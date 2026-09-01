@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">OpenCode Mobile</string>
+    <string name="notif_channel_server">OpenCode server status</string>
+    <string name="notif_title_running">OpenCode server is running</string>
+    <string name="notif_text_running">opencode serve on port 4096</string>
+    <string name="notif_title_starting">Starting OpenCode server…</string>
+    <string name="notif_title_error">OpenCode server failed</string>
+</resources>

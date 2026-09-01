@@ -1,0 +1,46 @@
+# Build artifacts
+.gradle/
+build/
+/cmake-build-*/
+*.so
+*.a
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Binary model / engine (rebuilt or downloaded, too big for git)
+app/src/main/assets/*.bin
+app/src/main/jniLibs/
+
+# CMake / NDK generated
+**/.cxx/
+**/.externalNativeBuild/
+**/prefab_config.json
+**/compile_commands.json
+**/ncnn-host-build/
+**/encdump-test/
+
+# Tool caches
+.cache/
+.kotlin/
+
+# IDE
+*.iml
+.idea/
+.DS_Store
+.vscode/
+
+# Local config
+local.properties
+
+# Release
+/app/release/
+
+# Large third-party (not in git)
+/third_party/
+/tools/ncnn-convert/
+
+# Logs
+*.log
+/build_log.txt
