@@ -1,5 +1,9 @@
 # OpenCode Mobile
 
+<p align="center">
+  <img src="social-preview.png" alt="OpenCode Mobile — превью" width="100%">
+</p>
+
 Android-приложение, которое запускает **opencode serve** прямо на устройстве
 (без Termux, без root) и даёт полноценный чат с AI-моделью в нативном интерфейсе.
 
