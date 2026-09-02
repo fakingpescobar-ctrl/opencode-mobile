@@ -31,6 +31,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
@@ -262,7 +264,7 @@ private data class ChatSnapshot(
  * сервера каждые 2с + отправка через POST /session/{id}/message.
  * Поле ввода внизу, лента наверху, клавиатура не перекрывает поле (imePadding).
  */
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
     val context = LocalContext.current
@@ -313,6 +315,8 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
     var whisperBusy by remember { mutableStateOf(false) }
     // Настройки голоса: движок распознавания ("system" | "whisper").
     var sttEngine by remember { mutableStateOf(prefs.getString("stt_engine", "system") ?: "system") }
+    // double-tap на "NCNN": показ подсказки о том, как работает двигатель (int8-энкодер и т.д.)
+    var ncnnTipVisible by remember { mutableStateOf(false) }
     // Модель whisper: "base" (assets, вшита) | "turbo" (скачивается 574MB в filesDir).
     var sttModel by remember { mutableStateOf(prefs.getString("stt_model", "base") ?: "base") }
     // Прогресс скачивания turbo: null = не качаем, иначе Int (0..100) + статус.
@@ -967,14 +971,25 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                sttEngine = "ncnn"
-                                prefs.edit().putString("stt_engine", "ncnn").apply()
-                            }
+                            .combinedClickable(
+                                enabled = true,
+                                onClick = {
+                                    sttEngine = "ncnn"
+                                    prefs.edit().putString("stt_engine", "ncnn").apply()
+                                },
+                                onDoubleClick = { ncnnTipVisible = !ncnnTipVisible }
+                            )
                             .padding(vertical = 6.dp)
                     ) {
                         Text(if (sttEngine == "ncnn") "● " else "○ ", color = Color(0xFFFF6D00), fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Text("NCNN (CPU/NEON fp16 · KV-cache)", color = Color(0xFFE6E6E6), fontSize = 13.sp)
+                        Text("NCNN (CPU encoder int8)", color = Color(0xFFE6E6E6), fontSize = 13.sp)
+                    }
+                    if (ncnnTipVisible) {
+                        Text(
+                            "Как работает: int8-энкодер (блочная квантование, ~2× быстрее fp32) → fp16/32-декодер с KV-cache (шаг по токену ~64мс).",
+                            color = Color(0xFF90A4AE), fontSize = 10.sp,
+                            modifier = Modifier.padding(start = 20.dp, top = 2.dp, bottom = 4.dp)
+                        )
                     }
                     Text("Модель распознавания:", color = Color(0xFFBDBDBD), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp))
                     Row(

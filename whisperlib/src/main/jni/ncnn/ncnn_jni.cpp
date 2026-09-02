@@ -7,6 +7,7 @@
 #include "net.h"
 #include "layer.h"
 #include "layer_type.h"
+#include "allocator.h"
 
 #include <jni.h>
 #include <android/log.h>
@@ -133,6 +134,13 @@ public:
 };
 
 // ---- whisper implementation ----
+// Единый стабильный аллокатор KV-кэша для decoder: позволяет MHA переиспользовать
+// кэш между prefill (step 0) и автогрегрессивными шагами (reuse=true в
+// create_or_grow_kvcache). Без него каждый шаг переаллоцировал бы кэш по
+// max_seqlen_hint (2=1638400) -> 8.4GB alloc -> rc=-100 (decoder step fail).
+// Объявлен статическим, живёт весь процесс.
+static ncnn::PoolAllocator* g_kvcache_allocator = nullptr;
+
 class Whisper
 {
 public:
@@ -204,16 +212,48 @@ int Whisper::load(const std::string& dir, const std::string& base)
     decoder.opt.use_fp16_storage = fp16;
     decoder.opt.use_fp16_arithmetic = fp16;
     decoder.opt.lightmode = false;   // держим промежуточные блобы (нужно для извлечения KV-кэша через extract)
+    if (!g_kvcache_allocator)
+        g_kvcache_allocator = new ncnn::PoolAllocator();
+    g_kvcache_allocator->set_size_compare_ratio(0.5f);
+    decoder.opt.kvcache_allocator = g_kvcache_allocator;
     proj_out.opt.use_vulkan_compute = false;
     proj_out.opt.use_fp16_packed = fp16;
     proj_out.opt.use_fp16_storage = fp16;
     proj_out.opt.use_fp16_arithmetic = fp16;
 
-    std::string p = dir + "/" + base;
+std::string p = dir + "/" + base;
     if (fbank.load_param((p + "_fbank.ncnn.param").c_str()) != 0) return -1;
     if (fbank.load_model((p + "_fbank.ncnn.bin").c_str()) != 0) return -1;
-    if (encoder.load_param((p + "_encoder.ncnn.param").c_str()) != 0) return -1;
-    if (encoder.load_model((p + "_encoder.ncnn.bin").c_str()) != 0) return -1;
+    // int8-кандидат для encoder: если рядом есть *_encoder_int8.ncnn.* — грузим его
+    // (int8-квантование Gemm/MHA через block-quant), иначе — обычный fp32. При любой
+    // ошибке загрузки int8 -> автоматический откат на fp32.
+    std::string enc_param = p + "_encoder_int8.ncnn.param";
+    std::string enc_bin   = p + "_encoder_int8.ncnn.bin";
+    bool int8_ok = false;
+    FILE* fint8 = fopen(enc_param.c_str(), "rb");
+    if (fint8)
+    {
+        fclose(fint8);
+        ncnn::Net enc_try;
+        enc_try.opt = encoder.opt;
+        if (enc_try.load_param(enc_param.c_str()) == 0 && enc_try.load_model(enc_bin.c_str()) == 0)
+        {
+            int8_ok = true;
+        }
+    }
+    if (int8_ok)
+    {
+        encoder.load_param(enc_param.c_str());
+        encoder.load_model(enc_bin.c_str());
+        NCNN_PHASE("encoder int8: ON (%s)", enc_param.c_str());
+    }
+    else
+    {
+        enc_param = p + "_encoder.ncnn.param";
+        enc_bin   = p + "_encoder.ncnn.bin";
+        if (encoder.load_param(enc_param.c_str()) != 0) return -1;
+        if (encoder.load_model(enc_bin.c_str()) != 0) return -1;
+    }
     if (embed_token.load_param((p + "_embed_token.ncnn.param").c_str()) != 0) return -1;
     if (embed_token.load_model((p + "_embed_token.ncnn.bin").c_str()) != 0) return -1;
     if (embed_position.load_param((p + "_embed_position.ncnn.param").c_str()) != 0) return -1;
@@ -223,6 +263,7 @@ int Whisper::load(const std::string& dir, const std::string& base)
     if (proj_out.load_param((p + "_proj_out.ncnn.param").c_str()) != 0) return -1;
     if (proj_out.load_model((p + "_proj_out.ncnn.bin").c_str()) != 0) return -1;
 
+    NCNN_PHASE("whisper load OK pre-tokenizer: base=%s", base.c_str());
     if (!tokenizer.load((dir + "/whisper_vocab.txt").c_str())) return -1;
 
     // resolve kv cache blob indexes (each MultiHeadAttention with 3 outputs)
@@ -439,8 +480,12 @@ int Whisper::run_decoder_prefill(const std::vector<int>& tokens, const ncnn::Mat
         ex.input("in2", attention_mask);
         out_kvcache.resize(out_kv_cache_indexes.size());
         for (size_t i = 0; i < out_kv_cache_indexes.size(); i++)
-            ex.extract(out_kv_cache_indexes[i], out_kvcache[i], 1);
-        ex.extract("out0", output_states);
+        {
+            int rck = ex.extract(out_kv_cache_indexes[i], out_kvcache[i], 1);
+            NCNN_PHASE("prefill kv_out[%d] extract rc=%d shape(%d,%d,%d)", (int)i, rck, out_kvcache[i].w,out_kvcache[i].h,out_kvcache[i].c);
+        }
+        int rcO = ex.extract("out0", output_states);
+        NCNN_PHASE("prefill out0 rc=%d shape(%d,%d,%d)", rcO, output_states.w,output_states.h,output_states.c);
     }
     if (output_states.empty() || output_states.h < dst_seqlen)
         return -1;
@@ -487,6 +532,14 @@ int Whisper::run_decoder_step(const std::vector<int>& tokens, const ncnn::Mat& e
 
     ncnn::Mat output_states;
     {
+        NCNN_PHASE("decoder step in: embeds(%d,%d,%d) enc(%d,%d,%d) mask(%d,%d) kvidx=%d outidx=%d",
+            input_embeds.w,input_embeds.h,input_embeds.c,
+            encoder_states.w,encoder_states.h,encoder_states.c,
+            attention_mask.w,attention_mask.h,
+            (int)kv_cache_indexes.size(),(int)out_kv_cache_indexes.size());
+        for (size_t i = 0; i < kv_cache_indexes.size(); i++)
+            NCNN_PHASE("  kv_in[%d] blob=%d shape(%d,%d,%d) total=%d", (int)i, (int)kv_cache_indexes[i],
+                kvcache[i].w,kvcache[i].h,kvcache[i].c,(int)kvcache[i].total());
         ncnn::Extractor ex = decoder.create_extractor();
         ex.input("in0", input_embeds);
         ex.input("in1", encoder_states);
@@ -494,9 +547,17 @@ int Whisper::run_decoder_step(const std::vector<int>& tokens, const ncnn::Mat& e
         for (size_t i = 0; i < kv_cache_indexes.size(); i++)
             ex.input(kv_cache_indexes[i], kvcache[i]);
         out_kvcache.resize(out_kv_cache_indexes.size());
+        int rc0, rc1 = 0, rc2 = 0;
         for (size_t i = 0; i < out_kv_cache_indexes.size(); i++)
-            ex.extract(out_kv_cache_indexes[i], out_kvcache[i], 1);
-        ex.extract("out0", output_states);
+        {
+            rc0 = ex.extract(out_kv_cache_indexes[i], out_kvcache[i], 1);
+            NCNN_PHASE("  kv_out[%d] extract rc=%d shape(%d,%d,%d)", (int)i, rc0, out_kvcache[i].w,out_kvcache[i].h,out_kvcache[i].c);
+            if (rc0 != 0) rc1 = rc0;
+        }
+        rc2 = ex.extract("out0", output_states);
+        NCNN_PHASE("  out0 extract rc=%d shape(%d,%d,%d)", rc2, output_states.w,output_states.h,output_states.c);
+        if (rc1) return rc1;
+        if (rc2) return rc2;
     }
     if (output_states.empty() || output_states.h < 1)
         return -1;

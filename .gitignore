@@ -41,6 +41,12 @@ local.properties
 /third_party/
 /tools/ncnn-convert/
 
+# Big int8-quant artifacts (weights ~2.8GB, regenerable via quantize_block.py)
+/tools/ncnn-int8/turbo/
+/tools/ncnn-int8/**/*.bin
+/tools/ncnn-int8/**/*.npy
+/tools/ncnn-int8/**/*.table
+
 # Logs
 *.log
 /build_log.txt
