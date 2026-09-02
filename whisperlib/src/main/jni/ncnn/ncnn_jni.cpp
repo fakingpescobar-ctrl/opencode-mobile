@@ -196,11 +196,17 @@ protected:
 
 int Whisper::load(const std::string& dir, const std::string& base)
 {
-    // CPU + fp32 (turbo) / fp16 (base): рабочий режим. Vulkan-путь ПРОВЕРЕН повторно
-    // 31.08.2026 с исправленными токенами: encoder на Vulkan FP32 даёт ×6 скорость
-    // (3094ms против ~18с), НО decoder зацикливается (448 токенов без EOT, avg
-    // 28.8ms/step) — состояния encoder неточны на этом Adreno/ColorOS-драйвере даже
-    // в FP32, поэтому GPU-путь непригоден. Остаёмся на CPU.
+    // CPU + fp32 (turbo) / fp16 (base): рабочий режим.
+    // Vulkan-путь ПРОВЕРЕН 31.08.2026: encoder на Vulkan FP32 давал ×6 скорость
+    // (3094ms против ~18с), НО decoder (тогда тоже на Vulkan) зацикливался (448 токенов
+    // без EOT) — неточность encoder-состояний на Adreno/ColorOS-драйвере.
+    // ЭКСП-1 (02.09.2026): encoder выносим на Vulkan (×6!), decoder ОСТАВЛЯЕМ на CPU
+    // (точнее, не зацикливается). subgroup_ops отключены — PhotonCamera: они крашатся на Adreno/Mali.
+    if (ncnn::get_gpu_count() > 0)
+    {
+        encoder.opt.use_vulkan_compute = true;
+        encoder.opt.use_subgroup_ops = false;
+    }
     // fbank: БЕЗ fp16 — на ARM fp16 даёт NaN в log10 (тишина 0.0), на x86 нет.
     fbank.opt.use_vulkan_compute = false;
     fbank.opt.use_fp16_packed = false;
@@ -212,7 +218,9 @@ int Whisper::load(const std::string& dir, const std::string& base)
     // про цыгана.»). base (512-мерный) остаётся на fp16 для скорости.
     const bool turbo = base.find("turbo") != std::string::npos;
     const bool fp16 = !turbo;
-    encoder.opt.use_vulkan_compute = false;
+    // encoder уже выше мог быть переключён на Vulkan (ЭКСП-1); НЕ сбрасывать здесь.
+    if (ncnn::get_gpu_count() > 0)
+        encoder.opt.use_vulkan_compute = true;
     encoder.opt.use_fp16_packed = fp16;
     encoder.opt.use_fp16_storage = fp16;
     encoder.opt.use_fp16_arithmetic = fp16;
@@ -242,35 +250,29 @@ std::string p = dir + "/" + base;
     if (fbank.load_param((p + "_fbank.ncnn.param").c_str()) != 0) return -1;
     if (fbank.load_model((p + "_fbank.ncnn.bin").c_str()) != 0) return -1;
     // int8-кандидат для encoder: если рядом есть *_encoder_int8.ncnn.* — грузим его
-    // (int8-квантование Gemm/MHA через block-quant), иначе — обычный fp32. При любой
-    // ошибке загрузки int8 -> автоматический откат на fp32.
-    std::string enc_param = p + "_encoder_int8.ncnn.param";
-    std::string enc_bin   = p + "_encoder_int8.ncnn.bin";
+    // (int8-квантование Gemm/MHA через block-quant), иначе — обычный fp32.
+    // ЗАМЕРЕНО 02.09: int8 быстрее FP32 и на CPU, и на Vulkan (int8-Vulkan 6.45s,
+    // FP32-Vulkan 11.2s, int8-CPU 8.82s). Поэтому int8 всегда приоритетен.
     bool int8_ok = false;
-    FILE* fint8 = fopen(enc_param.c_str(), "rb");
-    if (fint8)
     {
-        fclose(fint8);
-        ncnn::Net enc_try;
-        enc_try.opt = encoder.opt;
-        if (enc_try.load_param(enc_param.c_str()) == 0 && enc_try.load_model(enc_bin.c_str()) == 0)
+        std::string enc_param = p + "_encoder_int8.ncnn.param";
+        FILE* fint8 = fopen(enc_param.c_str(), "rb");
+        if (fint8)
         {
-            int8_ok = true;
+            fclose(fint8);
+            ncnn::Net enc_try;
+            enc_try.opt = encoder.opt;
+            if (enc_try.load_param(enc_param.c_str()) == 0 && enc_try.load_model((p + "_encoder_int8.ncnn.bin").c_str()) == 0)
+            {
+                int8_ok = true;
+            }
         }
     }
-    if (int8_ok)
-    {
-        encoder.load_param(enc_param.c_str());
-        encoder.load_model(enc_bin.c_str());
-        NCNN_PHASE("encoder int8: ON (%s)", enc_param.c_str());
-    }
-    else
-    {
-        enc_param = p + "_encoder.ncnn.param";
-        enc_bin   = p + "_encoder.ncnn.bin";
-        if (encoder.load_param(enc_param.c_str()) != 0) return -1;
-        if (encoder.load_model(enc_bin.c_str()) != 0) return -1;
-    }
+    std::string enc_param = p + "_encoder" + (int8_ok ? "_int8" : "") + ".ncnn.param";
+    std::string enc_bin   = p + "_encoder" + (int8_ok ? "_int8" : "") + ".ncnn.bin";
+    if (encoder.load_param(enc_param.c_str()) != 0) return -1;
+    if (encoder.load_model(enc_bin.c_str()) != 0) return -1;
+    NCNN_PHASE("encoder mode: %s (%s) vulkan=%d", int8_ok ? "int8" : "fp32", enc_param.c_str(), (int)encoder.opt.use_vulkan_compute);
     if (embed_token.load_param((p + "_embed_token.ncnn.param").c_str()) != 0) return -1;
     if (embed_token.load_model((p + "_embed_token.ncnn.bin").c_str()) != 0) return -1;
     if (embed_position.load_param((p + "_embed_position.ncnn.param").c_str()) != 0) return -1;
