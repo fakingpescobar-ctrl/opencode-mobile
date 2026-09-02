@@ -3,6 +3,7 @@ package org.opencode.mobile.server
 import android.content.Context
 import org.opencode.mobile.OpencodeApp
 import java.io.File
+import java.io.FileOutputStream
 
 /**
  * Запуск standalone opencode serve на Android без root.
@@ -24,6 +25,8 @@ object OpencodeRuntime {
 
     private const val BIN_NAME = "libopencode.so"        // в nativeLibraryDir
     private const val LOADER_NAME = "libldmusl.so"       // в nativeLibraryDir
+    private const val BUN_NAME = "libbun-musl.so"        // встроенный musl-Bun в nativeLibraryDir
+    const val MEMORY_PORT = 4199                          // TCP/Streamable-порт локальной памяти
 
     // Зависимые musl-libs. Источник — nativeLibraryDir (там они лежат под lib*-именами,
     // так их извлекает PackageManager). При старте копируются в filesDir/musl
@@ -119,9 +122,10 @@ object OpencodeRuntime {
         val cfg = OpencodeApp.ServerConfig
         val pb = ProcessBuilder(cmd)
         // IPv4 CONNECT-прокси: opencode (bun) не делает fallback IPv6->IPv4 для
-        // opencode.ai/zen/go/v1 (Cloudflare отдаёт AAAA первыми, на устройстве нет
-        // IPv6-маршрута) — «AI_APICallError: Cannot connect to API». Прокси
-        // резолвит строго по IPv4; TLS остаётся end-to-end.
+        // моделей.opencode.ai / opencode.ai/zen (Cloudflare отдаёт AAAA первыми, на
+        // устройстве нет IPv6-маршрута) — «Transport error / Timeout», как сейчас
+        // видно на models.dev без прокси. curl с телефона работает (happy-eyeballs),
+        // bun — нет. Прокси резолвит строго по IPv4; TLS остаётся end-to-end.
         val proxyPort = Ipv4Proxy.ensureStarted()
         if (proxyPort != null) {
             val proxy = "http://127.0.0.1:$proxyPort"
@@ -145,16 +149,132 @@ object OpencodeRuntime {
         pb.environment()["NO_COLOR"] = "1"
         // Пустые/безопасные значения чтобы opencode не ныл
         pb.environment()["PATH"] = (pb.environment()["PATH"] ?: "") + ":" + nativeDir
+        // Путь к встроенному musl-Bun (libbun-musl.so + лидирующий loader libldmusl.so).
+        // Оба в nativeLibraryDir — это ЕДИНСТВЕННОЕ место, откуда untrusted_app может
+        // exec-нуть ELF. Дочерние MCP-процессы (запускаемые opencode из конфига)
+        // наследуют этот env, поэтому конфиг может юзать $MCP_NATIVE_DIR стабильно,
+        // не завися от меняющегося при переустановке пути /data/app/<pkg>-*/.../lib.
+        pb.environment()["MCP_NATIVE_DIR"] = nativeDir
+        // Где локальная память MCP хранит SQLite (векторы+граф). По умолчанию HOME/.memory.
+        pb.environment()["MCP_MEMORY_DIR"] = File(cfg.opencodeHome, ".memory").absolutePath
 
+        // КРИТИЧНО для локальных MCP (stdio transport): НЕЛЬЗЯ редиректить stdout serve
+        // в файл. opencode запускает дочерние MCP процессы (например встроенный bun через
+        // libldmusl) и ждёт от них JSON-RPC по pipe. Если serve сам редиректит stdout в файл,
+        // все дочерние наследуют этот файл вместо pipe, и opencode не читает ответ MCP ->
+        // "Operation timed out after 30000ms". Поэтому: stdout/stderr serve -> отдельные pipes,
+        // а их содержимое мы в фоне дублируем в logFile для отладки (redirect через pipe не
+        // мешает opencode создавать нормальные stdio pipes у своих MCP детей).
         pb.redirectErrorStream(true)
-        pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
+        pb.redirectOutput(ProcessBuilder.Redirect.PIPE)
 
-        return runCatching { pb.start() }.onFailure { e ->
+        return runCatching {
+            val proc = pb.start()
+            if (logFile.parentFile?.exists() != true) logFile.parentFile?.mkdirs()
+            val out = FileOutputStream(logFile, true)
+            // Поток-логгер: читает stdout serve (уже слитый со stderr) и пишет в файл.
+            Thread {
+                try {
+                    val buf = ByteArray(8192)
+                    var n: Int
+                    proc.inputStream.use { inp ->
+                        while (inp.read(buf).also { n = it } != -1) {
+                            out.write(buf, 0, n)
+                            out.flush()
+                        }
+                    }
+                } catch (_: Exception) {
+                } finally {
+                    runCatching { out.close() }
+                }
+            }.apply { isDaemon = true; name = "opencode-log" }.start()
+            proc
+        }.onFailure { e ->
             android.util.Log.e("OpencodeRuntime", "failed to start opencode: ${e.message}")
         }.getOrNull()
     }
 
     private fun nativeLibraryDir(context: Context): String {
         return context.applicationInfo.nativeLibraryDir
+    }
+
+    /**
+     * Копирует memory.js (Streamable HTTP MCP-сервер локальной памяти) из встроенных
+     * assets в filesDir/mem/memory.js, откуда его может запустить встроенный musl-Bun.
+     * Возвращает путь к скрипту (или null при ошибке).
+     */
+    fun ensureMemoryScript(context: Context): File? {
+        val dir = File(context.filesDir, "mem").apply { mkdirs() }
+        val dest = File(dir, "memory.js")
+        return try {
+            // assets - источник истины: всегда сверяем, перезаписываем если отличается
+            // (install -r сохраняет app data/firstDir, старая копия оставалась и тормозила фиксы).
+            val source = context.assets.open("mcp/memory.js").use { input ->
+                input.readBytes()
+            }
+            val changed = !dest.exists() ||
+                    dest.length() != source.size.toLong() ||
+                    !dest.readBytes().contentEquals(source)
+            if (changed) {
+                dest.writeBytes(source)
+                android.util.Log.i("OpencodeRuntime", "ensureMemoryScript: wrote ${source.size}B to ${dest.absolutePath}")
+            }
+            dest
+        } catch (e: Exception) {
+            android.util.Log.e("OpencodeRuntime", "ensureMemoryScript failed: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Запускает локальную память MCP как ОТДЕЛЬНЫЙ TCP/Streamable HTTP-сервер
+     * (порт MEMORY_PORT). Это намеренный обход: local MCP через stdio у этой сборки
+     * opencode не работает, т.к. она НЕ создаёт отдельный stdio-pipe своим дочерним
+     * MCP-процессам — они наследуют stdin/stdout самого serve, и ответ JSON-RPC
+     * уходит не туда (таймаут 30s без ошибок спавна). TCP-Server подключается как
+     * remote MCP (url http://127.0.0.1:4199/mcp) — как context7 (SSE/Streamable), который
+     * стабильно работает. HTTPS_PROXY не нужен (localhost вынесен в NO_PROXY).
+     * @return запущенный процесс (или null)
+     */
+    fun startMemoryServer(context: Context, logFile: File, workDir: File? = null): Process? {
+        if (!isAssembled(context)) return null
+        val script = ensureMemoryScript(context) ?: return null
+        val nativeDir = nativeLibraryDir(context)
+        val loader = File(nativeDir, LOADER_NAME).absolutePath
+        val bun = File(nativeDir, BUN_NAME).absolutePath
+
+        val cmd = ArrayList<String>()
+        cmd.add(loader)                 // ld-musl загрузчик первым
+        cmd.add(bun)                    // сам runtime
+        cmd.add(script.absolutePath)    // наш MCP-скрипт
+
+        android.util.Log.i("OpencodeRuntime", "starting memory http server: $cmd (port $MEMORY_PORT)")
+
+        val cfg = OpencodeApp.ServerConfig
+        val pb = ProcessBuilder(cmd)
+        if (workDir != null) pb.directory(workDir)
+        pb.environment()["HOME"] = cfg.opencodeHome.absolutePath
+        pb.environment()["TMPDIR"] = cfg.opencodeCache.absolutePath
+        pb.environment()["XDG_CONFIG_HOME"] = cfg.opencodeConfig.absolutePath
+        pb.environment()["XDG_DATA_HOME"] = cfg.opencodeData.absolutePath
+        pb.environment()["XDG_CACHE_HOME"] = cfg.opencodeCache.absolutePath
+        val muslDir = try { ensureMuslLibs(context).absolutePath } catch (_: Exception) { nativeDir }
+        pb.environment()["LD_LIBRARY_PATH"] = "$muslDir:$nativeDir"
+        pb.environment()["NO_COLOR"] = "1"
+        pb.environment()["PATH"] = (pb.environment()["PATH"] ?: "") + ":" + nativeDir
+        pb.environment()["MCP_NATIVE_DIR"] = nativeDir
+        pb.environment()["MCP_MEMORY_DIR"] = File(cfg.opencodeHome, ".memory").absolutePath
+        pb.environment()["MCP_TCP_PORT"] = MEMORY_PORT.toString()
+        pb.environment()["NO_PROXY"] = "127.0.0.1,localhost"
+
+        // stdout/stderr memory -> отдельный лог (stdio не нужен: транспорт TCP).
+        pb.redirectErrorStream(true)
+        pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
+
+        return runCatching {
+            pb.start()
+        }.onFailure { e ->
+            android.util.Log.e("OpencodeRuntime", "failed to start memory server: ${e.message}")
+        }.getOrNull()
     }
 }

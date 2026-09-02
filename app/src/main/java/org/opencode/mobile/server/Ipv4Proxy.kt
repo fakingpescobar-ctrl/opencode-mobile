@@ -28,6 +28,13 @@ object Ipv4Proxy {
 
     const val PORT = 3128
 
+    // Вариант A: таймаут простоя туннеля. После CONNECT сокеты больше не должны
+    // висеть с soTimeout=0 вечно: если через туннель нет данных столько времени
+    // (модель молчит перед первым токеном / зависшая сеть), pump оборвёт соединение,
+    // bun получит обрыв и сам переподключится (или клиент увидит ошибку вместо
+    // вечного «думает»). 120с >> обычная пауза перед первым токеном SSE (~10-15с).
+    private const val PUMP_IDLE_TIMEOUT_MS = 120_000
+
     private val started = AtomicBoolean(false)
     @Volatile
     private var serverSocket: ServerSocket? = null
@@ -92,8 +99,11 @@ object Ipv4Proxy {
 
             client.getOutputStream().write("HTTP/1.1 200 Connection established\r\n\r\n".toByteArray())
             client.getOutputStream().flush()
-            client.soTimeout = 0
-            upstream.soTimeout = 0
+            // Вариант A: таймаут простоя (было 0 — вечная блокировка на read).
+            // По истечении pump выйдет с ошибкой и закроет туннель, дав баг-клиенту
+            // (bun/opencode) обрыв вместо бесконечного ожидания.
+            client.soTimeout = PUMP_IDLE_TIMEOUT_MS
+            upstream.soTimeout = PUMP_IDLE_TIMEOUT_MS
             android.util.Log.i("Ipv4Proxy", "CONNECT $host:$port OK")
 
             val upIn = upstream.getInputStream()

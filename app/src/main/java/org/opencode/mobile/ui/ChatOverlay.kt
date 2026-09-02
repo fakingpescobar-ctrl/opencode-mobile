@@ -6,7 +6,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
+import android.media.AudioAttributes
 import android.media.MediaRecorder
+import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.VibrationEffect
@@ -38,6 +41,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -62,11 +66,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -75,18 +81,23 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import org.opencode.mobile.R
 import org.opencode.mobile.stt.ModelDownloader
 import org.opencode.mobile.stt.WhisperTranscribeService
@@ -96,9 +107,13 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.style.TextOverflow
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.concurrent.thread
@@ -112,9 +127,104 @@ import java.util.Locale
 
 private const val MAX_SHOWN = 120
 
+// Контекст-лимит активной модели (входные токены) — порог, при котором opencode
+// начнёт компакт. big-pickle (opencode free) имеет окно 200000 токенов.
+// Если сменить модель с другим окном — поправить здесь. Круговой индикатор в
+// шапке чата показывает current/limit зрительно.
+private const val CONTEXT_LIMIT = 200_000L
+
+// Число сегментов (наклонных кубиков) индикатора контекста в шапке чата.
+// 30 — очень много мелких кубиков на всю ширину строки.
+private const val SEGMENTS = 30
+
+// Вариант B: если модель "думает" (последнее — user, или assistant с пустым текстом)
+// дольше этого времени без какого-либо прогресса в сессии — считаем зависание
+// и снимаем вечный индикатор «… генерируется …». 120_000 = 2 минуты паузы.
+private const val STALL_TIMEOUT_MS = 120_000L
+
+// Интервал опроса serve. КРАЙНЕ ВАЖНО для скорости появления ответа: serve пишет
+// полный ответ мгновенно, но приложение узнаёт о нём только на следующем поллинге.
+// Раз поллинг стоит 2_000мс — ответ «задерживался» на 0..2с (в среднем ~1с), что
+// ощущалось как «рендер через 1.5-2с». Снижено до 400мс: ответ появляется почти
+// сразу (≤400мс). Сам запрос лёгкий (~30-70мс), частая опрашивание безопасна.
+// При 400мс добавляем CDelta-поллинг: snapshot ставится только при реальных
+// изменениях, чтобы не реконсилить LazyColumn на каждый тик.
+private const val POLL_INTERVAL_MS = 400L
+
+// Адаптивный поллинг: в простое (лента статична, нет думания, никто не отвечает)
+// serve-опрос растягивается до POLL_IDLE_MS, чтобы не создавать 3 TCP-соединения
+// каждые 400мс вхолостую (жрёт ~30% CPU UI в idle). Как только детектим активность
+// (thinking=true | новый user-part | сменился liveTool/question) — мгновенно
+// возвращаемся к быстрому 400мс, чтобы отклик на ответ модели не проседал.
+// Idle-интервал → ввод: стоит 900мс (≈1.1 поллинга/с вместо 2.5).
+private const val POLL_IDLE_MS = 900L
+
+// Сколько последовательных «стабильных» поллингов нужно, чтобы перейти в idle.
+// Небольшое значение, чтобы не дёргаться на единичных флапс (скролл не влияет —
+// поллинг не зависит от видимости). Только лента + флаги.
+private const val STABLE_POLL_ROUNDS = 3
+
+// Лёгкий кэш MCP-статуса: /mcp меняется редко (только подключение/отключение
+// серверов), но считывается каждый поллинг (~2.5 раза/с). Чтобы убрать этот
+// HTTP-запрос из большинства опросов — кэшируем сырой JSON на короткое время.
+// При просрочке фонем его на следующем поллинге. Индикатор «N MCP» обновится
+// с задержкой ≤3с — некритично.
+private const val MCP_CACHE_MS = 3_000L
+private object McpCache {
+    @Volatile var raw: String? = null
+    @Volatile var at: Long = 0L
+}
+// Вернёт сырой JSON MCP из кэша, если он свежий (<MCP_CACHE_MS), иначе загрузит.
+private fun getMcpCached(port: Int): String? {
+    val now = System.currentTimeMillis()
+    val cached = McpCache.raw
+    if (cached != null && now - McpCache.at < MCP_CACHE_MS) return cached
+    val fresh = get("http://127.0.0.1:$port/mcp")
+    if (fresh != null) {
+        McpCache.raw = fresh
+        McpCache.at = now
+    }
+    return fresh
+}
+
+// Инкрементальный кэш ленты: самая дорогая операция поллинга — пересоздание
+// списка ChatMsg + вычисление thinking/liveTool/ctxTokens из сырого JSON /message.
+// При 400мс поллинге это происходит ~2.5 раза в секунду даже когда лента НЕ
+// меняется (нет ответа, нет думания). Кэшируем результат парсинга, привязанный
+// к (sessionId, hashCode(сырой /message)): если хэш тот же — лента битово
+// идентична, переиспользуем готовые объекты и НЕ парсим снова. serverRevs держит
+// отдельно, потому что заголовок/метки могут меняться независимо от ленты.
+private data class ChatParseResult(
+    val messages: List<ChatMsg>,
+    val question: ChatQuestion?,
+    val thinking: Boolean,
+    val liveTool: ChatTool?,
+    val contextTokens: Long,
+    val hasActivity: List<Boolean>,
+    val hasFinish: List<Boolean>,
+    val lastTool: ChatTool?
+)
+private object ChatCache {
+    @Volatile var sessionId: String? = null
+    @Volatile var rawHash: Int = 0
+    @Volatile var result: ChatParseResult? = null
+}
+
 private data class ChatMsg(val role: String, val text: String)
 
 private data class ChatQuestion(val id: String, val text: String, val options: List<String>)
+
+// Один вызов инструмента модели (tool) для live-чипа «что делает сейчас».
+private data class ChatTool(
+    val name: String,
+    val detail: String
+)
+
+// Отдельный MCP-сервер: имя + статус ("connected" / "disconnected" / ...).
+private data class McpInfo(
+    val name: String,
+    val status: String
+)
 
 private data class ChatSnapshot(
     val messages: List<ChatMsg>,
@@ -122,7 +232,18 @@ private data class ChatSnapshot(
     val activeId: String?,
     val question: ChatQuestion? = null,
     val thinking: Boolean = false,
-    val modelName: String = "Модель"
+    val modelName: String = "Модель",
+    val stalled: Boolean = false,
+    val liveTool: ChatTool? = null,
+    // Заполненность контекста (входные токены сессии). Контекст-лимит модели
+    // (порог компакта) задаётся константой CONTEXT_LIMIT — берётся из модели.
+    val contextTokens: Long = 0L,
+    // MCP-серверы: (подключено, всего). Для индикатора «mcp N» в шапке — зелёный
+    // если есть хотя бы один подключённый, красный если 0.
+    val mcpConnected: Int = 0,
+    val mcpTotal: Int = 0,
+    // Полный список MCP-серверов (имя + статус) для выпадающего списка по тапу.
+    val mcpServers: List<McpInfo> = emptyList()
 )
 
 /**
@@ -135,6 +256,8 @@ private data class ChatSnapshot(
 @Composable
 fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val lifecycleState = androidx.compose.runtime.remember { lifecycleOwner.lifecycle }
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
@@ -143,6 +266,18 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
     var sending by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     var knownMsgs by remember { mutableIntStateOf(0) }
+    // ИНДЕКС последнего завершённого ответа, на который уже сработала вибрация.
+    // Отделён от knownMsgs (фиксирует появление в сессии), чтобы звук играл
+    // СТРОГО когда ответ реально стал видимым на экране (см. LaunchedEffect(lastResp)).
+    var knownRendered by remember { mutableIntStateOf(-1) }
+    // Флаг «базовая линия зафиксирована»: истина после первого поллинга.
+    // Нужен чтобы первый реальный ответ (в т.ч. в пустой сессии) корректно
+    // вибрировал, а старые ответы при старте — нет.
+    var baselineDone by remember { mutableStateOf(false) }
+    // Счётчик размера ленты на прошлой автопрокрутке. Если лента ВЫРОСЛА
+    // (появилось новое сообщение — от юзера или модели) — принудительно
+    // спускаемся к низу, даже если юзер перед этим листал вверх (userScrolledUp).
+    var prevMsgCount by remember { mutableIntStateOf(0) }
     var userScrolledUp by remember { mutableStateOf(false) }
 
     // Настройка шрифта ответов модели: хранится в SharedPreferences, меняется на лету.
@@ -174,6 +309,8 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
     var turboDownloadPct by remember { mutableStateOf<Int?>(null) }
     var turboDownloadMsg by remember { mutableStateOf<String?>(null) }
     var showSettings by remember { mutableStateOf(false) }
+    // Выпадающий список MCP-серверов (открывается тапом по индикатору MCP).
+    var showMcpList by remember { mutableStateOf(false) }
     var whisperRecorder: AudioRecorder? = null
     fun setSttModel(m: String) {
         sttModel = m
@@ -226,6 +363,18 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                 snapshot = snapshot?.let { it.copy(messages = it.messages + ChatMsg("user", text)) }
                 scrollToBottomFull(listState, (snapshot?.messages?.size ?: 0) - 1)
             }
+        }
+    }
+
+    fun stopGen() {
+        val sessionId = snapshot?.activeId ?: return
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) { abortSession(serverPort, sessionId) }
+            if (ok) {
+                vibrate(context)
+            }
+            // thinking сбросится сам на следующем поллинге (2с): abort завершит
+            // стрим, и fetchChatSnapshot увидит step-finish → thinking=false.
         }
     }
 
@@ -458,16 +607,42 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
         }
     }
 
-    // Автопрокрутка вниз: после отправки и при новом ответе/думании,
-    // но НЕ когда юзер сам ушёл читать историю вверх.
+    // Автопрокрутка вниз: после отправки и при новом ответе/думании.
+    // Если юзер сам листал вверх, автопрокрутка СТАРОЙ ленты не дёргает его,
+    // НО когда приходит НОВОЕ сообщение (лента выросла) — принудительно
+    // спускаемся к низу, чтобы последнее сообщение всегда было видно.
     LaunchedEffect(snapshot?.messages?.size, snapshot?.thinking) {
-        delay(90) // дождаться рекомпозиции LazyColumn
+        delay(90) // дождаться рекомпозиции LazyColumn — здесь новый ответ УЖЕ отрисован
         val snap = snapshot ?: return@LaunchedEffect
         val n = snap.messages.size
-        if (n > 0 && !userScrolledUp) {
+        val newMsg = n > prevMsgCount // появилось новое сообщение (свой вопрос или ответ модели)
+        if (n > 0 && (!userScrolledUp || newMsg)) {
             val target = if (snap.thinking) n else n - 1
             scrollToBottomFull(listState, target)
         }
+        if (newMsg) userScrolledUp = false // новая порция контента — снимаем блокировку
+        prevMsgCount = n
+    }
+
+    // Вибрация при ПОЯВЛЕНИИ нового завершённого ответа.
+    // ПРИВЯЗАНА К ФАКТИЧЕСКОЙ ОТРИСОВКЕ: срабатывает только когда последний
+    // assistant-ответ реально стал видимым в viewport LazyColumn. Это исключает
+    // рассинхрон «звук раньше, текст позже»: даже если рендер медленный
+    // (композиция/измерение заняли время), вибрируем строго после показа текста.
+    // knownRendered — индекс последнего, на который уже «вибрировали» (высчитывается
+    // как количество завершённых ответов на момент последней вибрации).
+    val lastResp = snapshot?.messages?.indexOfLast { it.role == "assistant" && it.text.isNotBlank() }
+    LaunchedEffect(lastResp) {
+        val idx = lastResp ?: return@LaunchedEffect
+        if (idx < 0) return@LaunchedEffect
+        if (idx <= knownRendered) return@LaunchedEffect // старый/уже обработанный ответ — не вибрируем
+        // Ждём, пока этот элемент реально окажется в видимой области (скоррлировали).
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo.any { it.index == idx } }
+            .filter { it }
+            .first()
+        knownRendered = idx
+        vibrate(context)
+        playNotificationSound(context)
     }
 
     // Отслеживаем, ушёл ли юзер от низа списка вручную.
@@ -487,19 +662,87 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
     }
 
     LaunchedEffect(Unit) {
+        // Вариант B: клиентский таймаут стрима. Как только видим "думает" —
+        // фиксируем момент System.currentTimeMillis(); если за STALL_TIMEOUT_MS
+        // сессия так и не сдвинулась вперёд (нет нового ассистент-part и нет
+        // нового user-part), помечаем stalled -> UI снимает вечный индикатор
+        // и показывает «Нет ответа». Метка сбрасывается при любом прогрессе.
+        var stallSince = 0L
+        // Адаптивный поллинг: счётчик «стабильных» итераций. Растёт, пока лента
+        // статична и не думается; по достижении STABLE_POLL_ROUNDS поллинг
+        // растягивается до POLL_IDLE_MS. При малейшем прогрессе сбрасывается → 400мс.
+        var stableRounds = 0
         while (true) {
+            // Экономия батареи/CPU в фоне: если Activity не видна (на заднем плане),
+            // обновлять UI бессмысленно. Пропускаем поллинг и спим длинным квантом.
+            // При возврате в foreground первый же тик подхватит актуальный snapshot
+            // (задержка ≤2с — незаметно, т.к. экран просыпается). Процесс живой,
+            // сервер НЕ трогается — это лишь пауза обновления скрытого чата.
+            if (lifecycleState.currentState != Lifecycle.State.RESUMED) {
+                delay(2_000L)
+                stableRounds = 0
+                continue
+            }
             val snap = fetchChatSnapshot(serverPort)
+            var changed = false
             if (snap != null) {
+                val now = System.currentTimeMillis()
                 val completed = snap.messages.count { it.role == "assistant" && it.text.isNotBlank() }
-                snapshot = snap
+                val stalled = if (!snap.thinking) {
+                    stallSince = 0L
+                    false
+                } else {
+                    if (stallSince == 0L) stallSince = now
+                    val el = now - stallSince
+                    android.util.Log.d("ChatOverlay", "STALL check thinking=true since=${el}ms")
+                    if (el >= STALL_TIMEOUT_MS) true else false
+                }
+                val final = if (stalled) snap.copy(stalled = true) else snap
+                // Дельта-поллинг: ставим snapshot в UI только если содержимое реально
+                // изменилось (messages + thinking + stalled одинаковы — пропускаем).
+                // При частом поллинге (400мс) это не даёт Compose реконсилить всю
+                // ленту без необходимости, сохраняя рендер максимально дешёвым.
+                val old = snapshot
+                changed = old == null ||
+                    old.messages != final.messages ||
+                    old.thinking != final.thinking ||
+                    old.stalled != final.stalled ||
+                    old.liveTool != final.liveTool ||
+                    old.question != final.question
+                if (changed) {
+                    snapshot = final
+                }
                 if (completed > knownMsgs) {
+                    // Ответ появился в сессии (модель завершила, `completed` считает
+                    // ассистентов с текстом). ЗВУК НЕ играем здесь: snapshot ещё не
+                    // отрисован — иначе вибрация опережала бы рендер сообщения на
+                    // 1-2с (Compose-композиция + скролл отстают от записи данных).
+                    // Вибрация перенесена в отдельный LaunchedEffect, привязанный
+                    // к фактической видимости ответа. Здесь только фиксируем факт.
                     knownMsgs = completed
-                    vibrate(context)
                 } else if (knownMsgs == 0 && snap.messages.isNotEmpty()) {
                     knownMsgs = completed
                 }
+                // Базовая линия на ПЕРВОМ поллинге приложения: фиксируем ИНДЕКС
+                // последнего завершённого ответа как «уже известный», чтобы старые
+                // ответы (если сессия не пуста в момент открытия чата) НЕ вызывали
+                // вибрацию. Выполняется один раз. Последующие новые ответы
+                // (idx > knownRendered) завибрируют строго после отрисовки.
+                if (!baselineDone) {
+                    baselineDone = true
+                    knownRendered = snap.messages.indexOfLast { it.role == "assistant" && it.text.isNotBlank() }
+                }
             }
-            delay(2000)
+
+            // Адаптивный интервал: активность (thinking / реальное изменение ленты) →
+            // быстрая опрашивание 400мс. Стабильность → плавно растягиваем к idle 900мс.
+            val active = snap != null && (snap.thinking || changed)
+            if (active) {
+                stableRounds = 0
+            } else {
+                stableRounds++
+            }
+            delay(if (stableRounds >= STABLE_POLL_ROUNDS) POLL_IDLE_MS else POLL_INTERVAL_MS)
         }
     }
 
@@ -511,16 +754,25 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Чат — " + (snapshot?.label ?: "подключение…"),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = Color(0xFFE6E6E6),
-                    fontWeight = FontWeight.SemiBold,
+                // Круговой индикатор заполнения контекста. Показывает, сколько уже
+                // накоплено входных токенов сессии относительно лимита модели
+                // (CONTEXT_LIMIT). Зелёный → жёлтый → красный по мере приближения
+                // к компакту; внутри — процент заполнения.
+                ContextGauge(
+                    filled = snapshot?.contextTokens ?: 0L,
+                    limit = CONTEXT_LIMIT,
                     modifier = Modifier.weight(1f)
                 )
-                if (sending) {
-                    Text("отправка…", color = Color(0xFF8A8A8A), fontSize = 12.sp)
-                }
+                // Индикатор MCP-серверов (НЕОНОВЫЙ): «N MCP» + мигающая точка.
+                // Зелёный — все N подключённых серверов работают; красный — какой-то
+                // из них не работает (или их нет вовсе). Стоит ЛЕВЕЕ выбора цвета.
+                MCPIndicator(
+                    connected = snapshot?.mcpConnected ?: 0,
+                    total = snapshot?.mcpTotal ?: 0,
+                    onClick = { showMcpList = !showMcpList },
+                    modifier = Modifier.padding(start = 8.dp)
+                )
+                // Цветовой пикер для ответов модели.
                 Box(
                     Modifier
                         .padding(start = 8.dp)
@@ -573,6 +825,16 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                         drawCircle(Color(0xFF101010), radius = 2.dp.toPx(), center = c)
                     }
                 }
+            }
+            // Выпадающий список подключённых MCP-серверов (тап по индикатору «N MCP»).
+            // У каждого имени — мигающая точка: зелёная (работает) / красная (нет).
+            if (showMcpList) {
+                McpServerList(
+                    servers = snapshot?.mcpServers ?: emptyList(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, bottom = 2.dp)
+                )
             }
             // Цветовой пикер для ответов модели: квадрат-градиент (X — оттенок, Y — яркость), тап/драг точкой.
             if (showColorPicker) {
@@ -728,7 +990,7 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                     turboDownloadMsg?.let {
                         Text(it, color = Color(0xFFE05A5A), fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp))
                     }
-                    Text(
+Text(
                         if (ttsTestRunning) "TTS-тест: синтезирую и распознаю…" else "Диагностика: синтез → распознавание (см. лог VOICE)",
                         color = Color(0xFF5A8DEE),
                         fontSize = 11.sp,
@@ -812,8 +1074,19 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                         MessageRow(m, snapshot?.modelName ?: "Модель", modelFont, modelColor)
                     }
                     if (snapshot?.thinking == true) {
-                        item(key = "thinking") {
-                            ThinkingRow()
+                        val snap = requireNotNull(snapshot)
+                        item(key = if (snap.stalled) "stalled" else "thinking") {
+                            if (snap.stalled) {
+                                StalledRow()
+                            } else {
+                                ThinkingRow()
+                            }
+                        }
+                        // Живой чип «какой тул выполняет модель» — поверх индикатора думания.
+                        snap.liveTool?.let { t ->
+                            item(key = "livetool_${t.name}_${t.detail.hashCode()}") {
+                                LiveToolRow(t)
+                            }
                         }
                     }
                 }
@@ -962,6 +1235,25 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                         }
                     }
                 }
+                // Кнопка Stop: ВСЕГДА видна рядом с микрофоном.
+                // Прерывает текущую генерацию модели (POST /session/{id}/abort).
+                // Если модель не думает — abort просто не сработает, сессия не сломается.
+                Surface(
+                    modifier = Modifier
+                        .padding(start = 8.dp)
+                        .size(46.dp)
+                        .clickable { stopGen() },
+                    shape = CircleShape,
+                    color = Color(0xFF9E1C1C)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Surface(
+                            modifier = Modifier.size(14.dp),
+                            shape = RoundedCornerShape(3.dp),
+                            color = Color.White
+                        ) {}
+                    }
+                }
                 Surface(
                     modifier = Modifier
                         .padding(start = 8.dp)
@@ -1013,6 +1305,249 @@ private fun ThinkingRow() {
         }
         Spacer(Modifier.width(10.dp))
         Text("Модель думает…", color = Color(0xFF8A8A8A), fontSize = 13.sp)
+    }
+}
+
+@Composable
+private fun LiveToolRow(tool: ChatTool) {
+    // Живой чип: какой инструмент модель вызывает ПРЯМО СЕЙЧАС (пока работает).
+    val transition = rememberInfiniteTransition(label = "liveTool")
+    val pulse by transition.animateFloat(
+        initialValue = 0.4f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(460, delayMillis = 0), RepeatMode.Reverse),
+        label = "pulse"
+    )
+    // Иконка по типу инструмента.
+    val (icon, accent) = when (tool.name) {
+        "websearch", "webfetch", "context7" -> "🔍" to Color(0xFF5B9BD5)
+        "bash", "shell" -> "🛠" to Color(0xFFD97706)
+        "read", "grep", "glob" -> "📄" to Color(0xFF7BD88F)
+        "write", "edit" -> "✏️" to Color(0xFFB48AD9)
+        else -> "⚙️" to Color(0xFF9AA5B1)
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .padding(vertical = 6.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(accent.copy(alpha = 0.12f * pulse))
+            .border(width = 1.dp, color = accent.copy(alpha = 0.5f), shape = RoundedCornerShape(14.dp))
+            .padding(horizontal = 12.dp, vertical = 7.dp)
+    ) {
+        // Пульсирующая точка «активно».
+        Box(
+            Modifier
+                .size(8.dp)
+                .graphicsLayer { alpha = pulse }
+                .background(accent, CircleShape)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "$icon ${tool.name}",
+            color = Color.White.copy(alpha = 0.92f),
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold
+        )
+        if (tool.detail.isNotBlank()) {
+            Spacer(Modifier.width(10.dp))
+            Text(
+                tool.detail,
+                color = Color.White.copy(alpha = 0.72f),
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun StalledRow() {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(vertical = 6.dp)
+    ) {
+        Box(
+            Modifier
+                .size(10.dp)
+                .background(Color(0xFFE25822), RoundedCornerShape(3.dp))
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            "Нет ответа (зависло) — проверь сеть/провайдера",
+            color = Color(0xFFE25822), fontSize = 13.sp
+        )
+    }
+}
+
+/**
+ * Индикатор заполнения контекста (в шапке чата) — горизонтальная ПОЛОСКА из
+ * наклонных кубиков (ромбов). Показывает `filled` (входные токены сессии)
+ * относительно `limit` (контекст-лимит модели, CONTEXT_LIMIT). Заполненные
+ * кубики окрашены цветом прогресса, который меняется по мере приближения к
+ * компакту: зелёный (<50%) → жёлтый (50-80%) → красный (>80%). Пустые кубики
+ * — тёмные. Зрительно видно, сколько контекста накоплено и когда скоро будет
+ * компакт. Полоска занимает всю доступную ширину (weight 1f).
+ */
+@Composable
+private fun ContextGauge(filled: Long, limit: Long, modifier: Modifier = Modifier) {
+    val ratio = if (limit <= 0) 0f else (filled.toFloat() / limit.toFloat()).coerceIn(0f, 1f)
+    // Цвет прогресса по мере заполнения: зелёный → жёлтый → красный.
+    val g = Color(0xFF4CAF50)
+    val y = Color(0xFFFFC107)
+    val r = Color(0xFFE53935)
+    val active = when {
+        ratio < 0.50f -> g
+        ratio < 0.80f -> y
+        else -> r
+    }
+    val track = Color(0xFF242424)
+    val filledCubes = (ratio * SEGMENTS).toInt().coerceIn(0, SEGMENTS)
+    Canvas(modifier.height(40.dp).fillMaxWidth()) {
+        val segW = size.width / SEGMENTS
+        // Полуось по горизонтали (ширина кубика) и по вертикали (ВЫСОТА).
+        // halfY ≈ 2× halfX — кубики вытянуты вверх вдвое, наклон вправо сохранён.
+        val halfX = segW * 0.38f
+        val halfY = halfX * 2f
+        val skew = halfX * 0.55f
+        for (i in 0 until SEGMENTS) {
+            val cx = size.width * (i + 0.5f) / SEGMENTS
+            val cy = size.height / 2f
+            val color = if (i < filledCubes) active else track
+            val path = Path().apply {
+                moveTo(cx - halfX + skew, cy - halfY)   // верх-лево (сдвинут вправо)
+                lineTo(cx + halfX + skew, cy - halfY)   // верх-право
+                lineTo(cx + halfX, cy + halfY)          // низ-право
+                lineTo(cx - halfX, cy + halfY)          // низ-лево
+                close()
+            }
+            drawPath(path, color)
+        }
+    }
+}
+
+/**
+ * Неоновый индикатор MCP-серверов: «N MCP» + мигающая точка-светодиод.
+ * Зелёный — все подключённые серверы работают (connected==total>0);
+ * красный — какой-то не работает или их нет. Стилистика — неон: яркий
+ * цвет, мягкое свечение вокруг точки (shadowBlur), точка плавно мигает.
+ */
+@Composable
+private fun MCPIndicator(connected: Int, total: Int, modifier: Modifier = Modifier, onClick: () -> Unit = {}) {
+    // Все работают: есть серверы, и все подключённые дошли до connected.
+    val allOk = total > 0 && connected == total
+    val neon = if (allOk) Color(0xFF39FF88) else Color(0xFFFF3B3B)
+    val hasServers = total > 0
+    // Мягкое «дыхание» точки через ДИСКРЕТНЫЙ таймер, а не через infiniteTransition.
+    // infiniteTransition тикал каждый кадр (60fps) = RenderThread постоянно занят.
+    // Здесь alpha обновляется ~16 раз/с (delay 60мс) циклом, давая плавный пульс,
+    // но массивно дешевле. ИТОГОВАЯ защита CPU — тройная:
+    //  1) без MCP (total==0) — цикл вообще не запускается, точка статична;
+    //  2) цикл дискретный (не 60fps);
+    //  3) в фоне (lifecycle паузы) — эффект спит, не тикает.
+    var blink by remember { mutableFloatStateOf(if (hasServers) 0.5f else 0.45f) }
+    if (hasServers) {
+        val lc = LocalLifecycleOwner.current.lifecycle
+        LaunchedEffect(total) {
+            if (lc.currentState != Lifecycle.State.RESUMED) {
+                // При старте в фоне — стоим, пока не вернёмся на передний план.
+                // Возобновляем по перезаходу (эффект перезапустится на рекомпозиции).
+                return@LaunchedEffect
+            }
+            // Пульс 0.35 → 1.0 → 0.35 по синусу. ДИСКРЕТНО: апдейт раз в 120мс
+            // (≈8 тиков за цикл ~1с). Это «дышащий» пульс — плавный на глаз, но
+            // в ~7 раз дешевле 60fps-infiniteTransition (RenderThread рисует Canvas
+            // только при смене alpha). Пауза в фоне — ниже.
+            var t = 0.0
+            while (true) {
+                // Если Activity ушла в фон — перестаём тикать (экономия батареи).
+                if (lc.currentState != Lifecycle.State.RESUMED) {
+                    blink = 0.5f
+                    delay(2_000L)
+                    continue
+                }
+                val a = 0.35f + 0.65f * ((kotlin.math.sin(t) + 1.0) / 2.0).toFloat()
+                blink = a
+                t += 0.785  // ~0.785 рад/тик → период волны ≈ 8 тиков ≈ 0.96с
+                if (t > kotlin.math.PI * 2.0) t -= kotlin.math.PI * 2.0
+                delay(120)
+            }
+        }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier.clickable { onClick() }) {
+        // Аккуратная мигающая точка-светодиод (без ореола/свечения).
+        Box(Modifier.size(22.dp), contentAlignment = Alignment.Center) {
+            Canvas(Modifier.size(22.dp)) {
+                val c = Offset(size.width / 2f, size.height / 2f)
+                val rDot = 4.dp.toPx()
+                drawCircle(neon.copy(alpha = blink), radius = rDot, center = c)
+            }
+        }
+        Spacer(Modifier.width(4.dp))
+        // «N MCP» — сначала число, потом слово; надпись ВСЕГДА бирюзовая (яркий неон),
+        // не зависит от статуса. Статус показывает только точка-светодиод.
+        Text(
+            "${connected} MCP",
+            color = Color(0xFF00E5FF),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp,
+            softWrap = false,
+            maxLines = 1
+        )
+    }
+}
+
+/**
+ * Выпадающий список MCP-серверов (по тапу на индикатор MCP в шапке). Для каждого
+ * имени — мигающая точка-светодиод: зелёная (работает, status=="connected") или
+ * красная (не работает / отключён). Если серверов нет — подпись «нет MCP».
+ */
+@Composable
+private fun McpServerList(servers: List<McpInfo>, modifier: Modifier = Modifier) {
+    Column(
+        modifier
+            .background(Color(0xFF161616), RoundedCornerShape(12.dp))
+            .border(1.dp, Color(0xFF2A2A2A), RoundedCornerShape(12.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        Text(
+            "MCP-серверы",
+            color = Color(0xFF00E5FF),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp
+        )
+        Spacer(Modifier.height(6.dp))
+        if (servers.isEmpty()) {
+            Text("Нет подключённых MCP", color = Color(0xFF8A8A8A), fontSize = 12.sp)
+        } else {
+            servers.forEach { srv ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Точка статуса СТАТИЧНАЯ (без rememberInfiniteTransition) — как в
+                    // MCPIndicator. Статус передаёт цвет, а не мигание: не грузим
+                    // RenderThread постоянно, даже при открытом списке серверов.
+                    val ok = srv.status == "connected"
+                    val dotColor = if (ok) Color(0xFF39FF88) else Color(0xFFFF3B3B)
+                    Canvas(Modifier.size(12.dp)) {
+                        drawCircle(dotColor.copy(alpha = 0.9f), radius = size.minDimension / 2f)
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        srv.name,
+                        color = Color(0xFFE6E6E6),
+                        fontSize = 13.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        if (ok) "работает" else "не работает",
+                        color = if (ok) Color(0xFF39FF88) else Color(0xFFFF3B3B),
+                        fontSize = 11.sp
+                    )
+                }
+                Spacer(Modifier.height(5.dp))
+            }
+        }
     }
 }
 
@@ -1267,13 +1802,19 @@ private fun MessageRow(m: ChatMsg, modelName: String = "Модель", modelFont
             fontSize = 15.sp,
             fontWeight = FontWeight.Bold
         )
-        Text(
-            m.text.ifBlank { "… генерируется …" },
-            color = if (isModel) modelColor else Color(0xFFEDEDED),
-            fontFamily = if (isModel) modelFont else FontFamily.Default,
-            fontSize = 14.sp,
-            lineHeight = 19.sp
-        )
+        if (m.text.isNotBlank()) {
+            // SelectionContainer — системное выделение текста длинным нажатием:
+            // можно выделить любой кусок ответа и скопировать его отдельно.
+            SelectionContainer {
+                Text(
+                    m.text,
+                    color = if (isModel) modelColor else Color(0xFFEDEDED),
+                    fontFamily = if (isModel) modelFont else FontFamily.Default,
+                    fontSize = 14.sp,
+                    lineHeight = 19.sp
+                )
+            }
+        }
     }
 }
 
@@ -1296,42 +1837,159 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? = withContext(D
         }
         if (bestId == null) return@withContext ChatSnapshot(emptyList(), "нет сессий", null)
         val label = titleOf(sessions, bestId)
-        val msgRaw = get("http://127.0.0.1:$p/session/$bestId/message") ?: return@withContext ChatSnapshot(emptyList(), label, bestId)
+        // Вариант 2: /message (главный, тащит всю ленту) и /mcp стартуют ПАРАЛЛЕЛЬНО.
+        // Оба — блокирующие get() на Dispatchers.IO; async даёт им работать одновременно,
+        // а не последовательно (экономия ~11-58мс на поллинг в худшем случае).
+        val msgDeferred = async { get("http://127.0.0.1:$p/session/$bestId/message") }
+        // MCP-серверы: GET /mcp → Record<name, McpServer{name,enabled,status,...}> (иначе пустой {}).
+        // Читаем из кэша (обновляется раз в MCP_CACHE_MS), чтобы не дёргать сервис каждый поллинг.
+        // Подключёнными считаем тех, у кого status == "connected". Показываем «N MCP».
+        var mcpConnected = 0
+        var mcpTotal = 0
+        val mcpServers = ArrayList<McpInfo>()
+        try {
+            val mcpRaw = getMcpCached(p)
+            if (mcpRaw != null) {
+                val trimmed = mcpRaw.trim()
+                if (trimmed.startsWith("[")) {
+                    val marr = JSONArray(trimmed)
+                    mcpTotal = marr.length()
+                    for (i in 0 until marr.length()) {
+                        val ms = marr.optJSONObject(i)
+                        val name = ms?.optString("name", "") ?: ""
+                        val status = ms?.optString("status", "") ?: ""
+                        if (status == "connected") mcpConnected++
+                        if (name.isNotBlank()) mcpServers.add(McpInfo(name, status))
+                    }
+                } else if (trimmed.startsWith("{")) {
+                    val mobj = JSONObject(trimmed)
+                    val names = mobj.keys()
+                    while (names.hasNext()) {
+                        mcpTotal++
+                        val key = names.next()
+                        val ms = mobj.optJSONObject(key)
+                        val status = ms?.optString("status", "") ?: ""
+                        if (status == "connected") mcpConnected++
+                        mcpServers.add(McpInfo(ms?.optString("name", "")?.takeIf { it.isNotBlank() } ?: key, status))
+                    }
+                }
+            }
+        } catch (_: Exception) { /* MCP недоступен — покажем 0 красным */ }
+        val msgRaw = msgDeferred.await() ?: return@withContext ChatSnapshot(emptyList(), label, bestId)
+        // Инкрементальный кэш: если за этой сессией тот же самый сырой JSON /message
+        // (hash совпал) — лента и все производные (thinking/liveTool/ctxTokens/question)
+        // гарантированно идентичны. Переиспользуем готовые объекты, НЕ пересоздавая
+        // их: это убирает самое тяжёлое — полный JSON-парсинг и построение строк —
+        // на каждый тик поллинга (2.5 раза/с), пока контент чата статичен.
+        val rawHash = msgRaw.hashCode()
+        val cached = ChatCache.result
+        if (ChatCache.sessionId == bestId && ChatCache.rawHash == rawHash && cached != null) {
+            val q = cached.question
+            val thinking = cached.thinking
+            val liveTool = cached.liveTool
+            val take = cached.messages
+            val snap = ChatSnapshot(take, "$label", bestId, q, thinking, prettyModel(bestModelId), liveTool = liveTool, contextTokens = cached.contextTokens, mcpConnected = mcpConnected, mcpTotal = mcpTotal, mcpServers = mcpServers)
+            android.util.Log.d("ChatOverlay", "FETCH(cached) out=${take.size} thinking=$thinking q=${q != null} label=$label model=$bestModelId")
+            return@withContext snap
+        }
         val arr = JSONArray(msgRaw)
         val out = ArrayList<ChatMsg>(arr.length())
+        // Параллельные out флаги: была ли у сообщения «активность» шага
+        // (step-start/reasoning/tool) и был ли step-finish. Нужны, чтобы отличать
+        // реально думающего assistant (активность есть, финиша нет) от оборванного
+        // пустого шага после abort (parts=[], активности нет).
+        val hasActivity = ArrayList<Boolean>(arr.length())
+        val hasFinish = ArrayList<Boolean>(arr.length())
+        // Последний инструмент, вызыванный моделью, в этой сессии (для live-чипа).
+        var lastTool: ChatTool? = null
+        // ЧЕСТНАЯ оценка активного контекста сессии: сумма символов всех текущих
+        // частей (text + tool output/input + reasoning). `tokens.input` из /session
+        // кумулятивный (включает уже компактированные хвосты), поэтому для индикатора
+        // считаем именно активное окно: символы -> токены (≈ /4) + overhead (×1.15).
+        var ctxChars = 0L
         for (i in 0 until arr.length()) {
             val msg = arr.getJSONObject(i)
             val info = msg.optJSONObject("info") ?: continue
             val role = info.optString("role", "system")
             val parts = msg.optJSONArray("parts") ?: continue
             val sb = StringBuilder()
+            var hasText = false
+            var finish = false
+            var activity = false
             for (ph in 0 until parts.length()) {
                 val part = parts.getJSONObject(ph)
-                if (part.optString("type") == "text") {
+                val type = part.optString("type", "")
+                if (type == "text") {
+                    hasText = true
                     val t = part.optString("text", "")
+                    ctxChars += t.length
                     if (sb.isNotEmpty() && t.isNotEmpty()) sb.append("\n")
                     sb.append(t)
+                } else if (type == "step-finish") {
+                    finish = true
+                } else if (type == "tool") {
+                    activity = true
+                    ctxChars += (part.optJSONObject("state")?.optString("output", "") ?: "").length
+                    // Запомнить имя инструмента + краткое действие (команда/запрос).
+                    val st = part.optJSONObject("state")
+                    val input = st?.optJSONObject("input")
+                    val title = st?.optString("title", "") ?: ""
+                    val cmd = input?.optString("command", "") ?: ""
+                    val qry = input?.optString("query", "") ?: ""
+                    val det = when {
+                        cmd.isNotBlank() -> cmd
+                        qry.isNotBlank() -> qry
+                        title.isNotBlank() -> title
+                        else -> ""
+                    }
+                    lastTool = ChatTool(part.optString("tool", ""), det)
+                } else if (type == "step-start" || type == "reasoning") {
+                    activity = true
+                    ctxChars += part.optString("text", "").length
                 }
             }
+            // Завершённый tool-only шаг (step-start->tool...->step-finish без text)
+            // не должен отображаться как «… генерируется …» — это не зависание,
+            // а просто шаг без текста. Фильтруем его из ленты. ДУМАЮЩИЙ assistant
+            // (без step-finish) остаётся, чтобы UI показал «генерируется».
+            if (role == "assistant" && !hasText && finish) continue
             out.add(ChatMsg(role, sb.toString()))
+            hasActivity.add(activity)
+            hasFinish.add(finish)
         }
-        if (out.isNotEmpty()) {
-            val lastMsg = out[out.size - 1]
-            if (lastMsg.role == "assistant" && lastMsg.text.isBlank()) {
-                out.removeAt(out.size - 1)
-            }
-        }
+        val lastIndex = out.size - 1
+        fun hasActivityFor(idx: Int): Boolean = idx in hasActivity.indices && hasActivity[idx]
+        fun hasFinishFor(idx: Int): Boolean = idx in hasFinish.indices && hasFinish[idx]
         val take = if (out.size > MAX_SHOWN) out.subList(out.size - MAX_SHOWN, out.size) else out
         val q = questionOf(p, bestId)
         val last = out.lastOrNull()
+        // «Думает» = модель реально начала отвечать (есть шаг: step-start/reasoning/tool)
+        // И НЕ завершилась (нет step-finish). После abort opencode добавляет ПУСТОЙ
+        // assistant-шаг parts=[] (без step-start, без finish, без text) — такой НЕ
+        // считается думающим: иначе UI вечно показывал бы «Модель думает» после Stop.
         val thinking = q == null && when {
             last == null -> false
             last.role == "user" -> true
-            last.role == "assistant" && last.text.isBlank() -> true
+            last.role == "assistant" && hasActivityFor(lastIndex) && !hasFinishFor(lastIndex) -> true
             else -> false
         }
-        val snap = ChatSnapshot(take, "$label · ${out.size} сообщ.", bestId, q, thinking, prettyModel(bestModelId))
-        android.util.Log.d("ChatOverlay", "FETCH out=${out.size} take=${take.size} thinking=$thinking q=${q != null} label=$label model=$bestModelId")
+        // Live-чип показываем только пока модель ещё работает (thinking). Когда она
+        // закончила (дала финальный ответ) — lastTool не показываем как «текущее».
+        val liveTool = if (thinking) lastTool else null
+        // Токены оцениваем через суммарную длину активных частей сессии (ctxChars):
+        // ≈ символов/4 (ok для кода/HTML/русского в среднем), плюс небольшой
+        // оверхед на системный промпт/структуру (×1.15). Это и есть ТЕКУЩИЙ
+        // активный контекст, а не кумулятивный tokens.input.
+        val ctxTokens = (ctxChars / 4L * 115 / 100)
+        // Записываем кэш ТОЛЬКО после успешного полного парсинга.
+        ChatCache.sessionId = bestId
+        ChatCache.rawHash = rawHash
+        ChatCache.result = ChatParseResult(
+            take, q, thinking, liveTool, ctxTokens,
+            hasActivity, hasFinish, lastTool
+        )
+        val snap = ChatSnapshot(take, "$label", bestId, q, thinking, prettyModel(bestModelId), liveTool = liveTool, contextTokens = ctxTokens, mcpConnected = mcpConnected, mcpTotal = mcpTotal, mcpServers = mcpServers)
+        android.util.Log.d("ChatOverlay", "FETCH parse out=${out.size} take=${take.size} thinking=$thinking q=${q != null} label=$label model=$bestModelId liveTool=${liveTool?.name}")
         snap
     } catch (e: Exception) {
         if (e is InterruptedException) throw e
@@ -1423,6 +2081,29 @@ private fun vibrate(context: Context) {
     }
 }
 
+// Системный звук уведомления — тот самый тон, что юзер выбрал в настройках
+// Android для нотификаций. Играет при появлении нового ответа, чтобы оповещение
+// было слышным (не только вибрация). Ringtone.play() может блокировать — гоняем
+// на Dispatchers.IO. Не создаём NotificationChannel: просто воспроизводим тон.
+private fun playNotificationSound(context: Context) {
+    try {
+        val uri: Uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        if (uri != null) {
+            val rt = RingtoneManager.getRingtone(context.applicationContext, uri)
+            if (rt != null) {
+                if (Build.VERSION.SDK_INT >= 28) {
+                    rt.audioAttributes = AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                }
+                rt.play()
+            }
+        }
+    } catch (_: Exception) {
+    }
+}
+
 private fun createSession(port: Int): String? {
     val conn = (URL("http://127.0.0.1:$port/session").openConnection() as HttpURLConnection)
     try {
@@ -1439,6 +2120,25 @@ private fun createSession(port: Int): String? {
         return null
     } finally {
         conn.disconnect()
+    }
+}
+
+/**
+ * Прерывает текущую генерацию модели в сессии. opencode serve принимает
+ * POST /session/{id}/abort (200 + "true"). Ответ приходит сразу, блокировать
+ * нечего — это не долгий стрим.
+ */
+private fun abortSession(port: Int, sessionId: String): Boolean {
+    return try {
+        val conn = (URL("http://127.0.0.1:$port/session/$sessionId/abort").openConnection() as HttpURLConnection)
+        conn.requestMethod = "POST"
+        conn.connectTimeout = 2000
+        conn.readTimeout = 3000
+        val ok = conn.responseCode == 200
+        conn.disconnect()
+        ok
+    } catch (_: Exception) {
+        false
     }
 }
 

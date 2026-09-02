@@ -43,11 +43,13 @@ class OpencodeServerService : Service() {
         val status: ServerStatus = ServerStatus.STOPPED,
         val port: Int = OpencodeApp.ServerConfig.PORT,
         val logTail: String = "",
+        val workspaceExternal: Boolean = false,
     )
 
     companion object {
         const val ACTION_START = "org.opencode.mobile.START"
         const val ACTION_STOP = "org.opencode.mobile.STOP"
+        const val ACTION_RESTART = "org.opencode.mobile.RESTART"
 
         private const val CHANNEL_ID = "opencode_server"
         private const val NOTIF_ID = 1001
@@ -67,11 +69,26 @@ class OpencodeServerService : Service() {
                 context.startService(Intent(context, OpencodeServerService::class.java).setAction(ACTION_STOP))
             }
         }
+
+        /**
+         * Безопасный «мягкий» рестарт: убивает текущий процесс serve, НЕ трогая
+         * foreground-сервис и НЕ отменяя serverJob. Цикл runServerLoop видит,
+         * что proc мёртв, и перезапускает serve с заново резолвнутым workspace
+         * (нужно для подхвата внешнего хранилища после выдачи «Доступа ко всем файлам»).
+         */
+        fun restart(context: Context) {
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                context.startForegroundService(Intent(context, OpencodeServerService::class.java).setAction(ACTION_RESTART))
+            } else {
+                context.startService(Intent(context, OpencodeServerService::class.java).setAction(ACTION_RESTART))
+            }
+        }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var serverJob: Job? = null
     private var process: Process? = null
+    private var memoryProcess: Process? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -96,6 +113,18 @@ class OpencodeServerService : Service() {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
+            ACTION_RESTART -> {
+                // Мягкий рестарт: убить процесс serve (цикл перезапустит с новым workspace).
+                if (Build.VERSION.SDK_INT >= 26) {
+                    try {
+                        startAsForeground(buildNotification("Restarting"))
+                    } catch (e: Exception) {
+                        // ignore — сервис уже в foreground
+                    }
+                }
+                process?.destroy()
+                if (process?.isAlive == true) process?.destroyForcibly()
+            }
             else -> {
                 if (serverJob?.isActive != true) {
                     startAsForeground(buildNotification("Starting"))
@@ -117,11 +146,30 @@ class OpencodeServerService : Service() {
             // Рабочая директория (workspace): без неё у opencode serve нет ни одного
             // проекта — SPA показывал "Здесь пока ничего нет" и сессии не создавались.
             // Эта версия serve не понимает --dir, поэтому директория задаётся
-            // через CWD процесса (workDir).
-            val workspace = File(filesDir, "workspace").apply { mkdirs() }
+            // через CWD процесса (workDir). Теперь workspace резолвится через
+            // Workspace: при «Доступе ко всем файлам» — настоящие Documents/OpencodeTerminal,
+            // иначе внутренний filesDir/workspace (fallback).
+            val workspace = Workspace.resolve(context)
             val readme = File(workspace, "README.md")
             if (!readme.exists()) {
-                readme.writeText("# OpenCode Mobile Workspace\n\nРабочая директория для сессий на устройстве.\n")
+                readme.writeText("# OpenCode Terminal\n\nРабочая директория на внешнем хранилище (Documents/OpencodeTerminal).\n")
+            }
+            val ext = Workspace.usingExternal(context)
+            android.util.Log.i("OpencodeServer", "workspace=${workspace.absolutePath} external=$ext")
+            _state.value = _state.value.copy(status = ServerStatus.STARTING, workspaceExternal = ext)
+
+            // Локальная память MCP как HTTP/TCP-сервер (порт MEMORY_PORT) — ДО serve,
+            // чтобы remote MCP (url http://127.0.0.1:4199/mcp) успел подняться, прежде
+            // чем opencode попытается подключиться к памяти.
+            val memProc = OpencodeRuntime.startMemoryServer(
+                context,
+                logFile = logFile,
+                workDir = workspace,
+            )
+            if (memProc != null) {
+                memoryProcess?.destroy()
+                if (memoryProcess?.isAlive == true) memoryProcess?.destroyForcibly()
+                memoryProcess = memProc
             }
 
             val proc = OpencodeRuntime.startServe(
@@ -193,6 +241,8 @@ class OpencodeServerService : Service() {
         serverJob = null
         process?.destroy()
         process = null
+        memoryProcess?.destroy()
+        memoryProcess = null
         _state.value = _state.value.copy(status = ServerStatus.STOPPED)
     }
 
@@ -200,6 +250,8 @@ class OpencodeServerService : Service() {
         scope.cancel()
         process?.destroy()
         process = null
+        memoryProcess?.destroy()
+        memoryProcess = null
         super.onDestroy()
     }
 
@@ -226,9 +278,17 @@ class OpencodeServerService : Service() {
 
     private fun createChannel() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, getString(R.string.notif_channel_server), NotificationManager.IMPORTANCE_LOW)
+        // Канал сервера — ТИХИЙ: это служебный foreground no-тификатор, который
+        // обновляется при смене состояния (в т.ч. во время ответа модели). Без
+        // setSound(null) часть устройств (OPPO/и др. скинки) проигрывает звук
+        // канала при каждом повторном notify() — что давало «второй» (лишний)
+        // звук при приходе ответа. Жёстко обнуляем звук на канале.
+        val channel = NotificationChannel(
+            CHANNEL_ID, getString(R.string.notif_channel_server), NotificationManager.IMPORTANCE_LOW
         )
+        channel.setSound(null, null)
+        channel.enableVibration(false)
+        nm.createNotificationChannel(channel)
     }
 
     private fun buildNotification(stateText: String): Notification {
@@ -242,6 +302,9 @@ class OpencodeServerService : Service() {
             .setContentText("OpenCode server — $stateText")
             .setContentIntent(pi)
             .setOngoing(true)
+            // Дублирующая защита от звука на уровне самого уведомления: гарантирует
+            // тишину даже если канал переопределён скинкой устройства.
+            .setSilent(true)
         // кнопка stop
         val stopPi = PendingIntent.getService(
             this, 1,

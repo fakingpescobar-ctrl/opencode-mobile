@@ -2,9 +2,14 @@ package org.opencode.mobile
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
+import android.net.Uri
 import android.util.Log
+import android.view.View
 import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -14,6 +19,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -34,7 +40,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.LaunchedEffect
+
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -57,8 +63,29 @@ class MainActivity : ComponentActivity() {
 
     private val notificationPermissionLauncher =        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
+    // «Доступ ко всем файлам» (MANAGE_EXTERNAL_STORAGE, API 30+): открывает
+    // системные Настройки — приложения — доступ к файлам, где юзер вручную
+    // включает переключатель. Нужно, чтобы рабочая директория модели указывала
+    // на настоящие Documents на внешнем хранилище, а не на внутреннюю песочницу.
+    private val allFilesLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            // Вернулись из настроек. Если юзер включил «Доступ ко всем файлам» —
+            // мягко перезапускаем serve: цикл runServerLoop перезапустит его с
+            // внешним workspace (Documents/OpencodeTerminal). Безопасно — не трогает
+            // foreground-сервис и не отменяет serverJob (stop+start гонялся и валил сервер).
+            if (Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()) {
+                Log.i(TAG, "All-files access granted — soft-restart serve for external workspace")
+                OpencodeServerService.restart(this)
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // edge-to-edge: без этого на Android 15+ windowSoftInputMode="adjustResize" не работает,
+        // IME рисуется ПОВЕРХ терминала и поле ввода opencode остаётся под клавиатурой.
+        // enableEdgeToEdge включает wiring флагов, чтобы окно сжималось под софт-клавиатуру.
+        enableEdgeToEdge()
+        requestAllFilesAccessIfNeeded()
         OpencodeServerService.start(this)
         requestNotificationPermission()
         Thread {
@@ -101,17 +128,37 @@ class MainActivity : ComponentActivity() {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
+
+    /** Настоящие файлы юзера на внешнем хранилище: открыть «Доступ ко всем файлам». */
+    private fun requestAllFilesAccessIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
+            try {
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    Uri.parse("package:$packageName")
+                )
+                allFilesLauncher.launch(intent)
+            } catch (_: Exception) {
+                try {
+                    allFilesLauncher.launch(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                } catch (_: Exception) {
+                    // на очень старых/СCustom ROM нет этой настройки — пропускаем,
+                    // workspace останется внутренним (fallback).
+                }
+            }
+        }
+    }
 }
 
 @Composable
 fun TerminalScreen() {
-    val context = LocalContext.current
     val state by OpencodeServerService.state.collectAsState()
 
-    // запуск сервера при появлении экрана
-    LaunchedEffect(Unit) {
-        OpencodeServerService.start(context)
-    }
+    // Сервер уже запущен в onCreate() (OpencodeServerService.start(this)).
+    // Здесь НЕ дублируем второй start: служба идемпотентна (guard
+    // if (serverJob?.isActive != true)), а лишняя intent — просто шум.
+    // Если сервер остановлен юзером через уведомление — состояние перейдёт
+    // в STOPPED, и повторный onCreate после перезапуска приложения поднимет его.
 
     Scaffold { padding ->
         Box(
@@ -119,20 +166,21 @@ fun TerminalScreen() {
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            // Веб-интерфейс opencode во весь экран (как в десктопном браузере),
-            // с полноценным полем ввода чата. Панель-заглушка с кнопками удалена.
-            when (state.status) {
-                OpencodeServerService.ServerStatus.RUNNING -> {
+            when {
+                state.status == OpencodeServerService.ServerStatus.RUNNING -> {
                     Box(Modifier.fillMaxSize()) {
-                        OpencodeWebView()
-                        // Лента чата поверх WebView (обход бага SPA: история не рендерится).
+                        // WebView (SPA opencode) живёт в фоне; нативный ChatOverlay
+                        // полностью перекрывает его. paused=true → WebView оставлен
+                        // для запросов, но его рендер остановлен (нет frame-спайков
+                        // от бесконечной перерисовки SPA под чатом).
+                        OpencodeWebView(paused = true)
                         ChatOverlay(Modifier.align(Alignment.BottomCenter))
                     }
                 }
-                OpencodeServerService.ServerStatus.STARTING -> {
+                state.status == OpencodeServerService.ServerStatus.STARTING -> {
                     CenteredStatus("Starting OpenCode server…")
                 }
-                OpencodeServerService.ServerStatus.ERROR -> {
+                state.status == OpencodeServerService.ServerStatus.ERROR -> {
                     CenteredStatus("Server failed. See logcat")
                 }
                 else -> {
@@ -215,7 +263,7 @@ private fun CenteredStatus(text: String) {
 }
 
 @Composable
-fun OpencodeWebView() {
+fun OpencodeWebView(paused: Boolean = false) {
     val context = LocalContext.current
     AndroidView(
         factory = { ctx ->
@@ -224,7 +272,12 @@ fun OpencodeWebView() {
                     javaScriptEnabled = true
                     domStorageEnabled = true
                     javaScriptCanOpenWindowsAutomatically = false
-                    mediaPlaybackRequiresUserGesture = false
+                    // SPA opencode 1.18.25 имеет ВСТРОЕННЫЙ звук уведомления: при приходе
+                    // ответа модели через Web Audio (AAudio, USAGE_MEDIA) играет свой
+                    // тон — это «первый непонятный звук» из двух. Второй — наш
+                    // playNotificationSound (USAGE_NOTIFICATION). Убираем WebView-звук
+                    // автоплея: requireUserGesture=true + JS-мьют ниже (см. onPageFinished).
+                    mediaPlaybackRequiresUserGesture = true
                     cacheMode = WebSettings.LOAD_DEFAULT
                     mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                     // SPA opencode сам рендерит тёмную тему (localStorage scheme=dark) —
@@ -235,6 +288,39 @@ fun OpencodeWebView() {
                     override fun onPageFinished(view: WebView?, url: String?) {
                         super.onPageFinished(view, url)
                         Log.i(TAG, "onPageFinished: $url")
+                        // Глушим звук SPA. Инжектим JS, который переопределяет Web Audio
+                        // и замучивает медиа-элементы — чтобы встроенное уведомление
+                        // opencode НЕ играло свой тон (он и есть «первый» из двух звуков).
+                        // Не срашиваем ничего: best-effort, стабильно молчит.
+                        view?.evaluateJavascript(
+                            """
+                            (function(){
+                              try{
+                                var Ctor = window.AudioContext || window.webkitAudioContext;
+                                if(Ctor){
+                                  var origOut = Ctor.prototype.createGain;
+                                  // MUTing: перенаправим все выходы на заглушенный gain=0.
+                                  Object.defineProperty(Ctor.prototype,'createGain',{value:function(){
+                                    var g = origOut.call(this);
+                                    try{g.gain.value=0}catch(e){}
+                                    return g;
+                                  }});
+                                  // Также перехватим специализированные узлы-источники.
+                                  try{
+                                    var g0 = Ctor.prototype.createGain.call(this);
+                                    // создаём нулевой gain для будущих connect
+                                    window.__muteGain = g0;
+                                  }catch(e){}
+                                }
+                                // Media elements
+                                document.querySelectorAll('audio,video').forEach(function(el){
+                                  el.muted=true; el.volume=0;
+                                });
+                              }catch(e){}
+                            })();
+                            """.trimIndent(),
+                            null
+                        )
                     }
 
                     override fun onReceivedError(
@@ -255,7 +341,26 @@ fun OpencodeWebView() {
                 loadUrl("http://127.0.0.1:${OpencodeApp.ServerConfig.PORT}/")
             }
         },
-        update = { },
+        update = { wv ->
+            // Фоновый WebView приостановлен, когда поверх него активен нативный
+            // ChatOverlay (он полностью закрывает SPA). Это останавливает JS-таймеры
+            // SPA и убирает его рендер с GPU — уходит постоянная перерисовка, которая
+            // давала frame-спайки на каждом тике поллинга. При paused=false (нужен
+            // полный интерфейс SPA) — WebView возвращается к жизни.
+            if (paused) {
+                if (wv != null && wv.visibility != View.INVISIBLE) {
+                    wv.onPause()
+                    wv.pauseTimers()
+                    wv.visibility = View.INVISIBLE
+                }
+            } else {
+                if (wv != null && wv.visibility != View.VISIBLE) {
+                    wv.visibility = View.VISIBLE
+                    wv.onResume()
+                    wv.resumeTimers()
+                }
+            }
+        },
         onRelease = { wv ->
             wv.stopLoading()
             wv.loadUrl("about:blank")

@@ -11,6 +11,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // terminal-view / terminal-emulator (терминальный эмулятор для TUI opencode)
+        maven(url = "https://jitpack.io")
     }
 }
 

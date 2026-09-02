@@ -69,5 +69,8 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.4")
     implementation(project(":whisperlib"))
+    // Терминальный эмулятор для TUI opencode (Termux lib, не приложение):
+    // рендер ANSI-вывода + PTY-управление.
+    implementation("com.github.termux.termux-app:terminal-view:v0.118.3")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

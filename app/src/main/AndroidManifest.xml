@@ -8,10 +8,20 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Внешнее хранилище: чтобы рабочая директория модели указывала на настоящие
+         файлы юзера (/storage/emulated/0/Documents). MANAGE_EXTERNAL_STORAGE — «Доступ
+         ко всем файлам» (API 30+): юзер включает в настройках; без него fallback
+         на внутренний workspace. READ/WRITE для API <=28. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
 
     <application
         android:name=".OpencodeApp"
         android:allowBackup="true"
+        android:requestLegacyExternalStorage="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
