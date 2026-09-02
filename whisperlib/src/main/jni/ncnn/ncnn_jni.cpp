@@ -157,6 +157,23 @@ public:
         proj_out.opt.num_threads = n;
     }
 
+    // encoder (и проекции/эмбеддинги) — крупные матричные умножения: выигрывают от 8 потоков.
+    // decoder — серийные мелкие шаги (в т.ч. авторегрессивные по токену): на 8 потоках
+    // оверхед перекроет выигрыш, поэтому его держим на меньшем числе. Вызывается ДО load
+    // (ncnn gemm фиксирует число потоков при загрузке модели).
+    void set_encoder_threads(int n)
+    {
+        encoder.opt.num_threads = n;
+        embed_token.opt.num_threads = n;
+        embed_position.opt.num_threads = n;
+        proj_out.opt.num_threads = n;
+    }
+    void set_decoder_threads(int n)
+    {
+        fbank.opt.num_threads = n;
+        decoder.opt.num_threads = n;
+    }
+
 protected:
     int extract_fbank_feature(const std::vector<short>& samples, ncnn::Mat& input_features) const;
     int run_encoder(const ncnn::Mat& input_features, ncnn::Mat& encoder_states) const;
@@ -584,9 +601,12 @@ Java_com_whispercpp_whisper_NcnnWhisperLib_nativeInit(JNIEnv* env, jobject /*thi
     std::string baseStr = b ? b : "whisper_base";
 
     g_whisper = std::make_unique<Whisper>();
-    // 4 threads ДО load: gemm-слой фиксирует число потоков при первой загрузке модели
+    // Число потоков ДО load: gemm-слой фиксирует значение при первой загрузке модели
     // (иначе предупреждение 'gemm will use load-time value' и медленный single-gemm).
+    // encoder — крупные gemm: 8 потоков (у OPPO 8 ядер) для ускорения <8с.
+    // decoder/fbank — серийные мелкие шаги автогрегрессии: оставляем 4.
     g_whisper->set_num_threads(4);
+    g_whisper->set_encoder_threads(8);
     int ret = g_whisper->load(dirStr, baseStr);
 
     if (dir) env->ReleaseStringUTFChars(modelDir, dir);
