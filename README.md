@@ -150,10 +150,19 @@ Android-ядро позволяет `execve` только с **PIE**-бинар�
 
 ## Установка готового APK
 
-```bash
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n org.opencode.mobile.debug/org.opencode.mobile.MainActivity
-```
+Установка:
+
+- **Debug**:
+  ```bash
+  adb install -r app/build/outputs/apk/debug/app-debug.apk
+  adb shell monkey -p org.opencode.mobile.debug -c android.intent.category.LAUNCHER 1
+  ```
+- **Release** (R8-минифицирован, подписан debug-ключом для локального теста):
+  ```bash
+  gradlew.bat :app:assembleRelease -x lint
+  adb install -r app/build/outputs/apk/release/app-release.apk
+  adb shell monkey -p org.opencode.mobile -c android.intent.category.LAUNCHER 1
+  ```
 
 Логи смотреть:
 ```bash
@@ -206,6 +215,7 @@ tools/
 | 4 | Пауза поллинга и анимаций, когда Activity в фоне | Фоновый CPU ~0% |
 | 5 | Эффективное мигание MCP (дискретный пульс вместо 60fps) | Мигание возвращено, CPU ~8% (фон 0%) |
 | 6 | Все UI-кнопки на готовых Material-иконках (extended) | Микрофон, отправка, stop, шестерёнка, шрифт, цвет — векторные, читаемые |
+| 7 | R8-минификация + shrinkResources в release | APK 374 → 274 MB (debug подпись для локального smoke; пакет чистый `org.opencode.mobile`) |
 
 **Итог:** UI CPU ~38% → ~1.5-8% (×5–25), рендер 99-перц. 9 мс, janky 0.33%,
 фон ~0%. Единственный хвост — внутренний `opencode serve` (~35%, код движка, не наш).
