@@ -155,12 +155,16 @@ Android-ядро позволяет `execve` только с **PIE**-бинар�
 
 Установка:
 
-- **Debug**:
+> ⚠️ Два пакета сосуществуют: **release** (`org.opencode.mobile`, «OpenCode Mobile») и
+> **debug** (`org.opencode.mobile.debug`, «OpenCode Mobile · Debug»). Отличаются по названию
+> под значком.
+
+- **Debug** («OpenCode Mobile · Debug»):
   ```bash
   adb install -r app/build/outputs/apk/debug/app-debug.apk
   adb shell monkey -p org.opencode.mobile.debug -c android.intent.category.LAUNCHER 1
   ```
-- **Release** (R8-минифицирован, подписан debug-ключом для локального теста):
+- **Release** («OpenCode Mobile», R8-минифицирован, подписан debug-ключом для локального теста):
   ```bash
   gradlew.bat :app:assembleRelease -x lint
   adb install -r app/build/outputs/apk/release/app-release.apk

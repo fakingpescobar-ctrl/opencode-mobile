@@ -29,6 +29,8 @@ android {
         debug {
             // logcat-friendly
             applicationIdSuffix = ".debug"
+            // Отличительное имя в UI, чтобы debug-сборка не путалась с release.
+            resValue("string", "app_name", "OpenCode Mobile · Debug")
         }
     }
 
