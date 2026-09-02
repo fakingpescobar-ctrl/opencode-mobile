@@ -87,6 +87,6 @@ Release-контур блокирует «дать человеку», сеть 
 
 | Трек | Статус |
 |------|--------|
-| 1. Release-контур | Не начат |
+| 1. Release-контур | **В процессе** — R8 + shrinkResources включены (APK 374 → 274 MB, пакет чистый `org.opencode.mobile`, smoke OK). Осталось: lazy-загрузка base (~70-80MB) и upload-key подпись |
 | 2. Сеть без прокси | Не начат (есть набросок `connect_proxy.py`) |
 | 3. STT turbo на CPU | Частично (KV-cache внедрён; int8 — план) |
