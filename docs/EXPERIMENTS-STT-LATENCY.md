@@ -1,9 +1,9 @@
 # Эксперименты по ускорению STT (Track 3)
 
 `opencode-mobile` — локальное распознавание Whisper Large-v3-Turbo на Android (OPPO, 8 ядер ARM CPU + Adreno GPU).
-Цель этого документа — **план исследования и тестов**, чтобы выйти с текущего `encoder ≈ 8.8 c` (CPU, int8) на `полное распознавание 2–3 c` без потери качества (WER).
+Цель — выйти с текущего `encoder ≈ 8.8 c` (CPU, int8) на «полное распознавание 2–3 c» без потери качества (WER).
 
-Дата: 02.09.2026. Статус: план.
+Дата: 02.09.2026. Статус: **в работе — ЭКСП-1 выполнен частично; Vulkan-encoder int8 ~30% быстрее CPU, но НЕ ×3.**
 
 ---
 
@@ -11,124 +11,106 @@
 
 | Метрика | Значение | Режим |
 |---|---|---|
-| fbank | ~750 ms | CPU fp32 |
+| fbank | ~750–840 ms | CPU fp32 |
 | **encoder** | **8.82 s** | CPU int8 (block-quant), 8 потоков |
-| decoder | ~0.5–0.6 s | CPU fp16/32, KV-cache, 7 шагов · ~81 ms/шаг |
+| decoder | ~0.5–0.6 s | CPU fp16/32, KV-cache, 7 шагов · ~63–81 ms/шаг |
 | **полный ncnn** | ~10.1 s | 48k сэмплов, lang=ru |
 | целя | **2–3 s** | — |
 
-Промежуточные замеры:
-- encoder int8 ≈ 9.03 s (4 потока) → 8.82 s (8 потоков) — потоки дали лишь ~210 ms ⇒ **уперлись в ширину памяти/потолочную производительность CPU**, не в потоки.
-- fp32 encoder ≈ 17.9 s. int8 дал ~2×.
+Промежуточные замеры базы:
+- encoder int8 ≈ 9.03 s (4 потока) → 8.82 s (8 потоков) — потоки дали лишь ~210 ms ⇒ упёрлись в память/потолок CPU, не в потоки.
+- fp32 encoder ≈ 17.9 s (CPU). int8 дал ~2×.
 
-**Вывод базы:** чисто CPU int8 для LargeV3-Turbo encoder почти исчерпано. Резкий скачок к 2–3 c требует **гетерогенного исполнения** (вынос части на GPU/NPU).
-
----
-
-## 2. Гипотезы и направления (по наработкам индустрии)
-
-Из кодовой базы/паттернов (gh_grep, реальные проекты):
-
-1. **Vulkan-encoder + CPU-decoder** — самый реальный путь.
-   - ncnn позволяет задавать `opt.use_vulkan_compute` **на уровень отдельного `ncnn::Net`**. У нас encoder и decoder — разные Net ⇒ можно «энкодер на GPU, декодер на CPU».
-   - **PhotonCamera** (`eszdman/PhotonCamera`, продакшн): на Adreno/Mali Vulkan + fp16 работает, но **`use_subgroup_ops = false`** — прямо в коде: *«subgroup ops disabled (crash on Adreno/Mali)»*.
-   - **Вероятная причина нашего прошлого краша `net.cpp:1361`** — subgroup-ops, а не Vulkan сам по себе. Значит есть шанс включить Vulkan-encoder с `subgroup_ops=false`.
-   - **ncnn_llm / YOLOX-android** — проверенные схемы `use_vulkan_compute=true` + `workspace_allocator` + `use_packing_layout`.
-
-2. **fp16/bf16 storage на Vulkan-encoder** — на GPU даёт доп. ускорение (tensor-core). Риск точности уже на int8 низкий.
-
-3. **4-bit (INT4/FP4/MXFP4) + KV-cache-квантизация** — следующий уровень после int8 (грузит память в 2× меньше). Максимальный эффект — на GPU.
-
-4. **NPU/DSP (Snapdragon QNN/Hexagon)** — может целиком взять энкодер, но нетривиальная конвертация ncnn→QNN из нашего стека. Отложить (справочно).
-
-5. **Потоковый пайплайн / чанкинг** — распознавать чанки по 10–15 c в фоне ⇒ юзер видит результат почти мгновенно, даже если raw latency одного файла остаётся ≈9 c. Улучшение перцептивной латентности.
+**Вывод базы:** чисто CPU int8 для LargeV3-Turbo encoder почти исчерпано. Скачок к 2–3 c требует гетерогенного исполнения.
 
 ---
 
-## 3. Критерий успеха и методология замеров
+## 2. Статус ЭКСП-1: Vulkan-encoder + CPU-decoder (главный)
 
-### Цель
-- **encoder ≤ 2.5 s** (при текущих ~3× ускорении GPU это реалистично).
-- **полное распознавание ≤ 3 s**.
-- **WER не хуже текущего** (или не более +1–2 п.п.).
+### Что сделано (коммит `bb2937c`)
+- `CMakeLists.txt`: **`NCNN_VULKAN=ON`** + `NCNN_RUNTIME_CPU=ON`.
+- **glslang submodule** подтянут: `git submodule update --init glslang` в `third_party/ncnn` (без этого `vulkan-shaders-gen` FAILED).
+- `ncnn_jni.cpp`: `encoder.opt.use_vulkan_compute = true` + `use_subgroup_ops = false` (паттерн PhotonCamera; subgroup-ops — причина прошлого краша net.cpp:1361). decoder остаётся **CPU** (`use_vulkan_compute=false`) — точность, не зацикливается.
+- Guard `ncnn::get_gpu_count()>0`; int8-encoder приоритетен даже на Vulkan.
 
-### Как замеряем (воспроизводимо, на устройстве)
-Диагностика через **nohup logcat → файл `/sdcard/stt.log`** + grep `NcnnWhisper` (логи `fbank=/encoder=/decoder=` уже добавлены в `ncnn_jni.cpp`). Буфер logcat на OPPO заливается AONLog/radio — стрим в файл обязателен.
+### Реальные замеры (OPPO, AUTOSTT на test.f32, 2 прогона int8-Vulkan)
+| Режим encoder | decoder | итого | Комментарий |
+|---|---|---|---|
+| **CPU int8, 8 thr** | CPU 0.44 s | ~10.1 s | база |
+| **Vulkan int8** (subgroup off) | CPU 0.47 s | **~8.3 s** | encoder 6.45 / 6.95 s | 
+| Vulkan fp32 | CPU 0.58 s | 12.6 s | encoder 11.24 s — **ХУЖЕ** int8 |
+
+### Выводы по ЭКСП-1 (важно — корректировка плана)
+- ✅ **Vulkan-encoder НЕ крашится** с `subgroup_ops=false` (решение старого краша net.cpp:1361).
+- ✅ **decoder-CPU + encoder-GPU состояния корректны**: decoder не зацикливается, работает end-to-end.
+- ‼️ **int8-Vulkan даёт лишь ~30%** (8.82→6.5–6.9 s), а **FP32-Vulkan медленнее int8** (11.2 s). Adreno int8-gemm на Vulkan слабый; раннее «FP32-Vulkan ×6 (3.09 s)» не воспроизвелось — вероятно был другой тест/версия.
+- ⚠️ **Цель 2–3 s одним полным прогоном encoder НЕ достижима** на этом железе через один Vulkan-encoder. int8-Vulkan оптимум ≈ 6.5–7 s encoder.
+
+**Вывод:** Vulkan-encoder полезен (стабилен, -30%), но не является магией ×3. Для «мгновенности» нужны следующие уровни (4-bit/KV-quant) или потоковый пайплайн.
+
+---
+
+## 3. Уточнённые следующие шаги (приоритет после ЭКСП-1)
+
+1. **ЭКСП-3: 4-bit (INT4/FP4) + KV-cache-квантизация** — грузит память в ~2× меньше, на GPU обычно даёт ещё 1.5–2×. Ожидаемо encoder int4-Vulkan → ~4–5 s при лучшей точности памяти. Реалистичный промежуточный финиш.
+2. **ЭКСП-5: потоковый пайплайн / чанкинг** — первый результат через 1–2 s, пока юзер говорит. Не снижает raw latency (останется ~7 s для полного файла), но **стремительно улучшает перцептивную латентность** — это путь к «ощущению 2–3 s».
+3. (Отложено) **ЭКСП-6: NPU/QNN** — отдельная ветка, конвертация ncnn→QNN.
+
+---
+
+## 4. Прочие эксперименты (не основной шанс)
+
+- **ЭКСП-2** (fp16/bf16 на Vulkan-encoder вместо fp32): на int8 уже fp16-хранение частично; fp32 нет. Может дать малый буст на GPU, но риск точности. Низкий приоритет.
+- **ЭКСП-4** (set_cpu_powersave/привязка big.LITTLE): память-лимит — дёшево попробовать, ожидаемо мало.
+
+---
+
+## 5. Методология замеров (не менялась)
+
+Диагностика: **nohup logcat → `/sdcard/stt.log`** + grep `NcnnWhisper` (`fbank=/encoder=/decoder=` в ncnn_jni.cpp). Буфер logcat на OPPO заливается AONLog/radio — стрим в файл обязателен.
 
 Шаги:
 1. `adb install -r app-debug.apk`
 2. `adb shell am force-stop org.opencode.mobile.debug`
-3. запуск AUTOSTT (на `test.f32`) ИЛИ ручной голосовой триггер (микрофон в UI).
-4. снять `fbank= / encoder= / decoder=` из `/sdcard/stt.log`.
-5. повторить 3 прогона, взять **минимум/медиану** (шум CPU-автодросслинга).
+3. AUTOSTT (test.f32) ИЛИ ручной голосовой триггер.
+4. снять `fbank=/encoder=/decoder=` из `/sdcard/stt.log`.
+5. 3 прогона → минимум/медиану.
 
-### Качество (WER)
-- Прогнать фиксированный набор фраз на `test.f32` + реальных голосовых (рус/англ, шум).
-- Сравнить текст до/после изменения. Критерий — **не потерять смысл** (не только word-match).
+Качество: фикс-набор фраз (рус/англ, шум). Критерий — не потерять смысл (не только word-match).
 
 ---
 
-## 4. Эксперименты (по порядку приоритета)
+## 6. Риски и что делать, если
 
-### ЭКСП-1: Vulkan-encoder с subgroup_ops=OFF, decoder CPU (главный)
-- **Что:** в `ncnn_jni.cpp` включить `encoder.opt.use_vulkan_compute = true`, `encoder.opt.use_subgroup_ops = false`, `use_fp16_*` для encoder. decoder остаётся CPU (`use_vulkan_compute=false`).
-- **Заодно:** `ncnn::get_gpu_count()>0` guard; `workspace_allocator`/`shader_storage_buffer` для Vulkan (как в YOLOX).
-- **Ожидание:** encoder 8.8 → 2–4 s (2–3×).
-- **Риск:** краш net.cpp:1361; зацикливание decoder (признак неточности GPU-состояний — тогда decoder НЕ трогаем, он CPU).
-- **Проверка точности:** WER по фикс-набору.
-
-### ЭКСП-2: если ЭКСП-1 крашится — отключить fp16_arithmetic, оставить fp16_storage
-- Подбор: сначала `use_fp16_storage=true`, `use_fp16_arithmetic=false` (арифметика fp32, хранение fp16 — стабильнее на Adreno).
-- Найти минимум fp16-опций, чтобы работало и не сыпалось.
-
-### ЭКСП-3: 4-bit encoder + KV-cache квантизация
-- Только после того как Vulkan-encoder подтвердил стабильность. Дать доп. 1.5–2×.
-
-### ЭКСП-4: распределение потоков по ядрам (set_cpu_powersave / big.LITTLE)
-- Попробовать привязать encoder к быстрым big-ядрам (`ncnn::set_cpu_powersave(1)`), decoder — на средней группе.
-- Ожидаемо небольшое (память-бандвит limit), но дёшево.
-
-### ЭКСП-5: потоковый пайплайн (UX-латентность) — справочно, потом
-- Чанкинг + параллельон: первый чанк → encoder → decoder, пока юзер говорит.
-- Не снижает raw latency, но делает продукт «мгновенным» на слух.
-
-### ЭКСП-6 (справочно, отложено): NPU/QNN.
-- Только если Vulkan не даст нужного скачка; конвертация ncnn→QNN — отдельная ветка.
+- Vulkan-encoder всё же крашится → `use_bf16_storage` вместо fp16, либо workspace_allocator как в YOLOX; последний откат — CPU int8 (база сохранена git `2825837`/`afa32eb`).
+- Vulkan неточен (decoder зацикливается) → decoder уже CPU; проверить конверсию Mat между backends (encoder-GPU→decoder-CPU).
+- Шум logcat → стрим в файл обязателен.
+- Нет Vulkan-драйвера → fallback CPU int8 автоматически (`get_gpu_count()==0`).
 
 ---
 
-## 5. Риски и что делать, если
+## 7. Чек-лист действий
 
-- **Vulkan-encoder крашится** (net.cpp:1361) → точнее: греп по logcat исключает `subgroup` — если всё равно падает, пробуем `use_bf16_storage` вместо fp16 или откатываемся к CPU int8 (базовая линия сохранена в git коммите `2825837`).
-- **Vulkan-encoder неточен** (decoder зацикливается) → decoder уже на CPU, проверить только связку вход/выход между encoder-GPU и decoder-CPU (преобразование Mat между backends).
-- **Шум в logcat** → стрим в файл (`/sdcard/stt.log`) обязателен.
-- Нет Vulkan-драйвера/не 0 GPU → fallback на CPU int8 автоматически (`ncnn::get_gpu_count()==0`).
-
----
-
-## 6. Чек-лист действий
-
-- [ ] Правка `ncnn_jni.cpp`: Vulkan-encoder (ЭКСП-1), `subgroup_ops=false`, гвардия GPU.
-- [ ] Пересборка apk (vcvars; скрипт `run-ncnn-gradle-release.ps1`).
-- [ ] Три прогона AUTOSTT + ручной голос; снять fbank/encoder/decoder из `/sdcard/stt.log`.
-- [ ] WER-прогон фикс-набора фраз.
-- [ ] Если стабильно и <3 s → коммит + обновить ROADMAP (Track 3 done).
-- [ ] Если не достигли 2–3 s → 4-bit (ЭКСП-3) → NPU (ЭКСП-6).
+- [x] ЭКСП-1: Vulkan-encoder =ON, `subgroup_ops=false`, decoder CPU. Замерено: int8-Vulkan 6.5–6.9 s (без краша, decoder корректен). Коммит `bb2937c`.
+- [ ] **ЭКСП-3: 4-bit + KV-quant** (главный следующий шаг к ~4 s).
+- [ ] **ЭКСП-5: потоковый пайплайн/чанкинг** (UX-мгновенность 1–2 s).
+- [ ] WER-прогон фикс-набора после каждого.
+- [ ] Если стабильно и <3 s → ROADMAP Track 3 done.
 
 ---
 
-## 7. Оборудование / контекст
+## 8. Оборудование / контекст
 
-- Устройство: OPPO (arm64-v8a), 8 ядер CPU, Adreno GPU (ColorOS/Android).
-- Stack: ncnn (official Tencent master, commit `0a4e85a`), VULKAN=OFF сейчас в CMakeLists — для ЭКСП-1 нужен Vulkan-нейтивный соборот ncnn. Проверить, что `use_vulkan_compute` не требует пересборки ncnn с Vulkan (нет — Vulkan собран, включается на уровне opt сети; CMake VULKAN=OFF влияло на компиляцию — для Vulkan-слоёв надо вернуть VULKAN=ON).
+- OPPO arm64-v8a, 8× AArch64 CPU, Adreno GPU (ColorOS).
+- Stack: official ncnn master (`0a4e85a`), **NCNN_VULKAN=ON** (собран; glslang submodule подтянут).
 - Сборка: только из vcvars64 (иначе `vulkan-shaders-gen-configure` FAILED). JAVA_HOME=`C:\Program Files\Android\Android Studio\jbr`.
-- APK debug: `org.opencode.mobile.debug` (run-as работает).
+- APK debug `org.opencode.mobile.debug` (run-as работает).
 
 ---
 
-## 8. Ссылки/наработки (из gh_grep)
+## 9. Наработки из индустрии (gh_grep)
 
-- PhotonCamera `ncnnMl.cpp`: `use_vulkan_compute=true` + `use_subgroup_ops=false` + fp16 — рабочий паттерн Adreno (комментарий про краш на Adreno/Mali от subgroup).
-- ncnn_llm (futz12): вынос encoder/vision на Vulkan + bf16-storage, decoder в отдельной сети.
+- PhotonCamera `ncnnMl.cpp`: `use_vulkan_compute=true` + `use_subgroup_ops=false` + fp16 — рабочий паттерн Adreno (subgroup = причина краша на Adreno/Mali).
+- ncnn_llm (futz12): вынос encoder на Vulkan + bf16-storage, decoder отдельной сетью.
 - YOLOX-android: `use_vulkan_compute=true` + `workspace_allocator` + `use_packing_layout`.
-- whisper.cpp ggml-vulkan backend — валидация, что Vulkan-путь реален для Whisper.
+- whisper.cpp ggml-vulkan — валидация Vulkan-пути для Whisper.
