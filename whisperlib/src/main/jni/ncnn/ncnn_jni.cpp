@@ -197,16 +197,12 @@ protected:
 int Whisper::load(const std::string& dir, const std::string& base)
 {
     // CPU + fp32 (turbo) / fp16 (base): рабочий режим.
-    // Vulkan-путь ПРОВЕРЕН 31.08.2026: encoder на Vulkan FP32 давал ×6 скорость
-    // (3094ms против ~18с), НО decoder (тогда тоже на Vulkan) зацикливался (448 токенов
-    // без EOT) — неточность encoder-состояний на Adreno/ColorOS-драйвере.
-    // ЭКСП-1 (02.09.2026): encoder выносим на Vulkan (×6!), decoder ОСТАВЛЯЕМ на CPU
-    // (точнее, не зацикливается). subgroup_ops отключены — PhotonCamera: они крашатся на Adreno/Mali.
-    if (ncnn::get_gpu_count() > 0)
-    {
-        encoder.opt.use_vulkan_compute = true;
-        encoder.opt.use_subgroup_ops = false;
-    }
+    // ЭКСП-1 (02.09.2026): encoder выносили на Vulkan (int8, subgroup_ops=off) + decoder CPU.
+    // РЕЗУЛЬТАТ: encoder быстрее (6.5-6.9s vs 8.82 CPU), но decoder на ЖИВОЙ речи ЗАВИСАЛ на
+    // шаге kvidx=16 (конверсия больших Vulkan-encoder kv-состояний в CPU-блоб). AUTOSTT
+    // (test.f32) проходил, реальный голос вешал распознавание навсегда. ДЕФЕКТ СТАБИЛЬНОСТИ.
+    // Решение: encoder ВОЗВРАЩЁН на CPU int8 (стабильно для живого голоса). Vulkan-encoder
+    // без надёжного decoder-моста не годится. Ускорение Vulkan — отдельная задача.
     // fbank: БЕЗ fp16 — на ARM fp16 даёт NaN в log10 (тишина 0.0), на x86 нет.
     fbank.opt.use_vulkan_compute = false;
     fbank.opt.use_fp16_packed = false;
@@ -218,9 +214,6 @@ int Whisper::load(const std::string& dir, const std::string& base)
     // про цыгана.»). base (512-мерный) остаётся на fp16 для скорости.
     const bool turbo = base.find("turbo") != std::string::npos;
     const bool fp16 = !turbo;
-    // encoder уже выше мог быть переключён на Vulkan (ЭКСП-1); НЕ сбрасывать здесь.
-    if (ncnn::get_gpu_count() > 0)
-        encoder.opt.use_vulkan_compute = true;
     encoder.opt.use_fp16_packed = fp16;
     encoder.opt.use_fp16_storage = fp16;
     encoder.opt.use_fp16_arithmetic = fp16;
