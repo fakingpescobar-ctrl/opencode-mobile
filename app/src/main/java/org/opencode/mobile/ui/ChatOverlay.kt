@@ -62,6 +62,16 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.FormatColorText
+import androidx.compose.material.icons.filled.InvertColors
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.TextFields
+import androidx.compose.material.icons.filled.TextFormat
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -772,59 +782,45 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                     onClick = { showMcpList = !showMcpList },
                     modifier = Modifier.padding(start = 8.dp)
                 )
-                // Цветовой пикер для ответов модели.
-                Box(
-                    Modifier
-                        .padding(start = 8.dp)
-                        .size(22.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(
-                            Brush.horizontalGradient(
-                                listOf(
-                                    Color(0xFFFF0000), Color(0xFFFFFF00), Color(0xFF00FF00),
-                                    Color(0xFF00FFFF), Color(0xFF0000FF), Color(0xFFFF00FF)
-                                )
-                            )
-                        )
-                        .border(1.dp, if (showColorPicker) Color.White else Color(0xFF555555), RoundedCornerShape(4.dp))
-                        .clickable { showColorPicker = !showColorPicker }
-                )
-                Text(
-                    "Aa",
-                    color = if (showFontPicker) modelColor else Color(0xFF8A8A8A),
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
+                // Цветовой пикер для ответов модели. ИКОНКА — готовая «капля»
+                // (Material Icons: Icons.Filled.InvertColors) — узнаваемая капля,
+                // тонируется ТЕКУЩИМ выбранным цветом ответов (modelColor).
+                Icon(
+                    imageVector = Icons.Filled.InvertColors,
+                    contentDescription = "Цвет ответов модели",
+                    tint = modelColor,
                     modifier = Modifier
                         .padding(start = 8.dp)
-                        .clickable { showFontPicker = !showFontPicker }
+                        .size(22.dp)
+                        .clip(CircleShape)
+                        .background(if (showColorPicker) Color(0xFF3A3A3A) else Color.Transparent)
+                        .clickable { showColorPicker = !showColorPicker }
+                        .padding(3.dp)
                 )
-                Box(
-                    Modifier
+                Icon(
+                    imageVector = Icons.Filled.TextFormat,
+                    contentDescription = "Шрифт ответов модели",
+                    tint = if (showFontPicker) modelColor else Color(0xFF8A8A8A),
+                    modifier = Modifier
+                        .padding(start = 8.dp)
+                        .size(22.dp)
+                        .clip(CircleShape)
+                        .background(if (showFontPicker) Color(0xFF3A3A3A) else Color.Transparent)
+                        .clickable { showFontPicker = !showFontPicker }
+                        .padding(3.dp)
+                )
+                Icon(
+                    imageVector = Icons.Filled.Settings,
+                    contentDescription = "Настройки голосового распознавания",
+                    tint = if (showSettings) Color.White else Color(0xFFBDBDBD),
+                    modifier = Modifier
                         .padding(start = 8.dp)
                         .size(22.dp)
                         .clip(CircleShape)
                         .background(if (showSettings) Color(0xFF3A3A3A) else Color.Transparent)
                         .clickable { showSettings = !showSettings }
-                ) {
-                    Canvas(Modifier.size(22.dp).padding(2.dp)) {
-                        // Шестерёнка: 8 зубцов + окружность
-                        val c = Offset(size.width / 2f, size.height / 2f)
-                        val white = Color(0xFFBDBDBD)
-                        for (i in 0 until 8) {
-                            val a = Math.toRadians(i * 45.0 - 90.0)
-                            val dx = kotlin.math.cos(a).toFloat()
-                            val dy = kotlin.math.sin(a).toFloat()
-                            drawLine(
-                                white,
-                                Offset(c.x + dx * 4.5.dp.toPx(), c.y + dy * 4.5.dp.toPx()),
-                                Offset(c.x + dx * 8.dp.toPx(), c.y + dy * 8.dp.toPx()),
-                                strokeWidth = 2.6.dp.toPx()
-                            )
-                        }
-                        drawCircle(white, radius = 5.dp.toPx(), center = c)
-                        drawCircle(Color(0xFF101010), radius = 2.dp.toPx(), center = c)
-                    }
-                }
+                        .padding(3.dp)
+                )
             }
             // Выпадающий список подключённых MCP-серверов (тап по индикатору «N MCP»).
             // У каждого имени — мигающая точка: зелёная (работает) / красная (нет).
@@ -1207,33 +1203,12 @@ Text(
                     shape = CircleShape,
                     color = if (listening) Color(0xFFB71C1C) else Color(0xFF252525)
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Canvas(Modifier.size(24.dp)) {
-                            val cx = size.width / 2f
-                            val cy = size.height / 2f
-                            val white = Color.White
-                            // Чашка микрофона
-                            drawRoundRect(
-                                white,
-                                topLeft = Offset(cx - 5.dp.toPx(), cy - 11.dp.toPx()),
-                                size = Size(10.dp.toPx(), 15.dp.toPx()),
-                                cornerRadius = CornerRadius(5.dp.toPx())
-                            )
-                            // Дуга-скобка
-                            drawArc(
-                                white,
-                                startAngle = 180f,
-                                sweepAngle = 180f,
-                                useCenter = false,
-                                topLeft = Offset(cx - 9.dp.toPx(), cy + 1.dp.toPx()),
-                                size = Size(18.dp.toPx(), 13.dp.toPx()),
-                                style = Stroke(width = 2.2.dp.toPx())
-                            )
-                            // Ножка и стойка
-                            drawLine(white, Offset(cx, cy + 4.dp.toPx()), Offset(cx, cy + 11.dp.toPx()), strokeWidth = 2.2.dp.toPx())
-                            drawLine(white, Offset(cx - 7.dp.toPx(), cy + 14.dp.toPx()), Offset(cx + 7.dp.toPx(), cy + 14.dp.toPx()), strokeWidth = 2.2.dp.toPx())
-                        }
-                    }
+                    Icon(
+                        imageVector = Icons.Filled.Mic,
+                        contentDescription = "Голосовой ввод (удерживай для записи)",
+                        tint = if (listening) Color.White else Color(0xFFE0E0E0),
+                        modifier = Modifier.size(26.dp)
+                    )
                 }
                 // Кнопка Stop: ВСЕГДА видна рядом с микрофоном.
                 // Прерывает текущую генерацию модели (POST /session/{id}/abort).
@@ -1246,13 +1221,12 @@ Text(
                     shape = CircleShape,
                     color = Color(0xFF9E1C1C)
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Surface(
-                            modifier = Modifier.size(14.dp),
-                            shape = RoundedCornerShape(3.dp),
-                            color = Color.White
-                        ) {}
-                    }
+                    Icon(
+                        imageVector = Icons.Filled.Stop,
+                        contentDescription = "Прервать генерацию",
+                        tint = Color.White,
+                        modifier = Modifier.size(26.dp)
+                    )
                 }
                 Surface(
                     modifier = Modifier
@@ -1262,9 +1236,12 @@ Text(
                     shape = CircleShape,
                     color = if (sending) Color(0xFF3A3A3A) else Color(0xFF2E5E8E)
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text("→", color = Color.White, fontSize = 18.sp)
-                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "Отправить сообщение",
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp)
+                    )
                 }
             }
         }
