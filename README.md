@@ -52,7 +52,7 @@ Android-приложение, которое запускает **opencode serve
 Движок выбирается в настройках (шестерёнка в шапке чата).
 
 ### Модель STT
-- **base (141 МБ)** — вшита в APK, быстро, работает из коробки.
+- **base (141 МБ)** — скачивается по требованию при первом выборе (lazy, как turbo).
 - **large-v3-turbo (574 МБ)** — точнее на быстрой речи; скачивается по
   требованию из панели настроек (с прогрессом и докачкой при разрыве).
 
@@ -141,10 +141,13 @@ Android-ядро позволяет `execve` только с **PIE**-бинар�
   `opencode-linux-arm64-musl` (переименовать в `libopencode.so`).
 - Остальные `libldmusl.so`, `libc_musl.so`, `libstdcxx.so`, `libgcc_s.so` —
   musl-библиотеки (см. раздел выше).
-- `app/src/main/assets/ggml-base.bin` — whisper base модель (`ggml-base.bin`).
+- `app/src/main/assets/mcp/memory.js` — MCP-память.
+  whisper модели (**base**, **turbo**) в assets **не хранятся** — качаются по
+  требованию через `ModelDownloader` в `filesDir/models/`.
 
 Бинарь и модели можно получить пересборкой/скачиванием; в текущем состоянии
-этот процесс не автоматизирован в репозитории.
+этот процесс не автоматизирован в репозитории (кроме самих моделей — они
+скачиваются прямо в приложении).
 
 ---
 
@@ -185,11 +188,11 @@ app/
         Ipv4Proxy.kt             # вспомогательный (исходящая сеть)
       stt/
         WhisperTranscribeService.kt  # foreground-сервис распознавания
-        ModelDownloader.kt           # скачивание turbo-модели (resume)
+        ModelDownloader.kt           # скачивание whisper base/turbo (lazy, resume)
       ui/
         ChatOverlay.kt           # нативный чат поверх WebView + настройки
         theme/Theme.kt
-    assets/ggml-base.bin         # whisper base (не в git)
+    assets/                       # ТОЛЬКО шрифты + MCP-память (моделей нет)
     jniLibs/arm64-v8a/           # opencode-бинарь + musl-libs (не в git)
 whisperlib/                      # JNI-обёртки над whisper.cpp и ncnn
   src/main/jni/
@@ -215,7 +218,8 @@ tools/
 | 4 | Пауза поллинга и анимаций, когда Activity в фоне | Фоновый CPU ~0% |
 | 5 | Эффективное мигание MCP (дискретный пульс вместо 60fps) | Мигание возвращено, CPU ~8% (фон 0%) |
 | 6 | Все UI-кнопки на готовых Material-иконках (extended) | Микрофон, отправка, stop, шестерёнка, шрифт, цвет — векторные, читаемые |
-| 7 | R8-минификация + shrinkResources в release | APK 374 → 274 MB (debug подпись для локального smoke; пакет чистый `org.opencode.mobile`) |
+| 7 | R8-минификация + shrinkResources в release | APK 374 → 274 MB (R8), затем lazy-вынос base → **147 MB** (debug подпись для локального smoke; пакет чистый `org.opencode.mobile`) |
+| 8 | base-модель вынесена из assets в lazy-скачивание | base/turbo качаются по требованию; APK больше не тащит 141MB whisper |
 
 **Итог:** UI CPU ~38% → ~1.5-8% (×5–25), рендер 99-перц. 9 мс, janky 0.33%,
 фон ~0%. Единственный хвост — внутренний `opencode serve` (~35%, код движка, не наш).

@@ -318,6 +318,9 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
     // Прогресс скачивания turbo: null = не качаем, иначе Int (0..100) + статус.
     var turboDownloadPct by remember { mutableStateOf<Int?>(null) }
     var turboDownloadMsg by remember { mutableStateOf<String?>(null) }
+    // Прогресс скачивания base (тоже lazy с этого релиза).
+    var baseDownloadPct by remember { mutableStateOf<Int?>(null) }
+    var baseDownloadMsg by remember { mutableStateOf<String?>(null) }
     var showSettings by remember { mutableStateOf(false) }
     // Выпадающий список MCP-серверов (открывается тапом по индикатору MCP).
     var showMcpList by remember { mutableStateOf(false) }
@@ -603,7 +606,7 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
         turboDownloadMsg = null
         scope.launch {
             try {
-                val file = ModelDownloader.download(context) { done, total ->
+                val file = ModelDownloader.downloadTurbo(context) { done, total ->
                     turboDownloadPct = if (total > 0) ((done * 100) / total).toInt() else 0
                 }
                 Log.d("VOICE", "turbo скачана: ${file.absolutePath}")
@@ -613,6 +616,28 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                 Log.e("VOICE", "скачивание turbo упало", e)
                 turboDownloadMsg = "Ошибка скачивания: ${e.message}"
                 turboDownloadPct = null
+            }
+        }
+    }
+
+    // Скачивание base (141MB) на устройство — теперь тоже по требованию
+    // (вынесена из assets в lazy), как и turbo.
+    fun startBaseDownload(context: Context) {
+        if (baseDownloadPct != null) return // уже качаем
+        baseDownloadPct = 0
+        baseDownloadMsg = null
+        scope.launch {
+            try {
+                val file = ModelDownloader.downloadBase(context) { done, total ->
+                    baseDownloadPct = if (total > 0) ((done * 100) / total).toInt() else 0
+                }
+                Log.d("VOICE", "base скачана: ${file.absolutePath}")
+                baseDownloadPct = 100
+                setSttModel("base")
+            } catch (e: Throwable) {
+                Log.e("VOICE", "скачивание base упало", e)
+                baseDownloadMsg = "Ошибка скачивания: ${e.message}"
+                baseDownloadPct = null
             }
         }
     }
@@ -956,11 +981,25 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { setSttModel("base") }
+                            .clickable {
+                                if (ModelDownloader.baseReady(context) || baseDownloadPct != null) {
+                                    setSttModel("base")
+                                } else {
+                                    startBaseDownload(context)
+                                }
+                            }
                             .padding(vertical = 4.dp)
                     ) {
                         Text(if (sttModel == "base") "● " else "○ ", color = Color(0xFFFF6D00), fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Text("base (141 МБ, быстро, вшита в приложение)", color = Color(0xFFE6E6E6), fontSize = 12.sp)
+                        val baseLabel = when {
+                            baseDownloadPct != null -> "base… $baseDownloadPct%"
+                            ModelDownloader.baseReady(context) -> "base (141 МБ, быстро)"
+                            else -> "base (141 МБ) — нажми, чтобы скачать"
+                        }
+                        Text(baseLabel, color = Color(0xFFE6E6E6), fontSize = 12.sp)
+                    }
+                    baseDownloadMsg?.let {
+                        Text(it, color = Color(0xFFE05A5A), fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp))
                     }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,

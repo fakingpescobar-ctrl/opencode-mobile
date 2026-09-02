@@ -131,8 +131,14 @@ class WhisperTranscribeService : Service() {
         whisperCtxCache.getOrPut(model) {
             when (model) {
                 WhisperTranscribeService.MODEL_BASE -> {
-                    Log.d(TAG, "гружу base-модель из assets")
-                    WhisperContext.createContextFromAsset(application.assets, ModelDownloader.BASE_ASSET)
+                    val f = ModelDownloader.baseFile(application)
+                    if (!f.exists() || f.length() < 140L * 1024 * 1024) {
+                        throw IllegalStateException(
+                            "base-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках STT"
+                        )
+                    }
+                    Log.d(TAG, "гружу base-модель с файла (${f.length() / 1024 / 1024}MB)")
+                    WhisperContext.createContextFromFile(f.absolutePath)
                 }
                 WhisperTranscribeService.MODEL_TURBO -> {
                     val f = ModelDownloader.turboFile(application)

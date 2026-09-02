@@ -21,7 +21,7 @@
 
 **Инференс на устройстве (STT)**
 - `whisper.cpp` + `ncnn` (CPU/NEON fp16 + KV-cache).
-- Модели: `ggml-base.bin` (141 МБ, в APK), `large-v3-turbo` (574 МБ, опц.).
+- Модели: `base` и `large-v3-turbo` — lazy-скачивание по требованию (в APK моделей нет).
 - Ассеты шрифтов: `JetBrainsMono-Regular.ttf` (моно для ответов модели).
 
 **Сборка / инфраструктура**

@@ -24,12 +24,12 @@ Release-контур блокирует «дать человеку», сеть 
   → экономия ~20-30MB dex.
 
 ### 2. Честный размер модели
-- `base` (141MB) вшита в APK. Варианты:
-  - a. **App Bundle + on-demand** (Play требует AAB) — модель как отдельный asset.
-  - b. **Lazy-загрузка**: base качается при первом запуске (как turbo через
-    `ModelDownloader`), APK = только `libopencode.so` + ncnn + код → ~60-80MB.
-- Рекомендация: **(b)** — первый запуск тянет base, потом кэшируется.
-  `ModelDownloader` уже есть — расширить на base.
+- ✅ **base вынесена из APK** в lazy-скачивание (как turbo). APK: 374 → 274 (R8) → **147 MB**.
+- Реальный предел — ~147MB, т.к. `libopencode.so` (184 MB) — это сам opencode,
+  вынести нельзя. Дальнейшие варианты:
+  - **App Bundle / on-demand** (Play требует AAB) — ещё ужимает загрузку.
+  - Опционально: **убрать `libbun-musl.so` (70MB)** если opencode может работать
+    без bun-браузинга (рискованно, требует проверки запуска serve без bun).
 
 ### 3. Release-сборка и подпись
 - `applicationIdSuffix` убрать из release (сейчас только debug имеет `.debug` —
@@ -87,6 +87,6 @@ Release-контур блокирует «дать человеку», сеть 
 
 | Трек | Статус |
 |------|--------|
-| 1. Release-контур | **В процессе** — R8 + shrinkResources включены (APK 374 → 274 MB, пакет чистый `org.opencode.mobile`, smoke OK). Осталось: lazy-загрузка base (~70-80MB) и upload-key подпись |
+| 1. Release-контур | **В процессе** — R8 + shrinkResources включены (374 → 274 → **147 MB**), base вынесена в lazy, пакет чистый `org.opencode.mobile`, smoke OK. Осталось: upload-key подпись и опционально ужать `libopencode.so`/bun |
 | 2. Сеть без прокси | Не начат (есть набросок `connect_proxy.py`) |
 | 3. STT turbo на CPU | Частично (KV-cache внедрён; int8 — план) |

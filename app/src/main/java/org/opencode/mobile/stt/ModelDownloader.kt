@@ -10,52 +10,84 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Скачивание whisper-модели large-v3-turbo на устройство.
+ * Скачивание whisper-моделей на устройство по требованию.
  *
- * APK остаётся маленьким: turbo (574MB) НЕ кладём в assets, а качаем по
- * требованию в filesDir (по выбору в настройках STT). Загруженный файл
- * живёт между запусками — повторно качаем только если его нет.
+ * APK остаётся маленьким: и base, и turbo НЕ кладём в assets, а качаем в
+ * filesDir/models (по выбору в настройках STT). Загруженный файл живёт между
+ * запусками — повторно качаем только если его нет.
  *
- * URL: ggerganov/whisper.cpp ggml-large-v3-turbo-q5_0.bin (574 041 195 байт).
+ * - base  = ggerganov/whisper.cpp ggml-base.bin      (141 047 000 б ≈ 141 МБ)
+ * - turbo = ggerganov/whisper.cpp ggml-large-v3-turbo-q5_0.bin (574 МБ)
  */
 object ModelDownloader {
     private const val TAG = "ModelDL"
-    private const val URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
 
-    /** Имя файла модели на диске устройства + в assets (base). */
+    private const val HF_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
+    private const val URL_TURBO = "$HF_BASE/ggml-large-v3-turbo-q5_0.bin"
+    private const val URL_BASE = "$HF_BASE/ggml-base.bin"
+
+    /** Имена файлов моделей на диске устройства. */
     const val TURBO_FILE = "ggml-large-v3-turbo-q5_0.bin"
-    const val BASE_ASSET = "ggml-base.bin"
+    const val BASE_FILE = "ggml-base.bin"
+
+    /** Порог «не оборван»: файл не считается готовым, пока меньше минимума байт. */
+    private const val MIN_BASE = 140L * 1024 * 1024
+    private const val MIN_TURBO = 500L * 1024 * 1024
 
     /** Папка каталога моделей внутри filesDir: <filesDir>/models/. */
     fun modelsDir(context: Context): File =
         File(context.filesDir, "models").apply { mkdirs() }
 
-    /** Финальный путь turbo-модели (или null, если ещё не скачана). */
-    fun turboFile(context: Context): File = File(modelsDir(context), TURBO_FILE)
+    // ---- base ----
 
-    /** Докачана ли turbo (файл существует и больше 500MB — не оборванный). */
-    fun turboReady(context: Context): Boolean {
-        val f = turboFile(context)
-        return f.exists() && f.length() > 500L * 1024 * 1024
+    fun baseFile(context: Context): File = File(modelsDir(context), BASE_FILE)
+
+    /** Докачана ли base (файл существует и >140MB — не оборванный). */
+    fun baseReady(context: Context): Boolean {
+        val f = baseFile(context)
+        return f.exists() && f.length() > MIN_BASE
     }
 
-    /**
-     * Скачивает turbo-модель в filesDir/models. Блокирующий (suspend).
-     * onProgress(bytesSoFar, totalBytes) вызывается из IO-потока по мере
-     * записи. При любом сбое бросает Exception (временный файл чистится).
-     */
-    suspend fun download(
+    /** Скачивает base-модель в filesDir/models. Блокирующий (suspend). */
+    suspend fun downloadBase(
         context: Context,
         onProgress: (Long, Long) -> Unit = { _, _ -> }
+    ): File = downloadTo(context, URL_BASE, baseFile(context), MIN_BASE, onProgress)
+
+    // ---- turbo ----
+
+    fun turboFile(context: Context): File = File(modelsDir(context), TURBO_FILE)
+
+    /** Докачана ли turbo (файл существует и >500MB — не оборванный). */
+    fun turboReady(context: Context): Boolean {
+        val f = turboFile(context)
+        return f.exists() && f.length() > MIN_TURBO
+    }
+
+    /** Скачивает turbo-модель в filesDir/models. Блокирующий (suspend). */
+    suspend fun downloadTurbo(
+        context: Context,
+        onProgress: (Long, Long) -> Unit = { _, _ -> }
+    ): File = downloadTo(context, URL_TURBO, turboFile(context), MIN_TURBO, onProgress)
+
+    /**
+     * Общий загрузчик: качает url в dest (с resume и progress). При любом сбое
+     * бросает Exception; временный файл чистится только при полном срыве.
+     */
+    private suspend fun downloadTo(
+        context: Context,
+        url: String,
+        dest: File,
+        minBytes: Long,
+        onProgress: (Long, Long) -> Unit
     ): File = withContext(Dispatchers.IO) {
-        val dest = turboFile(context)
-        if (turboReady(context)) {
-            Log.d(TAG, "turbo уже докачана: ${dest.absolutePath}")
+        if (dest.exists() && dest.length() > minBytes) {
+            Log.d(TAG, "уже докачана: ${dest.absolutePath}")
             return@withContext dest
         }
 
-        val tmp = File(modelsDir(context), "$TURBO_FILE.part")
-        val conn = (URL(URL).openConnection() as HttpURLConnection).apply {
+        val tmp = File(modelsDir(context), "${dest.name}.part")
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             instanceFollowRedirects = true
             connectTimeout = 30_000
             readTimeout = 60_000
@@ -72,11 +104,12 @@ object ModelDownloader {
             val total: Long = when (code) {
                 HttpURLConnection.HTTP_PARTIAL -> conn.contentLengthLong // resume-хвост
                 HttpURLConnection.HTTP_OK -> conn.contentLengthLong
-                else -> throw IllegalStateException("HTTP $code при скачивании модели")
+                else -> throw IllegalStateException("HTTP $code при скачивании ${dest.name}")
             }
 
-            val totalBytes: Long = if (tmp.exists() && code == HttpURLConnection.HTTP_PARTIAL) tmp.length() + total else total
-            Log.d(TAG, "скачиваю turbo, http=$code, осталось=$total, уже есть=${if (code == 206) tmp.length() else 0}")
+            val totalBytes: Long =
+                if (tmp.exists() && code == HttpURLConnection.HTTP_PARTIAL) tmp.length() + total else total
+            Log.d(TAG, "скачиваю ${dest.name}, http=$code, осталось=$total, уже есть=${if (code == 206) tmp.length() else 0}")
 
             var done = if (tmp.exists() && code == HttpURLConnection.HTTP_PARTIAL) tmp.length() else 0L
             val out = FileOutputStream(tmp, true) // append при resume
@@ -93,8 +126,8 @@ object ModelDownloader {
                 }
             }
 
-            if (done < 500L * 1024 * 1024) {
-                throw IllegalStateException("файл оборван: $done байт")
+            if (done < minBytes) {
+                throw IllegalStateException("файл оборван: $done байт (min=$minBytes)")
             }
 
             // Целиком скачан → атомарно переносим в финальное имя.
@@ -102,7 +135,7 @@ object ModelDownloader {
                 tmp.copyTo(dest, overwrite = true)
                 tmp.delete()
             }
-            Log.d(TAG, "turbo скачана: ${dest.absolutePath} (${dest.length() / 1024 / 1024}MB)")
+            Log.d(TAG, "скачана: ${dest.absolutePath} (${dest.length() / 1024 / 1024}MB)")
             dest
         } finally {
             conn.disconnect()
