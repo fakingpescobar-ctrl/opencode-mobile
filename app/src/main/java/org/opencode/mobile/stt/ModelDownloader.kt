@@ -543,13 +543,16 @@ object ModelDownloader {
     }
 
     /**
-     * GGML-magic файла: первые 4 байта обязаны быть "ggml" (whisper.cpp ggml-*.bin).
+     * GGML-magic файла: первые 4 байта — uint32 LE "ggml" (0x67676D6C).
+     * Официальные whisper.cpp ggml-*.bin пишут магию 32-битным словом в little-endian:
+     * физические байты 6C 6D 67 67 (а НЕ текст "ggml" = 67 67 6D 6C). Валидируем
+     * по LE-значению — как это делает сам whisper.cpp (memcmp против целого).
      * Дешёвая проверка (4 байта) — используется и для .part-начала перед resume,
      * и для финальной сверки всего tmp.
      */
+    private val ggmlMagicBytes = byteArrayOf(0x6C.toByte(), 0x6D.toByte(), 0x67.toByte(), 0x67.toByte())
     private fun hasGgmlMagic(file: File): Boolean = try {
         file.inputStream().use { input ->
-            // readNBytes — API 33+, minSdk 28 — читаем вручную.
             val magic = ByteArray(4)
             var off = 0
             while (off < 4) {
@@ -557,10 +560,7 @@ object ModelDownloader {
                 if (n < 0) break
                 off += n
             }
-            off == 4 && magic[0] == 'g'.code.toByte() &&
-                magic[1] == 'g'.code.toByte() &&
-                magic[2] == 'm'.code.toByte() &&
-                magic[3] == 'l'.code.toByte()
+            off == 4 && magic.contentEquals(ggmlMagicBytes)
         }
     } catch (_: Exception) {
         false
