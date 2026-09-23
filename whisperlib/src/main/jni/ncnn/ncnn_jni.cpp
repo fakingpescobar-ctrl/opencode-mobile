@@ -632,7 +632,12 @@ int Whisper::run_decoder_step(const std::vector<int>& tokens, const ncnn::Mat& e
                 }
                 else if (m_cross_kv_h == kvcache[i].h)
                 {
-                    out_kvcache[i] = kvcache[i];
+                    // Если у другого cross-слоя h иной (теоретически: encoder_states один
+                    // на всех, поэтому нет) — здесь получим !=  → откат, НЕ тихий мусор.
+                    out_kvcache[i] = kvcache[i]; // shallow: refcount живого блока из prefill;
+                    // аллокатор (PoolAllocator) не отдаст занятый блок, пока жив хоть один
+                    // Mat — порча из-за переиспользования невозможна; extract для cross
+                    // не вызывается (continue) — записи в этот буфер нет.
                     continue;
                 }
                 else
@@ -641,14 +646,13 @@ int Whisper::run_decoder_step(const std::vector<int>& tokens, const ncnn::Mat& e
                         (int)i, kvcache[i].h, m_cross_kv_h);
                     m_cross_layout_ok = false;
                 }
-                // fallthrough на extract
+                // fallthrough на extract: НЕ клонируем out_kvcache[i], даже если он
+                // алиасит kvcache[i] — внутришаговый вход=выход это ШТАТНЫЙ протокол
+                // ncnn KV (self-индексы всегда так: выход прошлого шага = вход текущего,
+                // extract пишет в тот же буфер; экстрактор читает вход на ранних слоях
+                // пайплайна до записи результата). Откат cross приводит cross-индексы
+                // к тому же паттерну — дополнительная защита не нужна.
             }
-            // Разрыв алиаса перед in-place extract: после отката (и только в откатных
-            // сценариях) out_kvcache[i] может быть shallow-копией kvcache[i] с прошлого
-            // шага — extract, пишущий поверх этого буфера, изменил бы вход графа (UB
-            // при переиспользуемом кэш-аллокаторе). Сравнение указателей — дёшево.
-            if (out_kvcache[i].data == kvcache[i].data)
-                out_kvcache[i] = kvcache[i].clone();
             rc0 = ex.extract(out_kv_cache_indexes[i], out_kvcache[i], 1);
             NCNN_PHASE("  kv_out[%d] extract rc=%d shape(%d,%d,%d)", (int)i, rc0, out_kvcache[i].w,out_kvcache[i].h,out_kvcache[i].c);
             if (rc0 != 0) rc1 = rc0;
