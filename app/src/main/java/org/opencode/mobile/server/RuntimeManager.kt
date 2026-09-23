@@ -412,9 +412,15 @@ class RuntimeManager(
         while (total > LOG_TOTAL_BUDGET && idx > 0) {
             val f = File(parent, "opencode.log.$idx")
             if (f.exists()) {
-                total -= f.length()
-                f.delete()
-                android.util.Log.i("OpencodeServer", "pruned ${f.name} (total ${total / 1024 / 1024}MB)")
+                // Длину берём ДО удаления; вычитаем только при успехе — иначе
+                // неудачный delete (файл занят) ложно «соблюдал» бы бюджет.
+                val len = f.length()
+                if (f.delete()) {
+                    total -= len
+                    android.util.Log.i("OpencodeServer", "pruned ${f.name} (total ${total / 1024 / 1024}MB)")
+                } else {
+                    android.util.Log.w("OpencodeServer", "не удалось удалить ${f.name}")
+                }
             }
             idx--
         }
