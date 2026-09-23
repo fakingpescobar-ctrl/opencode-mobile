@@ -192,6 +192,16 @@ protected:
     Tokenizer tokenizer;
     std::vector<int> kv_cache_indexes;
     std::vector<int> out_kv_cache_indexes;
+    // Cross-KV-оптимизация в run_decoder_step: подтверждение того, что парный layout
+    // MHA в декодере действительно (self, cross) на слой. Cross-KV константен между
+    // шагами (зависит только от encoder) — если h cross-кандидата (i%4==2||3) меняется,
+    // это растущий self-KV (другой layout) — откатываемся на extract (иначе тихий мусор
+    // в расшифровке). mutable: run_decoder_step — const. БЕЗОПАСНОСТЬ ПОТОКОВ: transcribe()
+    // сериализован очередью STT (FIFO задач, очередь #2) — рефакторинг, снимающий
+    // сериализацию, обязан снять и cross-оптимизацию (вернуть extract-путь). Значения
+    // сбрасываются в load() при каждой загрузке модели.
+    mutable int m_cross_kv_h = -1;
+    mutable bool m_cross_layout_ok = true;
 };
 
 int Whisper::load(const std::string& dir, const std::string& base)
@@ -230,6 +240,11 @@ int Whisper::load(const std::string& dir, const std::string& base)
     decoder.opt.use_fp16_storage = fp16;
     decoder.opt.use_fp16_arithmetic = fp16;
     decoder.opt.lightmode = false;   // держим промежуточные блобы (нужно для извлечения KV-кэша через extract)
+    // KV-cache allocator критичен: без него ncnn decoder падает rc=-100 (alloc fail,
+    // 8.4GB ctx, reuse=false) уже на 2-м шаге при живой речи (замер 21:27). С ним —
+    // reuse=true и без OOM. Второй залип: stall на извлечении kv_out[14]/[15]
+    // (cross-attn 64x1500x20) на ~8-м шаге при живой длинной речи — чинится в
+    // run_decoder_step (cross-KV берётся из входного кэша, extract не зовётся).
     if (!g_kvcache_allocator)
         g_kvcache_allocator = new ncnn::PoolAllocator();
     g_kvcache_allocator->set_size_compare_ratio(0.5f);
@@ -279,6 +294,10 @@ std::string p = dir + "/" + base;
     if (!tokenizer.load((dir + "/whisper_vocab.txt").c_str())) return -1;
 
     // resolve kv cache blob indexes (each MultiHeadAttention with 3 outputs)
+    // Сброс cross-guard: инвариант привязан к текущей модели; повторная загрузка
+    // (смена модели на том же инстансе) обязана пере-подтвердить layout.
+    m_cross_kv_h = -1;
+    m_cross_layout_ok = true;
     for (size_t i = 0; i < decoder.layers().size(); i++)
     {
         const ncnn::Layer* mha = decoder.layers()[i];
@@ -292,6 +311,18 @@ std::string p = dir + "/" + base;
             out_kv_cache_indexes.push_back(mha->tops[output_count - 2]);
             out_kv_cache_indexes.push_back(mha->tops[output_count - 1]);
         }
+    }
+    // Жёсткое соответствие ожидаемому layout: whisper base — 4 слоя декодера ×
+    // (self, cross) MHA = 16 KV-индексов. Любое иное количество — иная модель,
+    // i%4-схема (i%4==2||3 = cross) недоказуема → cross-оптимизация отключается
+    // прямо при загрузке. Полная защита от «все self подряд» при 16 индексах —
+    // только runtime-сверка в run_decoder_step (shape cross-KV константен между
+    // шагами, у self — растёт).
+    if (kv_cache_indexes.size() != 16 || out_kv_cache_indexes.size() != 16)
+    {
+        NCNN_PHASE("DECODER: KV-индексов %zu/%zu (ожидается 16/16 для whisper base) — cross-оптимизация отключена",
+            kv_cache_indexes.size(), out_kv_cache_indexes.size());
+        m_cross_layout_ok = false;
     }
     return 0;
 }
@@ -393,6 +424,7 @@ int Whisper::transcribe(const std::vector<short>& samples, const char* lang, std
         int id = 0;
         float conf = 0.f;
         argmax(logits, id, conf);
+        NCNN_PHASE("decoder iter step=%d decoded=%zu last_id=%d conf=%.3f", step, decoded.size(), id, conf);
 
         if (id == token_endoftext) break;
         decoded.push_back(id);
@@ -544,6 +576,15 @@ int Whisper::run_decoder_step(const std::vector<int>& tokens, const ncnn::Mat& e
 
     ncnn::Mat output_states;
     {
+        // Защита от рассинхрона (B4): входной кэш обязан совпадать по размеру с
+        // ожидаемыми индексами — иначе i%4-ветка и extract выйдут за границы (UB).
+        if (kvcache.size() != kv_cache_indexes.size() ||
+            out_kv_cache_indexes.size() != kv_cache_indexes.size())
+        {
+            NCNN_PHASE("decoder kvcache mismatch: in=%zu idx=%zu outidx=%zu",
+                kvcache.size(), kv_cache_indexes.size(), out_kv_cache_indexes.size());
+            return -1;
+        }
         NCNN_PHASE("decoder step in: embeds(%d,%d,%d) enc(%d,%d,%d) mask(%d,%d) kvidx=%d outidx=%d",
             input_embeds.w,input_embeds.h,input_embeds.c,
             encoder_states.w,encoder_states.h,encoder_states.c,
@@ -562,6 +603,52 @@ int Whisper::run_decoder_step(const std::vector<int>& tokens, const ncnn::Mat& e
         int rc0, rc1 = 0, rc2 = 0;
         for (size_t i = 0; i < out_kv_cache_indexes.size(); i++)
         {
+            // Cross-attention KV (индексы 2,3 / 6,7 / 10,11 / 14,15: i%4==2||3) —
+            // константные 64x1500x20, зависят только от encoder, НЕ меняются между шагами.
+            // Их переизвлечение через extract на каждом шаге при kvcache_allocator'е давало
+            // stall (зависание на ~8-м шаге декодера при живой длинной речи, замер 21:17).
+            // Боремся: берём cross-attn kv из входного кэша как есть (const), не трогая extract.
+            // ЗАЩИТА layout (другой MHA-порядок модели): cross-KV обязан иметь константный
+            // shape между шагами (только encoder). Если h изменился — это растущий self-KV
+            // (не [self,cross] на слой) — навсегда откатываемся на extract, иначе тихий мусор.
+            if (m_cross_layout_ok && (i % 4 == 2 || i % 4 == 3))
+            {
+                if (m_cross_kv_h == -1)
+                {
+                    if (kvcache[i].h <= 0)
+                    {
+                        // Пустой/нулевой cross-кандидат: prefill не заполнил — не доверяем
+                        // схеме, откат на extract (иначе запомнили бы h=0 и откатили всё).
+                        NCNN_PHASE("  kv[%d] cross guess empty (h=%d) -> откат", (int)i, kvcache[i].h);
+                        m_cross_layout_ok = false;
+                    }
+                    else
+                    {
+                        m_cross_kv_h = kvcache[i].h;
+                        NCNN_PHASE("  kv cross guess: h=%d (layout [self,cross])", m_cross_kv_h);
+                        out_kvcache[i] = kvcache[i]; // shallow: refcount держит блок из prefill
+                        continue;
+                    }
+                }
+                else if (m_cross_kv_h == kvcache[i].h)
+                {
+                    out_kvcache[i] = kvcache[i];
+                    continue;
+                }
+                else
+                {
+                    NCNN_PHASE("  kv[%d] layout mismatch: h=%d != %d -> откат cross-оптимизации",
+                        (int)i, kvcache[i].h, m_cross_kv_h);
+                    m_cross_layout_ok = false;
+                }
+                // fallthrough на extract
+            }
+            // Разрыв алиаса перед in-place extract: после отката (и только в откатных
+            // сценариях) out_kvcache[i] может быть shallow-копией kvcache[i] с прошлого
+            // шага — extract, пишущий поверх этого буфера, изменил бы вход графа (UB
+            // при переиспользуемом кэш-аллокаторе). Сравнение указателей — дёшево.
+            if (out_kvcache[i].data == kvcache[i].data)
+                out_kvcache[i] = kvcache[i].clone();
             rc0 = ex.extract(out_kv_cache_indexes[i], out_kvcache[i], 1);
             NCNN_PHASE("  kv_out[%d] extract rc=%d shape(%d,%d,%d)", (int)i, rc0, out_kvcache[i].w,out_kvcache[i].h,out_kvcache[i].c);
             if (rc0 != 0) rc1 = rc0;

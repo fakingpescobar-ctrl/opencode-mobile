@@ -67,6 +67,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.FormatColorText
 import androidx.compose.material.icons.filled.InvertColors
 import androidx.compose.material.icons.filled.Mic
@@ -153,6 +154,12 @@ private const val SEGMENTS = 30
 // дольше этого времени без какого-либо прогресса в сессии — считаем зависание
 // и снимаем вечный индикатор «… генерируется …». 120_000 = 2 минуты паузы.
 private const val STALL_TIMEOUT_MS = 120_000L
+// «Пустой» открытый assistant-шаг (нет ни activity, ни текста, ни выполняемого тула) —
+// модель явно работает (предикт/ранний tool), но молчит БЕЗ частей. Провайдер может
+// держать такую паузу перед первым токеном/тулом достаточно долго (замер ~25-30с на
+// big-pickle перед bash-диагностикой), поэтому таймаут НЕ ставим слишком маленьким,
+// иначе помечаем «Нет ответа» при реально работающей модели. 90с = 1.5 мин паузы.
+private const val STALL_EMPTY_MS = 90_000L
 
 // Интервал опроса serve. КРАЙНЕ ВАЖНО для скорости появления ответа: serve пишет
 // полный ответ мгновенно, но приложение узнаёт о нём только на следующем поллинге.
@@ -392,6 +399,59 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
             }
             // thinking сбросится сам на следующем поллинге (2с): abort завершит
             // стрим, и fetchChatSnapshot увидит step-finish → thinking=false.
+        }
+    }
+
+    // «Начать новую сессию»: создаём пустую свежую сессию и удаляем ВСЕ остальные
+    // (включая зависшие/пустые). Используется как жёсткий «очистить все сессии»,
+    // когда модель залипла на огромном контексте и abort не пробивает сервер.
+    fun newSession() {
+        scope.launch {
+            val created = withContext(Dispatchers.IO) {
+                val id = createSession(serverPort) // POST /session → fresh id
+                if (id != null) {
+                    // Сбрасываем кэш ленты ТОЛЬКО при успехе: при отказе createSession
+                    // поллинг продолжит прежнюю ленту без лишнего форс-перезапроса.
+                    ChatCache.sessionId = null
+                    ChatCache.rawHash = 0
+                    ChatCache.result = null
+                    // Удаляем ВСЕ остальные сессии — чистый старт. DELETE сам по себе не
+                    // обязан останавливать бегущую генерацию: модель может продолжать
+                    // писать ответ в сессию, которую мы удаляем (CPU горит впустую, сервер
+                    // «залипает»). Поэтому каждую умирающую сессию сначала глушим abort-ом
+                    // (идемпотентен, безвреден для пустых/404) — независимо от того, была
+                    // ли она активной на момент сброса.
+                    val raw = try {
+                        java.net.URL("http://127.0.0.1:$serverPort/session").openConnection().let {
+                            (it as java.net.HttpURLConnection).apply {
+                                requestMethod = "GET"; connectTimeout = 2000; readTimeout = 4000
+                            }
+                            it.inputStream.bufferedReader().use { r -> r.readText() }
+                        }
+                    } catch (_: Exception) { "[]" }
+                    try {
+                        val arr = org.json.JSONArray(raw)
+                        for (i in 0 until arr.length()) {
+                            val sid = arr.getJSONObject(i).optString("id", null) ?: continue
+                            if (sid != id) {
+                                abortSession(serverPort, sid)
+                                try {
+                                    java.net.URL("http://127.0.0.1:$serverPort/session/$sid").openConnection().let {
+                                        (it as java.net.HttpURLConnection).apply {
+                                            requestMethod = "DELETE"; connectTimeout = 2000; readTimeout = 4000
+                                        }
+                                        it.responseCode
+                                    }
+                                } catch (_: Exception) {}
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
+                id != null
+            }
+            if (created) vibrate(context)
+            // snapshot сбросим на ближайшем поллинге (fetchChatSnapshot перевыберет bestId).
+            ChatCache.result = null
         }
     }
 
@@ -650,7 +710,7 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
     // Если юзер сам листал вверх, автопрокрутка СТАРОЙ ленты не дёргает его,
     // НО когда приходит НОВОЕ сообщение (лента выросла) — принудительно
     // спускаемся к низу, чтобы последнее сообщение всегда было видно.
-    LaunchedEffect(snapshot?.messages?.size, snapshot?.thinking) {
+    LaunchedEffect(snapshot?.messages?.size, snapshot?.thinking, snapshot?.liveTool) {
         delay(90) // дождаться рекомпозиции LazyColumn — здесь новый ответ УЖЕ отрисован
         val snap = snapshot ?: return@LaunchedEffect
         val n = snap.messages.size
@@ -707,6 +767,12 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
         // нового user-part), помечаем stalled -> UI снимает вечный индикатор
         // и показывает «Нет ответа». Метка сбрасывается при любом прогрессе.
         var stallSince = 0L
+        // Отдельный счётчик для «пустого» открытого assistant-шага (нет ни одного part:
+        // text пуст). Такой шаг может появиться сразу после вопроса / пока websearch
+        // собирается, и обычно быстро обрастает activity. Если он висит дольше
+        // STALL_EMPTY_MS — случаи abort-lag / зависший tool: снимаем спиннер раньше
+        // общего 120с, чтобы юзер не видел вечного «Модель думает» после Stop.
+        var emptyStallSince = 0L
         // Адаптивный поллинг: счётчик «стабильных» итераций. Растёт, пока лента
         // статична и не думается; по достижении STABLE_POLL_ROUNDS поллинг
         // растягивается до POLL_IDLE_MS. При малейшем прогрессе сбрасывается → 400мс.
@@ -729,12 +795,30 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                 val completed = snap.messages.count { it.role == "assistant" && it.text.isNotBlank() }
                 val stalled = if (!snap.thinking) {
                     stallSince = 0L
+                    emptyStallSince = 0L
                     false
                 } else {
-                    if (stallSince == 0L) stallSince = now
-                    val el = now - stallSince
-                    android.util.Log.d("ChatOverlay", "STALL check thinking=true since=${el}ms")
-                    if (el >= STALL_TIMEOUT_MS) true else false
+                    // Пуст ли последний открытый assistant-шаг (модель не дала ни part)?
+                    val lastMsg = snap.messages.lastOrNull()
+                    // «Пустой» = открыт assistant-шаг, никакого текста И никакого выполняемого
+                    // тула (liveTool == null). Если модель реально гоняет websearch/тул,
+                    // liveTool не null → идём в общий таймаут 120с (тул может работать долго).
+                    val emptyThinking = lastMsg != null &&
+                        lastMsg.role == "assistant" && lastMsg.text.isBlank() &&
+                        snap.liveTool == null
+                    var el: Long
+                    if (emptyThinking) {
+                        if (emptyStallSince == 0L) emptyStallSince = now
+                        el = now - emptyStallSince
+                        android.util.Log.d("ChatOverlay", "STALL empty-thinking since=${el}ms")
+                        if (el >= STALL_EMPTY_MS) true else false
+                    } else {
+                        emptyStallSince = 0L
+                        if (stallSince == 0L) stallSince = now
+                        el = now - stallSince
+                        android.util.Log.d("ChatOverlay", "STALL check thinking=true since=${el}ms")
+                        if (el >= STALL_TIMEOUT_MS) true else false
+                    }
                 }
                 val final = if (stalled) snap.copy(stalled = true) else snap
                 // Дельта-поллинг: ставим snapshot в UI только если содержимое реально
@@ -848,6 +932,21 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                         .clip(CircleShape)
                         .background(if (showSettings) Color(0xFF3A3A3A) else Color.Transparent)
                         .clickable { showSettings = !showSettings }
+                        .padding(3.dp)
+                )
+                // «Новая сессия» — очистить все сессии и начать с чистого листа.
+                // Жёстко сбрасывает активную (в т.ч. зависшую на огромном контексте),
+                // когда abort не пробивает сервер.
+                Icon(
+                    imageVector = Icons.Filled.Add,
+                    contentDescription = "Обновить / новая сессия",
+                    tint = if (showMcpList) Color(0xFF7BD88F) else Color(0xFFBDBDBD),
+                    modifier = Modifier
+                        .padding(start = 8.dp)
+                        .size(22.dp)
+                        .clip(CircleShape)
+                        .background(Color.Transparent)
+                        .clickable { newSession() }
                         .padding(3.dp)
                 )
             }
@@ -1051,8 +1150,8 @@ Text(
                 }
             }
             val msgs = snapshot?.messages ?: emptyList()
-            LaunchedEffect(msgs.size, snapshot?.thinking) {
-                android.util.Log.d("ChatOverlay", "RENDER msgs=${msgs.size} thinking=${snapshot?.thinking}")
+            LaunchedEffect(msgs.size, snapshot?.thinking, snapshot?.liveTool) {
+                android.util.Log.d("ChatOverlay", "RENDER msgs=${msgs.size} thinking=${snapshot?.thinking} live=${snapshot?.liveTool?.name}")
             }
             // Палитра шрифтов (настройка): тап по варианту — мгновенно применяется и сохраняется.
             if (showFontPicker) {
@@ -1931,7 +2030,11 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? = withContext(D
         // пустого шага после abort (parts=[], активности нет).
         val hasActivity = ArrayList<Boolean>(arr.length())
         val hasFinish = ArrayList<Boolean>(arr.length())
-        // Последний инструмент, вызыванный моделью, в этой сессии (для live-чипа).
+        // Живой инструмент, вызываемый моделью в ТЕКУЩЕМ ответе. Накопительный по
+        // assistant-шагам одного ответа (сбрасывается на новом user-сообщении), поэтому
+        // чип НЕ моргает между tool-вызовами. На шагах с тулом запоминаем его; пустой
+        // промежуточный шаг сохраняет предыдущий тул. Из UI показывается только пока
+        // думает (thinking=true) — после завершения ответа гаснет.
         var lastTool: ChatTool? = null
         // ЧЕСТНАЯ оценка активного контекста сессии: сумма символов всех текущих
         // частей (text + tool output/input + reasoning). `tokens.input` из /session
@@ -1947,6 +2050,12 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? = withContext(D
             var hasText = false
             var finish = false
             var activity = false
+            // Новый ВОПРОС (user-сообщение) — сбрасываем живой тул: начинается новый
+            // ответ модели, чип должен отражать только инструменты ЭТОГО ответа.
+            // На assistant-шагах НЕ сбрасываем: между tool-вызовами одного ответа есть
+            // пустые промежуточные шаги, и live-чип не должен моргать (bash→пусто→bash).
+            if (role == "user")
+                lastTool = null
             for (ph in 0 until parts.length()) {
                 val part = parts.getJSONObject(ph)
                 val type = part.optString("type", "")
@@ -2001,7 +2110,14 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? = withContext(D
         val thinking = q == null && when {
             last == null -> false
             last.role == "user" -> true
-            last.role == "assistant" && hasActivityFor(lastIndex) && !hasFinishFor(lastIndex) -> true
+            // «Думает» также = открыт assistant-шаг, ещё НЕ завершённый (нет step-finish),
+            // даже если модель пока не отдала ни одного part (step-start/reasoning/tool).
+            // Такой период = модель уже работает (греет предикт, выполняет websearch/tool),
+            // и юзер должен ВИДЕТЬ анимацию/живой чип, иначе кажется, что всё зависло.
+            // Раньше требовали hasActivityFor(lastIndex) — из-за этого пустой открытый шаг
+            // (первый тик после вопроса) давал thinking=false → никакой анимации до первых
+            // частей. Форсируем hint, что работа идёт: assistant без finish = думает.
+            last.role == "assistant" && !hasFinishFor(lastIndex) -> true
             else -> false
         }
         // Live-чип показываем только пока модель ещё работает (thinking). Когда она
@@ -2020,7 +2136,8 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? = withContext(D
             hasActivity, hasFinish, lastTool
         )
         val snap = ChatSnapshot(take, "$label", bestId, q, thinking, prettyModel(bestModelId), liveTool = liveTool, contextTokens = ctxTokens, mcpConnected = mcpConnected, mcpTotal = mcpTotal, mcpServers = mcpServers)
-        android.util.Log.d("ChatOverlay", "FETCH parse out=${out.size} take=${take.size} thinking=$thinking q=${q != null} label=$label model=$bestModelId liveTool=${liveTool?.name}")
+        val lastDiag = last?.let { "role=${it.role} text='${it.text.take(30)}'" } ?: "null"
+        android.util.Log.d("ChatOverlay", "FETCH parse out=${out.size} take=${take.size} thinking=$thinking q=${q != null} label=$label model=$bestModelId liveTool=${liveTool?.name} LAST=[$lastDiag] hasAct=${hasActivityFor(lastIndex)} hasFin=${hasFinishFor(lastIndex)}")
         snap
     } catch (e: Exception) {
         if (e is InterruptedException) throw e
