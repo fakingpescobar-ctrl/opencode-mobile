@@ -45,6 +45,8 @@ android {
 
     buildFeatures {
         compose = true
+        // BuildConfig (для BuildConfig.DEBUG: WebView remote debugging только в debug).
+        buildConfig = true
     }
 
     packaging {

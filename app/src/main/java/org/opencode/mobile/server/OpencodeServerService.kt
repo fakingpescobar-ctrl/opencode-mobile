@@ -54,6 +54,9 @@ class OpencodeServerService : Service() {
         private const val CHANNEL_ID = "opencode_server"
         private const val NOTIF_ID = 1001
 
+        /** Предел роста opencode.log; по достижении — rotation в opencode.log.1. */
+        private const val MAX_LOG_BYTES = 8L * 1024 * 1024
+
         private val _state = MutableStateFlow(ServerState())
         val state: StateFlow<ServerState> = _state
 
@@ -140,6 +143,12 @@ class OpencodeServerService : Service() {
         var attempt = 0
         val context = applicationContext
         while (currentCoroutineContext().isActive) {
+            // Ротация лога перед КАЖДЫМ рестартом процесса: serve пишет в открытый fd,
+            // поэтому live-rotation (copytruncate/reopen) без сигнала процессу невозможна —
+            // он продолжил бы писать в отвязанный inode, и лог потерялся бы. К этому
+            // моменту предыдущий процесс уже мёртв (в ветке падения — waitForProcessExit,
+            // в ветке самопада — isAlive=false).
+            rotateLogFile(logFile)
             _state.value = _state.value.copy(status = ServerStatus.STARTING)
             updateNotification("Starting")
 
@@ -193,6 +202,9 @@ class OpencodeServerService : Service() {
                 while (proc.isAlive && currentCoroutineContext().isActive) {
                     delay(3000)
                 }
+                // isAlive==false не гарантирует, что fd уже закрыты (процесс мог ещё
+                // не быть reap'нут ОС) — ждём фактическую смерть перед ротацией лога.
+                waitForProcessExit(proc)
                 process = null
                 if (!currentCoroutineContext().isActive) return
                 _state.value = _state.value.copy(status = ServerStatus.STARTING)
@@ -200,6 +212,7 @@ class OpencodeServerService : Service() {
             } else {
                 proc.destroy()
                 if (proc.isAlive) proc.destroyForcibly()
+                waitForProcessExit(proc)
                 process = null
                 _state.value = _state.value.copy(status = ServerStatus.ERROR)
                 updateNotification("Error")
@@ -209,6 +222,38 @@ class OpencodeServerService : Service() {
             // backoff: 1s, 2s, 4s ... cap 15s
             val waitMs = (1000L shl minOf(attempt, 4)).coerceAtMost(15_000L)
             delay(waitMs)
+        }
+    }
+
+    /**
+     * Ротация opencode.log по размеру: при превышении MAX_LOG_BYTES текущий лог
+     * переименовывается в opencode.log.1 (старый .1 затирается). Вызывается только
+     * перед стартом процесса serve — сам процесс пишет в свой открытый fd, поэтому
+     * живая ротация невозможна без его перезапуска.
+     */
+    private fun rotateLogFile(logFile: File) {
+        if (!logFile.exists()) return
+        if (logFile.length() < MAX_LOG_BYTES) return
+        val rotated = File(logFile.parentFile, "opencode.log.1")
+        if (rotated.exists()) rotated.delete()
+        if (logFile.renameTo(rotated)) {
+            android.util.Log.i("OpencodeServer", "rotated opencode.log -> opencode.log.1")
+        } else {
+            android.util.Log.w("OpencodeServer", "rotate opencode.log не удался (renameTo=false)")
+        }
+    }
+
+    /**
+     * Дожидается фактической смерти процесса (fd закрыты) с таймаутом — чтобы
+     * ротация/перезапуск не натолкнулись на ещё живой хвост записи в лог.
+     */
+    private fun waitForProcessExit(proc: Process) {
+        try {
+            if (!proc.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)) {
+                android.util.Log.w("OpencodeServer", "процесс не умер за 3s — продолжаем")
+            }
+        } catch (e: Exception) {
+            // процесс уже мёртв — ок
         }
     }
 

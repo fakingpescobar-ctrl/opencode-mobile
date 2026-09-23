@@ -1,0 +1,12 @@
+# Пример локальных настроек для разработчика проекта opencode-mobile.
+# Скопируйте в ~/.gradle/gradle.properties (Windows: C:\Users\<you>\.gradle\gradle.properties).
+# Файл gradle.properties проекта НЕ должен содержать машинно-зависимых настроек.
+
+# JDK для сборки (у Android Studio это встроенный JBR):
+# org.gradle.java.home=C:\\Program Files\\Android\\Android Studio\\jbr
+
+# Прокси для скачивания зависимостей (если вы за VPN/прокси):
+# systemProp.http.proxyHost=127.0.0.1
+# systemProp.http.proxyPort=10808
+# systemProp.https.proxyHost=127.0.0.1
+# systemProp.https.proxyPort=10808

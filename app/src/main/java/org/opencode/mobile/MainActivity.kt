@@ -50,11 +50,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import org.opencode.mobile.server.OpencodeServerService
 import org.opencode.mobile.ui.ChatOverlay
-import org.opencode.mobile.stt.WhisperTranscribeService
-import kotlinx.coroutines.runBlocking
-import java.io.File
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import org.opencode.mobile.ui.theme.OpencodeMobileTheme
 
 private const val TAG = "OpencodeWebView"
@@ -75,7 +70,12 @@ class MainActivity : ComponentActivity() {
             // foreground-сервис и не отменяет serverJob (stop+start гонялся и валил сервер).
             if (Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()) {
                 Log.i(TAG, "All-files access granted — soft-restart serve for external workspace")
-                OpencodeServerService.restart(this)
+                // Юзер мог вернуться из настроек раньше, чем onStartCommand доехал до
+                // runServerLoop: тогда рестартовать нечего (status=STOPPED дефолт),
+                // а стартующий сервис сам резолвнет внешний workspace уже с правом.
+                if (OpencodeServerService.state.value.status != OpencodeServerService.ServerStatus.STOPPED) {
+                    OpencodeServerService.restart(this)
+                }
             }
         }
 
@@ -88,31 +88,6 @@ class MainActivity : ComponentActivity() {
         requestAllFilesAccessIfNeeded()
         OpencodeServerService.start(this)
         requestNotificationPermission()
-        Thread {
-            try {
-                val f = File(filesDir, "test.f32")
-                if (f.exists()) {
-                    val bytes = f.readBytes()
-                    val n = bytes.size / 4
-                    val samples = FloatArray(n)
-                    ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(samples)
-                    Log.i("AUTOSTT", "autostt: samples=$n engine=ncnn turbo")
-                    val res = runBlocking {
-                        WhisperTranscribeService.transcribe(
-                            applicationContext, samples,
-                            model = WhisperTranscribeService.MODEL_TURBO,
-                            engine = WhisperTranscribeService.ENGINE_NCNN,
-                            timeoutMs = 600_000L
-                        )
-                    }
-                    Log.i("AUTOSTT", "autostt result: '$res'")
-                } else {
-                    Log.i("AUTOSTT", "no test.f32")
-                }
-            } catch (e: Throwable) {
-                Log.e("AUTOSTT", "autostt fail", e)
-            }
-        }.start()
         setContent {
             OpencodeMobileTheme {
                 TerminalScreen()
@@ -283,7 +258,11 @@ fun OpencodeWebView(paused: Boolean = false) {
                     // SPA opencode сам рендерит тёмную тему (localStorage scheme=dark) —
                     // forceDark отключаем, иначе он ломает контраст элементов.
                 }
-                WebView.setWebContentsDebuggingEnabled(true)
+                // Remote debugging только в debug-сборке: в release это дыра
+                // (chrome://inspect к WebView с правами приложения).
+                if (BuildConfig.DEBUG) {
+                    WebView.setWebContentsDebuggingEnabled(true)
+                }
                 webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView?, url: String?) {
                         super.onPageFinished(view, url)
