@@ -49,6 +49,7 @@ import org.opencode.mobile.stt.ModelDownloader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -67,10 +68,10 @@ import java.util.Locale
 private data class StorageSnapshot(
     val free: Long,
     val used: Long,
-    val baseReady: Boolean,
-    val baseSize: Long,
-    val turboReady: Boolean,
-    val turboSize: Long,
+    val ncnnBaseReady: Boolean,
+    val ncnnBaseSize: Long,
+    val ncnnTurboReady: Boolean,
+    val ncnnTurboSize: Long,
 )
 
 @Composable
@@ -84,19 +85,33 @@ fun DiagnosticsScreen(onClose: () -> Unit, modifier: Modifier = Modifier) {
     BackHandler(onBack = onClose)
 
     // Снапшот моделей собирается ОДИН раз при открытии, на IO-диспатчере:
-    // baseReady() цепляет sha256-манифест, length() — это диск. В композиции
-    // эти вызовы выполнялись бы на main при КАЖДОЙ рекомпозиции (серверный
-    // StateFlow тикает) — фризы. Здесь всё собрано в один IO-блок.
+    // проверка ncnn-каталогов (fbank.param + vocab, как в obtainNcnnContext),
+    // суммарный размер файлов — это диск. В композиции эти вызовы выполнялись
+    // бы на main при КАЖДОЙ рекомпозиции (серверный StateFlow тикает) — фризы.
+    // Здесь всё собрано в один IO-блок.
     var snap by remember { mutableStateOf<StorageSnapshot?>(null) }
     LaunchedEffect(Unit) {
         snap = withContext(Dispatchers.IO) {
+            val modelsDir = ModelDownloader.modelsDir(context)
+
+            // Готовность ncnn-каталога — тот же критерий, что в
+            // WhisperTranscribeService.obtainNcnnContext: fbank.param + vocab.
+            fun ncnnSnap(name: String): Pair<Boolean, Long> {
+                val model = name.removePrefix("ncnn-")
+                val dir = File(modelsDir, name)
+                val ready = File(dir, "whisper_${model}_fbank.ncnn.param").exists() && File(dir, "whisper_vocab.txt").exists()
+                val size = dir.listFiles()?.sumOf { it.length() } ?: 0L
+                return ready to size
+            }
+            val (bReady, bSize) = ncnnSnap("ncnn-base")
+            val (tReady, tSize) = ncnnSnap("ncnn-turbo")
             StorageSnapshot(
                 free = ModelDownloader.freeBytes(context),
                 used = ModelDownloader.modelsUsedBytes(context),
-                baseReady = ModelDownloader.baseReady(context),
-                baseSize = ModelDownloader.baseFile(context).length(),
-                turboReady = ModelDownloader.turboReady(context),
-                turboSize = ModelDownloader.turboFile(context).length()
+                ncnnBaseReady = bReady,
+                ncnnBaseSize = bSize,
+                ncnnTurboReady = tReady,
+                ncnnTurboSize = tSize
             )
         }
     }
@@ -173,14 +188,21 @@ modifier = Modifier.weight(1f)
                 serverState.stopReason?.let { InfoRow("Причина остановки", it.name) }
 
 Section("Голосовое распознавание")
-                InfoRow("Движок", if (prefs.getString("stt_engine", "system") == "whisper") "Whisper (локально)" else "Системный Android")
-                InfoRow("Модель", if (prefs.getString("stt_model", "base") == "turbo") "turbo" else "base")
+                InfoRow(
+                    "Движок",
+                    when (prefs.getString("stt_engine", "system")) {
+                        "ncnn" -> "ncnn (локально)"
+                        "whisper" -> "Whisper (локально)"
+                        else -> "Системный Android"
+                    }
+                )
+                InfoRow("Модель", prefs.getString("stt_model", "turbo") ?: "turbo")
                 if (snap == null) {
                     InfoRow("Модели", "загрузка…")
                 } else {
                     val s = requireNotNull(snap)
-                    InfoRow("base (141 МБ)", (if (s.baseReady) "✔ готов" else "✘ отсутствует") + " · " + fmtBytes(s.baseSize), if (s.baseReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A))
-                    InfoRow("turbo (574 МБ)", (if (s.turboReady) "✔ готов" else "✘ отсутствует") + " · " + fmtBytes(s.turboSize), if (s.turboReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A))
+                    InfoRow("ncnn-base", (if (s.ncnnBaseReady) "✔ готов" else "✘ отсутствует") + " · " + fmtBytes(s.ncnnBaseSize), if (s.ncnnBaseReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A))
+                    InfoRow("ncnn-turbo", (if (s.ncnnTurboReady) "✔ готов" else "✘ отсутствует") + " · " + fmtBytes(s.ncnnTurboSize), if (s.ncnnTurboReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A))
                     InfoRow("Модели заняли", fmtBytes(s.used))
                     InfoRow("Свободно", fmtBytes(s.free))
                 }
@@ -205,7 +227,6 @@ Section("Голосовое распознавание")
                     "RAM",
                     if (memInfo.totalMem > 0L) "свободно ${fmtBytes(memInfo.availMem)} / всего ${fmtBytes(memInfo.totalMem)}" else "недоступно"
                 )
-                InfoRow("Ключ Whisper", if (prefs.getString("whisper_key", null).isNullOrBlank()) "не задан" else "••• задан")
 
                 Section("Лог сервера (хвост)")
                 // Без SelectionContainer: он конфликтует с verticalScroll по жестам
@@ -329,8 +350,8 @@ private fun buildDiagnosticsDump(
         sb.append("Модели: (не загружено)\n")
     } else {
         val s = snap
-        sb.append("base: ${if (s.baseReady) "готов" else "отсутствует"}, ${fmtBytes(s.baseSize)}\n")
-        sb.append("turbo: ${if (s.turboReady) "готов" else "отсутствует"}, ${fmtBytes(s.turboSize)}\n")
+        sb.append("ncnn-base: ${if (s.ncnnBaseReady) "готов" else "отсутствует"}, ${fmtBytes(s.ncnnBaseSize)}\n")
+        sb.append("ncnn-turbo: ${if (s.ncnnTurboReady) "готов" else "отсутствует"}, ${fmtBytes(s.ncnnTurboSize)}\n")
         sb.append("Модели заняли: ${fmtBytes(s.used)}; свободно: ${fmtBytes(s.free)}\n")
     }
 

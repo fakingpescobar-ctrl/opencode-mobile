@@ -226,11 +226,10 @@
     <ID>MaxLineLength:ChatOverlay.kt$val snap = ChatSnapshot(take, "$label", bestId, q, thinking, prettyModel(bestModelId), liveTool = liveTool, contextTokens = cached.contextTokens, mcpConnected = mcpConnected, mcpTotal = mcpTotal, mcpServers = mcpServers)</ID>
     <ID>MaxLineLength:ChatOverlay.kt$val snap = ChatSnapshot(take, "$label", bestId, q, thinking, prettyModel(bestModelId), liveTool = liveTool, contextTokens = ctxTokens, mcpConnected = mcpConnected, mcpTotal = mcpTotal, mcpServers = mcpServers)</ID>
     <ID>MaxLineLength:DiagnosticsScreen.kt$InfoRow("Workspace", if (serverState.workspaceExternal) "Внешний (MANAGE_EXTERNAL_STORAGE)" else "Внутренний")</ID>
-    <ID>MaxLineLength:DiagnosticsScreen.kt$InfoRow("base (141 МБ)", (if (s.baseReady) "✔ готов" else "✘ отсутствует") + " · " + fmtBytes(s.baseSize), if (s.baseReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A))</ID>
-    <ID>MaxLineLength:DiagnosticsScreen.kt$InfoRow("turbo (574 МБ)", (if (s.turboReady) "✔ готов" else "✘ отсутствует") + " · " + fmtBytes(s.turboSize), if (s.turboReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A))</ID>
-    <ID>MaxLineLength:DiagnosticsScreen.kt$InfoRow("Движок", if (prefs.getString("stt_engine", "system") == "whisper") "Whisper (локально)" else "Системный Android")</ID>
-    <ID>MaxLineLength:DiagnosticsScreen.kt$InfoRow("Ключ Whisper", if (prefs.getString("whisper_key", null).isNullOrBlank()) "не задан" else "••• задан")</ID>
+    <ID>MaxLineLength:DiagnosticsScreen.kt$InfoRow("ncnn-base", (if (s.ncnnBaseReady) "✔ готов" else "✘ отсутствует") + " · " + fmtBytes(s.ncnnBaseSize), if (s.ncnnBaseReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A))</ID>
+    <ID>MaxLineLength:DiagnosticsScreen.kt$InfoRow("ncnn-turbo", (if (s.ncnnTurboReady) "✔ готов" else "✘ отсутствует") + " · " + fmtBytes(s.ncnnTurboSize), if (s.ncnnTurboReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A))</ID>
     <ID>MaxLineLength:DiagnosticsScreen.kt$if (memInfo.totalMem &gt; 0L) "свободно ${fmtBytes(memInfo.availMem)} / всего ${fmtBytes(memInfo.totalMem)}" else "недоступно"</ID>
+    <ID>MaxLineLength:DiagnosticsScreen.kt$val ready = File(dir, "whisper_${model}_fbank.ncnn.param").exists() &amp;&amp; File(dir, "whisper_vocab.txt").exists()</ID>
     <ID>MaxLineLength:MainActivity.kt$&lt;no name provided&gt;$Log.e(TAG, "onReceivedError code=${error?.errorCode} desc=${error?.description} url=${request?.url}")</ID>
     <ID>MaxLineLength:MainActivity.kt$DropdownButton</ID>
     <ID>MaxLineLength:MainActivity.kt$MainActivity$private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }</ID>

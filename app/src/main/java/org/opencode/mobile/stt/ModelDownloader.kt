@@ -247,10 +247,12 @@ object ModelDownloader {
         return deleted
     }
 
-    /** Суммарный размер всех файлов каталога моделей (включая .part и sidecar-ы). */
+/** Суммарный размер всех файлов каталога моделей (включая .part и sidecar-ы). */
     fun modelsUsedBytes(context: Context): Long {
         val dir = modelsDir(context)
-        return dir.listFiles()?.sumOf { it.length() } ?: 0L
+        if (!dir.exists()) return 0L
+        // Рекурсивно: ncnn-модели лежат в подпапках (ncnn-base/, ncnn-turbo/), а не в корне models/.
+        return dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
     }
 
     /** Свободное место на томе filesDir (байты). */
