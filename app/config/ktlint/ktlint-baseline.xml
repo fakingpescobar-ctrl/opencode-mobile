@@ -763,26 +763,26 @@
         <error line="225" column="123" source="standard:argument-list-wrapping" />
         <error line="225" column="141" source="standard:max-line-length" />
         <error line="225" column="144" source="standard:trailing-comma-on-call-site" />
-        <error line="243" column="43" source="standard:trailing-comma-on-call-site" />
-        <error line="252" column="13" source="standard:function-naming" />
-        <error line="258" column="64" source="standard:trailing-comma-on-call-site" />
-        <error line="264" column="13" source="standard:function-naming" />
-        <error line="264" column="21" source="standard:function-signature" />
-        <error line="264" column="36" source="standard:function-signature" />
-        <error line="264" column="51" source="standard:function-signature" />
-        <error line="264" column="88" source="standard:function-signature" />
-        <error line="271" column="52" source="standard:multiline-expression-wrapping" />
-        <error line="271" column="52" source="standard:function-signature" />
-        <error line="278" column="51" source="standard:multiline-expression-wrapping" />
-        <error line="278" column="51" source="standard:function-signature" />
-        <error line="296" column="23" source="standard:function-signature" />
-        <error line="296" column="41" source="standard:function-signature" />
-        <error line="296" column="53" source="standard:function-signature" />
-        <error line="297" column="18" source="standard:multiline-expression-wrapping" />
-        <error line="314" column="27" source="standard:trailing-comma-on-declaration-site" />
-        <error line="364" column="25" source="standard:function-signature" />
-        <error line="364" column="37" source="standard:function-signature" />
-        <error line="364" column="57" source="standard:function-signature" />
+        <error line="246" column="47" source="standard:trailing-comma-on-call-site" />
+        <error line="256" column="13" source="standard:function-naming" />
+        <error line="262" column="64" source="standard:trailing-comma-on-call-site" />
+        <error line="268" column="13" source="standard:function-naming" />
+        <error line="268" column="21" source="standard:function-signature" />
+        <error line="268" column="36" source="standard:function-signature" />
+        <error line="268" column="51" source="standard:function-signature" />
+        <error line="268" column="88" source="standard:function-signature" />
+        <error line="275" column="52" source="standard:multiline-expression-wrapping" />
+        <error line="275" column="52" source="standard:function-signature" />
+        <error line="282" column="51" source="standard:multiline-expression-wrapping" />
+        <error line="282" column="51" source="standard:function-signature" />
+        <error line="300" column="23" source="standard:function-signature" />
+        <error line="300" column="41" source="standard:function-signature" />
+        <error line="300" column="53" source="standard:function-signature" />
+        <error line="301" column="18" source="standard:multiline-expression-wrapping" />
+        <error line="318" column="27" source="standard:trailing-comma-on-declaration-site" />
+        <error line="368" column="25" source="standard:function-signature" />
+        <error line="368" column="37" source="standard:function-signature" />
+        <error line="368" column="57" source="standard:function-signature" />
     </file>
     <file name="src/main/java/org/opencode/mobile/ui/theme/Theme.kt">
         <error line="11" column="26" source="standard:multiline-expression-wrapping" />

@@ -231,17 +231,21 @@ Section("Голосовое распознавание")
                 // через «Поделиться» — там дамп собирается свежим.
                 // Хвост читаем из filesDir/opencode.log (туда serve пишет через
                 // ProcessBuilder.appendTo; ротация .1/.2/.3) — разово на открытии.
-                val s = requireNotNull(snap)
-                if (s.logTail.isBlank()) {
-                    Text("Пусто — opencode.log ещё не создан (сервер не запускался).", color = Color(0xFF8A8A8A), fontSize = 12.sp)
+                if (snap == null) {
+                    Text("Лог: загрузка…", color = Color(0xFF8A8A8A), fontSize = 12.sp)
                 } else {
-                    Text(
-                        s.logTail,
-                        color = Color(0xFFC8C8C8),
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 10.sp,
-                        lineHeight = 13.sp
-                    )
+                    val s = requireNotNull(snap)
+                    if (s.logTail.isBlank()) {
+                        Text("Пусто — opencode.log ещё не создан (сервер не запускался).", color = Color(0xFF8A8A8A), fontSize = 12.sp)
+                    } else {
+                        Text(
+                            s.logTail,
+                            color = Color(0xFFC8C8C8),
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp,
+                            lineHeight = 13.sp
+                        )
+                    }
                 }
             }
         }
