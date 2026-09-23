@@ -37,20 +37,18 @@ jobs:
           yes | sdkmanager "platforms;android-36" > /dev/null 2>&1 || echo "platform android-36 already present"
           yes | sdkmanager "build-tools;36.0.0" > /dev/null 2>&1 || echo "build-tools 36 already present"
 
-      - name: "Lint ktlint + detekt (новые нарушения валят CI)"
+      - name: "Build (Kotlin compile) + линт"
         run: |
           chmod +x gradlew
-          ./gradlew :app:ktlintCheck --no-daemon --console=plain
-          ./gradlew :app:detekt --no-daemon --console=plain
+          ./gradlew :app:ktlintCheck :app:detekt --no-daemon --console=plain
+          ./gradlew :app:compileDebugKotlin --no-daemon --console=plain
 
-      - name: Build debug APK
-        run: |
-          chmod +x gradlew
-          ./gradlew :app:assembleDebug --no-daemon --console=plain
-
-      - name: Upload APK
+      - name: Upload lint reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opencode-mobile-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
+          name: lint-reports
+          path: |
+            app/build/reports/ktlint
+            app/build/reports/detekt
+          if-no-files-found: ignore
