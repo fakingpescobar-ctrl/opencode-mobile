@@ -676,7 +676,9 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                 Log.d("VOICE", "turbo скачана: ${file.absolutePath}")
                 turboDownloadPct = 100
                 setSttModel("turbo")
-            } catch (e: Throwable) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e // отмена (выгрузка Activity) — не «ошибка скачивания»
+            } catch (e: Exception) {
                 Log.e("VOICE", "скачивание turbo упало", e)
                 turboDownloadMsg = "Ошибка скачивания: ${e.message}"
                 turboDownloadPct = null

@@ -3,9 +3,11 @@ package org.opencode.mobile.stt
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -42,6 +44,16 @@ object ModelDownloader {
      */
     private const val MIN_BASE = 130L * 1024 * 1024
     private const val MIN_TURBO = 540L * 1024 * 1024
+
+    /**
+     * Минимально необходимое свободное место на томе filesDir ПЕРЕД началом
+     * скачивания (размер модели + запас на хвост-resume и sidecar-ы). Проверку
+     * делаем до старта, а не в пути: обрыв посреди 574 МБ из-за места — худший
+     * сценарий для пользователя (модель «наполовину скачана», USB-освобождения).
+     * usableSpace ≤ 0 (ФС без лимита) — проверку пропускаем.
+     */
+    private const val MIN_FREE_BASE = 200L * 1024 * 1024   // 141 МБ base + запас
+    private const val MIN_FREE_TURBO = 700L * 1024 * 1024  // 574 МБ turbo + запас
 
     /** Папка каталога моделей внутри filesDir: <filesDir>/models/. */
     fun modelsDir(context: Context): File =
@@ -190,7 +202,7 @@ object ModelDownloader {
     suspend fun downloadBase(
         context: Context,
         onProgress: (Long, Long) -> Unit = { _, _ -> }
-    ): File = downloadTo(context, URL_BASE, baseFile(context), MIN_BASE, onProgress)
+    ): File = downloadTo(context, URL_BASE, baseFile(context), MIN_BASE, "base", MIN_FREE_BASE, onProgress)
 
     // ---- turbo ----
 
@@ -207,7 +219,7 @@ object ModelDownloader {
     suspend fun downloadTurbo(
         context: Context,
         onProgress: (Long, Long) -> Unit = { _, _ -> }
-    ): File = downloadTo(context, URL_TURBO, turboFile(context), MIN_TURBO, onProgress)
+    ): File = downloadTo(context, URL_TURBO, turboFile(context), MIN_TURBO, "turbo", MIN_FREE_TURBO, onProgress)
 
     /**
      * Общий загрузчик: качает url в dest (с resume и progress). При любом сбое
@@ -218,6 +230,8 @@ object ModelDownloader {
         url: String,
         dest: File,
         minBytes: Long,
+        label: String,
+        requiredFree: Long,
         onProgress: (Long, Long) -> Unit
     ): File = downloadMutex.withLock {
         withContext(Dispatchers.IO) {
@@ -226,11 +240,15 @@ object ModelDownloader {
                 return@withContext dest
             }
 
+            // Pre-check свободного места ДО старта (см. MIN_FREE_*): пользователь
+            // увидит «Недостаточно места» сразу, а не через 400 МБ скачивания.
+            ensureFreeSpace(context, label, requiredFree)
+
             val tmp = File(modelsDir(context), "${dest.name}.part")
-            val partial = tmp.exists() && tmp.length() > 0
+            var partial = tmp.exists() && tmp.length() > 0
             // Один снапшот длины на весь запрос: и для Range, и для сверок ниже
             // (защита от TOCTOU, если файл урезали извне между чтениями).
-            val startAt = if (partial) tmp.length() else 0L
+            var startAt = if (partial) tmp.length() else 0L
             // ETag первого скачивания (sidecar рядом с .part) → If-Range при resume:
             // сервер вернёт 206 только если ревизия НЕ менялась; если файл перезалили —
             // 200 полного файла, и Guard 1 ниже пересоберёт с нуля. Это единственный
@@ -240,6 +258,19 @@ object ModelDownloader {
             // скачивания сверяем done с ним ±0.5%. Без этого обрыв на 99% файла мог бы
             // пройти константный порог MIN_TURBO и «валидная» битая модель упала бы в whisper.
             val sizeFile = File(modelsDir(context), "${dest.name}.part.size")
+            // .part из прошлого запуска мог остаться с МУСОРНЫМ началом (HTTP-страница
+            // от прокси/капчи, которую не поймали ни content-type, ни первый-чанк —
+            // например, обрыв записи после них). Append к такому началу дал бы битый
+            // файл, который магическая сверка убьёт в самом конце — пустая трата 574 МБ.
+            // Проверяем GGML-magic начала .part ДО Range-запроса: мусор → перекачка с нуля.
+            if (partial && !hasGgmlMagic(tmp)) {
+                Log.w(TAG, "${dest.name}: .part не начинается с GGML-magic — перекачка с нуля")
+                tmp.delete()
+                etagFile.delete()
+                sizeFile.delete()
+                partial = false
+                startAt = 0L
+            }
             val conn = (URL(url).openConnection() as HttpURLConnection).apply {
                 instanceFollowRedirects = true
                 connectTimeout = 30_000
@@ -267,6 +298,23 @@ object ModelDownloader {
                 // незамеченным. HuggingFace resolve всегда отдаёт Content-Length.
                 if (total <= 0) {
                     throw IllegalStateException("сервер не отдал Content-Length для ${dest.name} — не могу гарантировать целостность")
+                }
+
+                // HTML вместо бинарной модели: HF/CDN при 502/403/редиректах иногда
+                // отвечают 200 с error-страницей. Пишем fail-loud ДО записи байтов —
+                // иначе «успешно скачанная» текстуха упадёт в whisper, а resume-хвост
+                // склеит HTML дальше. GGML всегда бинарь; text/html|text/plain —
+                // точно не модель. Прочие/пустые типы не блокируем (легальные CDN
+                // отдают application/octet-stream или вовсе без типа) — мусор поймает
+                // финальная GGML-magic сверка ниже.
+                val ct = conn.contentType ?: ""
+                if (ct.contains("text/html", ignoreCase = true) ||
+                    ct.contains("text/plain", ignoreCase = true)
+                ) {
+                    throw IllegalStateException("сервер вернул HTML/текст вместо модели $label (content-type=$ct) — проверь сеть/URL")
+                }
+                if (ct.isEmpty()) {
+                    Log.w(TAG, "$label: content-type пуст — доверяю только GGML-magic сверке")
                 }
 
                 // Guard 1: сервер может проигнорировать Range и ответить 200 — тогда в теле
@@ -317,8 +365,24 @@ object ModelDownloader {
                     out.use { fos ->
                         val buf = ByteArray(256 * 1024)
                         while (true) {
+                            // Каждый чанк: отмена пользователем (корутина) — чистый выход,
+                            // .part и sidecar-ы ОСТАЮТСЯ → следующий заход докачает с этого
+                            // места (resume), а не начнёт 574 МБ заново.
+                            coroutineContext.ensureActive()
                             val n = input.read(buf)
                             if (n < 0) break
+                            // Доп. защита от HTML: content-type мог быть пустым/обманным —
+                            // смотрим сами байты. Проверяем ПЕРВЫЙ чанк тела (done == doneStart;
+                            // при честном 206 это начало хвоста — тоже валидный бинарь, а HTML
+                            // туда не попадёт, т.к. хвост продолжает уже скачанный GGML).
+                            if (done == doneStart && looksLikeHtml(buf, n)) {
+                                // HTML — не «оборванная модель»: resume бессмысленен,
+                                // чистим .part и sidecar-ы, чтобы не склеивать страницу.
+                                tmp.delete()
+                                etagFile.delete()
+                                sizeFile.delete()
+                                throw IllegalStateException("сервер вернул HTML вместо модели $label (error page?) — проверь сеть/URL")
+                            }
                             fos.write(buf, 0, n)
                             done += n
                             onProgress(done, totalBytes)
@@ -342,6 +406,9 @@ object ModelDownloader {
                 // SHA-256 снапшот проверенного файла: считаем по tmp ДО rename (rename
                 // не меняет содержимое — хеш тот же, экономит повторное чтение 574МБ),
                 // манифест пишем уже под финальным именем после переноса.
+                // GGML-magic ПЕРВЫМ: проверка 4 байт дешева, мусор убиваем ДО тяжёлого
+                // SHA-256 574 МБ (хэш на заведомо битом файле — 3-5 сек впустую).
+                verifyGgmlMagic(tmp, etagFile, sizeFile, label)
                 val digest = sha256Of(tmp)
                 if (digest == null) {
                     // не читается — это уже повреждение: не отдаём успех без манифеста
@@ -354,7 +421,13 @@ object ModelDownloader {
                 // недописанный dest, ни битый tmp.
                 if (!tmp.renameTo(dest)) {
                     val destTmp = File(dest.parentFile, "${dest.name}.tmp-final")
-                    Log.w(TAG, "${dest.name}: rename не дался — копирую целиком (может занять время на ${dest.length() / 1024 / 1024}MB)")
+                    Log.w(TAG, "${dest.name}: rename не дался — копирую целиком (может занять время на ${done / 1024 / 1024}MB)")
+                    // Fallback-копия создаёт ВТОРОЙ экземпляр файла при живых tmp и dest.
+                    // Пик каталога: tmp (done) + dest (если жив) + destTmp-копия (done)
+                    // + запас. Считаем по done (прогресс), не по tmp.length() (буфер).
+                    destTmp.delete() // сироты прошлых fallback-попыток
+                    val peak = done + maxOf(done, if (dest.exists()) dest.length() else 0L) + 16L * 1024 * 1024
+                    ensureFreeSpace(context, label, peak)
                     try {
                         tmp.copyTo(destTmp, overwrite = true)
                         if (!destTmp.renameTo(dest)) {
@@ -400,6 +473,77 @@ object ModelDownloader {
         if (header == null) return null
         val m = Regex("""bytes\s+(\d+)-""").find(header) ?: return null
         return m.groupValues[1].toLongOrNull()
+    }
+
+    /**
+     * Предстартовая проверка места: у пользователя должно быть сообщение ДО того,
+     * как 574 МБ оборвутся посреди пути. usableSpace в {0, -1} — неизвестно
+     * (ФС без лимита / квота не реализована): не блокируем, только логируем —
+     * реальный недостаток места всё равно поймает IOException при записи.
+     */
+    private fun ensureFreeSpace(context: Context, label: String, requiredFree: Long) {
+        val free = context.filesDir.usableSpace
+        val needMb = requiredFree / 1024 / 1024
+        when {
+            free >= requiredFree -> Unit // места достаточно
+            free > 0 -> throw IllegalStateException(
+                "Недостаточно места для $label: нужно примерно $needMb МБ, " +
+                    "свободно ${free / 1024 / 1024} МБ (не хватает ${(requiredFree - free) / 1024 / 1024} МБ)"
+            )
+            else -> Log.w(TAG, "usableSpace=$free для $label (нужно ~$needMb МБ) — проверку пропускаю")
+        }
+    }
+
+    /**
+     * Error-page (HTML) вместо бинарной модели: ищем маркеры страницы в первых
+     * 512 байтах. Смотрим ТОЛЬКО начало файла (первый чанк тела): GGML всегда
+     * открывается magic "ggml", '<' там невозможен — ложных срабатываний нет.
+     * Середину потока НЕ сканируем (в бинарнике '<' встречается легально) —
+     * там мусор поймает финальная GGML-magic сверка.
+     */
+    private fun looksLikeHtml(buf: ByteArray, len: Int): Boolean {
+        val head = String(buf, 0, minOf(len, 512), Charsets.UTF_8)
+        return head.contains("<!DOCTYPE", ignoreCase = true) ||
+            head.contains("<html", ignoreCase = true)
+    }
+
+    /**
+     * GGML-magic файла: первые 4 байта обязаны быть "ggml" (whisper.cpp ggml-*.bin).
+     * Дешёвая проверка (4 байта) — используется и для .part-начала перед resume,
+     * и для финальной сверки всего tmp.
+     */
+    private fun hasGgmlMagic(file: File): Boolean = try {
+        file.inputStream().use { input ->
+            // readNBytes — API 33+, minSdk 28 — читаем вручную.
+            val magic = ByteArray(4)
+            var off = 0
+            while (off < 4) {
+                val n = input.read(magic, off, 4 - off)
+                if (n < 0) break
+                off += n
+            }
+            off == 4 && magic[0] == 'g'.code.toByte() &&
+                magic[1] == 'g'.code.toByte() &&
+                magic[2] == 'm'.code.toByte() &&
+                magic[3] == 'l'.code.toByte()
+        }
+    } catch (_: Exception) {
+        false
+    }
+
+    /**
+     * Финальная сверка tmp перед rename: см. [hasGgmlMagic]. Ловит мусор,
+     * прошедший предварительные проверки (обманутый content-type, HTML в середине
+     * потока от прокси). При провале чистим .part + sidecar-ы ДО rename/манифеста —
+     * повреждение не станет «валидной» моделью, следующая попытка начнёт с нуля.
+     */
+    private fun verifyGgmlMagic(tmp: File, etagFile: File, sizeFile: File, label: String) {
+        if (hasGgmlMagic(tmp)) return
+        Log.e(TAG, "$label: GGML-magic не сошёлся — мусор вместо модели, перекачка с нуля")
+        tmp.delete()
+        etagFile.delete()
+        sizeFile.delete()
+        throw IllegalStateException("сервер отдал не модель (нет GGML-magic) для $label — файл очищен, попробуй ещё раз")
     }
 
     /**
