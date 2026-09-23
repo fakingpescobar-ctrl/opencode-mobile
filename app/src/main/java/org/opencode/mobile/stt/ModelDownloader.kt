@@ -10,6 +10,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Скачивание whisper-моделей на устройство по требованию.
@@ -50,6 +52,128 @@ object ModelDownloader {
      * (UI + сервис); общий .part-файл и общий выходной файл — общие ресурсы.
      */
     private val downloadMutex = Mutex()
+
+    // ---- SHA-256 манифест ----
+
+    /**
+     * Результат проверки файла модели против локального манифеста (SHA-256 снапшот).
+     * - [VALID] — хеш совпал (или файл уже проверен в этом процессе при тех же размер+mtime);
+     * - [CORRUPT] — файл на диске повреждён/подменён (SHA-256 не сошёлся);
+     * - [NO_MANIFEST] — модель скачана до введения манифеста: проверять нечем,
+     *   загрузка разрешена (ровно прежний путь trust: ETag + строгий размер).
+     */
+    enum class ModelIntegrity { VALID, CORRUPT, NO_MANIFEST }
+
+    /** Sidecar с SHA-256 снапшотом: <имя модели>.sha256 рядом с моделью. */
+    private fun manifestFile(file: File): File = File(file.parentFile, "${file.name}.sha256")
+
+    /** Кэш «этот файл (size+mtime) уже проверен в этом процессе» — дешёвая повторная сверка. */
+    private val integrityCache = ConcurrentHashMap<String, Pair<Long, Long>>()
+
+    /** SHA-256 файла (hex, lowercase); null при ошибке чтения. */
+    fun sha256Of(file: File): String? = try {
+        MessageDigest.getInstance("SHA-256").run {
+            file.inputStream().use { input ->
+                val buf = ByteArray(256 * 1024)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    update(buf, 0, n)
+                }
+            }
+            toHex(digest())
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "sha256 ${file.name}: ${e.message}")
+        null
+    }
+
+    /** 32 байта → 64 hex-символа (без per-byte String.format — хешируется до 574МБ). */
+    private fun toHex(bytes: ByteArray): String {
+        val hex = "0123456789abcdef"
+        val sb = StringBuilder(bytes.size * 2)
+        for (b in bytes) {
+            sb.append(hex[(b.toInt() shr 4) and 0xf])
+            sb.append(hex[b.toInt() and 0xf])
+        }
+        return sb.toString()
+    }
+
+    /** Манифест валиден только как 64 hex-символа; битый/пустой/оборванный — NO_MANIFEST. */
+    private val HEX_64 = Regex("[0-9a-fA-F]{64}")
+
+    /**
+     * Пишет манифест модели. digest можно передать готовым (считанный по tmp до
+     * rename — содержимое то же), иначе считается заново.
+     */
+    private fun writeManifest(file: File, digest: String? = null) {
+        val value = digest ?: sha256Of(file) ?: run {
+            // digest не передан, а пересчёт не удался — молча выходить нельзя
+            Log.w(TAG, "manifest ${file.name}: SHA-256 не посчитался — манифест не пишу")
+            return
+        }
+        // кэш integrity устаревает при любой перезаписи модели/манифеста
+        integrityCache.remove(file.absolutePath)
+        try {
+            // Атомарно (tmp+rename): обрыв записи не оставит битый манифест — на
+            // месте останется прежний валидный снапшот, а не мусор NO_MANIFEST-болванка.
+            val tmp = File(file.parentFile, "${file.name}.sha256.tmp")
+            tmp.delete() // сирота от прошлого краха — не должен мешать перезаписи
+            tmp.writeText(value)
+            if (!tmp.renameTo(manifestFile(file))) {
+                tmp.delete()
+                // Старый манифест мог быть от ПРЕЖНЕЙ ревизии файла — оставить его
+                // = ложный CORRUPT на новой ревизии. Снимаем: без манифеста модель
+                // останется NO_MANIFEST (не блокирует), честнее ложной блокировки.
+                manifestFile(file).delete()
+                Log.w(TAG, "manifest ${file.name}: rename не удался — снапшот снят")
+            }
+        } catch (e: Exception) {
+            // при сбое записи тоже снимаем старый снапшот (иначе ложный CORRUPT
+            // для новой ревизии файла — блокировка без вины модели)
+            manifestFile(file).delete()
+            Log.w(TAG, "manifest ${file.name}: ${e.message}")
+        }
+    }
+
+    /**
+     * Проверяет файл модели против манифеста. Тяжёлую сверку (чтение всего файла)
+     * выполняет один раз в процессе; повторные вызовы для того же size+mtime — дёшево.
+     *
+     * Инвариант: не вызывается параллельно с downloadTo (downloadMutex сериализует
+     * скачивания; сервис дёргает сверку до/после — во время скачивания dest ещё
+     * не существует или нетронут, rename атомарен на одном томе).
+     */
+    fun checkIntegrity(file: File): ModelIntegrity {
+        // файла-модели нет/пуст — это не повреждение, а отсутствие (манифест-сирота)
+        if (!file.exists() || file.length() == 0L) return ModelIntegrity.NO_MANIFEST
+        val manifest = manifestFile(file)
+        val expected = try {
+            manifest.readText().trim()
+        } catch (e: java.io.FileNotFoundException) {
+            null // манифеста нет — штатно (модель скачана до введения манифеста)
+        } catch (e: Exception) {
+            // манифест есть, но не читается (права/IO) — диагностируем, но не блокируем
+            Log.w(TAG, "manifest ${file.name} не читается: ${e.message}")
+            null
+        }
+        // нет манифеста или он битый (оборвался writeText) — проверить нечем:
+        // не блокируем загрузку (прежний путь доверия ETag+размер), но и не VALID
+        if (expected == null || !HEX_64.matches(expected)) {
+            return ModelIntegrity.NO_MANIFEST
+        }
+        val stamp = file.length() to file.lastModified()
+        integrityCache[file.absolutePath]?.let { if (it == stamp) return ModelIntegrity.VALID }
+        val digest = sha256Of(file)
+            ?: return ModelIntegrity.CORRUPT // файл не читается — деградировал, это повреждение
+        val ok = digest == expected
+        // TOCTOU-защита: кэшируем ЗЕЛЁНЫЙ статус только если файл не менялся
+        // между снятием stamp и хэшированием (иначе в кэш ляжет штамп от старого
+        // содержимого — ложный VALID до следующего изменения файла).
+        val stampAfter = file.length() to file.lastModified()
+        if (ok && stampAfter == stamp) integrityCache[file.absolutePath] = stamp
+        return if (ok) ModelIntegrity.VALID else ModelIntegrity.CORRUPT
+    }
 
     // ---- base ----
 
@@ -135,9 +259,14 @@ object ModelDownloader {
                 conn.connect()
                 val code = conn.responseCode
                 val total: Long = when (code) {
-                    HttpURLConnection.HTTP_PARTIAL -> conn.contentLengthLong // resume-хвост
-                    HttpURLConnection.HTTP_OK -> conn.contentLengthLong
+                    HttpURLConnection.HTTP_PARTIAL, HttpURLConnection.HTTP_OK -> conn.contentLengthLong
                     else -> throw IllegalStateException("HTTP $code при скачивании ${dest.name}")
+                }
+                // Fail-loud вместо тихой дыры: без Content-Length (chunked, total<=0)
+                // сверка размера после скачивания невозможна — обрыв на 99% пройдёт
+                // незамеченным. HuggingFace resolve всегда отдаёт Content-Length.
+                if (total <= 0) {
+                    throw IllegalStateException("сервер не отдал Content-Length для ${dest.name} — не могу гарантировать целостность")
                 }
 
                 // Guard 1: сервер может проигнорировать Range и ответить 200 — тогда в теле
@@ -159,10 +288,12 @@ object ModelDownloader {
                 // и не доверяем, если начало хвоста не совпало с .part.
                 if (resuming) {
                     val crStart = parseContentRangeStart(conn.getHeaderField("Content-Range"))
-                    if (!etagFile.exists() || crStart != null && crStart != startAt) {
+                    // 206 обязан нести Content-Range: если заголовка нет (crStart == null) —
+                    // не знаем границу хвоста, склейка может лечь на неверный офсет → с нуля.
+                    if (!etagFile.exists() || crStart == null || crStart != startAt) {
                         Log.w(
                             TAG,
-                            "206 без etag-гарантии (start=$crStart, ждали $startAt, etag=${etagFile.exists()}) — перекачка с нуля"
+                            "206 без etag/Content-Range гарантии (start=$crStart, ждали $startAt, etag=${etagFile.exists()}) — перекачка с нуля"
                         )
                         resuming = false
                         tmp.delete()
@@ -174,9 +305,9 @@ object ModelDownloader {
                 if (!tmp.exists() || tmp.length() == 0L) resuming = false
 
                 val doneStart = if (resuming) startAt else 0L
-                // contentLengthLong может быть -1 (chunked): прогресс без общего знаменателя.
-                val reportedTotal = if (total < 0) 0L else total
-                val totalBytes = if (resuming) doneStart + reportedTotal else reportedTotal
+                // total гарантированно > 0 (fail-loud выше) — единственный источник
+                // неизвестности был chunked, который мы отсекли.
+                val totalBytes = if (resuming) doneStart + total else total
                 Log.d(TAG, "скачиваю ${dest.name}, http=$code, осталось=$total, уже есть=$doneStart")
 
                 var done = doneStart
@@ -208,21 +339,49 @@ object ModelDownloader {
                     throw IllegalStateException("размер не сошёлся: $done != $expected")
                 }
 
+                // SHA-256 снапшот проверенного файла: считаем по tmp ДО rename (rename
+                // не меняет содержимое — хеш тот же, экономит повторное чтение 574МБ),
+                // манифест пишем уже под финальным именем после переноса.
+                val digest = sha256Of(tmp)
+                if (digest == null) {
+                    // не читается — это уже повреждение: не отдаём успех без манифеста
+                    throw IllegalStateException("SHA-256 не посчитался для ${tmp.name} — файл не читается")
+                }
+
                 // Целиком скачан → атомарно переносим в финальное имя. Если renameTo
                 // не дался (кросс-ФС/FUSE) — fallback копированием в временный
                 // файл и rename; при сбое чистим всё, чтобы не оставить ни
                 // недописанный dest, ни битый tmp.
                 if (!tmp.renameTo(dest)) {
                     val destTmp = File(dest.parentFile, "${dest.name}.tmp-final")
+                    Log.w(TAG, "${dest.name}: rename не дался — копирую целиком (может занять время на ${dest.length() / 1024 / 1024}MB)")
                     try {
                         tmp.copyTo(destTmp, overwrite = true)
-                        destTmp.renameTo(dest)
+                        if (!destTmp.renameTo(dest)) {
+                            destTmp.delete()
+                            throw IllegalStateException("не удалось перенести ${dest.name} в финальное имя")
+                        }
                     } catch (e: Exception) {
-                        dest.delete()
+                        // НЕ трогаем dest: если копирование упало (место/IO), на месте
+                        // мог остаться прежний рабочий файл — уничтожать его нельзя.
                         destTmp.delete()
                         throw e
                     }
                     tmp.delete()
+                    // Fallback-путь копировал байты вручную — в отличие от rename,
+                    // содержимое dest не гарантировано идентично tmp: сверяем явно.
+                    val copiedDigest = sha256Of(dest)
+                    if (copiedDigest == null || copiedDigest != digest) {
+                        throw IllegalStateException("${dest.name}: SHA-256 не сошёлся после fallback-переноса — файл не тот")
+                    }
+                }
+                // Манифест пишем ТОЛЬКО под реально лежащим файлом: rename мог тихо
+                // не пройти (кривая ФС) — тогда dest старый/отсутствует, и манифест
+                // не должен фиксировать несуществующий или прежний файл.
+                if (dest.exists() && dest.length() == done) {
+                    writeManifest(dest, digest)
+                } else {
+                    throw IllegalStateException("${dest.name}: файл не на месте после переноса (${dest.length()} != $done)")
                 }
                 // Скачивание завершено: sidecar-ы больше не нужны (следующий полный
                 // заход запишет свежие). Ошибка удаления не критична.

@@ -132,25 +132,41 @@ class WhisperTranscribeService : Service() {
             when (model) {
                 WhisperTranscribeService.MODEL_BASE -> {
                     val f = ModelDownloader.baseFile(application)
-                    if (!f.exists() || f.length() < 140L * 1024 * 1024) {
+                    if (!ModelDownloader.baseReady(application)) {
                         throw IllegalStateException(
                             "base-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках STT"
                         )
                     }
+                    requireNotCorrupt(f, "base-модель")
                     Log.d(TAG, "гружу base-модель с файла (${f.length() / 1024 / 1024}MB)")
                     WhisperContext.createContextFromFile(f.absolutePath)
                 }
                 WhisperTranscribeService.MODEL_TURBO -> {
                     val f = ModelDownloader.turboFile(application)
-                    if (!f.exists() || f.length() < 500L * 1024 * 1024) {
-                        throw IllegalStateException("turbo-модель не скачана (${f.length() / 1024 / 1024}MB) — скачай в настройках")
+                    if (!ModelDownloader.turboReady(application)) {
+                        throw IllegalStateException("turbo-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках")
                     }
+                    requireNotCorrupt(f, "turbo-модель")
                     Log.d(TAG, "гружу turbo-модель с файла (${f.length() / 1024 / 1024}MB), может занять время")
                     WhisperContext.createContextFromFile(f.absolutePath)
                 }
                 else -> throw IllegalArgumentException("неизвестная модель: $model")
             }
         }
+
+    /**
+     * Fail-loud перед загрузкой в whisper: если файл на диске повреждён/подменён
+     * (SHA-256 не совпал с манифестом) — не грузим (whisper упал бы с мусорными
+     * ошибками), а сообщаем понятную причину. NO_MANIFEST — модель скачана до
+     * введения манифеста: пропускаем (прежнее доверие ETag+размер).
+     */
+    private fun requireNotCorrupt(file: File, label: String) {
+        if (ModelDownloader.checkIntegrity(file) == ModelDownloader.ModelIntegrity.CORRUPT) {
+            throw IllegalStateException(
+                "$label повреждена (SHA-256 не совпал — файл испорчен или подменён). Удали модель и перекачай заново в настройках STT"
+            )
+        }
+    }
 
     /**
      * Возвращает (и кэширует) контекст ncnn-движка. Каталог выбирается по sttModel:
