@@ -30,8 +30,14 @@ class RuntimeManager(
         /** Максимум подряд идущих витков без HEALTHY (лимит рестартов). */
         const val MAX_RESTART_ATTEMPTS = 5
 
-        /** Предел роста opencode.log; по достижении — rotation в opencode.log.1. */
+        /** Предел роста одного opencode.log; по достижении — сдвиг цепочки .N. */
         private const val MAX_LOG_BYTES = 8L * 1024 * 1024
+
+        /** Глубина ротации: opencode.log + .1 + .2 + .3 (4 файла в цепочке максимум). */
+        private const val MAX_LOG_FILES = 3
+
+        /** Общий бюджет всех лог-файлов цепочки; хвосты сверх бюджета удаляются. */
+        private const val LOG_TOTAL_BUDGET = 30L * 1024 * 1024
     }
 
     private val logFile = File(context.filesDir, "opencode.log")
@@ -356,19 +362,64 @@ class RuntimeManager(
 
     /**
      * Ротация opencode.log по размеру: при превышении MAX_LOG_BYTES текущий лог
-     * переименовывается в opencode.log.1 (старый .1 затирается). Вызывается перед
-     * стартом процесса serve — сам процесс пишет в открытый fd, живая ротация
-     * невозможна без его перезапуска.
+     * сдвигается по цепочке opencode.log.N (N=1..MAX_LOG_FILES): .2→.3, .1→.2,
+     * .log→.1. Старые хвосты затираются. После сдвига — прунинг по общему бюджету
+     * (LOG_TOTAL_BUDGET). Вызывается перед стартом процесса serve — сам процесс
+     * пишет в открытый fd, живая ротация невозможна без его перезапуска.
      */
     private fun rotateLogFile(logFile: File) {
+        // Общий бюджет пруним при КАЖДОМ вызове (не только после сдвига): хвосты
+        // могли раздуть извне, а .log ещё не дорос до порога MAX_LOG_BYTES.
+        pruneLogs(logFile)
         if (!logFile.exists()) return
         if (logFile.length() < MAX_LOG_BYTES) return
-        val rotated = File(logFile.parentFile, "opencode.log.1")
-        if (rotated.exists()) rotated.delete()
+        val parent = logFile.parentFile ?: return
+        // Сдвиг хвостов от старшего к младшему: .2→.3, .1→.2 (старый хвост затираем).
+        for (i in MAX_LOG_FILES - 1 downTo 1) {
+            val cur = File(parent, "opencode.log.$i")
+            val next = File(parent, "opencode.log.${i + 1}")
+            if (!cur.exists()) continue
+            // Не затираем next заранее: при неудаче renameTo пробуем delete+ретрай —
+            // иначе потеряли бы и данные next, и (при неудаче) содержимое cur.
+            if (!cur.renameTo(next)) {
+                next.delete()
+                if (!cur.renameTo(next)) {
+                    android.util.Log.w("OpencodeServer", "сдвиг ${cur.name} -> ${next.name} не удался")
+                }
+            }
+        }
+        val rotated = File(parent, "opencode.log.1")
         if (logFile.renameTo(rotated)) {
             android.util.Log.i("OpencodeServer", "rotated opencode.log -> opencode.log.1")
         } else {
             android.util.Log.w("OpencodeServer", "rotate opencode.log не удался (renameTo=false)")
+        }
+    }
+
+    /**
+     * Общий лимит логов: пока сумма всех файлов цепочки (opencode.log + .1..MAX)
+     * превышает LOG_TOTAL_BUDGET, удаляем самые старые из имеющихся (.N с конца).
+     * Пик во время самой ротации на ≤8MB выше бюджета (4×8MB=32MB vs 30MB),
+     * сразу после — прунинг до 24MB. Вызывается после каждого сдвига.
+     */
+    private fun pruneLogs(logFile: File) {
+        val parent = logFile.parentFile ?: return
+        var total = logFile.length()
+        (1..MAX_LOG_FILES).map { File(parent, "opencode.log.$it") }
+            .filter { it.exists() }
+            .forEach { total += it.length() }
+        var idx = MAX_LOG_FILES
+        while (total > LOG_TOTAL_BUDGET && idx > 0) {
+            val f = File(parent, "opencode.log.$idx")
+            if (f.exists()) {
+                total -= f.length()
+                f.delete()
+                android.util.Log.i("OpencodeServer", "pruned ${f.name} (total ${total / 1024 / 1024}MB)")
+            }
+            idx--
+        }
+        if (total > LOG_TOTAL_BUDGET) {
+            android.util.Log.w("OpencodeServer", "бюджет логов всё ещё превышен: $total байт")
         }
     }
 
