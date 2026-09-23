@@ -28,7 +28,7 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          key: "gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}"
           restore-keys: |
             gradle-${{ runner.os }}-
 
@@ -37,7 +37,7 @@ jobs:
           yes | sdkmanager "platforms;android-36" > /dev/null 2>&1 || echo "platform android-36 already present"
           yes | sdkmanager "build-tools;36.0.0" > /dev/null 2>&1 || echo "build-tools 36 already present"
 
-      - name: Lint (ktlint + detekt, baseline: только новые нарушения валят)
+      - name: "Lint ktlint + detekt (новые нарушения валят CI)"
         run: |
           chmod +x gradlew
           ./gradlew :app:ktlintCheck --no-daemon --console=plain
