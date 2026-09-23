@@ -69,6 +69,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.FormatColorText
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.InvertColors
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
@@ -344,6 +345,9 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
     var storageTick by remember { mutableStateOf(0) }
     var modelManageMsg by remember { mutableStateOf<String?>(null) }
     var showSettings by remember { mutableStateOf(false) }
+    // Полноэкранная диагностика: состояние сервера, STT-модели, лог serve.
+    // Оверлей рисуется ПОСЛЕДНИМ в корневом Surface — поверх чата и панелей.
+    var showDiagnostics by remember { mutableStateOf(false) }
     // Выпадающий список MCP-серверов (открывается тапом по индикатору MCP).
     var showMcpList by remember { mutableStateOf(false) }
     var whisperRecorder: AudioRecorder? = null
@@ -1009,6 +1013,27 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                         .clickable { showSettings = !showSettings }
                         .padding(3.dp)
                 )
+                // Диагностика: состояние сервера, STT-модели и хвост лога serve.
+                // Полноэкранный оверлей (DiagnosticsScreen), рисуется поверх всего.
+                Icon(
+                    imageVector = Icons.Filled.Info,
+                    contentDescription = "Диагностика",
+                    tint = if (showDiagnostics) Color.White else Color(0xFFBDBDBD),
+                    modifier = Modifier
+                        .padding(start = 8.dp)
+                        .size(22.dp)
+                        .clip(CircleShape)
+                        .background(if (showDiagnostics) Color(0xFF3A3A3A) else Color.Transparent)
+                        .clickable {
+                            // Прячем клавиатуру/фокус: корневой Surface чата сдвинут
+                            // imePadding(), иначе полноэкранный оверлей «съехал» бы вверх,
+                            // оставив полосу чата под клавиатурой.
+                            keyboard?.hide()
+                            focusManager.clearFocus()
+                            showDiagnostics = !showDiagnostics
+                        }
+                        .padding(3.dp)
+                )
                 // «Новая сессия» — очистить все сессии и начать с чистого листа.
                 // Жёстко сбрасывает активную (в т.ч. зависшую на огромном контексте),
                 // когда abort не пробивает сервер.
@@ -1542,6 +1567,16 @@ turboDownloadMsg?.let {
                     )
                 }
             }
+        }
+
+        // Экран диагностики — ПОСЛЕДНИМ в корневом Surface (поверх чата и панелей):
+        // непрозрачный, полноэкранный, layout-алгоритм Surface-контейнера (Box)
+        // кладёт его ПОВЕРХ Column чата даже без явного выравнивания.
+        if (showDiagnostics) {
+            DiagnosticsScreen(
+                onClose = { showDiagnostics = false },
+                modifier = Modifier.fillMaxSize()
+            )
         }
     }
 }
