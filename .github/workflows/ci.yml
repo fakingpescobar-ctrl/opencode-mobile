@@ -37,6 +37,12 @@ jobs:
           yes | sdkmanager "platforms;android-36" > /dev/null 2>&1 || echo "platform android-36 already present"
           yes | sdkmanager "build-tools;36.0.0" > /dev/null 2>&1 || echo "build-tools 36 already present"
 
+      - name: Lint (ktlint + detekt, baseline: только новые нарушения валят)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:ktlintCheck --no-daemon --console=plain
+          ./gradlew :app:detekt --no-daemon --console=plain
+
       - name: Build debug APK
         run: |
           chmod +x gradlew
