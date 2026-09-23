@@ -551,20 +551,22 @@ object ModelDownloader {
      * и для финальной сверки всего tmp.
      */
     private val ggmlMagicBytes = byteArrayOf(0x6C.toByte(), 0x6D.toByte(), 0x67.toByte(), 0x67.toByte())
-    private fun hasGgmlMagic(file: File): Boolean = try {
-        file.inputStream().use { input ->
-            val magic = ByteArray(4)
-            var off = 0
-            while (off < 4) {
-                val n = input.read(magic, off, 4 - off)
-                if (n < 0) break
-                off += n
+
+    private fun hasGgmlMagic(file: File): Boolean =
+        try {
+            file.inputStream().use { input ->
+                val magic = ByteArray(4)
+                var off = 0
+                while (off < 4) {
+                    val n = input.read(magic, off, 4 - off)
+                    if (n < 0) break
+                    off += n
+                }
+                off == 4 && magic.contentEquals(ggmlMagicBytes)
             }
-            off == 4 && magic.contentEquals(ggmlMagicBytes)
+        } catch (_: Exception) {
+            false
         }
-    } catch (_: Exception) {
-        false
-    }
 
     /**
      * Финальная сверка tmp перед rename: см. [hasGgmlMagic]. Ловит мусор,

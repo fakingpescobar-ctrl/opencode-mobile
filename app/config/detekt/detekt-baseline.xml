@@ -28,8 +28,6 @@
     <ID>FunctionNaming:MainActivity.kt$@Composable private fun DropdownButton(label: String, options: List&lt;String&gt;, onPick: (String) -&gt; Unit)</ID>
     <ID>FunctionNaming:MainActivity.kt$@Composable private fun StatusDot(status: OpencodeServerService.ServerStatus)</ID>
     <ID>FunctionNaming:Theme.kt$@Composable fun OpencodeMobileTheme( darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -&gt; Unit )</ID>
-    <ID>ImplicitDefaultLocale:ChatOverlay.kt$String.format("%.0f МБ", mb)</ID>
-    <ID>ImplicitDefaultLocale:ChatOverlay.kt$String.format("%.1f ГБ", mb / 1024)</ID>
     <ID>ImplicitDefaultLocale:ChatOverlay.kt$String.format("%.3f ", kotlin.math.sqrt(sum / (end - i)))</ID>
     <ID>InstanceOfCheckForException:ChatOverlay.kt$e is InterruptedException</ID>
     <ID>InstanceOfCheckForException:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$e is IllegalStateException</ID>
@@ -91,7 +89,6 @@
     <ID>MagicNumber:ChatOverlay.kt$0xFFB71C1C</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFFBDBDBD</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFFD97706</ID>
-    <ID>MagicNumber:ChatOverlay.kt$0xFFE05A5A</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFFE0E0E0</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFFE25822</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFFE53935</ID>
@@ -108,8 +105,6 @@
     <ID>MagicNumber:ChatOverlay.kt$0xFFFFFF00</ID>
     <ID>MagicNumber:ChatOverlay.kt$10</ID>
     <ID>MagicNumber:ChatOverlay.kt$100</ID>
-    <ID>MagicNumber:ChatOverlay.kt$1024</ID>
-    <ID>MagicNumber:ChatOverlay.kt$1024.0</ID>
     <ID>MagicNumber:ChatOverlay.kt$115</ID>
     <ID>MagicNumber:ChatOverlay.kt$12</ID>
     <ID>MagicNumber:ChatOverlay.kt$120</ID>
@@ -176,7 +171,6 @@
     <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$1024</ID>
     <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$16L</ID>
     <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$256</ID>
-    <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$3</ID>
     <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$30_000</ID>
     <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$4</ID>
     <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$512</ID>
@@ -215,15 +209,9 @@
     <ID>MaxLineLength:ChatOverlay.kt$AudioRecorder$Log.d("VOICE", "48к→16к: rmsL=${"%.3f".format(rmsL)} rmsR=${"%.3f".format(rmsR)} → беру ${if (rmsL &gt;= rmsR) "L" else "R"}")</ID>
     <ID>MaxLineLength:ChatOverlay.kt$AudioRecorder$Log.d("VOICE", "recorder source=$src (${if (src == MediaRecorder.AudioSource.UNPROCESSED) "UNPROCESSED" else "MIC"})")</ID>
     <ID>MaxLineLength:ChatOverlay.kt$Text("#$modelColorHex", color = Color(0xFFBDBDBD), fontSize = 12.sp, modifier = Modifier.padding(start = 10.dp))</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$Text("large-v3-turbo", color = Color(0xFFE6E6E6), fontSize = 12.sp, modifier = Modifier.weight(1f))</ID>
     <ID>MaxLineLength:ChatOverlay.kt$Text("Голосовое распознавание:", color = Color(0xFFBDBDBD), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$Text("Модель распознавания:", color = Color(0xFFBDBDBD), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp))</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$Text("Хранилище моделей:", color = Color(0xFFBDBDBD), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp))</ID>
     <ID>MaxLineLength:ChatOverlay.kt$Text(if (sttEngine == "ncnn") "● " else "○ ", color = Color(0xFFFF6D00), fontSize = 13.sp, fontWeight = FontWeight.Bold)</ID>
     <ID>MaxLineLength:ChatOverlay.kt$Text(if (sttEngine == "system") "● " else "○ ", color = Color(0xFFFF6D00), fontSize = 13.sp, fontWeight = FontWeight.Bold)</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$Text(if (sttEngine == "whisper") "● " else "○ ", color = Color(0xFFFF6D00), fontSize = 13.sp, fontWeight = FontWeight.Bold)</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$Text(if (sttModel == "base") "● " else "○ ", color = Color(0xFFFF6D00), fontSize = 13.sp, fontWeight = FontWeight.Bold)</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$Text(if (sttModel == "turbo") "● " else "○ ", color = Color(0xFFFF6D00), fontSize = 13.sp, fontWeight = FontWeight.Bold)</ID>
     <ID>MaxLineLength:ChatOverlay.kt$android.util.Log.d("ChatOverlay", "FETCH parse out=${out.size} take=${take.size} thinking=$thinking q=${q != null} label=$label model=$bestModelId liveTool=${liveTool?.name} LAST=[$lastDiag] hasAct=${hasActivityFor(lastIndex)} hasFin=${hasFinishFor(lastIndex)}")</ID>
     <ID>MaxLineLength:ChatOverlay.kt$android.util.Log.d("ChatOverlay", "FETCH(cached) out=${take.size} thinking=$thinking q=${q != null} label=$label model=$bestModelId")</ID>
     <ID>MaxLineLength:ChatOverlay.kt$android.util.Log.d("ChatOverlay", "RENDER msgs=${msgs.size} thinking=${snapshot?.thinking} live=${snapshot?.liveTool?.name}")</ID>
@@ -234,11 +222,9 @@
     <ID>MaxLineLength:ChatOverlay.kt$private</ID>
     <ID>MaxLineLength:ChatOverlay.kt$setModelColor("%06X".format(android.graphics.Color.HSVToColor(floatArrayOf(h, 1f, v)) and 0xFFFFFF))</ID>
     <ID>MaxLineLength:ChatOverlay.kt$val</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$val basePart = File(baseFile.parentFile ?: ModelDownloader.modelsDir(context), baseFile.name + ".part")</ID>
     <ID>MaxLineLength:ChatOverlay.kt$val conn = (URL("http://127.0.0.1:$port/api/session/$sessionId/question/$questionId/reply").openConnection() as HttpURLConnection)</ID>
     <ID>MaxLineLength:ChatOverlay.kt$val snap = ChatSnapshot(take, "$label", bestId, q, thinking, prettyModel(bestModelId), liveTool = liveTool, contextTokens = cached.contextTokens, mcpConnected = mcpConnected, mcpTotal = mcpTotal, mcpServers = mcpServers)</ID>
     <ID>MaxLineLength:ChatOverlay.kt$val snap = ChatSnapshot(take, "$label", bestId, q, thinking, prettyModel(bestModelId), liveTool = liveTool, contextTokens = ctxTokens, mcpConnected = mcpConnected, mcpTotal = mcpTotal, mcpServers = mcpServers)</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$val turboPart = File(turboFile.parentFile ?: ModelDownloader.modelsDir(context), turboFile.name + ".part")</ID>
     <ID>MaxLineLength:DiagnosticsScreen.kt$InfoRow("Workspace", if (serverState.workspaceExternal) "Внешний (MANAGE_EXTERNAL_STORAGE)" else "Внутренний")</ID>
     <ID>MaxLineLength:DiagnosticsScreen.kt$InfoRow("base (141 МБ)", (if (s.baseReady) "✔ готов" else "✘ отсутствует") + " · " + fmtBytes(s.baseSize), if (s.baseReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A))</ID>
     <ID>MaxLineLength:DiagnosticsScreen.kt$InfoRow("turbo (574 МБ)", (if (s.turboReady) "✔ готов" else "✘ отсутствует") + " · " + fmtBytes(s.turboSize), if (s.turboReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A))</ID>
@@ -284,7 +270,6 @@
     <ID>NewLineAtEndOfFile:RuntimeState.kt$org.opencode.mobile.server.RuntimeState.kt</ID>
     <ID>NewLineAtEndOfFile:Workspace.kt$org.opencode.mobile.server.Workspace.kt</ID>
     <ID>ReturnCount:ChatOverlay.kt$AudioRecorder$fun stop(): FloatArray</ID>
-    <ID>ReturnCount:ChatOverlay.kt$fun deleteModelWithSwitch(context: Context, model: String)</ID>
     <ID>ReturnCount:ChatOverlay.kt$private fun createSession(port: Int): String?</ID>
     <ID>ReturnCount:ChatOverlay.kt$private fun get(url: String): String?</ID>
     <ID>ReturnCount:ChatOverlay.kt$private fun prettyModel(id: String?): String</ID>

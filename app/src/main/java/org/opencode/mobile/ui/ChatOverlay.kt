@@ -116,7 +116,6 @@ import org.opencode.mobile.R
 import org.opencode.mobile.stt.WhisperTranscribeService
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -129,7 +128,6 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.concurrent.thread
 import kotlin.concurrent.thread
 import org.json.JSONArray
 import org.json.JSONObject
@@ -325,15 +323,17 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
     // "whisper" переключаем на ncnn (быстрый локальный путь по тестам).
     val savedEngine = prefs.getString("stt_engine", "system") ?: "system"
     val migratedEngine = if (savedEngine == "whisper") {
-        prefs.edit().putString("stt_engine", "ncnn").apply()
+        // stt_model не был задан: ставим turbo (base-конверт битый)
+        prefs.edit().putString("stt_engine", "ncnn").putString("stt_model", "turbo").apply()
         "ncnn"
     } else savedEngine
     var sttEngine by remember { mutableStateOf(migratedEngine) }
     // double-tap на "NCNN": показ подсказки о том, как работает двигатель (int8-энкодер и т.д.)
     var ncnnTipVisible by remember { mutableStateOf(false) }
     // Модель ncnn: "base" | "turbo" (выбор был в панели; ggml-модели убраны,
-    // переключаться теперь негде — остаётся то, что выбрано в prefs).
-    var sttModel by remember { mutableStateOf(prefs.getString("stt_model", "base") ?: "base") }
+    // переключаться теперь негде). Дефолт — turbo: base-конверт даёт мусор
+    // (петля декодера, никогда EOT), turbo-int8 — единственный рабочий путь.
+    var sttModel by remember { mutableStateOf(prefs.getString("stt_model", "turbo") ?: "turbo") }
     var showSettings by remember { mutableStateOf(false) }
     // Полноэкранная диагностика: состояние сервера, STT-модели, лог serve.
     // Оверлей рисуется ПОСЛЕДНИМ в корневом Surface — поверх чата и панелей.
@@ -1039,7 +1039,8 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                                 enabled = true,
                                 onClick = {
                                     sttEngine = "ncnn"
-                                    prefs.edit().putString("stt_engine", "ncnn").apply()
+                                    // Переключение на ncnn всегда подразумевает turbo (base битый)
+                                    prefs.edit().putString("stt_engine", "ncnn").putString("stt_model", "turbo").apply()
                                 },
                                 onDoubleClick = { ncnnTipVisible = !ncnnTipVisible }
                             )
