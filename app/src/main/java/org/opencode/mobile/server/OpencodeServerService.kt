@@ -17,23 +17,21 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.opencode.mobile.MainActivity
 import org.opencode.mobile.OpencodeApp
 import org.opencode.mobile.R
-import java.io.File
 
 /**
  * Foreground-сервис, отвечающий за жизненный цикл процесса opencode serve.
- * - стартует opencode через OpencodeRuntime
- * - рестартует с backoff при падении
- * - валидирует HTTP-доступность
- * - публикует статус в [state] для UI
+ *
+ * Тяжёлая логика (валидация, старт памяти/serve, health-check, рестарты
+ * с backoff, причины остановки) вынесена в [RuntimeManager]; здесь —
+ * только foreground-обвязка, нотификации и публикация статуса в [state]
+ * для UI (маппинг RuntimeStage -> ServerStatus; сигнатура для MainActivity
+ * не менялась).
  */
 class OpencodeServerService : Service() {
 
@@ -44,6 +42,9 @@ class OpencodeServerService : Service() {
         val port: Int = OpencodeApp.ServerConfig.PORT,
         val logTail: String = "",
         val workspaceExternal: Boolean = false,
+        val lastError: RuntimeError? = null,
+        val stopReason: StopReason? = null,
+        val restartCount: Int = 0,
     )
 
     companion object {
@@ -53,9 +54,6 @@ class OpencodeServerService : Service() {
 
         private const val CHANNEL_ID = "opencode_server"
         private const val NOTIF_ID = 1001
-
-        /** Предел роста opencode.log; по достижении — rotation в opencode.log.1. */
-        private const val MAX_LOG_BYTES = 8L * 1024 * 1024
 
         private val _state = MutableStateFlow(ServerState())
         val state: StateFlow<ServerState> = _state
@@ -74,10 +72,10 @@ class OpencodeServerService : Service() {
         }
 
         /**
-         * Безопасный «мягкий» рестарт: убивает текущий процесс serve, НЕ трогая
-         * foreground-сервис и НЕ отменяя serverJob. Цикл runServerLoop видит,
-         * что proc мёртв, и перезапускает serve с заново резолвнутым workspace
-         * (нужно для подхвата внешнего хранилища после выдачи «Доступа ко всем файлам»).
+         * Мягкий рестарт: убивает текущий процесс serve, НЕ трогая foreground-сервис
+         * и НЕ отменяя serverJob. Цикл RuntimeManager видит мёртвый процесс и
+         * перезапускает serve с заново резолвнутым workspace (нужно для подхвата
+         * внешнего хранилища после выдачи «Доступа ко всем файлам»).
          */
         fun restart(context: Context) {
             if (android.os.Build.VERSION.SDK_INT >= 26) {
@@ -90,8 +88,26 @@ class OpencodeServerService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var serverJob: Job? = null
-    private var process: Process? = null
-    private var memoryProcess: Process? = null
+
+    /** false после onDestroy — колбэки менеджера больше ничего не публикуют. */
+    @Volatile
+    private var serviceActive = true
+
+    /** true после ACTION_STOP: защита от START_STICKY — система может пересоздать
+     *  сервис с null intent (после kill), и else-ветка запустила бы runtime заново. */
+    @Volatile
+    private var stopRequested = false
+
+    /** Лениво создаётся при первом старте; nullable — чтобы onDestroy не триггерил
+     *  инициализацию менеджера для сервиса, убитого системой до ACTION_START.
+     *  @Volatile: читается из ACTION_RESTART (main), пишется из корутины (worker). */
+    @Volatile
+    private var runtimeManager: RuntimeManager? = null
+
+    private fun manager(): RuntimeManager = synchronized(this) {
+        runtimeManager ?: RuntimeManager(applicationContext) { rt -> onRuntimeState(rt) }
+            .also { runtimeManager = it }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -109,12 +125,13 @@ class OpencodeServerService : Service() {
                     try {
                         startAsForeground(buildNotification("Stopping"))
                     } catch (e: Exception) {
-                        // ignore — сервис уже умирает
+                        android.util.Log.w("OpencodeServer", "ACTION_STOP foreground fail: ${e.message}")
                     }
                 }
+                stopRequested = true
                 stopServer()
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                // Не даём системе возродить сервис (START_STICKY) после явного стопа.
+                return START_NOT_STICKY
             }
             ACTION_RESTART -> {
                 // Мягкий рестарт: убить процесс serve (цикл перезапустит с новым workspace).
@@ -122,187 +139,92 @@ class OpencodeServerService : Service() {
                     try {
                         startAsForeground(buildNotification("Restarting"))
                     } catch (e: Exception) {
-                        // ignore — сервис уже в foreground
+                        android.util.Log.w("OpencodeServer", "ACTION_RESTART foreground fail: ${e.message}")
                     }
                 }
-                process?.destroy()
-                if (process?.isAlive == true) process?.destroyForcibly()
+                stopRequested = false
+                val mgr = runtimeManager
+                if (mgr != null && serverJob?.isActive == true) {
+                    // Цикл жив — мягкий рестарт уходит в него и обрабатывается.
+                    mgr.requestRestart()
+                } else {
+                    // Менеджера нет ИЛИ цикл завершился (терминальный CRASHED):
+                    // рестартить нечего — стартуем новый цикл с чистого листа.
+                    serverJob = scope.launch { manager().run() }
+                }
             }
-            else -> {
+            ACTION_START -> {
+                // Явный старт из UI: снимаем запрет на возрождение.
+                stopRequested = false
                 if (serverJob?.isActive != true) {
                     startAsForeground(buildNotification("Starting"))
-                    serverJob = scope.launch { runServerLoop() }
+                    serverJob = scope.launch { manager().run() }
+                }
+            }
+            null -> {
+                // Системный перезапуск (START_STICKY) после kill — не поднимать runtime,
+                // если юзер ранее явно остановил сервис.
+                if (stopRequested) return START_NOT_STICKY
+                if (serverJob?.isActive != true) {
+                    startAsForeground(buildNotification("Starting"))
+                    serverJob = scope.launch { manager().run() }
                 }
             }
         }
         return START_STICKY
     }
 
-    private suspend fun runServerLoop() {
-        val logFile = File(filesDir, "opencode.log")
-        var attempt = 0
-        val context = applicationContext
-        while (currentCoroutineContext().isActive) {
-            // Гасим старую локальную память ДО ротации: её fd держит старый inode
-            // opencode.log, и после rename он дописывал бы хвост в .1. Безусловно
-            // (даже если новая память не поднимется) + waitFor, чтобы fd закрылись.
-            memoryProcess?.destroy()
-            if (memoryProcess?.isAlive == true) memoryProcess?.destroyForcibly()
-            waitForProcessExit(memoryProcess)
-            memoryProcess = null
-
-            // Ротация лога перед КАЖДЫМ рестартом процесса: serve пишет в открытый fd,
-            // поэтому live-rotation (copytruncate/reopen) без сигнала процессу невозможна —
-            // он продолжил бы писать в отвязанный inode, и лог потерялся бы. К этому
-            // моменту предыдущий процесс уже мёртв (в ветке падения — waitForProcessExit,
-            // в ветке самопада — isAlive=false).
-            rotateLogFile(logFile)
-            _state.value = _state.value.copy(status = ServerStatus.STARTING)
-            updateNotification("Starting")
-
-            // Рабочая директория (workspace): без неё у opencode serve нет ни одного
-            // проекта — SPA показывал "Здесь пока ничего нет" и сессии не создавались.
-            // Эта версия serve не понимает --dir, поэтому директория задаётся
-            // через CWD процесса (workDir). Теперь workspace резолвится через
-            // Workspace: при «Доступе ко всем файлам» — настоящие Documents/OpencodeTerminal,
-            // иначе внутренний filesDir/workspace (fallback).
-            val workspace = Workspace.resolve(context)
-            val readme = File(workspace, "README.md")
-            if (!readme.exists()) {
-                readme.writeText("# OpenCode Terminal\n\nРабочая директория на внешнем хранилище (Documents/OpencodeTerminal).\n")
-            }
-            val ext = Workspace.usingExternal(context)
-            android.util.Log.i("OpencodeServer", "workspace=${workspace.absolutePath} external=$ext")
-            _state.value = _state.value.copy(status = ServerStatus.STARTING, workspaceExternal = ext)
-
-            // Локальная память MCP как HTTP/TCP-сервер (порт MEMORY_PORT) — ДО serve,
-            // чтобы remote MCP (url http://127.0.0.1:4199/mcp) успел подняться, прежде
-            // чем opencode попытается подключиться к памяти.
-            val memProc = OpencodeRuntime.startMemoryServer(
-                context,
-                logFile = logFile,
-                workDir = workspace,
-            )
-            if (memProc != null) {
-                memoryProcess = memProc
-            }
-
-            val proc = OpencodeRuntime.startServe(
-                context,
-                logFile = logFile,
-                workDir = workspace,
-            )
-            if (proc == null) {
-                _state.value = _state.value.copy(status = ServerStatus.ERROR)
-                updateNotification("Error")
-                return
-            }
-            process = proc
-
-            if (waitForHttp(OpencodeApp.ServerConfig.PORT)) {
-                _state.value = _state.value.copy(status = ServerStatus.RUNNING)
-                updateNotification("Running")
-                attempt = 0
-                // ЖИВЁМ пока процесс жив и сервер отвечает. Не спавним новый поверх
-                // живого (иначе — порт занят, респавн каждые ~2 сек).
-                while (proc.isAlive && currentCoroutineContext().isActive) {
-                    delay(3000)
-                }
-                // isAlive==false не гарантирует, что fd уже закрыты (процесс мог ещё
-                // не быть reap'нут ОС) — ждём фактическую смерть перед ротацией лога.
-                waitForProcessExit(proc)
-                process = null
-                if (!currentCoroutineContext().isActive) return
-                _state.value = _state.value.copy(status = ServerStatus.STARTING)
-                attempt = 0
-            } else {
-                proc.destroy()
-                if (proc.isAlive) proc.destroyForcibly()
-                waitForProcessExit(proc)
-                process = null
-                _state.value = _state.value.copy(status = ServerStatus.ERROR)
-                updateNotification("Error")
-            }
-
-            attempt++
-            // backoff: 1s, 2s, 4s ... cap 15s
-            val waitMs = (1000L shl minOf(attempt, 4)).coerceAtMost(15_000L)
-            delay(waitMs)
-        }
+    /** RuntimeState -> ServerState (UI) + нотификация. Вызывается из корутины RuntimeManager. */
+    private fun onRuntimeState(rt: RuntimeState) {
+        // После onDestroy сервис считаем мёртвым: колбэки из in-flight корутины
+        // не должны публиковать state и «воскрешать» нотификацию поверх STOP.
+        if (!serviceActive) return
+        _state.value = ServerState(
+            status = rt.stage.toServerStatus(),
+            port = rt.port,
+            workspaceExternal = rt.workspaceExternal,
+            lastError = rt.lastError,
+            stopReason = rt.stopReason,
+            restartCount = rt.restartCount,
+        )
+        updateNotification(rt.stage.toNotificationText())
     }
 
-    /**
-     * Ротация opencode.log по размеру: при превышении MAX_LOG_BYTES текущий лог
-     * переименовывается в opencode.log.1 (старый .1 затирается). Вызывается только
-     * перед стартом процесса serve — сам процесс пишет в свой открытый fd, поэтому
-     * живая ротация невозможна без его перезапуска.
-     */
-    private fun rotateLogFile(logFile: File) {
-        if (!logFile.exists()) return
-        if (logFile.length() < MAX_LOG_BYTES) return
-        val rotated = File(logFile.parentFile, "opencode.log.1")
-        if (rotated.exists()) rotated.delete()
-        if (logFile.renameTo(rotated)) {
-            android.util.Log.i("OpencodeServer", "rotated opencode.log -> opencode.log.1")
-        } else {
-            android.util.Log.w("OpencodeServer", "rotate opencode.log не удался (renameTo=false)")
-        }
+    private fun RuntimeStage.toServerStatus() = when (this) {
+        RuntimeStage.IDLE, RuntimeStage.STOPPING, RuntimeStage.STOPPED -> ServerStatus.STOPPED
+        RuntimeStage.PREPARING, RuntimeStage.STARTING_MEMORY, RuntimeStage.STARTING_SERVER -> ServerStatus.STARTING
+        RuntimeStage.HEALTHY, RuntimeStage.DEGRADED -> ServerStatus.RUNNING
+        RuntimeStage.CRASHED -> ServerStatus.ERROR
     }
 
-    /**
-     * Дожидается фактической смерти процесса (fd закрыты) с таймаутом — чтобы
-     * ротация/перезапуск не натолкнулись на ещё живой хвост записи в лог.
-     */
-    private fun waitForProcessExit(proc: Process?) {
-        try {
-            if (proc != null && !proc.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)) {
-                android.util.Log.w("OpencodeServer", "процесс не умер за 3s — продолжаем")
-            }
-        } catch (e: Exception) {
-            // процесс уже мёртв — ок
-        }
-    }
-
-    /** Пингует HTTP localhost:port, ждёт пока сервер ответит. */
-    private suspend fun waitForHttp(port: Int): Boolean {
-        repeat(60) {
-            if (!currentCoroutineContext().isActive) return false
-            if (pingOk(port)) return true
-            delay(500)
-        }
-        return false
-    }
-
-    private fun pingOk(port: Int): Boolean = try {
-        val url = java.net.URL("http://127.0.0.1:$port/")
-        val conn = url.openConnection() as java.net.HttpURLConnection
-        conn.connectTimeout = 1000
-        conn.readTimeout = 1000
-        conn.requestMethod = "HEAD"
-        val code = conn.responseCode
-        conn.disconnect()
-        code in 200..499
-    } catch (e: Exception) {
-        false
+    private fun RuntimeStage.toNotificationText() = when (this) {
+        RuntimeStage.IDLE, RuntimeStage.STOPPED -> "Stopped"
+        RuntimeStage.STOPPING -> "Stopping"
+        RuntimeStage.PREPARING, RuntimeStage.STARTING_MEMORY, RuntimeStage.STARTING_SERVER -> "Starting"
+        RuntimeStage.HEALTHY, RuntimeStage.DEGRADED -> "Running"
+        RuntimeStage.CRASHED -> "Error"
     }
 
     private fun stopServer() {
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        // requestStop неблокирующий: флаг + daemon-тред гасит процессы serve/memory.
+        // Здесь же отменяем корутину цикла, чтобы run() не «воскресил» процесс
+        // после stopSelf() (CancellationException из delay пробросится в finally).
+        // runtimeManager может быть null (STOP без старта) — тогда не создаём.
+        runtimeManager?.requestStop()
         serverJob?.cancel()
         serverJob = null
-        process?.destroy()
-        process = null
-        memoryProcess?.destroy()
-        memoryProcess = null
-        _state.value = _state.value.copy(status = ServerStatus.STOPPED)
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     override fun onDestroy() {
+        serviceActive = false
+        // Синхронная остановка процессов: daemon-тред requestStop мог бы не успеть
+        // до убийства процесса приложения, и дочерние serve/memory выжили бы.
+        runtimeManager?.stopNow()
+        serverJob?.cancel()
+        serverJob = null
         scope.cancel()
-        process?.destroy()
-        process = null
-        memoryProcess?.destroy()
-        memoryProcess = null
         super.onDestroy()
     }
 
@@ -329,7 +251,7 @@ class OpencodeServerService : Service() {
 
     private fun createChannel() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        // Канал сервера — ТИХИЙ: это служебный foreground no-тификатор, который
+        // Канал сервера — ТИХИЙ: это служебный foreground нотификатор, который
         // обновляется при смене состояния (в т.ч. во время ответа модели). Без
         // setSound(null) часть устройств (OPPO/и др. скинки) проигрывает звук
         // канала при каждом повторном notify() — что давало «второй» (лишний)
