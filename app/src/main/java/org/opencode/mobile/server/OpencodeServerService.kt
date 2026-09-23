@@ -143,6 +143,14 @@ class OpencodeServerService : Service() {
         var attempt = 0
         val context = applicationContext
         while (currentCoroutineContext().isActive) {
+            // Гасим старую локальную память ДО ротации: её fd держит старый inode
+            // opencode.log, и после rename он дописывал бы хвост в .1. Безусловно
+            // (даже если новая память не поднимется) + waitFor, чтобы fd закрылись.
+            memoryProcess?.destroy()
+            if (memoryProcess?.isAlive == true) memoryProcess?.destroyForcibly()
+            waitForProcessExit(memoryProcess)
+            memoryProcess = null
+
             // Ротация лога перед КАЖДЫМ рестартом процесса: serve пишет в открытый fd,
             // поэтому live-rotation (copytruncate/reopen) без сигнала процессу невозможна —
             // он продолжил бы писать в отвязанный inode, и лог потерялся бы. К этому
@@ -176,8 +184,6 @@ class OpencodeServerService : Service() {
                 workDir = workspace,
             )
             if (memProc != null) {
-                memoryProcess?.destroy()
-                if (memoryProcess?.isAlive == true) memoryProcess?.destroyForcibly()
                 memoryProcess = memProc
             }
 
@@ -247,9 +253,9 @@ class OpencodeServerService : Service() {
      * Дожидается фактической смерти процесса (fd закрыты) с таймаутом — чтобы
      * ротация/перезапуск не натолкнулись на ещё живой хвост записи в лог.
      */
-    private fun waitForProcessExit(proc: Process) {
+    private fun waitForProcessExit(proc: Process?) {
         try {
-            if (!proc.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)) {
+            if (proc != null && !proc.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)) {
                 android.util.Log.w("OpencodeServer", "процесс не умер за 3s — продолжаем")
             }
         } catch (e: Exception) {
