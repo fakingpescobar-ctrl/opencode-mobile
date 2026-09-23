@@ -22,6 +22,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -93,9 +94,38 @@ class WhisperTranscribeService : Service() {
         private val whisperCtxCache = HashMap<String, WhisperContext>()
         private val ncnnCtxCache = HashMap<String, NcnnWhisperContext>()
 
-        /** Application-контекст для работы со статиками (кэши/очередь переживают
+        /**
+         * Tombstone удалённых моделей (thread-safe): модели, чей файл удалён с диска
+         * через UI. Предотвращает гонку «worker грузит контекст из удалённого файла»
+         * и «контекст из ниоткуда» после удаления. Проверяется в [obtainContext]
+         * ДО getOrPut; снимается при успешной перекачке (clearDeletedModel).
+         * Контекст уже в кэше при этом НЕ трогается и не освобождается извне:
+         * release() из параллельной корутины = use-after-free, пока worker использует
+         * его в активной транскрипции; он безопасно живёт в памяти (ggml держит
+         * данные в RAM), а кэш всё равно умирает вместе с процессом/бездействием
+         * (stopSelf). Модель удаляли ради МЕСТА на диске, не ради RAM.
+         */
+        private val deletedModelFiles = ConcurrentHashMap.newKeySet<String>()
+
+        /** Приложение-контекст для работы со статиками (кэши/очередь переживают
          *  смерть инстанса сервиса). Устанавливается каждым вызовом transcribe(). */
         @Volatile private var appContext: Context? = null
+
+        /**
+         * Пометить модель удалённой (вызывается из UI после фактического удаления
+         * файла). Никаких манипуляций с кэшами извне: tombstone блокирует ДОСТУП,
+         * существующий контекст в памяти безопасно доживает (см. поле), новый не
+         * создастся — файла нет, [obtainContext] бросит понятную ошибку.
+         */
+        fun dropModelContext(model: String) {
+            deletedModelFiles.add(model)
+        }
+
+        /** Снять tombstone после успешной перекачки модели (нельзя: worker бы навсегда
+         *  видел «модель удалена» при живом файле). Вызывается из UI/сервиса. */
+        fun clearDeletedModel(model: String) {
+            deletedModelFiles.remove(model)
+        }
 
         /** Worker-scope живёт до конца процесса: НИКОГДА не отменяется в onDestroy. */
         private val workerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -266,9 +296,45 @@ class WhisperTranscribeService : Service() {
          * base — из assets, turbo — с файла в filesDir (предполагается, что
          * уже скачана через ModelDownloader; если нет — понятная ошибка).
          */
-        private fun obtainContext(model: String): WhisperContext = whisperCtxCache.getOrPut(model) {
+        private fun obtainContext(model: String): WhisperContext {
+            // Tombstone: файл модели удалён через UI — не загружаем «контекст из
+            // ниоткуда», а сообщаем понятную причину (перекачай в настройках STT).
+            // Второй check ВНУТРИ лямбды ловит гонку UI-drop между первым check и
+            // входом в getOrPut-лямбду: dropModelContext (UI-поток) выполним в любой
+            // момент на многоядре, а лямбда — единственное место, где файл реально
+            // открывается. После входа в лямбду (второй check пройден) остаётся
+            // TOCTOU во время requireNotCorrupt/createContextFromFile (секунды
+            // чтения 141-574MB) — его ловит catch ниже (переводим в понятный текст).
+            if (deletedModelFiles.contains(model)) {
+                throw IllegalStateException("модель \"$model\" удалена — перекачай её в настройках STT")
+            }
+            return whisperCtxCache.getOrPut(model) {
+                if (deletedModelFiles.contains(model)) {
+                    throw IllegalStateException("модель \"$model\" удалена — перекачай её в настройках STT")
+                }
+                try {
+                    loadContextLocked(model)
+                } catch (e: Exception) {
+                    // Файл удалён прямо во время загрузки (unlink на открытом fd —
+                    // POSIX-призрак — это ок; хуже: unlink ДО open -> FileNotFound).
+                    // Причины: tombstone (UI уже пометил) ИЛИ файл исчез в окне
+                    // delete..drop (FileNotFound/IOException до пометки). Обе —
+                    // «удалена/повреждена — перекачай». Свой IllegalStateException
+                    // («не скачана», «повреждена») не трогаем — текст уже понятный.
+                    if (e is IllegalStateException && !deletedModelFiles.contains(model)) {
+                        throw e // настоящая семантическая ошибка (не скачана/повреждена)
+                    }
+                    throw IllegalStateException("модель \"$model\" удалена или повреждена — перекачай её в настройках STT", e)
+                }
+            }
+        }
+
+        /** ВАЖНО (инвариант): вызывается ТОЛЬКО из единственного worker-потока
+         *  (в [runPendingTasks]/транскрипции). Кэши контекстов не потокобезопасны;
+         *  второй читатель/писатель = гонка. НЕ вызывать из onStartCommand, UI и т.д. */
+        private fun loadContextLocked(model: String): WhisperContext {
             val app = requireAppContext()
-            when (model) {
+            return when (model) {
                 WhisperTranscribeService.MODEL_BASE -> {
                     val f = ModelDownloader.baseFile(app)
                     if (!ModelDownloader.baseReady(app)) {

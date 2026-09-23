@@ -221,6 +221,41 @@ object ModelDownloader {
         onProgress: (Long, Long) -> Unit = { _, _ -> }
     ): File = downloadTo(context, URL_TURBO, turboFile(context), MIN_TURBO, "turbo", MIN_FREE_TURBO, onProgress)
 
+    // ---- управление моделями ----
+
+    /** Удаляет модель вместе со всеми sidecar-ами (.part, .part.etag, .part.size,
+     *  .sha256) и сиротами fallback-копий (.tmp-final и пр.). Возвращает true,
+     *  если удалил хоть что-то. Безопасно при загруженном в whisper контексте
+     *  (ggml держит данные в памяти), но доступ к модели блокируется tombstone
+     *  в сервисе — см. WhisperTranscribeService.dropModelContext(). */
+    fun deleteModel(file: File): Boolean {
+        var deleted = false
+        if (file.exists() && file.delete()) deleted = true
+        val dir = file.parentFile ?: return deleted
+        listOf(
+            "${file.name}.part",
+            "${file.name}.part.etag",
+            "${file.name}.part.size",
+            "${file.name}.sha256",
+            "${file.name}.tmp-final",
+            "${file.name}.part.tmp",
+            "${file.name}.tmp"
+        ).forEach { name ->
+            val f = File(dir, name)
+            if (f.exists() && f.delete()) deleted = true
+        }
+        return deleted
+    }
+
+    /** Суммарный размер всех файлов каталога моделей (включая .part и sidecar-ы). */
+    fun modelsUsedBytes(context: Context): Long {
+        val dir = modelsDir(context)
+        return dir.listFiles()?.sumOf { it.length() } ?: 0L
+    }
+
+    /** Свободное место на томе filesDir (байты). */
+    fun freeBytes(context: Context): Long = context.filesDir.usableSpace
+
     /**
      * Общий загрузчик: качает url в dest (с resume и progress). При любом сбое
      * бросает Exception; временный файл чистится только при полном срыве.

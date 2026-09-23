@@ -332,6 +332,17 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
     // Прогресс скачивания base (тоже lazy с этого релиза).
     var baseDownloadPct by remember { mutableStateOf<Int?>(null) }
     var baseDownloadMsg by remember { mutableStateOf<String?>(null) }
+    // Фактическая активность закачки (НЕ производная от pct!): pct=100 выставляется
+    // из onProgress ДО финализации (sha-хэш, GGML-magic, rename) — guard по pct
+    // пропустил бы удаление на стадии финализации. Флаги снимаются в finally корутины
+    // (покрывают и отмену). Composables пересоздаются при рекомпозиции, поэтому
+    // remember-State (как у pct), а не plain var / @Volatile на поле класса.
+    var baseDownloading by remember { mutableStateOf(false) }
+    var turboDownloading by remember { mutableStateOf(false) }
+    // Хранилище моделей: (свободно, занято) байт + тик пересчёта после удаления.
+    var storageInfo by remember { mutableStateOf<Pair<Long, Long>?>(null) }
+    var storageTick by remember { mutableStateOf(0) }
+    var modelManageMsg by remember { mutableStateOf<String?>(null) }
     var showSettings by remember { mutableStateOf(false) }
     // Выпадающий список MCP-серверов (открывается тапом по индикатору MCP).
     var showMcpList by remember { mutableStateOf(false) }
@@ -665,7 +676,8 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
     // Скачивание large-v3-turbo (574MB) на устройство. Прогресс обновляется
     // в панели настроек; по завершении — переключаем STT на turbo.
     fun startTurboDownload(context: Context) {
-        if (turboDownloadPct != null) return // уже качаем
+        if (turboDownloading) return // синхронный guard ПО ФЛАГУ (не по pct)
+        turboDownloading = true // синхронно ДО launch: второй вызов/удаление не пройдут
         turboDownloadPct = 0
         turboDownloadMsg = null
         scope.launch {
@@ -674,7 +686,14 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                     turboDownloadPct = if (total > 0) ((done * 100) / total).toInt() else 0
                 }
                 Log.d("VOICE", "turbo скачана: ${file.absolutePath}")
-                turboDownloadPct = 100
+                // pct=100 НЕ ставим вручную: пик приходит из последнего колбека
+                // onProgress(done==total), а «скачана» UI определяет по турбоReady(файл).
+                // Порядок clear->set: tombstone снимаем ДО активации. Окно clear..set
+                // безопасно: новые задачи создаются из sttModel/prefs (ещё base), а
+                // задача на turbo возможна только ПОСЛЕ set — когда tombstone уже снят.
+                // Обратный порядок (set->clear) при падении setSttModel оставил бы
+                // tombstone при живом файле — ложная «модель удалена».
+                WhisperTranscribeService.clearDeletedModel("turbo")
                 setSttModel("turbo")
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e // отмена (выгрузка Activity) — не «ошибка скачивания»
@@ -682,6 +701,9 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                 Log.e("VOICE", "скачивание turbo упало", e)
                 turboDownloadMsg = "Ошибка скачивания: ${e.message}"
                 turboDownloadPct = null
+                turboDownloading = false // UI: pct=null + флаг=false в одном кадре
+            } finally {
+                turboDownloading = false // снимается в ЛЮБОМ исходе (успех/провал/отмена)
             }
         }
     }
@@ -689,7 +711,8 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
     // Скачивание base (141MB) на устройство — теперь тоже по требованию
     // (вынесена из assets в lazy), как и turbo.
     fun startBaseDownload(context: Context) {
-        if (baseDownloadPct != null) return // уже качаем
+        if (baseDownloading) return // синхронный guard ПО ФЛАГУ (не по pct)
+        baseDownloading = true // синхронно ДО launch: второй вызов/удаление не пройдут
         baseDownloadPct = 0
         baseDownloadMsg = null
         scope.launch {
@@ -698,14 +721,64 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                     baseDownloadPct = if (total > 0) ((done * 100) / total).toInt() else 0
                 }
                 Log.d("VOICE", "base скачана: ${file.absolutePath}")
-                baseDownloadPct = 100
+                // pct=100 НЕ ставим вручную (пик из последнего колбека) — см. turbo.
+                WhisperTranscribeService.clearDeletedModel("base")
                 setSttModel("base")
-            } catch (e: Throwable) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e // отмена (выгрузка Activity) — не «ошибка скачивания»
+            } catch (e: Exception) {
                 Log.e("VOICE", "скачивание base упало", e)
                 baseDownloadMsg = "Ошибка скачивания: ${e.message}"
                 baseDownloadPct = null
+                baseDownloading = false // UI: pct=null + флаг=false в одном кадре
+            } finally {
+                baseDownloading = false // снимается в ЛЮБОМ исходе (успех/провал/отмена)
             }
         }
+    }
+
+    // Удаление модели с диска (все sidecar-ы + незавершённый .part). Если удаляем
+    // АКТИВНУЮ модель — переключаемся на запасную готовую (иначе следующая
+    // транскрипция упала бы на «модель не скачана»). Если запасной нет — не даём
+    // удалить (base/turbo — единственная модель, assets-фолбэка нет).
+    // ВАЖНО: файл удаляем ПЕРВЫМ, переключаемся после успеха — провал удаления
+    // не должен молча подменять активную модель.
+    fun deleteModelWithSwitch(context: Context, model: String) {
+        val isBase = model == "base"
+        val file = if (isBase) ModelDownloader.baseFile(context) else ModelDownloader.turboFile(context)
+        // Guard по ФЛАГУ активности закачки, не по pct: pct=100 (последний onProgress)
+        // выставляется ДО финализации (sha, GGML-magic, rename) — по нему удаление
+        // снесло бы полу-готовый файл. Флаг снимается только в finally корутины.
+        val downloading = if (isBase) baseDownloading else turboDownloading
+        if (downloading) {
+            modelManageMsg = "закачка $model ещё идёт — удалить нельзя"
+            return
+        }
+        // Удалять-то есть что? (файл или недокачанный .part)
+        val part = File(file.parentFile ?: ModelDownloader.modelsDir(context), file.name + ".part")
+        if (!file.exists() && !part.exists()) {
+            modelManageMsg = null
+            return
+        }
+        val deletingActive = sttModel == model
+        val alt = if (isBase) "turbo" else "base"
+        val altReady = if (isBase) ModelDownloader.turboReady(context) else ModelDownloader.baseReady(context)
+        if (deletingActive && !altReady) {
+            modelManageMsg = "нельзя удалить активную модель: $alt не скачана, запасной нет"
+            return
+        }
+        // Сначала удаление, потом переключение (см. ВАЖНО выше). Tombstone ставим
+        // ДО смены активной модели: worker, поймавший setSttModel на alt, точно
+        // не создаст контекст удалённой модели (double-check в obtainContext).
+        val deleted = ModelDownloader.deleteModel(file)
+        if (!deleted) {
+            modelManageMsg = "не удалось удалить $model (файл занят?)"
+            return
+        }
+        WhisperTranscribeService.dropModelContext(model)
+        if (deletingActive) setSttModel(alt)
+        storageTick++ // пересчёт свободного/занятого места
+        modelManageMsg = "модель $model удалена"
     }
 
     // Автопрокрутка вниз: после отправки и при новом ответе/думании.
@@ -1033,6 +1106,12 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                 }
             }
             // Панель настроек: движок голосового распознавания + ключ Whisper.
+            // Пересчёт хранилища при каждом открытии и после удаления (storageTick).
+            LaunchedEffect(showSettings, storageTick) {
+                if (showSettings) {
+                    storageInfo = ModelDownloader.freeBytes(context) to ModelDownloader.modelsUsedBytes(context)
+                }
+            }
             if (showSettings) {
                 Column(
                     Modifier
@@ -1138,10 +1217,74 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                         }
                         Text(turboLabel, color = Color(0xFFE6E6E6), fontSize = 12.sp)
                     }
-                    turboDownloadMsg?.let {
+turboDownloadMsg?.let {
                         Text(it, color = Color(0xFFE05A5A), fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp))
                     }
-Text(
+                    // ---- Хранилище моделей: место, размеры, удаление ----
+                    Text("Хранилище моделей:", color = Color(0xFFBDBDBD), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp))
+                    storageInfo?.let { (freeBytesUi, usedBytesUi) ->
+                        Text(
+                            "Свободно: ${fmtMb(freeBytesUi)} · модели занимают: ${fmtMb(usedBytesUi)}",
+                            color = Color(0xFF90A4AE), fontSize = 10.sp,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                    // base: размер / удаление
+                    val baseReady = ModelDownloader.baseReady(context)
+                    val baseFile = ModelDownloader.baseFile(context)
+                    val basePart = File(baseFile.parentFile ?: ModelDownloader.modelsDir(context), baseFile.name + ".part")
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)
+                    ) {
+                        Text("base", color = Color(0xFFE6E6E6), fontSize = 12.sp, modifier = Modifier.weight(1f))
+                        Text(
+                            if (ModelDownloader.baseReady(context)) "· ${fmtMb(baseFile.length())}"
+                            else if (basePart.exists()) "· скачивание не завершено (${fmtMb(basePart.length())})"
+                            else "· не скачана",
+                            color = Color(0xFF9E9E9E), fontSize = 11.sp
+                        )
+                        if (baseReady || basePart.exists()) {
+                            Text(
+                                "Удалить",
+                                color = Color(0xFFFF6D00),
+                                fontSize = 11.sp,
+                                modifier = Modifier
+                                    .padding(start = 10.dp)
+                                    .clickable { deleteModelWithSwitch(context, "base") }
+                            )
+                        }
+                    }
+                    // turbo: размер / удаление
+                    val turboReady = ModelDownloader.turboReady(context)
+                    val turboFile = ModelDownloader.turboFile(context)
+                    val turboPart = File(turboFile.parentFile ?: ModelDownloader.modelsDir(context), turboFile.name + ".part")
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)
+                    ) {
+                        Text("large-v3-turbo", color = Color(0xFFE6E6E6), fontSize = 12.sp, modifier = Modifier.weight(1f))
+                        Text(
+                            if (ModelDownloader.turboReady(context)) "· ${fmtMb(turboFile.length())}"
+                            else if (turboPart.exists()) "· скачивание не завершено (${fmtMb(turboPart.length())})"
+                            else "· не скачана",
+                            color = Color(0xFF9E9E9E), fontSize = 11.sp
+                        )
+                        if (turboReady || turboPart.exists()) {
+                            Text(
+                                "Удалить",
+                                color = Color(0xFFFF6D00),
+                                fontSize = 11.sp,
+                                modifier = Modifier
+                                    .padding(start = 10.dp)
+                                    .clickable { deleteModelWithSwitch(context, "turbo") }
+                            )
+                        }
+                    }
+                    modelManageMsg?.let {
+                        Text(it, color = Color(0xFFE05A5A), fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp))
+                    }
+                    Text(
                         if (ttsTestRunning) "TTS-тест: синтезирую и распознаю…" else "Диагностика: синтез → распознавание (см. лог VOICE)",
                         color = Color(0xFF5A8DEE),
                         fontSize = 11.sp,
@@ -2331,4 +2474,10 @@ private fun get(url: String): String? {
     } finally {
         conn.disconnect()
     }
+}
+
+/** Человекочитаемый размер: МБ или ГБ (1 десятичный знак для ГБ). */
+private fun fmtMb(bytes: Long): String {
+    val mb = bytes / (1024.0 * 1024.0)
+    return if (mb >= 1024) String.format("%.1f ГБ", mb / 1024) else String.format("%.0f МБ", mb)
 }
