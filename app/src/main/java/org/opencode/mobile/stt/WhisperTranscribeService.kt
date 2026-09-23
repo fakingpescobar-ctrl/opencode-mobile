@@ -377,36 +377,20 @@ class WhisperTranscribeService : Service() {
         }
 
         /**
-         * Возвращает (и кэширует) контекст ncnn-движка. Каталог выбирается по sttModel:
-         * base -> models/ncnn-base/ (whisper_base_*.ncnn.{param,bin}),
-         * turbo -> models/ncnn-turbo/ (whisper_turbo_*.ncnn.{param,bin}).
-         * Если выбранный turbo-каталог не найден — откат на base (быстрее, чем ошибка
-         * для пользователя). Доставка моделей — adb push или ModelDownloader.
+         * Возвращает (и кэширует) контекст ncnn-движка. Модель — ВСЕГДА turbo
+         * (models/ncnn-turbo/, whisper_turbo_*.ncnn.{param,bin}): base-конверт
+         * битый (декодер петляет, мусор) и из программы удалён, выбирать нечего.
+         * Доставка моделей — adb push или ModelDownloader.
          */
-        private fun obtainNcnnContext(model: String): NcnnWhisperContext = ncnnCtxCache.getOrPut(
-            if (model == MODEL_TURBO) "turbo" else "base"
-        ) {
+        private fun obtainNcnnContext(model: String): NcnnWhisperContext = ncnnCtxCache.getOrPut("turbo") {
             val app = requireAppContext()
-            val turbo = model == MODEL_TURBO
-            val dirName = if (turbo) "ncnn-turbo" else "ncnn-base"
-            val baseName = if (turbo) "whisper_turbo" else "whisper_base"
-            var dir = File(ModelDownloader.modelsDir(app), dirName)
+            val dir = File(ModelDownloader.modelsDir(app), "ncnn-turbo")
+            val baseName = "whisper_turbo"
             if (!File(dir, "${baseName}_fbank.ncnn.param").exists() || !File(dir, "whisper_vocab.txt").exists()) {
-                if (turbo) {
-                    // turbo-каталог не доставлен — откат на base, чтобы не ломать STT
-                    Log.w(TAG, "ncnn-turbo не найден в $dir — откат на ncnn-base")
-                    dir = File(ModelDownloader.modelsDir(app), "ncnn-base")
-                    if (!File(dir, "whisper_base_fbank.ncnn.param").exists() || !File(dir, "whisper_vocab.txt").exists()) {
-                        throw IllegalStateException("ncnn-модель не найдена (ncnn-turbo/ и ncnn-base/) — закинь param+bin+vocab в filesDir/models или включи движок whisper")
-                    }
-                    NcnnWhisperContext.createFromFilesDir(dir, "whisper_base")
-                } else {
-                    throw IllegalStateException("ncnn-модель не найдена в $dir — закинь ncnn-base/ (param+bin+vocab) в filesDir/models или включи движок whisper")
-                }
-            } else {
-                Log.d(TAG, "гружу ncnn-модель из $dir (CPU, $baseName)")
-                NcnnWhisperContext.createFromFilesDir(dir, baseName)
+                throw IllegalStateException("ncnn-модель не найдена в $dir — закинь ncnn-turbo/ (param+bin+vocab) в filesDir/models")
             }
+            Log.d(TAG, "гружу ncnn-модель из $dir (CPU, $baseName)")
+            NcnnWhisperContext.createFromFilesDir(dir, baseName)
         }
     }
 

@@ -251,7 +251,7 @@ object ModelDownloader {
     fun modelsUsedBytes(context: Context): Long {
         val dir = modelsDir(context)
         if (!dir.exists()) return 0L
-        // Рекурсивно: ncnn-модели лежат в подпапках (ncnn-base/, ncnn-turbo/), а не в корне models/.
+        // Рекурсивно: ncnn-модели лежат в подпапке ncnn-turbo/, а не в корне models/.
         return dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
     }
 

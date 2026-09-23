@@ -68,10 +68,9 @@ import java.util.Locale
 private data class StorageSnapshot(
     val free: Long,
     val used: Long,
-    val ncnnBaseReady: Boolean,
-    val ncnnBaseSize: Long,
     val ncnnTurboReady: Boolean,
     val ncnnTurboSize: Long,
+    val logTail: String,
 )
 
 @Composable
@@ -84,10 +83,10 @@ fun DiagnosticsScreen(onClose: () -> Unit, modifier: Modifier = Modifier) {
     // из Activity, оставив оверлей на экране — UX-ловушка).
     BackHandler(onBack = onClose)
 
-    // Снапшот моделей собирается ОДИН раз при открытии, на IO-диспатчере:
-    // проверка ncnn-каталогов (fbank.param + vocab, как в obtainNcnnContext),
-    // суммарный размер файлов — это диск. В композиции эти вызовы выполнялись
-    // бы на main при КАЖДОЙ рекомпозиции (серверный StateFlow тикает) — фризы.
+    // Снапшот собирается ОДИН раз при открытии, на IO-диспатчере: проверка
+    // ncnn-каталога (fbank.param + vocab, как в obtainNcnnContext), суммарный
+    // размер файлов, хвост лога serve. В композиции эти вызовы выполнялись бы
+    // на main при КАЖДОЙ рекомпозиции (серверный StateFlow тикает) — фризы.
     // Здесь всё собрано в один IO-блок.
     var snap by remember { mutableStateOf<StorageSnapshot?>(null) }
     LaunchedEffect(Unit) {
@@ -103,15 +102,13 @@ fun DiagnosticsScreen(onClose: () -> Unit, modifier: Modifier = Modifier) {
                 val size = dir.listFiles()?.sumOf { it.length() } ?: 0L
                 return ready to size
             }
-            val (bReady, bSize) = ncnnSnap("ncnn-base")
             val (tReady, tSize) = ncnnSnap("ncnn-turbo")
             StorageSnapshot(
                 free = ModelDownloader.freeBytes(context),
                 used = ModelDownloader.modelsUsedBytes(context),
-                ncnnBaseReady = bReady,
-                ncnnBaseSize = bSize,
                 ncnnTurboReady = tReady,
-                ncnnTurboSize = tSize
+                ncnnTurboSize = tSize,
+                logTail = readLogTail(File(context.filesDir, "opencode.log"))
             )
         }
     }
@@ -196,12 +193,12 @@ Section("Голосовое распознавание")
                         else -> "Системный Android"
                     }
                 )
-                InfoRow("Модель", prefs.getString("stt_model", "turbo") ?: "turbo")
+                // ncnn = всегда turbo (base-конверт битый и удалён из программы).
+                InfoRow("Модель", "turbo")
                 if (snap == null) {
                     InfoRow("Модели", "загрузка…")
                 } else {
                     val s = requireNotNull(snap)
-                    InfoRow("ncnn-base", (if (s.ncnnBaseReady) "✔ готов" else "✘ отсутствует") + " · " + fmtBytes(s.ncnnBaseSize), if (s.ncnnBaseReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A))
                     InfoRow("ncnn-turbo", (if (s.ncnnTurboReady) "✔ готов" else "✘ отсутствует") + " · " + fmtBytes(s.ncnnTurboSize), if (s.ncnnTurboReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A))
                     InfoRow("Модели заняли", fmtBytes(s.used))
                     InfoRow("Свободно", fmtBytes(s.free))
@@ -232,11 +229,14 @@ Section("Голосовое распознавание")
                 // Без SelectionContainer: он конфликтует с verticalScroll по жестам
                 // (долгое нажатие перехватывается), а копирование всего лога есть
                 // через «Поделиться» — там дамп собирается свежим.
-                if (serverState.logTail.isBlank()) {
-                    Text("Пусто — сервер ещё не запускался.", color = Color(0xFF8A8A8A), fontSize = 12.sp)
+                // Хвост читаем из filesDir/opencode.log (туда serve пишет через
+                // ProcessBuilder.appendTo; ротация .1/.2/.3) — разово на открытии.
+                val s = requireNotNull(snap)
+                if (s.logTail.isBlank()) {
+                    Text("Пусто — opencode.log ещё не создан (сервер не запускался).", color = Color(0xFF8A8A8A), fontSize = 12.sp)
                 } else {
                     Text(
-                        serverState.logTail,
+                        s.logTail,
                         color = Color(0xFFC8C8C8),
                         fontFamily = FontFamily.Monospace,
                         fontSize = 10.sp,
@@ -344,19 +344,43 @@ private fun buildDiagnosticsDump(
 
     sb.append("\n--- Голосовое распознавание ---\n")
     val engine = prefs.getString("stt_engine", "system")
-    val model = prefs.getString("stt_model", "base")
-    sb.append("Движок: $engine; модель: $model\n")
+    sb.append("Движок: $engine; модель: turbo (единственная, base удалён)\n")
     if (snap == null) {
         sb.append("Модели: (не загружено)\n")
     } else {
         val s = snap
-        sb.append("ncnn-base: ${if (s.ncnnBaseReady) "готов" else "отсутствует"}, ${fmtBytes(s.ncnnBaseSize)}\n")
         sb.append("ncnn-turbo: ${if (s.ncnnTurboReady) "готов" else "отсутствует"}, ${fmtBytes(s.ncnnTurboSize)}\n")
         sb.append("Модели заняли: ${fmtBytes(s.used)}; свободно: ${fmtBytes(s.free)}\n")
     }
 
     sb.append("\n--- Лог сервера (хвост) ---\n")
-    sb.append(if (st.logTail.isBlank()) "(пусто)" else st.logTail)
-    if (!st.logTail.endsWith("\n")) sb.append("\n")
+    val tail = snap?.logTail
+    sb.append(if (tail.isNullOrBlank()) "(пусто)" else tail)
+    if (!tail.isNullOrBlank() && !tail.endsWith("\n")) sb.append("\n")
     return sb.toString()
+}
+
+/** Хвост opencode.log (serve пишет через ProcessBuilder.appendTo; ротация регулярная). */
+private fun readLogTail(file: File, maxBytes: Int = 4000): String {
+    if (!file.exists()) return ""
+    return try {
+        val len = file.length()
+        val start = (len - maxBytes).coerceAtLeast(0)
+        val buf = ByteArray((len - start).toInt())
+        file.inputStream().use { ins ->
+            ins.skip(start)
+            var off = 0
+            while (off < buf.size) {
+                val n = ins.read(buf, off, buf.size - off)
+                if (n < 0) break
+                off += n
+            }
+        }
+        val txt = String(buf, Charsets.UTF_8)
+        // Не режем посреди строки: откатываемся до последнего \n.
+        val cut = txt.indexOf('\n')
+        if (cut in 1 until txt.length) txt.substring(cut + 1) else txt
+    } catch (e: Exception) {
+        ""
+    }
 }

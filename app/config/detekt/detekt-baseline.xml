@@ -226,8 +226,8 @@
     <ID>MaxLineLength:ChatOverlay.kt$val snap = ChatSnapshot(take, "$label", bestId, q, thinking, prettyModel(bestModelId), liveTool = liveTool, contextTokens = cached.contextTokens, mcpConnected = mcpConnected, mcpTotal = mcpTotal, mcpServers = mcpServers)</ID>
     <ID>MaxLineLength:ChatOverlay.kt$val snap = ChatSnapshot(take, "$label", bestId, q, thinking, prettyModel(bestModelId), liveTool = liveTool, contextTokens = ctxTokens, mcpConnected = mcpConnected, mcpTotal = mcpTotal, mcpServers = mcpServers)</ID>
     <ID>MaxLineLength:DiagnosticsScreen.kt$InfoRow("Workspace", if (serverState.workspaceExternal) "Внешний (MANAGE_EXTERNAL_STORAGE)" else "Внутренний")</ID>
-    <ID>MaxLineLength:DiagnosticsScreen.kt$InfoRow("ncnn-base", (if (s.ncnnBaseReady) "✔ готов" else "✘ отсутствует") + " · " + fmtBytes(s.ncnnBaseSize), if (s.ncnnBaseReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A))</ID>
     <ID>MaxLineLength:DiagnosticsScreen.kt$InfoRow("ncnn-turbo", (if (s.ncnnTurboReady) "✔ готов" else "✘ отсутствует") + " · " + fmtBytes(s.ncnnTurboSize), if (s.ncnnTurboReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A))</ID>
+    <ID>MaxLineLength:DiagnosticsScreen.kt$Text("Пусто — opencode.log ещё не создан (сервер не запускался).", color = Color(0xFF8A8A8A), fontSize = 12.sp)</ID>
     <ID>MaxLineLength:DiagnosticsScreen.kt$if (memInfo.totalMem &gt; 0L) "свободно ${fmtBytes(memInfo.availMem)} / всего ${fmtBytes(memInfo.totalMem)}" else "недоступно"</ID>
     <ID>MaxLineLength:DiagnosticsScreen.kt$val ready = File(dir, "whisper_${model}_fbank.ncnn.param").exists() &amp;&amp; File(dir, "whisper_vocab.txt").exists()</ID>
     <ID>MaxLineLength:MainActivity.kt$&lt;no name provided&gt;$Log.e(TAG, "onReceivedError code=${error?.errorCode} desc=${error?.description} url=${request?.url}")</ID>
@@ -250,13 +250,12 @@
     <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$"base-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках STT"</ID>
     <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$Log.d(TAG, "worker: задача #${task.id}, ${task.samples.size} сэмплов, модель=${task.model}, движок=${task.engine}")</ID>
     <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$appContext ?: throw IllegalStateException("STT: context не инициализирован (transcribe() не вызывался до worker)")</ID>
-    <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$if</ID>
-    <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("ncnn-модель не найдена (ncnn-turbo/ и ncnn-base/) — закинь param+bin+vocab в filesDir/models или включи движок whisper")</ID>
-    <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("ncnn-модель не найдена в $dir — закинь ncnn-base/ (param+bin+vocab) в filesDir/models или включи движок whisper")</ID>
+    <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("ncnn-модель не найдена в $dir — закинь ncnn-turbo/ (param+bin+vocab) в filesDir/models")</ID>
     <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("turbo-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках")</ID>
     <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("модель \"$model\" удалена или повреждена — перекачай её в настройках STT", e)</ID>
     <ID>NestedBlockDepth:ChatOverlay.kt$@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class) @Composable fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096)</ID>
     <ID>NestedBlockDepth:ChatOverlay.kt$private fun playNotificationSound(context: Context)</ID>
+    <ID>NestedBlockDepth:DiagnosticsScreen.kt$private fun readLogTail(file: File, maxBytes: Int = 4000): String</ID>
     <ID>NestedBlockDepth:ModelDownloader.kt$ModelDownloader$fun sha256Of(file: File): String?</ID>
     <ID>NestedBlockDepth:ModelDownloader.kt$ModelDownloader$private fun hasGgmlMagic(file: File): Boolean</ID>
     <ID>NestedBlockDepth:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
@@ -286,6 +285,7 @@
     <ID>ReturnCount:RuntimeManager.kt$RuntimeManager$private suspend fun waitForHttp(port: Int): Boolean</ID>
     <ID>ReturnCount:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
     <ID>ReturnCount:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$suspend fun transcribe( context: Context, samples: FloatArray, model: String = MODEL_BASE, engine: String = ENGINE_WHISPER, timeoutMs: Long = 90_000L ): String</ID>
+    <ID>SwallowedException:DiagnosticsScreen.kt$e: Exception</ID>
     <ID>SwallowedException:Ipv4Proxy.kt$Ipv4Proxy$e: IOException</ID>
     <ID>SwallowedException:ModelDownloader.kt$ModelDownloader$e: java.io.FileNotFoundException</ID>
     <ID>SwallowedException:ProcessSupervisor.kt$ProcessSupervisor$e: Exception</ID>
@@ -296,6 +296,7 @@
     <ID>TooGenericExceptionCaught:ChatOverlay.kt$&lt;no name provided&gt;$e: Throwable</ID>
     <ID>TooGenericExceptionCaught:ChatOverlay.kt$e: Exception</ID>
     <ID>TooGenericExceptionCaught:ChatOverlay.kt$e: Throwable</ID>
+    <ID>TooGenericExceptionCaught:DiagnosticsScreen.kt$e: Exception</ID>
     <ID>TooGenericExceptionCaught:Ipv4Proxy.kt$Ipv4Proxy$e: Exception</ID>
     <ID>TooGenericExceptionCaught:ModelDownloader.kt$ModelDownloader$e: Exception</ID>
     <ID>TooGenericExceptionCaught:OpencodeRuntime.kt$OpencodeRuntime$e: Exception</ID>
@@ -312,6 +313,7 @@
     <ID>TooManyFunctions:OpencodeServerService.kt$OpencodeServerService : Service</ID>
     <ID>TooManyFunctions:RuntimeManager.kt$RuntimeManager</ID>
     <ID>TooManyFunctions:WhisperTranscribeService.kt$WhisperTranscribeService$Companion</ID>
+    <ID>UnusedParameter:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$model: String</ID>
     <ID>UnusedParameter:Workspace.kt$Workspace$context: Context</ID>
     <ID>UnusedPrivateMember:MainActivity.kt$@Composable private fun ControlBar(status: OpencodeServerService.ServerStatus)</ID>
     <ID>UnusedPrivateProperty:MainActivity.kt$val context = LocalContext.current</ID>
@@ -332,8 +334,7 @@
     <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException( "$label повреждена (SHA-256 не совпал — файл испорчен или подменён). Удали модель и перекачай заново в настройках STT" )</ID>
     <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException( "base-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках STT" )</ID>
     <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("STT: context не инициализирован (transcribe() не вызывался до worker)")</ID>
-    <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("ncnn-модель не найдена (ncnn-turbo/ и ncnn-base/) — закинь param+bin+vocab в filesDir/models или включи движок whisper")</ID>
-    <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("ncnn-модель не найдена в $dir — закинь ncnn-base/ (param+bin+vocab) в filesDir/models или включи движок whisper")</ID>
+    <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("ncnn-модель не найдена в $dir — закинь ncnn-turbo/ (param+bin+vocab) в filesDir/models")</ID>
     <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("turbo-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках")</ID>
     <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("модель \"$model\" удалена — перекачай её в настройках STT")</ID>
   </CurrentIssues>
