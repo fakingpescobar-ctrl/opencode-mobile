@@ -61,13 +61,23 @@ object OpencodeRuntime {
         muslDir.mkdirs()
         for ((neededName, srcName, required) in MUSL_LIBS) {
             val dest = File(muslDir, neededName)
-            if (dest.exists() && dest.length() > 0) continue
             val src = File(nativeDir, srcName)
             if (!src.exists()) {
                 if (required) throw IllegalStateException("musl lib $srcName missing in nativeLibraryDir")
                 continue
             }
-            src.copyTo(dest, overwrite = true)
+            // Пропуск только при полном совпадении размера: файл, обрезанный
+            // убийством процесса посреди copyTo, не должен считаться валидным
+            // навсегда (как >0-чек в ModelDownloader до фикса).
+            if (dest.exists() && dest.length() == src.length()) continue
+            // Атомарная замена: tmp + rename, чтобы обрыв записи не оставил
+            // кривой .so по целевому имени.
+            val tmp = File(muslDir, "$neededName.tmp")
+            src.copyTo(tmp, overwrite = true)
+            if (!tmp.renameTo(dest)) {
+                tmp.delete()
+                throw IllegalStateException("musl lib $neededName: tmp rename failed")
+            }
         }
         // verf: нужные файлы непустые
         for ((neededName, _, required) in MUSL_LIBS) {
@@ -216,7 +226,16 @@ object OpencodeRuntime {
                     dest.length() != source.size.toLong() ||
                     !dest.readBytes().contentEquals(source)
             if (changed) {
-                dest.writeBytes(source)
+                // Атомарная замена: tmp + rename. Обрезанный writeBytes (kill посреди
+                // записи) оставил бы битый memory.js по целевому имени навсегда —
+                // dest.size()==source.size() прошёл бы только при совпадении длины.
+                val tmp = File(dir, "memory.js.tmp")
+                tmp.writeBytes(source)
+                if (!tmp.renameTo(dest)) {
+                    android.util.Log.e("OpencodeRuntime", "ensureMemoryScript: tmp->dest rename failed")
+                    tmp.delete()
+                    return null
+                }
                 android.util.Log.i("OpencodeRuntime", "ensureMemoryScript: wrote ${source.size}B to ${dest.absolutePath}")
             }
             dest
@@ -258,7 +277,14 @@ object OpencodeRuntime {
         pb.environment()["XDG_CONFIG_HOME"] = cfg.opencodeConfig.absolutePath
         pb.environment()["XDG_DATA_HOME"] = cfg.opencodeData.absolutePath
         pb.environment()["XDG_CACHE_HOME"] = cfg.opencodeCache.absolutePath
-        val muslDir = try { ensureMuslLibs(context).absolutePath } catch (_: Exception) { nativeDir }
+        val muslDir: String? = try {
+            ensureMuslLibs(context).absolutePath
+        } catch (e: Exception) {
+            // Запускать процесс с кривым LD_LIBRARY_PATH незачем: он гарантированно
+            // умрёт на старте (не найдёт libc) и молча оставит память нерабочей.
+            android.util.Log.e("OpencodeRuntime", "memory: ensureMuslLibs failed: ${e.message}")
+            return null
+        }
         pb.environment()["LD_LIBRARY_PATH"] = "$muslDir:$nativeDir"
         pb.environment()["NO_COLOR"] = "1"
         pb.environment()["PATH"] = (pb.environment()["PATH"] ?: "") + ":" + nativeDir
