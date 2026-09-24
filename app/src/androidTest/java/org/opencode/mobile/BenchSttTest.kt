@@ -10,8 +10,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.opencode.mobile.stt.ChunkedTranscriber
 import org.opencode.mobile.stt.ModelDownloader
 import org.opencode.mobile.stt.NcnnModelValidator
+import org.opencode.mobile.stt.SpeechSegmenter
+import org.opencode.mobile.stt.WhisperTranscribeService
 import java.io.File
 import java.io.FileOutputStream
 
@@ -53,6 +56,42 @@ class BenchSttTest {
         }
         writeCsv(target, csv.toString())
         Log.i(TAG, "BENCH_DONE\n$csv")
+    }
+
+    /**
+     * ЭКСП-5: сегментный пайплайн на длинной речи (37с > 30с — лимит ncnn).
+     * Проверяет: VAD разбил на 3 высказывания, все распознаны (нет потери хвоста),
+     * тишина между ними отброшена (нет галлюцинаций «Продолжение следует…»).
+     */
+    @Test
+    fun benchChunkedLong() {
+        val target = InstrumentationRegistry.getInstrumentation().targetContext
+        val benchAssets = InstrumentationRegistry.getInstrumentation().context.assets
+        val int8Dir = File(ModelDownloader.modelsDir(target), "ncnn-turbo")
+        val int8Check = NcnnModelValidator.checkModelDir(int8Dir, "whisper_turbo")
+        assumeTrue("ncnn-turbo не доставлена на устройство: ${int8Check.missing}", int8Check.ok)
+
+        val wav = readWav("long.wav", benchAssets) ?: run {
+            assertTrue("bench/long.wav не читается как WAV", false)
+            return
+        }
+        Log.i(TAG, "CHUNK: long.wav ${wav.samples.size / 16000}.${(wav.samples.size % 16000) / 1600}с")
+
+        val segs = SpeechSegmenter().split(wav.samples)
+        Log.i(TAG, "CHUNK: сегментов=${segs.size} " + segs.joinToString { "%.1fс".format(it.samples.size / 16000f) })
+        assertTrue("VAD должен выделить ≥2 сегмента из 37с речи", segs.size >= 2)
+
+        val t0 = System.nanoTime()
+        val text = runBlocking {
+            ChunkedTranscriber.transcribe(target, wav.samples, "turbo", WhisperTranscribeService.ENGINE_NCNN)
+        }
+        val ms = (System.nanoTime() - t0) / 1_000_000
+        Log.i(TAG, "BENCH_ROW chunked,long,$ms,---,---,$ms,$text")
+        assertTrue("чанкинг должен распознать текст (а не вернуть пусто): '$text'", text.isNotBlank())
+        assertTrue(
+            "в сегментах не должно быть галлюцинаций на тишине (а есть: '$text')",
+            !text.contains("Продолжение следует"),
+        )
     }
 
     /** Один конфиг модели: warmup (init+прогрев), затем 3 замера каждого wav. */

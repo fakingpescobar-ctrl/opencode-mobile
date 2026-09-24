@@ -84,12 +84,25 @@ def main() -> int:
     write_wav(out / "tone.wav", y)
 
     # 4. En-речь: jfk.wav из локального клона whisper.cpp (11 с).
+    # 4. En-речь: jfk.wav из локального клона whisper.cpp (11 с).
     jfk = Path(r"C:\Projects\whisper.cpp\samples\jfk.wav")
+    jfk_track = None
     if jfk.exists():
         shutil.copy2(jfk, out / "jfk.wav")
         print(f"  jfk.wav: {jfk.stat().st_size} bytes (скопирован из whisper.cpp)")
     else:
         print("  jfk.wav ПРОПУЩЕН: C:\\Projects\\whisper.cpp\\samples\\jfk.wav не найден", file=sys.stderr)
+
+    # 4b. Длинная речь для ЭКСП-5 (чанкинг): 3×jfk с паузами ~2с.
+    #     Итог ~35c > 30с — ncnn-encoder в одиночку молча обрезал бы хвост
+    #     (extract_fbank_feature фиксирован на 480000 сэмплов). Сегментер с VAD
+    #     должен разбить на 3 высказывания и распознать ВСЕ.
+    if jfk.exists():
+        with wave.open(str(jfk), "rb") as w:
+            jfk_data = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32767.0
+        gap = 0.02 * rng.standard_normal(int(SR * 2.0))  # «комнатная тишина» с лёгким шумом
+        long_data = np.concatenate([jfk_data, gap, jfk_data, gap, jfk_data])
+        write_wav(out / "long.wav", long_data)
 
     # 5. Русская речь (опционально): свой файл или --ru.
     if args.ru:

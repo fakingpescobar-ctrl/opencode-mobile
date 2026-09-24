@@ -7,7 +7,7 @@ plugins {
 // (CI-17): дефолты — машина разработчика (Windows + whisper.cpp + VulkanSDK).
 // -PwhisperCppDir=...  -PvulkanSdkDir=... ; сборка нативки целиком отключается
 // флагом -PskipNativeBuild=true (CI: ubuntu не имеет ни whisper.cpp, ни VulkanSDK).
-def whisperCppDir = project.findProperty('whisperCppDir') ?: 'C:/Projects/whisper.cpp'
+def whisperCppDir = (project.findProperty('whisperCppDir') ?: 'C:/Projects/whisper.cpp').toString().replace('\\', '/')
 def vulkanSdkDir = project.findProperty('vulkanSdkDir') ?: 'C:/VulkanSDK/1.4.357.0'
 def skipNativeBuild = project.hasProperty('skipNativeBuild')
 
@@ -65,8 +65,8 @@ android {
                     // GGML_VULKAN=ON включает Vulkan-бэкенд (Adreno GPU). Должна
                     // быть установлена Vulkan SDK (LunarG) — ggml компилирует
                     // шейдеры через glslc из неё при конфигурации.
-                    arguments "-DCMAKE_BUILD_TYPE=Release", "-DGGML_VULKAN=ON", "-DWHISPER_LIB_DIR=${whisperCppDir}",
-                         // Пути Vulkan SDK (LunarG). Версия по умолчанию — 1.4.357.0.
+                    def whisperArg = "-DWHISPER_LIB_DIR=${whisperCppDir}"
+                    arguments "-DCMAKE_BUILD_TYPE=Release", "-DGGML_VULKAN=ON", whisperArg,
                          // SPIRV-Headers нужен host-инструменту vulkan-shaders-gen
                          // (компиляция .comp/.glsl шейдеров в .spv через glslc).
                          "-DSPIRV-Headers_DIR=${vulkanSdkDir}/Lib/cmake/SPIRV-Headers",

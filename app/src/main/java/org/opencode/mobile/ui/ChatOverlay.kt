@@ -324,7 +324,7 @@ fun ChatOverlay(
     }
 
     // Голосовой ввод: системный распознаватель (SpeechRecognizer). Удержание кнопки — запись, отпускание — распознавание и отправка.
-    val speechRecognizer = remember { ContextCompatSpeechRecognizer(context) }
+    val speechRecognizer = remember { createSpeechRecognizer(context) }
     var listening by remember { mutableStateOf(false) }
     var speechError by remember { mutableStateOf<String?>(null) }
     var whisperBusy by remember { mutableStateOf(false) }
@@ -634,16 +634,6 @@ fun ChatOverlay(
                     Log.d("VOICE", "без нормализации: peak=$peak")
                 }
             }
-            // Паддинг: whisper стабильно врёт на начале коротких клипов (<3с).
-            // 0.25с тишины в начало + добиваем конец нулями до 3с.
-            if (samples.size >= 1600) {
-                val padStart = 4000
-                val targetLen = maxOf(samples.size + padStart, 48000 + padStart)
-                val padded = FloatArray(targetLen)
-                System.arraycopy(samples, 0, padded, padStart, samples.size)
-                Log.d("VOICE", "паддинг: ${samples.size} → $targetLen (+$padStart в начало)")
-                samples = padded
-            }
             // Диагностика качества аудио: RMS по 0.5с чанкам + дамп PCM.
             run {
                 val sb = StringBuilder()
@@ -674,10 +664,13 @@ fun ChatOverlay(
                     return@launch
                 }
                 speechError = null
-                Log.d("VOICE", "запускаю распознавание через foreground-сервис...")
+                // ЭКСП-5: сегментный пайплайн — VAD отбрасывает тишину/шум
+                // (нет галлюцинаций «Продолжение следует…»), длинные клипы
+                // (>30с) режутся на высказывания (нет потери хвоста у ncnn).
+                Log.d("VOICE", "запускаю сегментное распознавание через foreground-сервис...")
                 val text =
                     try {
-                        WhisperTranscribeService.transcribe(
+                        org.opencode.mobile.stt.ChunkedTranscriber.transcribe(
                             context,
                             samples,
                             model = sttModel,
@@ -1873,7 +1866,7 @@ private fun parseHexColor(hex: String): Color =
     }
 
 // Создаёт системный распознаватель речи, если он доступен на устройстве.
-private fun ContextCompatSpeechRecognizer(context: Context): SpeechRecognizer? =
+private fun createSpeechRecognizer(context: Context): SpeechRecognizer? =
     if (SpeechRecognizer.isRecognitionAvailable(context)) {
         SpeechRecognizer.createSpeechRecognizer(context.applicationContext)
     } else {

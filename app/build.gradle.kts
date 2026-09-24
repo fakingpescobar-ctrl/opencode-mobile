@@ -88,6 +88,8 @@ dependencies {
     // Instrumented smoke-тест нативного слоя (PR3): nativeInit -> nativeTranscribe.
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
+    // JVM-тесты (ЭКСП-5): чистый Kotlin — SpeechSegmenter без устройства.
+    testImplementation("junit:junit:4.13.2")
 }
 
 // ---- Линтеры (ktlint: формат/аккуратность; detekt: качество/«запахи») ----
