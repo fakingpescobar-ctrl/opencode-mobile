@@ -222,7 +222,6 @@
     <ID>MaxLineLength:ChatOverlay.kt$val conn = (URL("http://127.0.0.1:$port/api/session/$sessionId/question/$questionId/reply").openConnection() as HttpURLConnection)</ID>
     <ID>MaxLineLength:DiagnosticsScreen.kt$InfoRow("Workspace", if (serverState.workspaceExternal) "Внешний (MANAGE_EXTERNAL_STORAGE)" else "Внутренний")</ID>
     <ID>MaxLineLength:DiagnosticsScreen.kt$Text("Пусто — opencode.log ещё не создан (сервер не запускался).", color = Color(0xFF8A8A8A), fontSize = 12.sp)</ID>
-    <ID>MaxLineLength:DiagnosticsScreen.kt$val ready = File(dir, "whisper_${model}_fbank.ncnn.param").exists() &amp;&amp; File(dir, "whisper_vocab.txt").exists()</ID>
     <ID>MaxLineLength:MainActivity.kt$&lt;no name provided&gt;$Log.e(TAG, "onReceivedError code=${error?.errorCode} desc=${error?.description} url=${request?.url}")</ID>
     <ID>MaxLineLength:MainActivity.kt$DropdownButton</ID>
     <ID>MaxLineLength:MainActivity.kt$MainActivity$private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }</ID>
@@ -238,12 +237,11 @@
     <ID>MaxLineLength:OpencodeServerService.kt$OpencodeServerService.Companion$context.startForegroundService(Intent(context, OpencodeServerService::class.java).setAction(ACTION_RESTART))</ID>
     <ID>MaxLineLength:OpencodeServerService.kt$OpencodeServerService.Companion$context.startForegroundService(Intent(context, OpencodeServerService::class.java).setAction(ACTION_STOP))</ID>
     <ID>MaxLineLength:RuntimeManager.kt$RuntimeManager$"# OpenCode Terminal\n\nРабочая директория на внешнем хранилище (Documents/OpencodeTerminal).\n"</ID>
-    <ID>MaxLineLength:RuntimeManager.kt$RuntimeManager$message = "процесс serve умер сам (exit=${serve.lastExitCode ?: serve.currentExitCode()})"</ID>
+    <ID>MaxLineLength:RuntimeValidation.kt$RuntimeValidation$@Suppress("SwallowedException")</ID>
     <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$"$label повреждена (SHA-256 не совпал — файл испорчен или подменён). Удали модель и перекачай заново в настройках STT"</ID>
     <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$"base-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках STT"</ID>
     <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$Log.d(TAG, "worker: задача #${task.id}, ${task.samples.size} сэмплов, модель=${task.model}, движок=${task.engine}")</ID>
     <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$appContext ?: throw IllegalStateException("STT: context не инициализирован (transcribe() не вызывался до worker)")</ID>
-    <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("ncnn-модель не найдена в $dir — закинь ncnn-turbo/ (param+bin+vocab) в filesDir/models")</ID>
     <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("turbo-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках")</ID>
     <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("модель \"$model\" удалена или повреждена — перекачай её в настройках STT", e)</ID>
     <ID>NestedBlockDepth:ChatOverlay.kt$@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class) @Composable fun ChatOverlay( modifier: Modifier = Modifier, serverPort: Int = 4096, )</ID>
@@ -298,6 +296,7 @@
     <ID>TooGenericExceptionThrown:ChatOverlay.kt$throw RuntimeException("WAV: нет data/не PCM16 (bits=$bits)")</ID>
     <ID>TooGenericExceptionThrown:ChatOverlay.kt$throw RuntimeException("не WAV-файл")</ID>
     <ID>TooManyFunctions:ChatOverlay.kt$org.opencode.mobile.ui.ChatOverlay.kt</ID>
+    <ID>TooManyFunctions:DiagnosticsScreen.kt$org.opencode.mobile.ui.DiagnosticsScreen.kt</ID>
     <ID>TooManyFunctions:ModelDownloader.kt$ModelDownloader</ID>
     <ID>TooManyFunctions:OpencodeServerService.kt$OpencodeServerService : Service</ID>
     <ID>TooManyFunctions:RuntimeManager.kt$RuntimeManager</ID>
@@ -322,7 +321,6 @@
     <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException( "$label повреждена (SHA-256 не совпал — файл испорчен или подменён). Удали модель и перекачай заново в настройках STT" )</ID>
     <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException( "base-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках STT" )</ID>
     <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("STT: context не инициализирован (transcribe() не вызывался до worker)")</ID>
-    <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("ncnn-модель не найдена в $dir — закинь ncnn-turbo/ (param+bin+vocab) в filesDir/models")</ID>
     <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("turbo-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках")</ID>
     <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("модель \"$model\" удалена — перекачай её в настройках STT")</ID>
   </CurrentIssues>

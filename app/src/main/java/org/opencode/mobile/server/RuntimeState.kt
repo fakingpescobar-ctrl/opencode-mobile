@@ -84,6 +84,10 @@ data class RuntimeError(
     val message: String,
     /** false = терминальный отказ (рестарты бессмысленны), true = можно перезапустить. */
     val recoverable: Boolean,
+    /** Момент фиксации ошибки (epoch ms) — для истории сбоев в диагностике. */
+    val at: Long = 0L,
+    /** Момент восстановления (DEGRADED→HEALTHY / новый виток цикла); null = ошибка ещё активна. */
+    val resolvedAt: Long? = null,
 )
 
 /** Причина, по которой runtime перестал работать/был остановлен. */
@@ -117,6 +121,21 @@ data class RuntimeState(
     val stopReason: StopReason? = null,
     /** Сколько рестартов сделал цикл с момента последнего HEALTHY. */
     val restartCount: Int = 0,
+    /** Кольцо последних сбоев (MAX_ERROR_HISTORY): recovery не стирает прошлые
+     *  ошибки — диагностика видит «что падало и когда» даже после восстановления. */
+    val errorHistory: List<RuntimeError> = emptyList(),
+    /** Момент последнего отказа памяти (epoch ms) — «когда именно умерла MCP». */
+    val lastMemoryFailureAt: Long? = null,
+    /** Момент последнего успешного восстановления/старта HEALTHY (epoch ms). */
+    val lastRecoveredAt: Long? = null,
 ) {
     val isHealthy: Boolean get() = stage == RuntimeStage.HEALTHY
+
+    /** Последняя ошибка, которую цикл ещё не пережил (resolvedAt == null). */
+    val lastUnresolvedError: RuntimeError? get() = lastError?.takeIf { it.resolvedAt == null }
+
+    companion object {
+        /** Глубина кольца истории сбоев. */
+        const val MAX_ERROR_HISTORY = 8
+    }
 }

@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
@@ -29,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -47,6 +49,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.opencode.mobile.server.OpencodeServerService
 import org.opencode.mobile.server.OpencodeServerService.ServerStatus
+import org.opencode.mobile.server.RuntimeError
+import org.opencode.mobile.server.RuntimeStage
+import org.opencode.mobile.server.RuntimeValidation
 import org.opencode.mobile.stt.ModelDownloader
 import org.opencode.mobile.stt.NcnnModelValidator
 import java.io.File
@@ -64,6 +69,9 @@ import java.util.Locale
  * Закрывается иконкой ✕ или системным Back (BackHandler).
  */
 
+/** Сколько последних сбоев показываем в UI и дампе (кольцо хранит до MAX_ERROR_HISTORY). */
+private const val HISTORY_SHOWN = 5
+
 /** Снапшот моделей и хранилища, собранный один раз на IO при открытии. */
 private data class StorageSnapshot(
     val free: Long,
@@ -71,6 +79,8 @@ private data class StorageSnapshot(
     val ncnnTurboReady: Boolean,
     val ncnnTurboSize: Long,
     val logTail: String,
+    /** Единый отчёт готовности runtime-слоя (RuntimeValidation). */
+    val validation: RuntimeValidation.Report,
 )
 
 @Composable
@@ -92,7 +102,9 @@ fun DiagnosticsScreen(
     // композиции эти вызовы выполнялись бы на main при КАЖДОЙ рекомпозиции
     // (серверный StateFlow тикает) — фризы. Здесь всё собрано в один IO-блок.
     var snap by remember { mutableStateOf<StorageSnapshot?>(null) }
-    LaunchedEffect(Unit) {
+    // Кнопка «Проверить сейчас» инкрементит ключ — LaunchedEffect пересобирает снапшот.
+    var refreshKey by remember { mutableIntStateOf(0) }
+    LaunchedEffect(refreshKey) {
         snap =
             withContext(Dispatchers.IO) {
                 val modelsDir = ModelDownloader.modelsDir(context)
@@ -109,6 +121,7 @@ fun DiagnosticsScreen(
                     ncnnTurboReady = tReady,
                     ncnnTurboSize = tSize,
                     logTail = readLogTail(File(context.filesDir, "opencode.log")),
+                    validation = RuntimeValidation.run(context),
                 )
             }
     }
@@ -152,6 +165,19 @@ fun DiagnosticsScreen(
                 )
                 Spacer(Modifier.width(10.dp))
                 Icon(
+                    imageVector = Icons.Filled.Refresh,
+                    contentDescription = "Проверить сейчас",
+                    tint = Color(0xFFBDBDBD),
+                    modifier =
+                        Modifier
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF1E1E1E))
+                            .padding(3.dp)
+                            .clickable { refreshKey++ },
+                )
+                Spacer(Modifier.width(10.dp))
+                Icon(
                     imageVector = Icons.Filled.Close,
                     contentDescription = "Закрыть диагностику",
                     tint = Color(0xFFBDBDBD),
@@ -174,18 +200,31 @@ fun DiagnosticsScreen(
             ) {
                 Section("Сервер opencode")
                 InfoRow("Статус", statusLabel(serverState.status), statusColor(serverState.status))
+                serverState.stage?.let { InfoRow("Стадия runtime", stageLabel(it)) }
                 InfoRow("Порт", serverState.port.toString())
                 InfoRow("Рестарты цикла", serverState.restartCount.toString())
                 InfoRow("Workspace", if (serverState.workspaceExternal) "Внешний (MANAGE_EXTERNAL_STORAGE)" else "Внутренний")
                 serverState.lastError?.let { err ->
+                    val resolved = err.resolvedAt != null
                     InfoRow(
-                        "Последняя ошибка",
+                        if (resolved) "Последняя ошибка (разрешена)" else "Активная ошибка",
                         "${err.stage} / ${err.code}" +
                             (if (err.recoverable) " (recoverable)" else " (терминальная)") +
+                            (if (resolved) "\nв ${fmtTime(err.resolvedAt)}" else "\nс ${fmtTime(err.at)}") +
                             if (err.message.isNotBlank()) "\n${err.message}" else "",
+                        if (resolved) Color(0xFFBDBDBD) else Color(0xFFFF6F5A),
                     )
                 }
                 serverState.stopReason?.let { InfoRow("Причина остановки", it.name) }
+                serverState.lastMemoryFailureAt?.let {
+                    InfoRow("Память MCP упала в", fmtTime(it))
+                }
+                serverState.lastRecoveredAt?.let {
+                    InfoRow("Восстановилась в", fmtTime(it))
+                }
+                if (serverState.errorHistory.isNotEmpty()) {
+                    InfoRow("Сбои (последние ${serverState.errorHistory.size})", historyText(serverState.errorHistory))
+                }
 
                 Section("Голосовое распознавание")
                 InfoRow("Движок", engineLabel(prefs))
@@ -202,6 +241,41 @@ fun DiagnosticsScreen(
                     )
                     InfoRow("Модели заняли", fmtBytes(s.used))
                     InfoRow("Свободно", fmtBytes(s.free))
+                }
+
+                Section("Валидация runtime")
+                if (snap == null) {
+                    InfoRow("Проверка", "загрузка…")
+                } else {
+                    val v = requireNotNull(snap).validation
+                    val ok = Color(0xFF7BD88F)
+                    val bad = Color(0xFFFF6F5A)
+                    InfoRow("Итог", if (v.allOk) "все подсистемы готовы" else "есть проблемы", if (v.allOk) ok else bad)
+                    InfoRow(
+                        "Нативный runtime",
+                        if (v.nativeRuntime) "✔ ассемблирован" else "✘ libopencode.so отсутствует",
+                        if (v.nativeRuntime) ok else bad,
+                    )
+                    InfoRow(
+                        "Basic-аутентификация",
+                        if (v.serverAuth) "✔ пароль задан" else "✘ пароль не задан",
+                        if (v.serverAuth) ok else bad,
+                    )
+                    InfoRow(
+                        "Serve (HTTP)",
+                        if (v.serverHttp) "✔ отвечает" else "✘ не отвечает",
+                        if (v.serverHttp) ok else bad,
+                    )
+                    InfoRow(
+                        "Локальная память (MCP)",
+                        if (v.memoryMcp) "✔ порт слушается" else "✘ не поднята",
+                        if (v.memoryMcp) ok else bad,
+                    )
+                    InfoRow(
+                        "ncnn-turbo",
+                        if (v.ncnnTurbo) "✔ полный набор" else "✘ файлов не хватает",
+                        if (v.ncnnTurbo) ok else bad,
+                    )
                 }
 
                 Section("Система")
@@ -300,6 +374,38 @@ private fun statusColor(s: ServerStatus): Color =
         ServerStatus.STOPPED -> Color(0xFF8A8A8A)
     }
 
+/** Человекочитаемое имя стадии runtime-цикла. */
+private fun stageLabel(stage: RuntimeStage): String =
+    when (stage) {
+        RuntimeStage.IDLE -> "idle (нет цикла)"
+        RuntimeStage.PREPARING -> "подготовка"
+        RuntimeStage.STARTING_MEMORY -> "старт памяти MCP"
+        RuntimeStage.STARTING_SERVER -> "старт serve"
+        RuntimeStage.HEALTHY -> "здоров"
+        RuntimeStage.DEGRADED -> "деградация"
+        RuntimeStage.RESTARTING -> "перезапуск (backoff)"
+        RuntimeStage.CRASHED -> "сбой витка"
+        RuntimeStage.FAILED_PERMANENTLY -> "терминальный отказ"
+        RuntimeStage.STOPPING -> "остановка"
+        RuntimeStage.STOPPED -> "остановлен"
+    }
+
+/** Формат времени сбоя: «14:03:25»; null — «—» (события без времени). */
+private fun fmtTime(epochMs: Long?): String {
+    val fmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+    return epochMs?.let { fmt.format(Date(it)) } ?: "—"
+}
+
+/** История сбоев -> многострочный текст «время · код · сообщение (решен/активен)». */
+private fun historyText(history: List<RuntimeError>): String =
+    history
+        .reversed()
+        .take(HISTORY_SHOWN)
+        .joinToString("\n") { err ->
+            val state = if (err.resolvedAt != null) "решена в ${fmtTime(err.resolvedAt)}" else "активна"
+            "${fmtTime(err.at)} · ${err.code} ($state) · ${err.message}"
+        }
+
 /** Человекочитаемый размер: МБ (1 десятичный знак) или ГБ; <0 — «недоступно». */
 private fun fmtBytes(b: Long): String {
     if (b < 0) return "недоступно"
@@ -359,14 +465,10 @@ private fun buildDiagnosticsDump(
     }
 
     sb.append("\n--- Сервер ---\n")
-    sb.append("Статус: ${statusLabel(st.status)} (${st.status.name})\n")
-    sb.append("Порт: ${st.port}\n")
-    sb.append("Рестарты цикла: ${st.restartCount}\n")
-    sb.append("Workspace: ${if (st.workspaceExternal) "внешний" else "внутренний"}\n")
-    st.lastError?.let {
-        sb.append("Последняя ошибка: ${it.stage} / ${it.code} (recoverable=${it.recoverable})\n  ${it.message}\n")
-    }
-    st.stopReason?.let { sb.append("Причина остановки: ${it.name}\n") }
+    dumpServerSection(sb, st)
+
+    sb.append("\n--- Валидация runtime ---\n")
+    dumpValidationSection(sb, snap)
 
     sb.append("\n--- Голосовое распознавание ---\n")
     sb.append("Движок: $engineLabel; модель: turbo (единственная, base удалён)\n")
@@ -383,6 +485,51 @@ private fun buildDiagnosticsDump(
     sb.append(if (tail.isNullOrBlank()) "(пусто)" else tail)
     if (!tail.isNullOrBlank() && !tail.endsWith("\n")) sb.append("\n")
     return sb.toString()
+}
+
+/** Секция «Сервер» дампа: стадия/рестарты/ошибка/история сбоев/события памяти. */
+private fun dumpServerSection(
+    sb: StringBuilder,
+    st: OpencodeServerService.ServerState,
+) {
+    sb.append("Статус: ${statusLabel(st.status)} (${st.status.name})\n")
+    st.stage?.let { sb.append("Стадия runtime: ${stageLabel(it)} (${it.name})\n") }
+    sb.append("Порт: ${st.port}\n")
+    sb.append("Рестарты цикла: ${st.restartCount}\n")
+    sb.append("Workspace: ${if (st.workspaceExternal) "внешний" else "внутренний"}\n")
+    st.lastError?.let {
+        val resolved = it.resolvedAt != null
+        val ts = if (resolved) "resolved@" + fmtTime(it.resolvedAt) else "active@" + fmtTime(it.at)
+        sb.append("Последняя ошибка: ${it.stage} / ${it.code} (recoverable=${it.recoverable}, $ts)\n  ${it.message}\n")
+    }
+    st.stopReason?.let { sb.append("Причина остановки: ${it.name}\n") }
+    st.lastMemoryFailureAt?.let { sb.append("Память MCP упала: ${fmtTime(it)}\n") }
+    st.lastRecoveredAt?.let { sb.append("Восстановление: ${fmtTime(it)}\n") }
+    if (st.errorHistory.isNotEmpty()) {
+        sb.append("Сбои (${st.errorHistory.size}):\n")
+        for (err in st.errorHistory.reversed().take(HISTORY_SHOWN)) {
+            val state = if (err.resolvedAt != null) "resolved@${fmtTime(err.resolvedAt)}" else "ACTIVE"
+            sb.append("  ${fmtTime(err.at)} [$state] ${err.code}: ${err.message}\n")
+        }
+    }
+}
+
+/** Секция «Валидация runtime» дампа: единый отчёт RuntimeValidation. */
+private fun dumpValidationSection(
+    sb: StringBuilder,
+    snap: StorageSnapshot?,
+) {
+    if (snap == null) {
+        sb.append("(не загружено)\n")
+        return
+    }
+    val v = snap.validation
+    sb.append("Итог: ${if (v.allOk) "все подсистемы готовы" else "есть проблемы"}\n")
+    sb.append("Нативный runtime: ${v.nativeRuntime}\n")
+    sb.append("Basic-аутентификация: ${v.serverAuth}\n")
+    sb.append("Serve (HTTP): ${v.serverHttp}\n")
+    sb.append("Память MCP: ${v.memoryMcp}\n")
+    sb.append("ncnn-turbo: ${v.ncnnTurbo}\n")
 }
 
 /** Человекочитаемый лейбл движка STT (stt_engine pref → русское имя). */

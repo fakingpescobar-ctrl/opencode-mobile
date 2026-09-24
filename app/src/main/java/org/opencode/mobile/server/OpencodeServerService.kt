@@ -44,6 +44,14 @@ class OpencodeServerService : Service() {
         val lastError: RuntimeError? = null,
         val stopReason: StopReason? = null,
         val restartCount: Int = 0,
+        /** Текущая стадия runtime-цикла (детальнее ServerStatus — для диагностики). */
+        val stage: RuntimeStage? = null,
+        /** Кольцо последних сбоев (recovery не стирает). */
+        val errorHistory: List<RuntimeError> = emptyList(),
+        /** Момент последнего отказа памяти (epoch ms). */
+        val lastMemoryFailureAt: Long? = null,
+        /** Момент последнего восстановления/HEALTHY (epoch ms). */
+        val lastRecoveredAt: Long? = null,
     )
 
     companion object {
@@ -191,6 +199,10 @@ class OpencodeServerService : Service() {
                 lastError = rt.lastError,
                 stopReason = rt.stopReason,
                 restartCount = rt.restartCount,
+                stage = rt.stage,
+                errorHistory = rt.errorHistory,
+                lastMemoryFailureAt = rt.lastMemoryFailureAt,
+                lastRecoveredAt = rt.lastRecoveredAt,
             )
         updateNotification(rt.stage.toNotificationText())
     }

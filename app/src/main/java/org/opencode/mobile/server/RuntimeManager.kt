@@ -65,6 +65,49 @@ class RuntimeManager(
         onState(currentState)
     }
 
+    /** Коды, относящиеся к подсистеме локальной памяти (фиксируют lastMemoryFailureAt). */
+    private val memoryCodes =
+        setOf(
+            RuntimeErrorCode.MEMORY_SCRIPT_FAILED,
+            RuntimeErrorCode.MEMORY_START_FAILED,
+            RuntimeErrorCode.MEMORY_DIED,
+        )
+
+    /** Фиксация сбоя: пушит RuntimeError в lastError + кольцо errorHistory.
+     *  Память-коды сами фиксируют lastMemoryFailureAt (отдельный флаг не нужен).
+     *  transition применяется к базовому состоянию ПОВЕРХ фиксации (сдвиг стадии,
+     *  счётчика рестартов или stopReason) — одиночный emit без промежуточных тиков.
+     */
+    private fun emitFailure(
+        stage: RuntimeStage,
+        code: RuntimeErrorCode,
+        message: String,
+        recoverable: Boolean,
+        transition: RuntimeState.() -> RuntimeState = { this },
+    ) {
+        val at = System.currentTimeMillis()
+        val err = RuntimeError(stage, code, message, recoverable, at = at)
+        emit {
+            copy(
+                lastError = err,
+                lastMemoryFailureAt = if (code in memoryCodes) at else this.lastMemoryFailureAt,
+                errorHistory = (errorHistory + err).takeLast(RuntimeState.MAX_ERROR_HISTORY),
+            ).transition()
+        }
+    }
+
+    /** Последняя активная ошибка помечается resolvedAt (момент восстановления),
+     *  НЕ стирается: UI видит «ошибка (разрешена)», история остаётся. */
+    private fun resolveActiveError() {
+        val at = System.currentTimeMillis()
+        emit {
+            copy(
+                lastError = lastError?.takeIf { it.resolvedAt == null }?.copy(resolvedAt = at) ?: lastError,
+                lastRecoveredAt = at,
+            )
+        }
+    }
+
     /** Главный цикл. Вызывается из корутины сервиса; завершается сам по running=false. */
     suspend fun run() {
         running = true
@@ -88,13 +131,17 @@ class RuntimeManager(
                 memory.stop()
                 rotateLogFile(logFile)
 
-                // Новый виток: сбрасываем ошибку/причину прошлого цикла, иначе
-                // lastError от CRASHED мигал бы на STARTING_* фазах при рестарте.
+                // Новый виток: прошлая ошибка (если была активна) помечается
+                // resolved — новый виток «берёт её на себя», но не стирает из
+                // истории (Diagnostics видит весь ряд сбоев).
                 emit {
                     copy(
                         stage = RuntimeStage.PREPARING,
                         restartCount = consecutiveFailures,
-                        lastError = null,
+                        lastError =
+                            lastError
+                                ?.takeIf { it.resolvedAt == null }
+                                ?.copy(resolvedAt = System.currentTimeMillis()) ?: lastError,
                         stopReason = null,
                     )
                 }
@@ -115,19 +162,12 @@ class RuntimeManager(
                     }
                 if (wsResult.isFailure) {
                     consecutiveFailures++
-                    emit {
-                        copy(
-                            stage = RuntimeStage.CRASHED,
-                            lastError =
-                                RuntimeError(
-                                    stage = RuntimeStage.PREPARING,
-                                    code = RuntimeErrorCode.UNKNOWN,
-                                    message = "workspace resolve: ${wsResult.exceptionOrNull()?.message}",
-                                    recoverable = true,
-                                ),
-                            restartCount = consecutiveFailures,
-                        )
-                    }
+                    emitFailure(
+                        stage = RuntimeStage.PREPARING,
+                        code = RuntimeErrorCode.UNKNOWN,
+                        message = "workspace resolve: ${wsResult.exceptionOrNull()?.message}",
+                        recoverable = true,
+                    ) { copy(stage = RuntimeStage.CRASHED, restartCount = consecutiveFailures) }
                     if (consecutiveFailures >= MAX_RESTART_ATTEMPTS) {
                         emitTerminalRestartLimit()
                         return
@@ -157,36 +197,24 @@ class RuntimeManager(
                     // Гасим явно: процесс мог стартовать, но не поднять MCP-порт
                     // (битый старт). Без stop() следующий виток создал бы ещё один.
                     memory.stop()
-                    emit {
-                        copy(
-                            lastError =
-                                RuntimeError(
-                                    stage = RuntimeStage.STARTING_MEMORY,
-                                    code = RuntimeErrorCode.MEMORY_START_FAILED,
-                                    message = "������ ������ MCP �� ����﫠�� - �� ࠡ�⠥� ��� ���",
-                                    recoverable = true,
-                                ),
-                        )
-                    }
+                    emitFailure(
+                        stage = RuntimeStage.STARTING_MEMORY,
+                        code = RuntimeErrorCode.MEMORY_START_FAILED,
+                        message = "Локальная память MCP не поднялась - порт или процесс",
+                        recoverable = true,
+                    )
                 }
 
                 emit { copy(stage = RuntimeStage.STARTING_SERVER) }
                 val proc = OpencodeRuntime.startServe(context, logFile = logFile, workDir = workspace)
                 if (proc == null) {
                     consecutiveFailures++
-                    emit {
-                        copy(
-                            stage = RuntimeStage.CRASHED,
-                            lastError =
-                                RuntimeError(
-                                    stage = RuntimeStage.STARTING_SERVER,
-                                    code = RuntimeErrorCode.SERVER_START_FAILED,
-                                    message = "startServe вернул null (runtime не собрался)",
-                                    recoverable = true,
-                                ),
-                            restartCount = consecutiveFailures,
-                        )
-                    }
+                    emitFailure(
+                        stage = RuntimeStage.STARTING_SERVER,
+                        code = RuntimeErrorCode.SERVER_START_FAILED,
+                        message = "startServe вернул null (runtime не собрался)",
+                        recoverable = true,
+                    ) { copy(stage = RuntimeStage.CRASHED, restartCount = consecutiveFailures) }
                     if (consecutiveFailures >= MAX_RESTART_ATTEMPTS) {
                         emitTerminalRestartLimit()
                         return
@@ -212,38 +240,24 @@ class RuntimeManager(
                     // Сервер не ответил за окно — старт не удался: рвём процесс, счётчик++.
                     serve.stop()
                     consecutiveFailures++
-                    emit {
-                        copy(
-                            stage = RuntimeStage.CRASHED,
-                            lastError =
-                                RuntimeError(
-                                    stage = RuntimeStage.STARTING_SERVER,
-                                    code = RuntimeErrorCode.HEALTH_TIMEOUT,
-                                    message = "opencode serve не ответил по HTTP за 30s",
-                                    recoverable = true,
-                                ),
-                            restartCount = consecutiveFailures,
-                        )
-                    }
+                    emitFailure(
+                        stage = RuntimeStage.STARTING_SERVER,
+                        code = RuntimeErrorCode.HEALTH_TIMEOUT,
+                        message = "opencode serve не ответил по HTTP за 30s",
+                        recoverable = true,
+                    ) { copy(stage = RuntimeStage.CRASHED, restartCount = consecutiveFailures) }
                 } else {
                     consecutiveFailures = 0
-                    emit {
-                        copy(
-                            stage = if (memoryStarted) RuntimeStage.HEALTHY else RuntimeStage.DEGRADED,
-                            restartCount = 0,
-                            lastError =
-                                if (!memoryStarted) {
-                                    RuntimeError(
-                                        stage = RuntimeStage.STARTING_MEMORY,
-                                        code = RuntimeErrorCode.MEMORY_START_FAILED,
-                                        message = "локальная память MCP не работает — чат работает без неё",
-                                        recoverable = true,
-                                    )
-                                } else {
-                                    null
-                                },
-                            stopReason = null,
-                        )
+                    if (memoryStarted) {
+                        resolveActiveError()
+                    } else {
+                        // Serve поднялся, память нет — DEGRADED с причиной в lastError.
+                        emitFailure(
+                            stage = RuntimeStage.STARTING_MEMORY,
+                            code = RuntimeErrorCode.MEMORY_START_FAILED,
+                            message = "локальная память MCP не работает - чат работает без неё",
+                            recoverable = true,
+                        ) { copy(stage = RuntimeStage.DEGRADED, restartCount = 0, stopReason = null) }
                     }
 
                     // Живём, пока процесс жив и цикл не остановлен. Респавн поверх живого
@@ -259,27 +273,16 @@ class RuntimeManager(
                             when (currentState.stage) {
                                 RuntimeStage.HEALTHY ->
                                     if (!memAlive) {
-                                        emit {
-                                            copy(
-                                                stage = RuntimeStage.DEGRADED,
-                                                lastError =
-                                                    RuntimeError(
-                                                        stage = RuntimeStage.HEALTHY,
-                                                        code = RuntimeErrorCode.MEMORY_DIED,
-                                                        message = "Память (MCP-сервер) умерла - отключаем на лету",
-                                                        recoverable = true,
-                                                    ),
-                                            )
-                                        }
+                                        emitFailure(
+                                            stage = RuntimeStage.HEALTHY,
+                                            code = RuntimeErrorCode.MEMORY_DIED,
+                                            message = "Память (MCP-сервер) умерла - отключаем на лету",
+                                            recoverable = true,
+                                        ) { copy(stage = RuntimeStage.DEGRADED) }
                                     }
                                 RuntimeStage.DEGRADED ->
                                     if (memAlive) {
-                                        emit {
-                                            copy(
-                                                stage = RuntimeStage.HEALTHY,
-                                                lastError = null,
-                                            )
-                                        }
+                                        resolveActiveError()
                                     }
                                 else -> Unit
                             }
@@ -303,19 +306,12 @@ class RuntimeManager(
                         consecutiveFailures = 0
                     } else {
                         consecutiveFailures++
-                        emit {
-                            copy(
-                                stage = RuntimeStage.CRASHED,
-                                lastError =
-                                    RuntimeError(
-                                        stage = RuntimeStage.HEALTHY,
-                                        code = RuntimeErrorCode.SERVER_CRASHED,
-                                        message = "процесс serve умер сам (exit=${serve.lastExitCode ?: serve.currentExitCode()})",
-                                        recoverable = true,
-                                    ),
-                                restartCount = consecutiveFailures,
-                            )
-                        }
+                        emitFailure(
+                            stage = RuntimeStage.HEALTHY,
+                            code = RuntimeErrorCode.SERVER_CRASHED,
+                            message = "процесс serve умер сам (exit=${serve.lastExitCode ?: serve.currentExitCode()})",
+                            recoverable = true,
+                        ) { copy(stage = RuntimeStage.CRASHED, restartCount = consecutiveFailures) }
                     }
                 }
 
@@ -350,18 +346,13 @@ class RuntimeManager(
     }
 
     private fun emitTerminalInvalidRuntime() {
-        emit {
-            copy(
-                stage = RuntimeStage.FAILED_PERMANENTLY,
-                lastError =
-                    RuntimeError(
-                        stage = RuntimeStage.PREPARING,
-                        code = RuntimeErrorCode.MISSING_NATIVE_BIN,
-                        message = "libopencode.so / libldmusl.so отсутствуют в nativeLibraryDir",
-                        recoverable = false,
-                    ),
-                stopReason = StopReason.INVALID_RUNTIME,
-            )
+        emitFailure(
+            stage = RuntimeStage.PREPARING,
+            code = RuntimeErrorCode.MISSING_NATIVE_BIN,
+            message = "libopencode.so / libldmusl.so отсутствуют в nativeLibraryDir",
+            recoverable = false,
+        ) {
+            copy(stage = RuntimeStage.FAILED_PERMANENTLY, stopReason = StopReason.INVALID_RUNTIME)
         }
         running = false
     }
@@ -369,18 +360,13 @@ class RuntimeManager(
     private fun emitTerminalRestartLimit() {
         // lastError проставляем явно: после HEALTHY он может быть null, и UI
         // увидел бы CRASHED без причины. recoverable=false — терминально.
-        emit {
-            copy(
-                stage = RuntimeStage.FAILED_PERMANENTLY,
-                lastError =
-                    RuntimeError(
-                        stage = currentState.stage,
-                        code = RuntimeErrorCode.SERVER_CRASHED,
-                        message = "превышен лимит рестартов ($MAX_RESTART_ATTEMPTS) — runtime не поднялся",
-                        recoverable = false,
-                    ),
-                stopReason = StopReason.RESTART_LIMIT,
-            )
+        emitFailure(
+            stage = currentState.stage,
+            code = RuntimeErrorCode.SERVER_CRASHED,
+            message = "превышен лимит рестартов ($MAX_RESTART_ATTEMPTS) — runtime не поднялся",
+            recoverable = false,
+        ) {
+            copy(stage = RuntimeStage.FAILED_PERMANENTLY, stopReason = StopReason.RESTART_LIMIT)
         }
         running = false
     }
