@@ -175,6 +175,7 @@
     <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$4</ID>
     <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$512</ID>
     <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$60_000</ID>
+    <ID>MagicNumber:OpencodeRuntime.kt$OpencodeRuntime$24</ID>
     <ID>MagicNumber:OpencodeRuntime.kt$OpencodeRuntime$8192</ID>
     <ID>MagicNumber:OpencodeServerService.kt$ContextCompatSafe$26</ID>
     <ID>MagicNumber:OpencodeServerService.kt$OpencodeServerService$26</ID>
@@ -208,6 +209,7 @@
     <ID>MaxLineLength:ChatOverlay.kt$// Голосовой ввод: системный распознаватель (SpeechRecognizer). Удержание кнопки — запись, отпускание — распознавание и отправка.</ID>
     <ID>MaxLineLength:ChatOverlay.kt$AudioRecorder$Log.d("VOICE", "48к→16к: rmsL=${"%.3f".format(rmsL)} rmsR=${"%.3f".format(rmsR)} → беру ${if (rmsL &gt;= rmsR) "L" else "R"}")</ID>
     <ID>MaxLineLength:ChatOverlay.kt$AudioRecorder$Log.d("VOICE", "recorder source=$src (${if (src == MediaRecorder.AudioSource.UNPROCESSED) "UNPROCESSED" else "MIC"})")</ID>
+    <ID>MaxLineLength:ChatOverlay.kt$ServerAuth.basicHeader()?.let { h -&gt; setRequestProperty("Authorization", h) }</ID>
     <ID>MaxLineLength:ChatOverlay.kt$Text("#$modelColorHex", color = Color(0xFFBDBDBD), fontSize = 12.sp, modifier = Modifier.padding(start = 10.dp))</ID>
     <ID>MaxLineLength:ChatOverlay.kt$Text("Голосовое распознавание:", color = Color(0xFFBDBDBD), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)</ID>
     <ID>MaxLineLength:ChatOverlay.kt$Text(if (sttEngine == "ncnn") "● " else "○ ", color = Color(0xFFFF6D00), fontSize = 13.sp, fontWeight = FontWeight.Bold)</ID>
@@ -266,6 +268,7 @@
     <ID>NewLineAtEndOfFile:ProcessSupervisor.kt$org.opencode.mobile.server.ProcessSupervisor.kt</ID>
     <ID>NewLineAtEndOfFile:RuntimeManager.kt$org.opencode.mobile.server.RuntimeManager.kt</ID>
     <ID>NewLineAtEndOfFile:RuntimeState.kt$org.opencode.mobile.server.RuntimeState.kt</ID>
+    <ID>NewLineAtEndOfFile:ServerAuth.kt$org.opencode.mobile.server.ServerAuth.kt</ID>
     <ID>NewLineAtEndOfFile:Workspace.kt$org.opencode.mobile.server.Workspace.kt</ID>
     <ID>ReturnCount:ChatOverlay.kt$AudioRecorder$fun stop(): FloatArray</ID>
     <ID>ReturnCount:ChatOverlay.kt$private fun createSession(port: Int): String?</ID>

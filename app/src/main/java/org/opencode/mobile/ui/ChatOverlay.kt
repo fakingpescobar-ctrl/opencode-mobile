@@ -113,6 +113,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import org.opencode.mobile.R
+import org.opencode.mobile.server.ServerAuth
 import org.opencode.mobile.stt.WhisperTranscribeService
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -426,6 +427,7 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                         java.net.URL("http://127.0.0.1:$serverPort/session").openConnection().let {
                             (it as java.net.HttpURLConnection).apply {
                                 requestMethod = "GET"; connectTimeout = 2000; readTimeout = 4000
+                                ServerAuth.basicHeader()?.let { h -> setRequestProperty("Authorization", h) }
                             }
                             it.inputStream.bufferedReader().use { r -> r.readText() }
                         }
@@ -440,6 +442,7 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                                     java.net.URL("http://127.0.0.1:$serverPort/session/$sid").openConnection().let {
                                         (it as java.net.HttpURLConnection).apply {
                                             requestMethod = "DELETE"; connectTimeout = 2000; readTimeout = 4000
+                                            ServerAuth.basicHeader()?.let { h -> setRequestProperty("Authorization", h) }
                                         }
                                         it.responseCode
                                     }
@@ -2107,6 +2110,7 @@ private fun postAnswer(port: Int, sessionId: String, questionId: String, labels:
         conn.connectTimeout = 2000
         conn.doOutput = true
         conn.setRequestProperty("Content-Type", "application/json")
+        ServerAuth.basicHeader()?.let { conn.setRequestProperty("Authorization", it) }
         val answers = JSONArray()
         val one = JSONArray()
         one.put(labels.firstOrNull() ?: "")
@@ -2187,6 +2191,7 @@ private fun createSession(port: Int): String? {
         conn.readTimeout = 4000
         conn.doOutput = true
         conn.setRequestProperty("Content-Type", "application/json")
+        ServerAuth.basicHeader()?.let { conn.setRequestProperty("Authorization", it) }
         conn.outputStream.use { it.write("{}".toByteArray()) }
         if (conn.responseCode != 200) return null
         val body = conn.inputStream.bufferedReader().use { it.readText() }
@@ -2209,6 +2214,7 @@ private fun abortSession(port: Int, sessionId: String): Boolean {
         conn.requestMethod = "POST"
         conn.connectTimeout = 2000
         conn.readTimeout = 3000
+        ServerAuth.basicHeader()?.let { conn.setRequestProperty("Authorization", it) }
         val ok = conn.responseCode == 200
         conn.disconnect()
         ok
@@ -2224,6 +2230,7 @@ private fun postMessage(port: Int, sessionId: String, text: String): Boolean {
         conn.connectTimeout = 2000
         conn.doOutput = true
         conn.setRequestProperty("Content-Type", "application/json")
+        ServerAuth.basicHeader()?.let { conn.setRequestProperty("Authorization", it) }
         val body = "{\"parts\":[{\"type\":\"text\",\"text\":${JSONObject.quote(text)}}]}"
         conn.outputStream.use { it.write(body.toByteArray()) }
         // opencode отвечает на этот POST только после завершения генерации.
@@ -2249,6 +2256,7 @@ private fun get(url: String): String? {
         conn.connectTimeout = 1500
         conn.readTimeout = 3000
         conn.requestMethod = "GET"
+        ServerAuth.basicHeader()?.let { conn.setRequestProperty("Authorization", it) }
         if (conn.responseCode != 200) return null
         return conn.inputStream.bufferedReader().use { it.readText() }
     } catch (_: Exception) {

@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import org.opencode.mobile.server.OpencodeServerService
+import org.opencode.mobile.server.ServerAuth
 import org.opencode.mobile.ui.ChatOverlay
 import org.opencode.mobile.ui.theme.OpencodeMobileTheme
 
@@ -86,6 +87,9 @@ class MainActivity : ComponentActivity() {
         // enableEdgeToEdge включает wiring флагов, чтобы окно сжималось под софт-клавиатуру.
         enableEdgeToEdge()
         requestAllFilesAccessIfNeeded()
+        // Пароль serve читаем сразу: WebView (SPA) стартует раньше сервиса и
+        // должен успеть авторизоваться Basic-заголовком с первого запроса.
+        ServerAuth.setPasswordFromPrefs(this)
         OpencodeServerService.start(this)
         requestNotificationPermission()
         setContent {
@@ -310,6 +314,30 @@ fun OpencodeWebView(paused: Boolean = false) {
                         super.onReceivedError(view, request, error)
                         Log.e(TAG, "onReceivedError code=${error?.errorCode} desc=${error?.description} url=${request?.url}")
                     }
+
+                    // serve защищён Basic-auth (OPENCODE_SERVER_PASSWORD) — SPA сама
+                    // не знает пароль, отвечаем за неё системным диалогом WebView.
+                    override fun onReceivedHttpAuthRequest(
+                        view: WebView?,
+                        handler: android.webkit.HttpAuthHandler?,
+                        host: String?,
+                        realm: String?
+                    ) {
+                        // Рассчитываем на ServerAuth (заполнен в onCreate из prefs),
+                        // но подстраховываемся повторным чтением — serve мог
+                        // сгенерировать пароль уже после нашего onCreate.
+                        if (ServerAuth.password.isNullOrEmpty()) {
+                            // OpencodeWebView — top-level функция, контекст берём из WebView.
+                            val ctx = view?.context ?: return
+                            ServerAuth.setPasswordFromPrefs(ctx)
+                        }
+                        val pwd = ServerAuth.password
+                        if (handler != null && pwd != null) {
+                            handler.proceed("opencode", pwd)
+                        } else {
+                            handler?.cancel()
+                        }
+                    }
                 }
                 webChromeClient = object : WebChromeClient() {
                     override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
@@ -317,7 +345,9 @@ fun OpencodeWebView(paused: Boolean = false) {
                         return true
                     }
                 }
-                loadUrl("http://127.0.0.1:${OpencodeApp.ServerConfig.PORT}/")
+                ServerAuth.basicHeader()?.let { h ->
+                    loadUrl("http://127.0.0.1:${OpencodeApp.ServerConfig.PORT}/", mapOf("Authorization" to h))
+                } ?: loadUrl("http://127.0.0.1:${OpencodeApp.ServerConfig.PORT}/")
             }
         },
         update = { wv ->

@@ -157,6 +157,23 @@ object OpencodeRuntime {
         // muslDir (filesDir/musl с именами DT_NEEDED) в приоритете; nativeDir на всякий случай
         pb.environment()["LD_LIBRARY_PATH"] = "$muslDir:$nativeDir"
         pb.environment()["NO_COLOR"] = "1"
+        // Пароль serve: warning «server is unsecured» в логе уходит. Сервер висит на 127.0.0.1,
+        // наружу не торчит, но пароль всё равно зададим — формально «secured» и лог чище.
+        // Генерим один раз и храним в SharedPreferences, чтобы переживал перезапуски serve.
+        val serverPwdPrefs = context.getSharedPreferences("opencode_server", Context.MODE_PRIVATE)
+        var serverPwd = serverPwdPrefs.getString("password", null)
+        if (serverPwd == null) {
+            serverPwd = java.util.UUID.randomUUID().toString().replace("-", "").take(24)
+            // commit() (не apply()): пароль критичный — клиентские запросы идут сразу
+            // после старта serve, и WebView может перезапуститься раньше async-записи.
+            // apply() пишет в диск в фоне и не гарантирует видимость из другого
+            // процесса/компонента, commit() — синхронно и атомарно.
+            serverPwdPrefs.edit().putString("password", serverPwd).commit()
+        }
+        pb.environment()["OPENCODE_SERVER_PASSWORD"] = serverPwd
+        // Клиентские HTTP-запросы (ChatOverlay, WebView) тоже должны слать Basic-auth:
+        // serve теперь отдаёт 401 без Authorization. Прокидываем тот же пароль.
+        ServerAuth.setPassword(serverPwd)
         // Пустые/безопасные значения чтобы opencode не ныл
         pb.environment()["PATH"] = (pb.environment()["PATH"] ?: "") + ":" + nativeDir
         // Путь к встроенному musl-Bun (libbun-musl.so + лидирующий loader libldmusl.so).
