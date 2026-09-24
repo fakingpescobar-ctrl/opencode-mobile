@@ -40,8 +40,11 @@ jobs:
       - name: "Build (Kotlin compile) + линт"
         run: |
           chmod +x gradlew
-          ./gradlew :app:ktlintCheck :app:detekt --no-daemon --console=plain
-          ./gradlew :app:compileDebugKotlin --no-daemon --console=plain
+          # -PskipNativeBuild=true обязателен на ubuntu: без него конфигурация
+          # whisperlib падает на пин-проверке whisper.cpp (git -C C:/Projects/whisper.cpp
+          # не существует на runner). Нативку собирает только windows-джоба.
+          ./gradlew :app:ktlintCheck :app:detekt --no-daemon --console=plain -PskipNativeBuild=true
+          ./gradlew :app:compileDebugKotlin --no-daemon --console=plain -PskipNativeBuild=true
 
       # Реальная сборка APK (CI-15): раньше CI ограничивался compileDebugKotlin и
       # НЕ проверял packaging (ресурсы, jniLibs, манифест). whisperlib-нативка на
