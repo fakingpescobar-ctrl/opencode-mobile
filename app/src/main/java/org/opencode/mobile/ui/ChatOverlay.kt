@@ -122,6 +122,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.opencode.mobile.R
 import org.opencode.mobile.server.ServerAuth
+import org.opencode.mobile.stt.NcnnModelValidator
 import org.opencode.mobile.stt.WhisperTranscribeService
 import java.io.File
 import java.net.HttpURLConnection
@@ -333,7 +334,13 @@ fun ChatOverlay(
     // "whisper" переключаем на ncnn (быстрый локальный путь по тестам).
     // Пишем prefs НЕ в композиции (UI-21: побочный эффект выполнялся бы на каждый
     // рекомпоз до первого обновления ключа) — один раз через LaunchedEffect.
-    var sttEngine by remember { mutableStateOf(prefs.getString("stt_engine", "system") ?: "system") }
+    // Дефолт движка: явно сохранённая настройка выигрывает; иначе — ncnn, если
+    // локальная модель готова (переустановка сбрасывает prefs: system-Google на
+    // OPPO работает странно, а ncnn — единственный отлаженный путь).
+    val defaultEngine =
+        if (prefs.contains("stt_engine")) prefs.getString("stt_engine", "system")!!
+        else if (NcnnModelValidator.checkTurbo(context).ok) "ncnn" else "system"
+    var sttEngine by remember { mutableStateOf(defaultEngine) }
     // double-tap на "NCNN": показ подсказки о том, как работает двигатель (int8-энкодер и т.д.)
     var ncnnTipVisible by remember { mutableStateOf(false) }
     // Модель ncnn: "base" | "turbo" (выбор был в панели; ggml-модели убраны,
