@@ -3,7 +3,9 @@
 cmake_minimum_required(VERSION 3.16)
 project(compare_encoder CXX)
 
-set(NCNN_SRC "C:/Projects/opencode-mobile/third_party/ncnn")
+# ncnn — в репо (third_party/ncnn): путь ОТНОСИТЕЛЬНЫЙ от этого файла
+# (tools/ncnn-int8 → корень репо = 2 уровня вверх), не абсолютный C:/... (CI-17).
+set(NCNN_SRC "${CMAKE_CURRENT_LIST_DIR}/../../third_party/ncnn")
 set(NCNN_INC "${NCNN_SRC}/src")
 set(NCNN_LIB "${NCNN_SRC}/src/Release/ncnn.lib")
 

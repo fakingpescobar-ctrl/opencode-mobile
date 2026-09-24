@@ -2,24 +2,24 @@
 <SmellBaseline>
   <ManuallySuppressedIssues/>
   <CurrentIssues>
-    <ID>CyclomaticComplexMethod:ChatOverlay.kt$@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class) @Composable fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096)</ID>
+    <ID>CyclomaticComplexMethod:ChatOverlay.kt$@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class) @Composable fun ChatOverlay( modifier: Modifier = Modifier, serverPort: Int = 4096, )</ID>
     <ID>CyclomaticComplexMethod:ChatOverlay.kt$private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot?</ID>
-    <ID>CyclomaticComplexMethod:DiagnosticsScreen.kt$@Composable fun DiagnosticsScreen(onClose: () -&gt; Unit, modifier: Modifier = Modifier)</ID>
-    <ID>CyclomaticComplexMethod:ModelDownloader.kt$ModelDownloader$private suspend fun downloadTo( context: Context, url: String, dest: File, minBytes: Long, label: String, requiredFree: Long, onProgress: (Long, Long) -&gt; Unit ): File</ID>
+    <ID>CyclomaticComplexMethod:DiagnosticsScreen.kt$@Composable fun DiagnosticsScreen( onClose: () -&gt; Unit, modifier: Modifier = Modifier, )</ID>
+    <ID>CyclomaticComplexMethod:ModelDownloader.kt$ModelDownloader$private suspend fun downloadTo( context: Context, url: String, dest: File, minBytes: Long, label: String, requiredFree: Long, onProgress: (Long, Long) -&gt; Unit, ): File</ID>
     <ID>CyclomaticComplexMethod:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
     <ID>EmptyFunctionBlock:ChatOverlay.kt$&lt;no name provided&gt;${}</ID>
-    <ID>ForEachOnRange:RuntimeManager.kt$RuntimeManager$(1..MAX_LOG_FILES).map { File(parent, "opencode.log.$it") } .filter { it.exists() }</ID>
-    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun ContextGauge(filled: Long, limit: Long, modifier: Modifier = Modifier)</ID>
+    <ID>ForEachOnRange:RuntimeManager.kt$RuntimeManager$(1..MAX_LOG_FILES) .map { File(parent, "opencode.log.$it") } .filter { it.exists() }</ID>
+    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun ContextGauge( filled: Long, limit: Long, modifier: Modifier = Modifier, )</ID>
     <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun LiveToolRow(tool: ChatTool)</ID>
-    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun MCPIndicator(connected: Int, total: Int, modifier: Modifier = Modifier, onClick: () -&gt; Unit = {})</ID>
-    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun McpServerList(servers: List&lt;McpInfo&gt;, modifier: Modifier = Modifier)</ID>
-    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun MessageRow(m: ChatMsg, modelName: String = "Модель", modelFont: FontFamily = FontFamily.Monospace, modelColor: Color = Color(0xFFD97706))</ID>
+    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun MCPIndicator( connected: Int, total: Int, modifier: Modifier = Modifier, onClick: () -&gt; Unit = {}, )</ID>
+    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun McpServerList( servers: List&lt;McpInfo&gt;, modifier: Modifier = Modifier, )</ID>
+    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun MessageRow( m: ChatMsg, modelName: String = "Модель", modelFont: FontFamily = FontFamily.Monospace, modelColor: Color = Color(0xFFD97706), )</ID>
     <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun StalledRow()</ID>
     <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun ThinkingRow()</ID>
-    <ID>FunctionNaming:ChatOverlay.kt$@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class) @Composable fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096)</ID>
+    <ID>FunctionNaming:ChatOverlay.kt$@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class) @Composable fun ChatOverlay( modifier: Modifier = Modifier, serverPort: Int = 4096, )</ID>
     <ID>FunctionNaming:ChatOverlay.kt$private fun ContextCompatSpeechRecognizer(context: Context): SpeechRecognizer?</ID>
-    <ID>FunctionNaming:DiagnosticsScreen.kt$@Composable fun DiagnosticsScreen(onClose: () -&gt; Unit, modifier: Modifier = Modifier)</ID>
-    <ID>FunctionNaming:DiagnosticsScreen.kt$@Composable private fun InfoRow(label: String, value: String, valueColor: Color = Color(0xFFE6E6E6))</ID>
+    <ID>FunctionNaming:DiagnosticsScreen.kt$@Composable fun DiagnosticsScreen( onClose: () -&gt; Unit, modifier: Modifier = Modifier, )</ID>
+    <ID>FunctionNaming:DiagnosticsScreen.kt$@Composable private fun InfoRow( label: String, value: String, valueColor: Color = Color(0xFFE6E6E6), )</ID>
     <ID>FunctionNaming:DiagnosticsScreen.kt$@Composable private fun Section(title: String)</ID>
     <ID>FunctionNaming:MainActivity.kt$@Composable fun OpencodeWebView(paused: Boolean = false)</ID>
     <ID>FunctionNaming:MainActivity.kt$@Composable fun TerminalScreen()</ID>
@@ -31,14 +31,14 @@
     <ID>ImplicitDefaultLocale:ChatOverlay.kt$String.format("%.3f ", kotlin.math.sqrt(sum / (end - i)))</ID>
     <ID>InstanceOfCheckForException:ChatOverlay.kt$e is InterruptedException</ID>
     <ID>InstanceOfCheckForException:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$e is IllegalStateException</ID>
-    <ID>LongMethod:ChatOverlay.kt$@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class) @Composable fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096)</ID>
+    <ID>LongMethod:ChatOverlay.kt$@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class) @Composable fun ChatOverlay( modifier: Modifier = Modifier, serverPort: Int = 4096, )</ID>
     <ID>LongMethod:ChatOverlay.kt$fun stopVoice()</ID>
     <ID>LongMethod:ChatOverlay.kt$private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot?</ID>
-    <ID>LongMethod:DiagnosticsScreen.kt$@Composable fun DiagnosticsScreen(onClose: () -&gt; Unit, modifier: Modifier = Modifier)</ID>
-    <ID>LongMethod:ModelDownloader.kt$ModelDownloader$private suspend fun downloadTo( context: Context, url: String, dest: File, minBytes: Long, label: String, requiredFree: Long, onProgress: (Long, Long) -&gt; Unit ): File</ID>
+    <ID>LongMethod:DiagnosticsScreen.kt$@Composable fun DiagnosticsScreen( onClose: () -&gt; Unit, modifier: Modifier = Modifier, )</ID>
+    <ID>LongMethod:ModelDownloader.kt$ModelDownloader$private suspend fun downloadTo( context: Context, url: String, dest: File, minBytes: Long, label: String, requiredFree: Long, onProgress: (Long, Long) -&gt; Unit, ): File</ID>
     <ID>LongMethod:OpencodeRuntime.kt$OpencodeRuntime$fun startServe( context: Context, additionalArgs: List&lt;String&gt; = emptyList(), logFile: File, workDir: File? = null, ): Process?</ID>
     <ID>LongMethod:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
-    <ID>LongParameterList:ModelDownloader.kt$ModelDownloader$( context: Context, url: String, dest: File, minBytes: Long, label: String, requiredFree: Long, onProgress: (Long, Long) -&gt; Unit )</ID>
+    <ID>LongParameterList:ModelDownloader.kt$ModelDownloader$( context: Context, url: String, dest: File, minBytes: Long, label: String, requiredFree: Long, onProgress: (Long, Long) -&gt; Unit, )</ID>
     <ID>LoopWithTooManyJumpStatements:ChatOverlay.kt$for</ID>
     <ID>LoopWithTooManyJumpStatements:Ipv4Proxy.kt$Ipv4Proxy$while</ID>
     <ID>LoopWithTooManyJumpStatements:OpencodeRuntime.kt$OpencodeRuntime$for</ID>
@@ -168,6 +168,7 @@
     <ID>MagicNumber:Ipv4Proxy.kt$Ipv4Proxy$8192</ID>
     <ID>MagicNumber:MainActivity.kt$MainActivity$30</ID>
     <ID>MagicNumber:MainActivity.kt$MainActivity$33</ID>
+    <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$0.97</ID>
     <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$1024</ID>
     <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$16L</ID>
     <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$256</ID>
@@ -212,25 +213,15 @@
     <ID>MaxLineLength:ChatOverlay.kt$ServerAuth.basicHeader()?.let { h -&gt; setRequestProperty("Authorization", h) }</ID>
     <ID>MaxLineLength:ChatOverlay.kt$Text("#$modelColorHex", color = Color(0xFFBDBDBD), fontSize = 12.sp, modifier = Modifier.padding(start = 10.dp))</ID>
     <ID>MaxLineLength:ChatOverlay.kt$Text("Голосовое распознавание:", color = Color(0xFFBDBDBD), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$Text(if (sttEngine == "ncnn") "● " else "○ ", color = Color(0xFFFF6D00), fontSize = 13.sp, fontWeight = FontWeight.Bold)</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$Text(if (sttEngine == "system") "● " else "○ ", color = Color(0xFFFF6D00), fontSize = 13.sp, fontWeight = FontWeight.Bold)</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$android.util.Log.d("ChatOverlay", "FETCH parse out=${out.size} take=${take.size} thinking=$thinking q=${q != null} label=$label model=$bestModelId liveTool=${liveTool?.name} LAST=[$lastDiag] hasAct=${hasActivityFor(lastIndex)} hasFin=${hasFinishFor(lastIndex)}")</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$android.util.Log.d("ChatOverlay", "FETCH(cached) out=${take.size} thinking=$thinking q=${q != null} label=$label model=$bestModelId")</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$android.util.Log.d("ChatOverlay", "RENDER msgs=${msgs.size} thinking=${snapshot?.thinking} live=${snapshot?.liveTool?.name}")</ID>
     <ID>MaxLineLength:ChatOverlay.kt$drawCircle(Color.Black, radius = 10.dp.toPx(), center = mark, style = Stroke(width = 1.dp.toPx()))</ID>
     <ID>MaxLineLength:ChatOverlay.kt$drawCircle(Color.White, radius = 10.dp.toPx(), center = mark, style = Stroke(width = 2.dp.toPx()))</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$if</ID>
     <ID>MaxLineLength:ChatOverlay.kt$if (ttsTestRunning) "TTS-тест: синтезирую и распознаю…" else "Диагностика: синтез → распознавание (см. лог VOICE)"</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$private</ID>
+    <ID>MaxLineLength:ChatOverlay.kt$mcpServers.add(McpInfo(ms?.optString("name", "")?.takeIf { it.isNotBlank() } ?: key, status))</ID>
+    <ID>MaxLineLength:ChatOverlay.kt$private fun fontFor(key: String): FontFamily</ID>
     <ID>MaxLineLength:ChatOverlay.kt$setModelColor("%06X".format(android.graphics.Color.HSVToColor(floatArrayOf(h, 1f, v)) and 0xFFFFFF))</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$val</ID>
     <ID>MaxLineLength:ChatOverlay.kt$val conn = (URL("http://127.0.0.1:$port/api/session/$sessionId/question/$questionId/reply").openConnection() as HttpURLConnection)</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$val snap = ChatSnapshot(take, "$label", bestId, q, thinking, prettyModel(bestModelId), liveTool = liveTool, contextTokens = cached.contextTokens, mcpConnected = mcpConnected, mcpTotal = mcpTotal, mcpServers = mcpServers)</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$val snap = ChatSnapshot(take, "$label", bestId, q, thinking, prettyModel(bestModelId), liveTool = liveTool, contextTokens = ctxTokens, mcpConnected = mcpConnected, mcpTotal = mcpTotal, mcpServers = mcpServers)</ID>
     <ID>MaxLineLength:DiagnosticsScreen.kt$InfoRow("Workspace", if (serverState.workspaceExternal) "Внешний (MANAGE_EXTERNAL_STORAGE)" else "Внутренний")</ID>
-    <ID>MaxLineLength:DiagnosticsScreen.kt$InfoRow("ncnn-turbo", (if (s.ncnnTurboReady) "✔ готов" else "✘ отсутствует") + " · " + fmtBytes(s.ncnnTurboSize), if (s.ncnnTurboReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A))</ID>
     <ID>MaxLineLength:DiagnosticsScreen.kt$Text("Пусто — opencode.log ещё не создан (сервер не запускался).", color = Color(0xFF8A8A8A), fontSize = 12.sp)</ID>
-    <ID>MaxLineLength:DiagnosticsScreen.kt$if (memInfo.totalMem &gt; 0L) "свободно ${fmtBytes(memInfo.availMem)} / всего ${fmtBytes(memInfo.totalMem)}" else "недоступно"</ID>
     <ID>MaxLineLength:DiagnosticsScreen.kt$val ready = File(dir, "whisper_${model}_fbank.ncnn.param").exists() &amp;&amp; File(dir, "whisper_vocab.txt").exists()</ID>
     <ID>MaxLineLength:MainActivity.kt$&lt;no name provided&gt;$Log.e(TAG, "onReceivedError code=${error?.errorCode} desc=${error?.description} url=${request?.url}")</ID>
     <ID>MaxLineLength:MainActivity.kt$DropdownButton</ID>
@@ -246,8 +237,8 @@
     <ID>MaxLineLength:OpencodeRuntime.kt$OpencodeRuntime$android.util.Log.i("OpencodeRuntime", "ensureMemoryScript: wrote ${source.size}B to ${dest.absolutePath}")</ID>
     <ID>MaxLineLength:OpencodeServerService.kt$OpencodeServerService.Companion$context.startForegroundService(Intent(context, OpencodeServerService::class.java).setAction(ACTION_RESTART))</ID>
     <ID>MaxLineLength:OpencodeServerService.kt$OpencodeServerService.Companion$context.startForegroundService(Intent(context, OpencodeServerService::class.java).setAction(ACTION_STOP))</ID>
+    <ID>MaxLineLength:RuntimeManager.kt$RuntimeManager$"# OpenCode Terminal\n\nРабочая директория на внешнем хранилище (Documents/OpencodeTerminal).\n"</ID>
     <ID>MaxLineLength:RuntimeManager.kt$RuntimeManager$message = "процесс serve умер сам (exit=${serve.lastExitCode ?: serve.currentExitCode()})"</ID>
-    <ID>MaxLineLength:RuntimeManager.kt$RuntimeManager$readme.writeText("# OpenCode Terminal\n\nРабочая директория на внешнем хранилище (Documents/OpencodeTerminal).\n")</ID>
     <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$"$label повреждена (SHA-256 не совпал — файл испорчен или подменён). Удали модель и перекачай заново в настройках STT"</ID>
     <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$"base-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках STT"</ID>
     <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$Log.d(TAG, "worker: задача #${task.id}, ${task.samples.size} сэмплов, модель=${task.model}, движок=${task.engine}")</ID>
@@ -255,27 +246,22 @@
     <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("ncnn-модель не найдена в $dir — закинь ncnn-turbo/ (param+bin+vocab) в filesDir/models")</ID>
     <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("turbo-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках")</ID>
     <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("модель \"$model\" удалена или повреждена — перекачай её в настройках STT", e)</ID>
-    <ID>NestedBlockDepth:ChatOverlay.kt$@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class) @Composable fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096)</ID>
+    <ID>NestedBlockDepth:ChatOverlay.kt$@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class) @Composable fun ChatOverlay( modifier: Modifier = Modifier, serverPort: Int = 4096, )</ID>
     <ID>NestedBlockDepth:ChatOverlay.kt$private fun playNotificationSound(context: Context)</ID>
-    <ID>NestedBlockDepth:DiagnosticsScreen.kt$private fun readLogTail(file: File, maxBytes: Int = 4000): String</ID>
+    <ID>NestedBlockDepth:DiagnosticsScreen.kt$private fun readLogTail( file: File, maxBytes: Int = 4000, ): String</ID>
     <ID>NestedBlockDepth:ModelDownloader.kt$ModelDownloader$fun sha256Of(file: File): String?</ID>
     <ID>NestedBlockDepth:ModelDownloader.kt$ModelDownloader$private fun hasGgmlMagic(file: File): Boolean</ID>
     <ID>NestedBlockDepth:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
-    <ID>NewLineAtEndOfFile:ChatOverlay.kt$org.opencode.mobile.ui.ChatOverlay.kt</ID>
     <ID>NewLineAtEndOfFile:Ipv4Proxy.kt$org.opencode.mobile.server.Ipv4Proxy.kt</ID>
-    <ID>NewLineAtEndOfFile:ModelDownloader.kt$org.opencode.mobile.stt.ModelDownloader.kt</ID>
-    <ID>NewLineAtEndOfFile:OpencodeServerService.kt$org.opencode.mobile.server.OpencodeServerService.kt</ID>
     <ID>NewLineAtEndOfFile:ProcessSupervisor.kt$org.opencode.mobile.server.ProcessSupervisor.kt</ID>
-    <ID>NewLineAtEndOfFile:RuntimeManager.kt$org.opencode.mobile.server.RuntimeManager.kt</ID>
-    <ID>NewLineAtEndOfFile:RuntimeState.kt$org.opencode.mobile.server.RuntimeState.kt</ID>
     <ID>NewLineAtEndOfFile:ServerAuth.kt$org.opencode.mobile.server.ServerAuth.kt</ID>
     <ID>NewLineAtEndOfFile:Workspace.kt$org.opencode.mobile.server.Workspace.kt</ID>
     <ID>ReturnCount:ChatOverlay.kt$AudioRecorder$fun stop(): FloatArray</ID>
     <ID>ReturnCount:ChatOverlay.kt$private fun createSession(port: Int): String?</ID>
     <ID>ReturnCount:ChatOverlay.kt$private fun get(url: String): String?</ID>
     <ID>ReturnCount:ChatOverlay.kt$private fun prettyModel(id: String?): String</ID>
-    <ID>ReturnCount:ChatOverlay.kt$private fun questionOf(port: Int, sessionId: String): ChatQuestion?</ID>
-    <ID>ReturnCount:ChatOverlay.kt$private suspend fun scrollToBottomFull(state: LazyListState, target: Int)</ID>
+    <ID>ReturnCount:ChatOverlay.kt$private fun questionOf( port: Int, sessionId: String, ): ChatQuestion?</ID>
+    <ID>ReturnCount:ChatOverlay.kt$private suspend fun scrollToBottomFull( state: LazyListState, target: Int, )</ID>
     <ID>ReturnCount:DiagnosticsScreen.kt$private fun fmtBytes(b: Long): String</ID>
     <ID>ReturnCount:Ipv4Proxy.kt$Ipv4Proxy$fun ensureStarted(port: Int = PORT): Int?</ID>
     <ID>ReturnCount:Ipv4Proxy.kt$Ipv4Proxy$private fun handleConn(client: Socket)</ID>
@@ -283,7 +269,7 @@
     <ID>ReturnCount:ModelDownloader.kt$ModelDownloader$private fun parseContentRangeStart(header: String?): Long?</ID>
     <ID>ReturnCount:OpencodeRuntime.kt$OpencodeRuntime$fun startMemoryServer(context: Context, logFile: File, workDir: File? = null): Process?</ID>
     <ID>ReturnCount:OpencodeRuntime.kt$OpencodeRuntime$fun startServe( context: Context, additionalArgs: List&lt;String&gt; = emptyList(), logFile: File, workDir: File? = null, ): Process?</ID>
-    <ID>ReturnCount:OpencodeServerService.kt$OpencodeServerService$override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int</ID>
+    <ID>ReturnCount:OpencodeServerService.kt$OpencodeServerService$override fun onStartCommand( intent: Intent?, flags: Int, startId: Int, ): Int</ID>
     <ID>ReturnCount:RuntimeManager.kt$RuntimeManager$private fun rotateLogFile(logFile: File)</ID>
     <ID>ReturnCount:RuntimeManager.kt$RuntimeManager$private suspend fun waitForHttp(port: Int): Boolean</ID>
     <ID>ReturnCount:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
@@ -319,7 +305,6 @@
     <ID>UnusedParameter:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$model: String</ID>
     <ID>UnusedParameter:Workspace.kt$Workspace$context: Context</ID>
     <ID>UnusedPrivateMember:MainActivity.kt$@Composable private fun ControlBar(status: OpencodeServerService.ServerStatus)</ID>
-    <ID>UnusedPrivateProperty:MainActivity.kt$val context = LocalContext.current</ID>
     <ID>UseCheckOrError:ModelDownloader.kt$ModelDownloader$throw IllegalStateException("${dest.name}: SHA-256 не сошёлся после fallback-переноса — файл не тот")</ID>
     <ID>UseCheckOrError:ModelDownloader.kt$ModelDownloader$throw IllegalStateException("${dest.name}: файл не на месте после переноса (${dest.length()} != $done)")</ID>
     <ID>UseCheckOrError:ModelDownloader.kt$ModelDownloader$throw IllegalStateException("HTTP $code при скачивании ${dest.name}")</ID>

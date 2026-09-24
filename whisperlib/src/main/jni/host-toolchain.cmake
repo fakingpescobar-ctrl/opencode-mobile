@@ -29,7 +29,15 @@ set(CMAKE_CXX_COMPILER "cl.exe" CACHE FILEPATH "Host CXX compiler" FORCE)
 
 # Ninja (host) + его путь.
 set(CMAKE_GENERATOR "Ninja")
-set(CMAKE_MAKE_PROGRAM "C:/Users/OLD/AppData/Local/Android/Sdk/cmake/3.22.1/bin/ninja.exe" CACHE STRING "Ninja for host vulkan-shaders-gen")
+# Ninja ищем в PATH/стандартных местах; fallback — SDK windows-машины разработчика
+# (CI-17: абсолютный путь не обязан существовать на другом хосте).
+find_program(NCNN_NINJA_EXE ninja)
+if(NCNN_NINJA_EXE)
+    set(CMAKE_MAKE_PROGRAM "${NCNN_NINJA_EXE}" CACHE STRING "Ninja for host vulkan-shaders-gen" FORCE)
+else()
+    set(CMAKE_MAKE_PROGRAM "C:/Users/OLD/AppData/Local/Android/Sdk/cmake/3.22.1/bin/ninja.exe" CACHE STRING "Ninja for host vulkan-shaders-gen" FORCE)
+endif()
 
 # Quoted + forward slashes (избегаем Invalid character escape '\P').
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "C:/Projects/opencode-mobile/whisperlib/build/vk-host" CACHE STRING "Host runtime output")
+# Относительно toolchain-файла (whisperlib/src/main/jni → ../../../ = whisperlib).
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/../../../build/vk-host" CACHE STRING "Host runtime output")

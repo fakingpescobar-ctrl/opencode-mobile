@@ -3,7 +3,12 @@ cmake_minimum_required(VERSION 3.10)
 project(whisper.cpp)
 
 set(CMAKE_CXX_STANDARD 17)
-set(WHISPER_LIB_DIR "C:/Projects/whisper.cpp")
+# whisper.cpp — ВНЕШНЯЯ зависимость (нет в репо): путь конфигурируется через
+# -DWHISPER_LIB_DIR (gradle передаёт из -PwhisperCppDir=...), дефолт — машина
+# разработчика. На CI (ubuntu) сборка нативки выключена целиком (skipNativeBuild).
+if(NOT DEFINED WHISPER_LIB_DIR)
+    set(WHISPER_LIB_DIR "C:/Projects/whisper.cpp" CACHE PATH "Path to whisper.cpp source (external dependency)")
+endif()
 
 # Get whisper.cpp version
 file(READ "${WHISPER_LIB_DIR}/CMakeLists.txt" MAIN_CMAKE_CONTENT)
@@ -92,7 +97,10 @@ include_directories(${WHISPER_LIB_DIR}/ggml/src/ggml-cpu)
 # Existing whisper / whisper_v8fp16_va targets are untouched -> engine-selection
 # by loading libwhisper.so (whisper.cpp) vs libncnnwhisper.so (ncnn).
 
-set(NCNN_DIR "C:/Projects/opencode-mobile/third_party/ncnn")
+# ncnn — в репо (third_party/ncnn): путь ОТНОСИТЕЛЬНЫЙ от этого файла
+# (whisperlib/src/main/jni/whisper → корень репо = 5 уровней вверх), а не
+# абсолютный C:/... — иначе сборка непереносима (CI-17).
+set(NCNN_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../../../third_party/ncnn")
 
 set(NCNN_VULKAN ON CACHE BOOL "" FORCE)
 set(NCNN_RUNTIME_CPU ON CACHE BOOL "" FORCE)

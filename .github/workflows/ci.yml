@@ -28,7 +28,7 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: "gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}"
+          key: "gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', '**/*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}"
           restore-keys: |
             gradle-${{ runner.os }}-
 
@@ -42,6 +42,34 @@ jobs:
           chmod +x gradlew
           ./gradlew :app:ktlintCheck :app:detekt --no-daemon --console=plain
           ./gradlew :app:compileDebugKotlin --no-daemon --console=plain
+
+      # Реальная сборка APK (CI-15): раньше CI ограничивался compileDebugKotlin и
+      # НЕ проверял packaging (ресурсы, jniLibs, манифест). whisperlib-нативка на
+      # ubuntu не собирается в принципе — ей нужны ВНЕШНИЕ whisper.cpp (вне репо)
+      # и VulkanSDK (Windows): сборка модуля выключается флагом -PskipNativeBuild,
+      # APK пакует prebuilt libopencode.so/libbun-musl.so из jniLibs (CI-16).
+      - name: "Assemble debug APK (без whisper-нативки — см. skipNativeBuild)"
+        run: |
+          ./gradlew :app:assembleDebug -PskipNativeBuild=true --no-daemon --console=plain
+
+      # Нативные артефакты НЕ генерируются на CI (внешние зависимости): проверяем,
+      # что prebuilt в репо на месте и ncnn-исходники (in-repo) присутствуют.
+      # Полная native-сборка — локально на машине разработчика (build_ncnn.bat /
+      # build-release.ps1) с whisper.cpp + VulkanSDK (CI-16).
+      - name: "Нативная проверка (prebuilt jniLibs + ncnn in-repo)"
+        run: |
+          test -s app/src/main/jniLibs/arm64-v8a/libopencode.so
+          test -s app/src/main/jniLibs/arm64-v8a/libbun-musl.so
+          test -d third_party/ncnn/src
+          echo "native artifacts: OK (prebuilt opencode/bun .so + ncnn sources in-repo; whisper.cpp/VulkanSDK — external, собираются локально)"
+
+      - name: Upload APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: ignore
 
       - name: Upload lint reports
         if: always()
