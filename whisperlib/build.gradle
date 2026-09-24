@@ -10,6 +10,9 @@ plugins {
 def whisperCppDir = (project.findProperty('whisperCppDir') ?: 'C:/Projects/whisper.cpp').toString().replace('\\', '/')
 def vulkanSdkDir = project.findProperty('vulkanSdkDir') ?: 'C:/VulkanSDK/1.4.357.0'
 def skipNativeBuild = project.hasProperty('skipNativeBuild')
+// Vulkan OFF (CI: windows native job без VulkanSDK — прод-путь STT и так CPU/int8;
+// локально по умолчанию ON, поведение не меняется): -PggmlVulkan=OFF
+def ggmlVulkan = !project.hasProperty('ggmlVulkan') || project.property('ggmlVulkan') == 'ON'
 
 // ---- Пин внешнего whisper.cpp (PR3): fail-fast против неизвестного состояния ----
 // Нативка собирается ТОЛЬКО против зафиксированного коммита (WHISPER_PIN).
@@ -64,20 +67,26 @@ android {
                     //
                     // GGML_VULKAN=ON включает Vulkan-бэкенд (Adreno GPU). Должна
                     // быть установлена Vulkan SDK (LunarG) — ggml компилирует
-                    // шейдеры через glslc из неё при конфигурации.
+                    // шейдеры через glslc из неё при конфигурации. На CI (windows
+                    // native job) сборка идёт с -PggmlVulkan=OFF: прод-путь STT —
+                    // CPU/int8 (Vulkan — эксперимент, выключен), SDK грузить не нужно.
                     def whisperArg = "-DWHISPER_LIB_DIR=${whisperCppDir}"
-                    arguments "-DCMAKE_BUILD_TYPE=Release", "-DGGML_VULKAN=ON", whisperArg,
-                         // SPIRV-Headers нужен host-инструменту vulkan-shaders-gen
-                         // (компиляция .comp/.glsl шейдеров в .spv через glslc).
-                         "-DSPIRV-Headers_DIR=${vulkanSdkDir}/Lib/cmake/SPIRV-Headers",
-                         "-DCMAKE_PREFIX_PATH=${vulkanSdkDir}/Lib",
-                         // Vulkan-Hpp (vulkan/vulkan.hpp) есть только в VulkanSDK,
-                         // НЕ в NDK (там только C-заголовки). Направляем find_package:
-                         "-DVulkan_INCLUDE_DIR=${vulkanSdkDir}/Include",
-                         // Свой host-toolchain для vulkan-shaders-gen — штатный шаблон
-                         // ggml ломается на Windows (backslash в без-кавычек пути).
-                         // Путь ОТНОСИТЕЛЬНЫЙ от модуля (projectDir), не абсолютный.
-                         "-DGGML_VULKAN_SHADERS_GEN_TOOLCHAIN=${projectDir}/src/main/jni/host-toolchain.cmake"
+                    arguments("-DCMAKE_BUILD_TYPE=Release", "-DGGML_VULKAN=${ggmlVulkan ? 'ON' : 'OFF'}", whisperArg)
+                    if (ggmlVulkan) {
+                        arguments(
+                            // SPIRV-Headers нужен host-инструменту vulkan-shaders-gen
+                            // (компиляция .comp/.glsl шейдеров в .spv через glslc).
+                            "-DSPIRV-Headers_DIR=${vulkanSdkDir}/Lib/cmake/SPIRV-Headers",
+                            "-DCMAKE_PREFIX_PATH=${vulkanSdkDir}/Lib",
+                            // Vulkan-Hpp (vulkan/vulkan.hpp) есть только в VulkanSDK,
+                            // НЕ в NDK (там только C-заголовки). Направляем find_package:
+                            "-DVulkan_INCLUDE_DIR=${vulkanSdkDir}/Include",
+                            // Свой host-toolchain для vulkan-shaders-gen — штатный шаблон
+                            // ggml ломается на Windows (backslash в без-кавычек пути).
+                            // Путь ОТНОСИТЕЛЬНЫЙ от модуля (projectDir), не абсолютный.
+                            "-DGGML_VULKAN_SHADERS_GEN_TOOLCHAIN=${projectDir}/src/main/jni/host-toolchain.cmake"
+                        )
+                    }
                     // When set, builds whisper.android against the version located
                     // at GGML_HOME instead of the copy bundled with whisper.cpp.
                     if (

@@ -42,6 +42,17 @@ Android-приложение, которое запускает **opencode serve
 - Поддержка **вопросов от модели**: если модель спрашивает выбор/уточнение —
   приложение показывает варианты-кнопки и поле для своего ответа.
 
+### Локальная память (MCP)
+- Вместе с serve поднимается второй процесс — **memory.js**: MCP-сервер
+  локальной памяти (`127.0.0.1:4199/mcp`, streamable HTTP), хранилище в
+  `$XDG_CONFIG_HOME/opencode/memory/`. Модель получает memory-инструменты
+  (запоминать/искать по прошлым сессиям).
+- Индикатор **«N MCP»** в шапке чата — сколько MCP-серверов зарегистрировано
+  в serve (запрос `GET /mcp`). Если конфиг потерялся — `ensureMcpConfig()`
+  сам допишет секцию `mcp.memory` в `opencode.jsonc` до старта serve
+  (фикс «0 MCP»). Проверка в диагностике — протокольная: `GET /mcp` → 2xx
+  (не просто TCP-порт).
+
 ### Голосовой ввод (STT) — два движка
 1. **Системный Android (Google)** — встроенный распознаватель, не требует
    загрузки моделей, нужен доступ к сети.
@@ -51,6 +62,12 @@ Android-приложение, которое запускает **opencode serve
    скрыт) — рабочий локальный путь только через ncnn.
 
 Движок выбирается в настройках (шестерёнка в шапке чата).
+
+**Потоковый пайплайн (ЭКСП-5)**: VAD-сегментация + чанкинг — длинная речь
+режется на сегменты, каждый распознаётся отдельно (первые слова видны на
+1–2 с, без потери хвоста на записи >30 с, меньше галлюцинаций).
+Классы: `SpeechSegmenter`, `ChunkedTranscriber`. Подробности —
+`docs/EXPERIMENTS-STT-LATENCY.md`.
 
 ### Модель STT
 - **large-v3-turbo (574 МБ)** — единственная рабочая модель; скачивается по
@@ -71,8 +88,17 @@ Android-приложение, которое запускает **opencode serve
 ### Сервер
 - Foreground-сервис держит процесс opencode serve, рестартует его с backoff
   при падении, проверяет доступность по HTTP.
-- Рабочая директория (workspace) создаётся на устройстве, сессии живут там.
+- **Basic Auth**: serve доступен наружу (HTTP на `127.0.0.1:4096`), поэтому
+  все запросы идут с заголовком Authorization; пароль генерируется при
+  первом запуске и лежит в зашифрованных prefs (`ServerAuth`). Без пароля —
+  `401 Unauthorized` (проверено на чистой установке).
+- Рабочая директория (workspace, конфиг, сессии, память) — на внешнем
+  хранилище `/sdcard/Documents/OpencodeTerminal/opencode/`, переживает
+  переустановку приложения (в отличие от prefs/моделей).
 - Уведомление с кнопкой «Stop» и статусом процесса.
+- Диагностика (`RuntimeValidation`): порты serve/память, протокольная
+  проверка MCP (`/mcp` → 2xx), наличие и валидность ncnn-моделей — экран
+  «Диагностика» в настройках.
 
 ---
 
@@ -101,6 +127,24 @@ Android-ядро позволяет `execve` только с **PIE**-бинар�
    зависимые либы копируются в `filesDir/musl` с правильными DT_NEEDED-именами,
    на них указывает `LD_LIBRARY_PATH`.
 
+### Локальная память MCP и Basic Auth
+
+| Процесс | Порт | Роль |
+|---|---|---|
+| `libopencode.so serve` | `127.0.0.1:4096` | сам сервер opencode (HTTP API, Basic Auth) |
+| `libbun-musl.so memory.js` | `127.0.0.1:4199` | MCP-сервер локальной памяти (streamable HTTP/SSE) |
+
+- Модель видит память, только если serve **зарегистрировал** MCP-сервер.
+  Регистрация — секция `"mcp": { "memory": { "type": "remote", "url": ... } }`
+  в `$XDG_CONFIG_HOME/opencode/opencode.jsonc` (тот же формат, что на
+  десктопе: `~/.config/opencode/opencode.json`). `OpencodeRuntime.ensureMcpConfig()`
+  дописывает её идемпотентно (атомарно tmp+rename) до старта serve — фикс
+  «0 MCP» (пустой конфиг, когда память слушала порт, но не была зарегистрирована).
+- Индикатор «N MCP» в шапке чата = ответ `GET /mcp` с сервера (через
+  `LocalOpenCodeClient` с авторизацией; без заголовков serve отвечает 401).
+- Память хранится в `$XDG_CONFIG_HOME/opencode/memory/` (json-каталог прошлых
+  сессий), переживает переустановку приложения.
+
 ### STT на CPU (ncnn, int8)
 
 На ColorOS/OPPO фоновые compute-потоки душатся до 1–5% CPU. Поэтому
@@ -110,8 +154,9 @@ Android-ядро позволяет `execve` только с **PIE**-бинар�
 
 Производительность (OPPO, 02.09.2026): **encoder int8 ≈ 8.82 s** (fp32 — 17.9 s;
 Vulkan-эксперимент 6.45 s — стабилен, но в проде выключен), decoder с KV-cache
-~0.5–0.6 s → полное распознавание ~10 s. Следующий шаг — потоковый пайплайн
-(первые слова через 1–2 s). Подробности: `docs/EXPERIMENTS-STT-LATENCY.md`.
+~0.5–0.6 s → полное распознавание ~10 s. Бенч 24.09.2026: int8 6.8–8.2 s vs
+fp32 14.5–15.2 s (~2.1×). Подробности: `docs/EXPERIMENTS-STT-LATENCY.md`,
+`docs/stt-bench-2026-09-24.csv`.
 
 Запись: `AudioRecord` → PCM16 16кГц → нормализация пика (телефоны пишут тихо) →
 подкладка тишины (whisper врёт на очень коротких клипах) → распознавание →
@@ -131,6 +176,11 @@ Vulkan-эксперимент 6.45 s — стабилен, но в проде в
 2. Собрать: `Build → Build APK(s)` или из терминала:
    ```bash
    ./gradlew :app:assembleDebug
+   ```
+   На Windows есть обёртка `build.ps1` (Android Studio JDK, offline, лог
+   в `build-inst.log`):
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File build.ps1 -Task debug
    ```
 3. APK появится в `app/build/outputs/apk/debug/app-debug.apk`.
 4. Установить:
@@ -177,8 +227,14 @@ Vulkan-эксперимент 6.45 s — стабилен, но в проде в
 
 Логи смотреть:
 ```bash
-adb logcat -s OpencodeRuntime OpencodeServerService OpencodeWebView VOICE
+adb logcat -s OpencodeRuntime OpencodeServerService OpencodeWebView VOICE RuntimeValidation ChatOverlay
 ```
+
+> ⚠️ **После переустановки (uninstall → install)**: сессии/история/память на
+> внешнем хранилище сохраняются, но **авторизация сбрасывается** — serve
+> сгенерирует новый пароль, и ncnn-модели STT нужно раскатать заново
+> (`filesDir` стирается). Проверка: «OpenCode server — Running», мониторинг
+> чата работает с новым паролем автоматически.
 
 ---
 
@@ -189,16 +245,27 @@ app/
   src/main/
     java/org/opencode/mobile/
       MainActivity.kt            # точка входа, WebView, статус сервера
-      OpencodeApp.kt             # глобальный конфиг каталогов (sandbox)
+      OpencodeApp.kt             # глобальный конфиг каталогов (sandbox + $XDG_CONFIG_HOME)
       server/
-        OpencodeServerService.kt # foreground-сервис: жизненный цикл opencode serve
-        OpencodeRuntime.kt       # запуск musl-лоадером
-        Ipv4Proxy.kt             # вспомогательный (исходящая сеть)
+        OpencodeServerService.kt # foreground-сервис: жизненный цикл serve
+        OpencodeRuntime.kt       # запуск musl-лоадером + ensureMcpConfig (память MCP)
+        RuntimeManager.kt        # стейт-машина запуска: память → serve → HEALTHY (backoff)
+        RuntimeState.kt          # состояния рантайма
+        RuntimeValidation.kt     # диагностика: порты, memoryHttpOk() (протокол MCP), модели
+        ProcessSupervisor.kt     # рестарты с backoff + контроль процессов
+        Workspace.kt             # пути к workspace/конфигу (external storage)
+        ServerAuth.kt            # Basic Auth: генерация пароля, заголовки, Keystore/prefs
+        LocalOpenCodeClient.kt   # единый HTTP-клиент serve (get/post/postAsync/delete + auth)
+        Ipv4Proxy.kt             # исходящая сеть (CONNECT-туннель, IPv4-first)
       stt/
         WhisperTranscribeService.kt  # foreground-сервис распознавания
+        SpeechSegmenter.kt           # VAD-сегментация речи (ЭКСП-5)
+        ChunkedTranscriber.kt        # чанкинг: сегменты → отдельные распознавания
+        NcnnModelValidator.kt        # валидация набора ncnn-моделей
         ModelDownloader.kt           # скачивание turbo (lazy, resume, integrity SHA-256)
       ui/
         ChatOverlay.kt           # нативный чат поверх WebView + настройки
+        DiagnosticsScreen.kt     # экран диагностики (порты/MCP/модели)
         theme/Theme.kt
     assets/                       # ТОЛЬКО шрифты + MCP-память (моделей нет)
     jniLibs/arm64-v8a/           # prebuilt opencode-бинарь + musl-libs (в git)
@@ -208,13 +275,15 @@ whisperlib/                      # JNI-обёртки: ncnn (рабочий) + w
     whisper/CMakeLists.txt       # переменные внешних путей: WHISPER_LIB_DIR, NCNN_DIR
     ncnn/                        # ncnn-whisper (int8 encoder, KV-cache) — основной путь
 docs/
-  ROADMAP.md                     # три трека к релизу
-  EXPERIMENTS-STT-LATENCY.md     # замеры ncnn: int8/Vulkan/KV
+  ROADMAP.md                     # три трека к релизу + статусы
+  EXPERIMENTS-STT-LATENCY.md     # замеры ncnn: int8/Vulkan/KV, ЭКСП-5 (чанкинг)
+  stt-bench-2026-09-24.csv       # бенч int8 vs fp32 (24.09.2026)
 tools/
   connect_proxy.py               # legacy-помощник по исходящей сети (можно удалить)
   ncnn-whisper-plan.md           # план интеграции ncnn-whisper
   ncnn-int8-plan.md              # int8-квантование (внедрено) + тулзы квантования
   ncnn-int8/                     # quantize_block.py, compare_encoder.cpp (хост-бенч)
+build.ps1                        # сборка на Windows: debug/release (Android Studio JDK)
 ```
 
 ---
@@ -264,8 +333,9 @@ tools/
   политикой `untrusted_app` — проверено на реальном OPPO, на других устройствах
   стоит делать smoke-тест.
 - **Performance STT**: полное распознавание turbo ncnn ~10 s (encoder int8 8.82 s).
-  Движки: foreground-сервис + int8-encoder внедрены; следующий шаг — потоковый
-  пайплайн/чанкинг (первые слова 1–2 s) и WER-бенч (см. `docs/EXPERIMENTS-STT-LATENCY.md`).
+  Внедрены foreground-сервис + int8-encoder + **VAD-чанкинг** (первые слова 1–2 s);
+  бенч на устройстве: int8 ~2.1× fp32 (см. `docs/EXPERIMENTS-STT-LATENCY.md`,
+  `docs/stt-bench-2026-09-24.csv`). Осталось: формальный WER-бенч.
 - **Vulkan (GPU)**: экспериментально (int8-Vulkan 6.45 s, стабилен), но в проде
   выключен — включение = `encoder.opt.use_vulkan_compute=true` в `ncnn_jni.cpp`.
 

@@ -80,3 +80,55 @@ jobs:
             app/build/reports/ktlint
             app/build/reports/detekt
           if-no-files-found: ignore
+
+  # Windows native job (CI-17): реальная сборка whisper-нативки против
+  # закреплённого пина whisper.cpp + ncnn (in-repo), БЕЗ VulkanSDK:
+  # -PggmlVulkan=OFF (прод-путь STT — CPU/int8, Vulkan эксперимент выключен;
+  # локально ggmlVulkan по умолчанию ON — поведение разработчика не меняется).
+  # Проверяет, что НАСТОЯЩАЯ сборка (CMake/NDK, без skipNativeBuild) проходит на
+  # чистой машине, а не только на машине разработчика.
+  native-windows:
+    name: Native build (windows, whisper.cpp + ncnn, CPU)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # whisper.cpp — внешняя зависимость: клонируем ровно тот пин, что
+      # закреплён в whisperlib/src/main/jni/whisper/WHISPER_PIN (gradle
+      # сам сделает fail-fast при несовпадении HEAD).
+      - name: Checkout pinned whisper.cpp
+        uses: actions/checkout@v4
+        with:
+          repository: ggerganov/whisper.cpp
+          ref: c4ac0012a8f5a2082dfca6aad4ddfd8b2c02b337
+          path: whisper.cpp
+          fetch-depth: 1
+
+      - name: JDK 17 (AGP 8.x)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: SDK platform / build-tools / NDK / CMake
+        shell: pwsh
+        run: |
+          $sdk = "$env:ANDROID_SDK_ROOT\cmdline-tools\latest\bin\sdkmanager.bat"
+          & $sdk "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: "Assemble debug APK с нативкой (CPU, без VulkanSDK)"
+        shell: pwsh
+        run: |
+          .\gradlew.bat :app:assembleDebug `
+            "-PwhisperCppDir=${{ github.workspace }}\whisper.cpp" `
+            "-PggmlVulkan=OFF" --no-daemon --console=plain
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload APK (native)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apk-native-windows
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: ignore
