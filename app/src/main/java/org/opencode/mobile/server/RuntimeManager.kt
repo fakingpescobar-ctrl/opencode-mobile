@@ -1,11 +1,11 @@
 package org.opencode.mobile.server
 
 import android.content.Context
-import org.opencode.mobile.OpencodeApp
-import java.io.File
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import org.opencode.mobile.OpencodeApp
+import java.io.File
 
 /**
  * Оркестратор жизненного цикла opencode runtime (Этап 2).
@@ -25,7 +25,6 @@ class RuntimeManager(
     private val context: Context,
     private val onState: (RuntimeState) -> Unit,
 ) {
-
     companion object {
         /** Максимум подряд идущих витков без HEALTHY (лимит рестартов). */
         const val MAX_RESTART_ATTEMPTS = 5
@@ -38,6 +37,13 @@ class RuntimeManager(
 
         /** Общий бюджет всех лог-файлов цепочки; хвосты сверх бюджета удаляются. */
         private const val LOG_TOTAL_BUDGET = 30L * 1024 * 1024
+
+        /** Окно ожидания подъёма локальной памяти (10 попыток × 500 мс). */
+        private const val MEMORY_HEALTH_TIMEOUT_MS = 10_000L
+        private const val MEMORY_HEALTH_POLL_MS = 500L
+
+        /** Таймаут TCP-коннекта к сокету памяти. */
+        private const val MEMORY_TCP_TIMEOUT_MS = 1_000
     }
 
     private val logFile = File(context.filesDir, "opencode.log")
@@ -53,6 +59,7 @@ class RuntimeManager(
     private var restartRequested = false
 
     private var currentState = RuntimeState()
+
     private fun emit(transform: RuntimeState.() -> RuntimeState) {
         currentState = currentState.transform()
         onState(currentState)
@@ -95,25 +102,29 @@ class RuntimeManager(
                 // Рабочая директория (workspace): без неё у opencode serve нет ни одного
                 // проекта — SPA показывал "Здесь пока ничего нет". Эта версия serve не
                 // понимает --dir, поэтому директория задаётся через CWD (workDir).
-                val wsResult = runCatching {
-                    val w = Workspace.resolve(context)
-                    val readme = File(w, "README.md")
-                    if (!readme.exists()) {
-                        readme.writeText("# OpenCode Terminal\n\nРабочая директория на внешнем хранилище (Documents/OpencodeTerminal).\n")
+                val wsResult =
+                    runCatching {
+                        val w = Workspace.resolve(context)
+                        val readme = File(w, "README.md")
+                        if (!readme.exists()) {
+                            readme.writeText(
+                                "# OpenCode Terminal\n\nРабочая директория на внешнем хранилище (Documents/OpencodeTerminal).\n",
+                            )
+                        }
+                        w to Workspace.usingExternal(context)
                     }
-                    w to Workspace.usingExternal(context)
-                }
                 if (wsResult.isFailure) {
                     consecutiveFailures++
                     emit {
                         copy(
                             stage = RuntimeStage.CRASHED,
-                            lastError = RuntimeError(
-                                stage = RuntimeStage.PREPARING,
-                                code = RuntimeErrorCode.UNKNOWN,
-                                message = "workspace resolve: ${wsResult.exceptionOrNull()?.message}",
-                                recoverable = true,
-                            ),
+                            lastError =
+                                RuntimeError(
+                                    stage = RuntimeStage.PREPARING,
+                                    code = RuntimeErrorCode.UNKNOWN,
+                                    message = "workspace resolve: ${wsResult.exceptionOrNull()?.message}",
+                                    recoverable = true,
+                                ),
                             restartCount = consecutiveFailures,
                         )
                     }
@@ -121,28 +132,32 @@ class RuntimeManager(
                         emitTerminalRestartLimit()
                         return
                     }
-                    delay(backoff(consecutiveFailures))
+                    restartBackoff(consecutiveFailures)
                     continue
                 }
                 val (workspace, ext) = wsResult.getOrThrow()
                 android.util.Log.i("OpencodeServer", "workspace=${workspace.absolutePath} external=$ext")
 
                 // Локальная память MCP как HTTP/TCP-сервер (MEMORY_PORT) — ДО serve.
-                // Не стартовала — НЕ фатал: serve продолжит, статус DEGRADED.
+                // Не стартовала/умерла — НЕ фатал: serve продолжит, статус DEGRADED.
+                // Живой process != поднятая память: startMemoryServer возвращает процесс,
+                // который может мгновенно упасть или не открыть сокет — верифицируем
+                // isAlive + TCP-коннект на MEMORY_PORT (окно ~5s).
                 emit { copy(stage = RuntimeStage.STARTING_MEMORY, workspaceExternal = ext) }
                 val memProc = OpencodeRuntime.startMemoryServer(context, logFile = logFile, workDir = workspace)
-                val memoryStarted = memProc != null
+                val memoryStarted = memProc != null && waitForMemory(memProc)
                 if (memoryStarted) {
                     memory.setProcess(memProc)
                 } else {
                     emit {
                         copy(
-                            lastError = RuntimeError(
-                                stage = RuntimeStage.STARTING_MEMORY,
-                                code = RuntimeErrorCode.MEMORY_START_FAILED,
-                                message = "локальная память MCP не поднялась — чат работает без неё",
-                                recoverable = true,
-                            )
+                            lastError =
+                                RuntimeError(
+                                    stage = RuntimeStage.STARTING_MEMORY,
+                                    code = RuntimeErrorCode.MEMORY_START_FAILED,
+                                    message = "локальная память MCP не поднялась — чат работает без неё",
+                                    recoverable = true,
+                                ),
                         )
                     }
                 }
@@ -154,12 +169,13 @@ class RuntimeManager(
                     emit {
                         copy(
                             stage = RuntimeStage.CRASHED,
-                            lastError = RuntimeError(
-                                stage = RuntimeStage.STARTING_SERVER,
-                                code = RuntimeErrorCode.SERVER_START_FAILED,
-                                message = "startServe вернул null (runtime не собрался)",
-                                recoverable = true,
-                            ),
+                            lastError =
+                                RuntimeError(
+                                    stage = RuntimeStage.STARTING_SERVER,
+                                    code = RuntimeErrorCode.SERVER_START_FAILED,
+                                    message = "startServe вернул null (runtime не собрался)",
+                                    recoverable = true,
+                                ),
                             restartCount = consecutiveFailures,
                         )
                     }
@@ -167,7 +183,7 @@ class RuntimeManager(
                         emitTerminalRestartLimit()
                         return
                     }
-                    delay(backoff(consecutiveFailures))
+                    restartBackoff(consecutiveFailures)
                     continue
                 }
                 serve.setProcess(proc)
@@ -191,12 +207,13 @@ class RuntimeManager(
                     emit {
                         copy(
                             stage = RuntimeStage.CRASHED,
-                            lastError = RuntimeError(
-                                stage = RuntimeStage.STARTING_SERVER,
-                                code = RuntimeErrorCode.HEALTH_TIMEOUT,
-                                message = "opencode serve не ответил по HTTP за 30s",
-                                recoverable = true,
-                            ),
+                            lastError =
+                                RuntimeError(
+                                    stage = RuntimeStage.STARTING_SERVER,
+                                    code = RuntimeErrorCode.HEALTH_TIMEOUT,
+                                    message = "opencode serve не ответил по HTTP за 30s",
+                                    recoverable = true,
+                                ),
                             restartCount = consecutiveFailures,
                         )
                     }
@@ -206,14 +223,17 @@ class RuntimeManager(
                         copy(
                             stage = if (memoryStarted) RuntimeStage.HEALTHY else RuntimeStage.DEGRADED,
                             restartCount = 0,
-                            lastError = if (!memoryStarted) {
-                                RuntimeError(
-                                    stage = RuntimeStage.STARTING_MEMORY,
-                                    code = RuntimeErrorCode.MEMORY_START_FAILED,
-                                    message = "локальная память MCP не работает — чат работает без неё",
-                                    recoverable = true,
-                                )
-                            } else null,
+                            lastError =
+                                if (!memoryStarted) {
+                                    RuntimeError(
+                                        stage = RuntimeStage.STARTING_MEMORY,
+                                        code = RuntimeErrorCode.MEMORY_START_FAILED,
+                                        message = "локальная память MCP не работает — чат работает без неё",
+                                        recoverable = true,
+                                    )
+                                } else {
+                                    null
+                                },
                             stopReason = null,
                         )
                     }
@@ -223,6 +243,39 @@ class RuntimeManager(
                     // restartRequested выводит мгновенно (не ждём смерти процесса
                     // от daemon-треда — флаг уже обработан ниже).
                     while (serve.isAlive && running && !restartRequested) {
+                        // Мониторинг памяти: деградация только из HEALTHY (не спамим
+                        // lastError каждые 3s), восстановление DEGRADED→HEALTHY при
+                        // оживлении (процесс жив и TCP-порт отвечает).
+                        if (memoryStarted) {
+                            val memAlive = memory.isAlive && tcpOk(OpencodeRuntime.MEMORY_PORT)
+                            when (currentState.stage) {
+                                RuntimeStage.HEALTHY ->
+                                    if (!memAlive) {
+                                        emit {
+                                            copy(
+                                                stage = RuntimeStage.DEGRADED,
+                                                lastError =
+                                                    RuntimeError(
+                                                        stage = RuntimeStage.HEALTHY,
+                                                        code = RuntimeErrorCode.MEMORY_DIED,
+                                                        message = "Память (MCP-сервер) умерла - отключаем на лету",
+                                                        recoverable = true,
+                                                    ),
+                                            )
+                                        }
+                                    }
+                                RuntimeStage.DEGRADED ->
+                                    if (memAlive) {
+                                        emit {
+                                            copy(
+                                                stage = RuntimeStage.HEALTHY,
+                                                lastError = null,
+                                            )
+                                        }
+                                    }
+                                else -> Unit
+                            }
+                        }
                         delay(3000)
                     }
                     if (!running) break
@@ -245,12 +298,13 @@ class RuntimeManager(
                         emit {
                             copy(
                                 stage = RuntimeStage.CRASHED,
-                                lastError = RuntimeError(
-                                    stage = RuntimeStage.HEALTHY,
-                                    code = RuntimeErrorCode.SERVER_CRASHED,
-                                    message = "процесс serve умер сам (exit=${serve.lastExitCode ?: serve.currentExitCode()})",
-                                    recoverable = true,
-                                ),
+                                lastError =
+                                    RuntimeError(
+                                        stage = RuntimeStage.HEALTHY,
+                                        code = RuntimeErrorCode.SERVER_CRASHED,
+                                        message = "процесс serve умер сам (exit=${serve.lastExitCode ?: serve.currentExitCode()})",
+                                        recoverable = true,
+                                    ),
                                 restartCount = consecutiveFailures,
                             )
                         }
@@ -264,7 +318,7 @@ class RuntimeManager(
                 // При явном стопе выходим сразу; backoff только после реальных фейлов
                 // (consecutiveFailures > 0: мягкий рестарт — без паузы, мгновенно).
                 if (consecutiveFailures > 0 && running) {
-                    delay(backoff(consecutiveFailures))
+                    restartBackoff(consecutiveFailures)
                 }
             }
         } finally {
@@ -276,10 +330,12 @@ class RuntimeManager(
             serve.stop()
             memory.stop()
             // Публикуем STOPPED при штатном выходе (requestStop) и при отмене корутины
-            // (CancellationException из delay). НО: CRASHED не затираем НИКОГДА —
-            // информация о терминальном отказе важнее (RESTART_LIMIT / INVALID_RUNTIME /
-            // просто последний краш, который юзер прервал кнопкой Stop).
-            if (currentState.stage != RuntimeStage.CRASHED) {
+            // (CancellationException из delay). НО: CRASHED/FAILED_PERMANENTLY не затираем
+            // НИКОГДА — информация о терминальном отказе важнее (RESTART_LIMIT /
+            // INVALID_RUNTIME / просто последний краш, который юзер прервал кнопкой Stop).
+            if (currentState.stage != RuntimeStage.CRASHED &&
+                currentState.stage != RuntimeStage.FAILED_PERMANENTLY
+            ) {
                 emit { copy(stage = RuntimeStage.STOPPED, stopReason = StopReason.USER_STOP) }
             }
         }
@@ -288,13 +344,14 @@ class RuntimeManager(
     private fun emitTerminalInvalidRuntime() {
         emit {
             copy(
-                stage = RuntimeStage.CRASHED,
-                lastError = RuntimeError(
-                    stage = RuntimeStage.PREPARING,
-                    code = RuntimeErrorCode.MISSING_NATIVE_BIN,
-                    message = "libopencode.so / libldmusl.so отсутствуют в nativeLibraryDir",
-                    recoverable = false,
-                ),
+                stage = RuntimeStage.FAILED_PERMANENTLY,
+                lastError =
+                    RuntimeError(
+                        stage = RuntimeStage.PREPARING,
+                        code = RuntimeErrorCode.MISSING_NATIVE_BIN,
+                        message = "libopencode.so / libldmusl.so отсутствуют в nativeLibraryDir",
+                        recoverable = false,
+                    ),
                 stopReason = StopReason.INVALID_RUNTIME,
             )
         }
@@ -306,13 +363,14 @@ class RuntimeManager(
         // увидел бы CRASHED без причины. recoverable=false — терминально.
         emit {
             copy(
-                stage = RuntimeStage.CRASHED,
-                lastError = RuntimeError(
-                    stage = currentState.stage,
-                    code = RuntimeErrorCode.SERVER_CRASHED,
-                    message = "превышен лимит рестартов ($MAX_RESTART_ATTEMPTS) — runtime не поднялся",
-                    recoverable = false,
-                ),
+                stage = RuntimeStage.FAILED_PERMANENTLY,
+                lastError =
+                    RuntimeError(
+                        stage = currentState.stage,
+                        code = RuntimeErrorCode.SERVER_CRASHED,
+                        message = "превышен лимит рестартов ($MAX_RESTART_ATTEMPTS) — runtime не поднялся",
+                        recoverable = false,
+                    ),
                 stopReason = StopReason.RESTART_LIMIT,
             )
         }
@@ -349,7 +407,11 @@ class RuntimeManager(
      */
     fun requestRestart() {
         restartRequested = true
-        Thread { serve.stop() }.apply { isDaemon = true; name = "runtime-restart" }.start()
+        Thread { serve.stop() }
+            .apply {
+                isDaemon = true
+                name = "runtime-restart"
+            }.start()
     }
 
     /**
@@ -359,6 +421,44 @@ class RuntimeManager(
         val shift = if (failures > 0) failures else 1
         return (1000L shl minOf(shift, 4)).coerceAtMost(15_000L)
     }
+
+    /** Backoff-пауза с явной фазой RESTARTING: UI видит «перезапускается», а не
+     *  зависший CRASHED. Пауза отменяемая (стоп/рестарт выходят сразу). */
+    private suspend fun restartBackoff(failures: Int) {
+        emit { copy(stage = RuntimeStage.RESTARTING) }
+        delay(backoff(failures))
+    }
+
+    /**
+     * Ждём, пока локальная память реально поднимется: процесс жив И открыл TCP
+     * на MEMORY_PORT (окно ~5s = 10 × 500ms). startMemoryServer возвращает живой
+     * process и в случае, когда тот мгновенно падает или сокет не открыт, —
+     * без этой проверки память ошибочно считалась бы стартовавшей (P0-3).
+     */
+    private suspend fun waitForMemory(proc: Process): Boolean {
+        val deadline = System.currentTimeMillis() + MEMORY_HEALTH_TIMEOUT_MS
+        var ok = false
+        while (!ok && System.currentTimeMillis() < deadline) {
+            if (!currentCoroutineContext().isActive || !running || restartRequested) break
+            if (proc.isAlive && tcpOk(OpencodeRuntime.MEMORY_PORT)) {
+                ok = true
+            } else {
+                delay(MEMORY_HEALTH_POLL_MS)
+            }
+        }
+        return ok
+    }
+
+    /** TCP-коннект до localhost:port (память слушает сокет, не HTTP). */
+    private fun tcpOk(port: Int): Boolean =
+        try {
+            java.net.Socket().use { socket ->
+                socket.connect(java.net.InetSocketAddress("127.0.0.1", port), MEMORY_TCP_TIMEOUT_MS)
+            }
+            true
+        } catch (e: Exception) {
+            false
+        }
 
     /**
      * Ротация opencode.log по размеру: при превышении MAX_LOG_BYTES текущий лог
@@ -405,7 +505,8 @@ class RuntimeManager(
     private fun pruneLogs(logFile: File) {
         val parent = logFile.parentFile ?: return
         var total = logFile.length()
-        (1..MAX_LOG_FILES).map { File(parent, "opencode.log.$it") }
+        (1..MAX_LOG_FILES)
+            .map { File(parent, "opencode.log.$it") }
             .filter { it.exists() }
             .forEach { total += it.length() }
         var idx = MAX_LOG_FILES
@@ -440,16 +541,17 @@ class RuntimeManager(
         return false
     }
 
-    private fun pingOk(port: Int): Boolean = try {
-        val url = java.net.URL("http://127.0.0.1:$port/")
-        val conn = url.openConnection() as java.net.HttpURLConnection
-        conn.connectTimeout = 1000
-        conn.readTimeout = 1000
-        conn.requestMethod = "HEAD"
-        val code = conn.responseCode
-        conn.disconnect()
-        code in 200..499
-    } catch (e: Exception) {
-        false
-    }
+    private fun pingOk(port: Int): Boolean =
+        try {
+            val url = java.net.URL("http://127.0.0.1:$port/")
+            val conn = url.openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = 1000
+            conn.readTimeout = 1000
+            conn.requestMethod = "HEAD"
+            val code = conn.responseCode
+            conn.disconnect()
+            code in 200..499
+        } catch (e: Exception) {
+            false
+        }
 }

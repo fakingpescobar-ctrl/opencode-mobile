@@ -4,9 +4,9 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioRecord
-import android.media.AudioAttributes
 import android.media.MediaRecorder
 import android.media.RingtoneManager
 import android.net.Uri
@@ -28,10 +28,10 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -42,13 +42,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -61,38 +58,35 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.Icon
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.FormatColorText
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.InvertColors
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.TextFormat
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -105,22 +99,17 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import org.opencode.mobile.R
-import org.opencode.mobile.server.ServerAuth
-import org.opencode.mobile.stt.WhisperTranscribeService
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
-import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -129,13 +118,16 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.concurrent.thread
 import org.json.JSONArray
 import org.json.JSONObject
+import org.opencode.mobile.R
+import org.opencode.mobile.server.ServerAuth
+import org.opencode.mobile.stt.WhisperTranscribeService
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
+import kotlin.concurrent.thread
 
 private const val MAX_SHOWN = 120
 
@@ -153,6 +145,7 @@ private const val SEGMENTS = 30
 // дольше этого времени без какого-либо прогресса в сессии — считаем зависание
 // и снимаем вечный индикатор «… генерируется …». 120_000 = 2 минуты паузы.
 private const val STALL_TIMEOUT_MS = 120_000L
+
 // «Пустой» открытый assistant-шаг (нет ни activity, ни текста, ни выполняемого тула) —
 // модель явно работает (предикт/ранний tool), но молчит БЕЗ частей. Провайдер может
 // держать такую паузу перед первым токеном/тулом достаточно долго (замер ~25-30с на
@@ -188,10 +181,13 @@ private const val STABLE_POLL_ROUNDS = 3
 // При просрочке фонем его на следующем поллинге. Индикатор «N MCP» обновится
 // с задержкой ≤3с — некритично.
 private const val MCP_CACHE_MS = 3_000L
+
 private object McpCache {
     @Volatile var raw: String? = null
+
     @Volatile var at: Long = 0L
 }
+
 // Вернёт сырой JSON MCP из кэша, если он свежий (<MCP_CACHE_MS), иначе загрузит.
 private fun getMcpCached(port: Int): String? {
     val now = System.currentTimeMillis()
@@ -220,28 +216,38 @@ private data class ChatParseResult(
     val contextTokens: Long,
     val hasActivity: List<Boolean>,
     val hasFinish: List<Boolean>,
-    val lastTool: ChatTool?
+    val lastTool: ChatTool?,
 )
+
 private object ChatCache {
     @Volatile var sessionId: String? = null
+
     @Volatile var rawHash: Int = 0
+
     @Volatile var result: ChatParseResult? = null
 }
 
-private data class ChatMsg(val role: String, val text: String)
+private data class ChatMsg(
+    val role: String,
+    val text: String,
+)
 
-private data class ChatQuestion(val id: String, val text: String, val options: List<String>)
+private data class ChatQuestion(
+    val id: String,
+    val text: String,
+    val options: List<String>,
+)
 
 // Один вызов инструмента модели (tool) для live-чипа «что делает сейчас».
 private data class ChatTool(
     val name: String,
-    val detail: String
+    val detail: String,
 )
 
 // Отдельный MCP-сервер: имя + статус ("connected" / "disconnected" / ...).
 private data class McpInfo(
     val name: String,
-    val status: String
+    val status: String,
 )
 
 private data class ChatSnapshot(
@@ -261,7 +267,7 @@ private data class ChatSnapshot(
     val mcpConnected: Int = 0,
     val mcpTotal: Int = 0,
     // Полный список MCP-серверов (имя + статус) для выпадающего списка по тапу.
-    val mcpServers: List<McpInfo> = emptyList()
+    val mcpServers: List<McpInfo> = emptyList(),
 )
 
 /**
@@ -272,7 +278,10 @@ private data class ChatSnapshot(
  */
 @OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
-fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
+fun ChatOverlay(
+    modifier: Modifier = Modifier,
+    serverPort: Int = 4096,
+) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val lifecycleState = androidx.compose.runtime.remember { lifecycleOwner.lifecycle }
@@ -322,36 +331,52 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
     // Настройки голоса: движок распознавания ("system" | "ncnn").
     // Миграция: движок whisper.cpp (ggml) убран из продукта — ранее сохранённый
     // "whisper" переключаем на ncnn (быстрый локальный путь по тестам).
-    val savedEngine = prefs.getString("stt_engine", "system") ?: "system"
-    val migratedEngine = if (savedEngine == "whisper") {
-        // stt_model не был задан: ставим turbo (base-конверт битый)
-        prefs.edit().putString("stt_engine", "ncnn").putString("stt_model", "turbo").apply()
-        "ncnn"
-    } else savedEngine
-    var sttEngine by remember { mutableStateOf(migratedEngine) }
+    // Пишем prefs НЕ в композиции (UI-21: побочный эффект выполнялся бы на каждый
+    // рекомпоз до первого обновления ключа) — один раз через LaunchedEffect.
+    var sttEngine by remember { mutableStateOf(prefs.getString("stt_engine", "system") ?: "system") }
     // double-tap на "NCNN": показ подсказки о том, как работает двигатель (int8-энкодер и т.д.)
     var ncnnTipVisible by remember { mutableStateOf(false) }
     // Модель ncnn: "base" | "turbo" (выбор был в панели; ggml-модели убраны,
     // переключаться теперь негде). Дефолт — turbo: base-конверт даёт мусор
     // (петля декодера, никогда EOT), turbo-int8 — единственный рабочий путь.
     var sttModel by remember { mutableStateOf(prefs.getString("stt_model", "turbo") ?: "turbo") }
+    LaunchedEffect(Unit) {
+        if (sttEngine == "whisper") {
+            prefs
+                .edit()
+                .putString("stt_engine", "ncnn")
+                .putString("stt_model", "turbo")
+                .apply()
+            sttEngine = "ncnn"
+            sttModel = "turbo"
+        }
+    }
     var showSettings by remember { mutableStateOf(false) }
     // Полноэкранная диагностика: состояние сервера, STT-модели, лог serve.
     // Оверлей рисуется ПОСЛЕДНИМ в корневом Surface — поверх чата и панелей.
     var showDiagnostics by remember { mutableStateOf(false) }
     // Выпадающий список MCP-серверов (открывается тапом по индикатору MCP).
     var showMcpList by remember { mutableStateOf(false) }
+    // «Новая сессия» в полёте — иконка + подсвечивается зелёным (UI-19:
+    // подсветка НЕ привязана к showMcpList — это два независимых состояния).
+    var creatingSession by remember { mutableStateOf(false) }
+    // Диалог подтверждения «очистить все сессии» (long-press на +).
+    var confirmClearAll by remember { mutableStateOf(false) }
     var whisperRecorder: AudioRecorder? = null
 
-    fun answerQuestion(q: ChatQuestion, text: String) {
+    fun answerQuestion(
+        q: ChatQuestion,
+        text: String,
+    ) {
         val sessionId = snapshot?.activeId ?: return
         if (sending) return
         sending = true
         userScrolledUp = false
         scope.launch {
-            val ok = withContext(Dispatchers.IO) {
-                if (sessionId != null) postAnswer(serverPort, sessionId, q.id, listOf(text)) else false
-            }
+            val ok =
+                withContext(Dispatchers.IO) {
+                    if (sessionId != null) postAnswer(serverPort, sessionId, q.id, listOf(text)) else false
+                }
             sending = false
             if (ok) {
                 draft = ""
@@ -376,10 +401,11 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
         sending = true
         userScrolledUp = false
         scope.launch {
-            val ok = withContext(Dispatchers.IO) {
-                val id = sessionId ?: createSession(serverPort)
-                if (id != null) postMessage(serverPort, id, text) else false
-            }
+            val ok =
+                withContext(Dispatchers.IO) {
+                    val id = sessionId ?: createSession(serverPort)
+                    if (id != null) postMessage(serverPort, id, text) else false
+                }
             sending = false
             if (ok) {
                 draft = ""
@@ -404,92 +430,145 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
         }
     }
 
-    // «Начать новую сессию»: создаём пустую свежую сессию и удаляем ВСЕ остальные
-    // (включая зависшие/пустые). Используется как жёсткий «очистить все сессии»,
-    // когда модель залипла на огромном контексте и abort не пробивает сервер.
+    // «Начать новую сессию»: создаём пустую свежую сессию и ПЕРЕКЛЮЧАЕМСЯ на неё
+    // (старые сессии остаются в списке). Жёсткая очистка ВСЕХ сессий — отдельно,
+    // clearAllSessions (long-press на +) с диалогом подтверждения (UI-20).
     fun newSession() {
+        creatingSession = true
         scope.launch {
-            val created = withContext(Dispatchers.IO) {
-                val id = createSession(serverPort) // POST /session → fresh id
-                if (id != null) {
-                    // Сбрасываем кэш ленты ТОЛЬКО при успехе: при отказе createSession
-                    // поллинг продолжит прежнюю ленту без лишнего форс-перезапроса.
-                    ChatCache.sessionId = null
-                    ChatCache.rawHash = 0
-                    ChatCache.result = null
-                    // Удаляем ВСЕ остальные сессии — чистый старт. DELETE сам по себе не
-                    // обязан останавливать бегущую генерацию: модель может продолжать
-                    // писать ответ в сессию, которую мы удаляем (CPU горит впустую, сервер
-                    // «залипает»). Поэтому каждую умирающую сессию сначала глушим abort-ом
-                    // (идемпотентен, безвреден для пустых/404) — независимо от того, была
-                    // ли она активной на момент сброса.
-                    val raw = try {
-                        java.net.URL("http://127.0.0.1:$serverPort/session").openConnection().let {
-                            (it as java.net.HttpURLConnection).apply {
-                                requestMethod = "GET"; connectTimeout = 2000; readTimeout = 4000
-                                ServerAuth.basicHeader()?.let { h -> setRequestProperty("Authorization", h) }
-                            }
-                            it.inputStream.bufferedReader().use { r -> r.readText() }
-                        }
-                    } catch (_: Exception) { "[]" }
-                    try {
-                        val arr = org.json.JSONArray(raw)
-                        for (i in 0 until arr.length()) {
-                            val sid = arr.getJSONObject(i).optString("id", null) ?: continue
-                            if (sid != id) {
-                                abortSession(serverPort, sid)
-                                try {
-                                    java.net.URL("http://127.0.0.1:$serverPort/session/$sid").openConnection().let {
-                                        (it as java.net.HttpURLConnection).apply {
-                                            requestMethod = "DELETE"; connectTimeout = 2000; readTimeout = 4000
-                                            ServerAuth.basicHeader()?.let { h -> setRequestProperty("Authorization", h) }
-                                        }
-                                        it.responseCode
-                                    }
-                                } catch (_: Exception) {}
-                            }
-                        }
-                    } catch (_: Exception) {}
+            val created =
+                withContext(Dispatchers.IO) {
+                    val id = createSession(serverPort) // POST /session → fresh id
+                    if (id != null) {
+                        // Сбрасываем кэш ленты ТОЛЬКО при успехе: при отказе createSession
+                        // поллинг продолжит прежнюю ленту без лишнего форс-перезапроса.
+                        ChatCache.sessionId = null
+                        ChatCache.rawHash = 0
+                        ChatCache.result = null
+                    }
+                    id != null
                 }
-                id != null
-            }
+            creatingSession = false
             if (created) vibrate(context)
             // snapshot сбросим на ближайшем поллинге (fetchChatSnapshot перевыберет bestId).
             ChatCache.result = null
         }
     }
 
-    val voiceListener = remember {
-        object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) { listening = true }
-            override fun onBeginningOfSpeech() {}
-            override fun onRmsChanged(rmsdB: Float) {}
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {}
-            override fun onError(error: Int) {
-                listening = false
-                speechError = when (error) {
-                    SpeechRecognizer.ERROR_NO_MATCH -> "не расслышал, попробуй ещё"
-                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "слишком тихо"
-                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "нет доступа к микрофону"
-                    else -> "ошибка распознавания ($error)"
+    // «Очистить все сессии»: создаём свежую сессию и удаляем ВСЕ остальные
+    // (включая зависшие/пустые). Используется как жёсткий «чистый старт», когда
+    // модель залипла на огромном контексте и abort не пробивает сервер.
+    // Вызывается только из диалога подтверждения (long-press на +).
+    fun clearAllSessions() {
+        creatingSession = true
+        scope.launch {
+            val created =
+                withContext(Dispatchers.IO) {
+                    val id = createSession(serverPort) // POST /session → fresh id
+                    if (id != null) {
+                        // Сбрасываем кэш ленты ТОЛЬКО при успехе: при отказе createSession
+                        // поллинг продолжит прежнюю ленту без лишнего форс-перезапроса.
+                        ChatCache.sessionId = null
+                        ChatCache.rawHash = 0
+                        ChatCache.result = null
+                        // Удаляем ВСЕ остальные сессии — чистый старт. DELETE сам по себе не
+                        // обязан останавливать бегущую генерацию: модель может продолжать
+                        // писать ответ в сессию, которую мы удаляем (CPU горит впустую, сервер
+                        // «залипает»). Поэтому каждую умирающую сессию сначала глушим abort-ом
+                        // (идемпотентен, безвреден для пустых/404) — независимо от того, была
+                        // ли она активной на момент сброса.
+                        val raw =
+                            try {
+                                java.net.URL("http://127.0.0.1:$serverPort/session").openConnection().let {
+                                    (it as java.net.HttpURLConnection).apply {
+                                        requestMethod = "GET"
+                                        connectTimeout = 2000
+                                        readTimeout = 4000
+                                        ServerAuth.basicHeader()?.let { h -> setRequestProperty("Authorization", h) }
+                                    }
+                                    it.inputStream.bufferedReader().use { r -> r.readText() }
+                                }
+                            } catch (_: Exception) {
+                                "[]"
+                            }
+                        try {
+                            val arr = org.json.JSONArray(raw)
+                            for (i in 0 until arr.length()) {
+                                val sid = arr.getJSONObject(i).optString("id", null) ?: continue
+                                if (sid != id) {
+                                    abortSession(serverPort, sid)
+                                    try {
+                                        java.net.URL("http://127.0.0.1:$serverPort/session/$sid").openConnection().let {
+                                            (it as java.net.HttpURLConnection).apply {
+                                                requestMethod = "DELETE"
+                                                connectTimeout = 2000
+                                                readTimeout = 4000
+                                                ServerAuth.basicHeader()?.let { h -> setRequestProperty("Authorization", h) }
+                                            }
+                                            it.responseCode
+                                        }
+                                    } catch (_: Exception) {
+                                    }
+                                }
+                            }
+                        } catch (_: Exception) {
+                        }
+                    }
+                    id != null
                 }
-            }
-            override fun onResults(results: Bundle?) {
-                listening = false
-                val best = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim()
-                if (!best.isNullOrEmpty()) {
-                    speechError = null
-                    draft = best
-                    send()
-                } else {
-                    speechError = "не расслышал, попробуй ещё"
-                }
-            }
-            override fun onPartialResults(partialResults: Bundle?) {}
-            override fun onEvent(eventType: Int, params: Bundle?) {}
+            creatingSession = false
+            if (created) vibrate(context)
+            // snapshot сбросим на ближайшем поллинге (fetchChatSnapshot перевыберет bestId).
+            ChatCache.result = null
         }
     }
+
+    val voiceListener =
+        remember {
+            object : RecognitionListener {
+                override fun onReadyForSpeech(params: Bundle?) {
+                    listening = true
+                }
+
+                override fun onBeginningOfSpeech() {}
+
+                override fun onRmsChanged(rmsdB: Float) {}
+
+                override fun onBufferReceived(buffer: ByteArray?) {}
+
+                override fun onEndOfSpeech() {}
+
+                override fun onError(error: Int) {
+                    listening = false
+                    speechError =
+                        when (error) {
+                            SpeechRecognizer.ERROR_NO_MATCH -> "не расслышал, попробуй ещё"
+                            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "слишком тихо"
+                            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "нет доступа к микрофону"
+                            else -> "ошибка распознавания ($error)"
+                        }
+                }
+
+                override fun onResults(results: Bundle?) {
+                    listening = false
+                    val best = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim()
+                    if (!best.isNullOrEmpty()) {
+                        speechError = null
+                        draft = best
+                        send()
+                    } else {
+                        speechError = "не расслышал, попробуй ещё"
+                    }
+                }
+
+                override fun onPartialResults(partialResults: Bundle?) {}
+
+                override fun onEvent(
+                    eventType: Int,
+                    params: Bundle?,
+                ) {}
+            }
+        }
 
     fun startVoice() {
         speechError = null
@@ -508,12 +587,17 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
             }
             return
         }
-        val sr = speechRecognizer ?: run { speechError = "распознавание речи недоступно на устройстве"; return }
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-        }
+        val sr =
+            speechRecognizer ?: run {
+                speechError = "распознавание речи недоступно на устройстве"
+                return
+            }
+        val intent =
+            Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            }
         sr.setRecognitionListener(voiceListener)
         try {
             sr.startListening(intent)
@@ -529,10 +613,13 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
             whisperRecorder = null
             listening = false
             Log.d("VOICE", "stopVoice: останавливаю запись")
-            var samples = try { ar.stop() } catch (e: Throwable) {
-                Log.e("VOICE", "ar.stop упал", e)
-                FloatArray(0)
-            }
+            var samples =
+                try {
+                    ar.stop()
+                } catch (e: Throwable) {
+                    Log.e("VOICE", "ar.stop упал", e)
+                    FloatArray(0)
+                }
             Log.d("VOICE", "сэмплов: ${samples.size}")
             // Нормализация уровня: OPPO пишет речь очень тихо (RMS ~0.05),
             // whisper на таком сигнале деградирует. Тянем peak к 0.85.
@@ -575,7 +662,8 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                     for (s in samples) bb.putShort((s.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
                     f.writeBytes(bb.array())
                     Log.d("VOICE", "дамп: ${f.absolutePath} (${f.length()} байт)")
-                } catch (_: Exception) {}
+                } catch (_: Exception) {
+                }
             }
             whisperBusy = true
             scope.launch {
@@ -587,16 +675,23 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                 }
                 speechError = null
                 Log.d("VOICE", "запускаю распознавание через foreground-сервис...")
-                val text = try {
-                    WhisperTranscribeService.transcribe(
-                        context, samples, model = sttModel,
-                        engine = if (sttEngine == "ncnn") WhisperTranscribeService.ENGINE_NCNN
-                                 else WhisperTranscribeService.ENGINE_WHISPER
-                    )
-                } catch (e: Throwable) {
-                    Log.e("VOICE", "сервис распознавания упал", e)
-                    "ОШИБКА WHISPER: ${e.message}"
-                }
+                val text =
+                    try {
+                        WhisperTranscribeService.transcribe(
+                            context,
+                            samples,
+                            model = sttModel,
+                            engine =
+                                if (sttEngine == "ncnn") {
+                                    WhisperTranscribeService.ENGINE_NCNN
+                                } else {
+                                    WhisperTranscribeService.ENGINE_WHISPER
+                                },
+                        )
+                    } catch (e: Throwable) {
+                        Log.e("VOICE", "сервис распознавания упал", e)
+                        "ОШИБКА WHISPER: ${e.message}"
+                    }
                 Log.d("VOICE", "распознано: '${text.take(80)}'")
                 whisperBusy = false
                 if (!text.isNullOrBlank() && !text.startsWith("ОШИБКА")) {
@@ -612,58 +707,72 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
         speechRecognizer?.stopListening()
     }
 
-    val micPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) startVoice() else speechError = "нет доступа к микрофону"
-    }
+    val micPermissionLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) startVoice() else speechError = "нет доступа к микрофону"
+        }
 
     // Диагностика: синтез фразу системным TTS → прогон через наш whisper.
     // Чистое распознавание = модель и пайплайн ок, проблема в микрофоне/записи.
     var ttsTestRunning by remember { mutableStateOf(false) }
+
     fun runTtsTest() {
         if (ttsTestRunning) return
         ttsTestRunning = true
         Log.d("VOICE", "TTS-тест: инициализация синтеза...")
         var tts: TextToSpeech? = null
-        tts = TextToSpeech(context.applicationContext) { status ->
-            if (status != TextToSpeech.SUCCESS) {
-                Log.e("VOICE", "TTS-тест: движок недоступен")
-                ttsTestRunning = false
-                return@TextToSpeech
-            }
-            val file = File(context.cacheDir, "tts_test.wav")
-            tts?.language = Locale("ru")
-            tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onDone(id: String?) {
-                    if (id != "tts_test") return
-                    scope.launch {
-                        val text = withContext(Dispatchers.IO) {
-                            try {
-                                val samples = readWavPcm16(file)
-                                Log.d("VOICE", "TTS-тест: ${samples.size} сэмплов → whisper ($sttModel)")
-                                WhisperTranscribeService.transcribe(
-                                    context, samples, model = sttModel,
-                                    engine = if (sttEngine == "ncnn") WhisperTranscribeService.ENGINE_NCNN
-                                             else WhisperTranscribeService.ENGINE_WHISPER
-                                )
-                            } catch (e: Throwable) {
-                                Log.e("VOICE", "TTS-тест упал", e)
-                                "ОШИБКА TTS-ТЕСТА: ${e.message}"
+        tts =
+            TextToSpeech(context.applicationContext) { status ->
+                if (status != TextToSpeech.SUCCESS) {
+                    Log.e("VOICE", "TTS-тест: движок недоступен")
+                    ttsTestRunning = false
+                    return@TextToSpeech
+                }
+                val file = File(context.cacheDir, "tts_test.wav")
+                tts?.language = Locale("ru")
+                tts?.setOnUtteranceProgressListener(
+                    object : UtteranceProgressListener() {
+                        override fun onDone(id: String?) {
+                            if (id != "tts_test") return
+                            scope.launch {
+                                val text =
+                                    withContext(Dispatchers.IO) {
+                                        try {
+                                            val samples = readWavPcm16(file)
+                                            Log.d("VOICE", "TTS-тест: ${samples.size} сэмплов → whisper ($sttModel)")
+                                            WhisperTranscribeService.transcribe(
+                                                context,
+                                                samples,
+                                                model = sttModel,
+                                                engine =
+                                                    if (sttEngine == "ncnn") {
+                                                        WhisperTranscribeService.ENGINE_NCNN
+                                                    } else {
+                                                        WhisperTranscribeService.ENGINE_WHISPER
+                                                    },
+                                            )
+                                        } catch (e: Throwable) {
+                                            Log.e("VOICE", "TTS-тест упал", e)
+                                            "ОШИБКА TTS-ТЕСТА: ${e.message}"
+                                        }
+                                    }
+                                Log.d("VOICE", "TTS-тест РЕЗУЛЬТАТ: '$text'")
+                                tts?.shutdown()
+                                ttsTestRunning = false
                             }
                         }
-                        Log.d("VOICE", "TTS-тест РЕЗУЛЬТАТ: '$text'")
-                        tts?.shutdown()
-                        ttsTestRunning = false
-                    }
-                }
-                override fun onError(id: String?) {
-                    Log.e("VOICE", "TTS-тест: ошибка синтеза")
-                    tts?.shutdown()
-                    ttsTestRunning = false
-                }
-                override fun onStart(id: String?) {}
-            })
-            tts?.synthesizeToFile("Расскажи анекдот про цыгана.", null, file, "tts_test")
-        }
+
+                        override fun onError(id: String?) {
+                            Log.e("VOICE", "TTS-тест: ошибка синтеза")
+                            tts?.shutdown()
+                            ttsTestRunning = false
+                        }
+
+                        override fun onStart(id: String?) {}
+                    },
+                )
+                tts?.synthesizeToFile("Расскажи анекдот про цыгана.", null, file, "tts_test")
+            }
     }
 
     // Автопрокрутка вниз: после отправки и при новом ответе/думании.
@@ -753,33 +862,36 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
             if (snap != null) {
                 val now = System.currentTimeMillis()
                 val completed = snap.messages.count { it.role == "assistant" && it.text.isNotBlank() }
-                val stalled = if (!snap.thinking) {
-                    stallSince = 0L
-                    emptyStallSince = 0L
-                    false
-                } else {
-                    // Пуст ли последний открытый assistant-шаг (модель не дала ни part)?
-                    val lastMsg = snap.messages.lastOrNull()
-                    // «Пустой» = открыт assistant-шаг, никакого текста И никакого выполняемого
-                    // тула (liveTool == null). Если модель реально гоняет websearch/тул,
-                    // liveTool не null → идём в общий таймаут 120с (тул может работать долго).
-                    val emptyThinking = lastMsg != null &&
-                        lastMsg.role == "assistant" && lastMsg.text.isBlank() &&
-                        snap.liveTool == null
-                    var el: Long
-                    if (emptyThinking) {
-                        if (emptyStallSince == 0L) emptyStallSince = now
-                        el = now - emptyStallSince
-                        android.util.Log.d("ChatOverlay", "STALL empty-thinking since=${el}ms")
-                        if (el >= STALL_EMPTY_MS) true else false
-                    } else {
+                val stalled =
+                    if (!snap.thinking) {
+                        stallSince = 0L
                         emptyStallSince = 0L
-                        if (stallSince == 0L) stallSince = now
-                        el = now - stallSince
-                        android.util.Log.d("ChatOverlay", "STALL check thinking=true since=${el}ms")
-                        if (el >= STALL_TIMEOUT_MS) true else false
+                        false
+                    } else {
+                        // Пуст ли последний открытый assistant-шаг (модель не дала ни part)?
+                        val lastMsg = snap.messages.lastOrNull()
+                        // «Пустой» = открыт assistant-шаг, никакого текста И никакого выполняемого
+                        // тула (liveTool == null). Если модель реально гоняет websearch/тул,
+                        // liveTool не null → идём в общий таймаут 120с (тул может работать долго).
+                        val emptyThinking =
+                            lastMsg != null &&
+                                lastMsg.role == "assistant" &&
+                                lastMsg.text.isBlank() &&
+                                snap.liveTool == null
+                        var el: Long
+                        if (emptyThinking) {
+                            if (emptyStallSince == 0L) emptyStallSince = now
+                            el = now - emptyStallSince
+                            android.util.Log.d("ChatOverlay", "STALL empty-thinking since=${el}ms")
+                            if (el >= STALL_EMPTY_MS) true else false
+                        } else {
+                            emptyStallSince = 0L
+                            if (stallSince == 0L) stallSince = now
+                            el = now - stallSince
+                            android.util.Log.d("ChatOverlay", "STALL check thinking=true since=${el}ms")
+                            if (el >= STALL_TIMEOUT_MS) true else false
+                        }
                     }
-                }
                 val final = if (stalled) snap.copy(stalled = true) else snap
                 // Дельта-поллинг: ставим snapshot в UI только если содержимое реально
                 // изменилось (messages + thinking + stalled одинаковы — пропускаем).
@@ -830,10 +942,11 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
     }
 
     Surface(
-        modifier = modifier
-            .fillMaxSize()
-            .imePadding(),
-        color = Color(0xFF101010)
+        modifier =
+            modifier
+                .fillMaxSize()
+                .imePadding(),
+        color = Color(0xFF101010),
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -844,7 +957,7 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                 ContextGauge(
                     filled = snapshot?.contextTokens ?: 0L,
                     limit = CONTEXT_LIMIT,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
                 )
                 // Индикатор MCP-серверов (НЕОНОВЫЙ): «N MCP» + мигающая точка.
                 // Зелёный — все N подключённых серверов работают; красный — какой-то
@@ -853,7 +966,7 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                     connected = snapshot?.mcpConnected ?: 0,
                     total = snapshot?.mcpTotal ?: 0,
                     onClick = { showMcpList = !showMcpList },
-                    modifier = Modifier.padding(start = 8.dp)
+                    modifier = Modifier.padding(start = 8.dp),
                 )
                 // Цветовой пикер для ответов модели. ИКОНКА — готовая «капля»
                 // (Material Icons: Icons.Filled.InvertColors) — узнаваемая капля,
@@ -862,37 +975,40 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                     imageVector = Icons.Filled.InvertColors,
                     contentDescription = "Цвет ответов модели",
                     tint = modelColor,
-                    modifier = Modifier
-                        .padding(start = 8.dp)
-                        .size(22.dp)
-                        .clip(CircleShape)
-                        .background(if (showColorPicker) Color(0xFF3A3A3A) else Color.Transparent)
-                        .clickable { showColorPicker = !showColorPicker }
-                        .padding(3.dp)
+                    modifier =
+                        Modifier
+                            .padding(start = 8.dp)
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .background(if (showColorPicker) Color(0xFF3A3A3A) else Color.Transparent)
+                            .clickable { showColorPicker = !showColorPicker }
+                            .padding(3.dp),
                 )
                 Icon(
                     imageVector = Icons.Filled.TextFormat,
                     contentDescription = "Шрифт ответов модели",
                     tint = if (showFontPicker) modelColor else Color(0xFF8A8A8A),
-                    modifier = Modifier
-                        .padding(start = 8.dp)
-                        .size(22.dp)
-                        .clip(CircleShape)
-                        .background(if (showFontPicker) Color(0xFF3A3A3A) else Color.Transparent)
-                        .clickable { showFontPicker = !showFontPicker }
-                        .padding(3.dp)
+                    modifier =
+                        Modifier
+                            .padding(start = 8.dp)
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .background(if (showFontPicker) Color(0xFF3A3A3A) else Color.Transparent)
+                            .clickable { showFontPicker = !showFontPicker }
+                            .padding(3.dp),
                 )
                 Icon(
                     imageVector = Icons.Filled.Settings,
                     contentDescription = "Настройки голосового распознавания",
                     tint = if (showSettings) Color.White else Color(0xFFBDBDBD),
-                    modifier = Modifier
-                        .padding(start = 8.dp)
-                        .size(22.dp)
-                        .clip(CircleShape)
-                        .background(if (showSettings) Color(0xFF3A3A3A) else Color.Transparent)
-                        .clickable { showSettings = !showSettings }
-                        .padding(3.dp)
+                    modifier =
+                        Modifier
+                            .padding(start = 8.dp)
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .background(if (showSettings) Color(0xFF3A3A3A) else Color.Transparent)
+                            .clickable { showSettings = !showSettings }
+                            .padding(3.dp),
                 )
                 // Диагностика: состояние сервера, STT-модели и хвост лога serve.
                 // Полноэкранный оверлей (DiagnosticsScreen), рисуется поверх всего.
@@ -900,35 +1016,38 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                     imageVector = Icons.Filled.Info,
                     contentDescription = "Диагностика",
                     tint = if (showDiagnostics) Color.White else Color(0xFFBDBDBD),
-                    modifier = Modifier
-                        .padding(start = 8.dp)
-                        .size(22.dp)
-                        .clip(CircleShape)
-                        .background(if (showDiagnostics) Color(0xFF3A3A3A) else Color.Transparent)
-                        .clickable {
-                            // Прячем клавиатуру/фокус: корневой Surface чата сдвинут
-                            // imePadding(), иначе полноэкранный оверлей «съехал» бы вверх,
-                            // оставив полосу чата под клавиатурой.
-                            keyboard?.hide()
-                            focusManager.clearFocus()
-                            showDiagnostics = !showDiagnostics
-                        }
-                        .padding(3.dp)
+                    modifier =
+                        Modifier
+                            .padding(start = 8.dp)
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .background(if (showDiagnostics) Color(0xFF3A3A3A) else Color.Transparent)
+                            .clickable {
+                                // Прячем клавиатуру/фокус: корневой Surface чата сдвинут
+                                // imePadding(), иначе полноэкранный оверлей «съехал» бы вверх,
+                                // оставив полосу чата под клавиатурой.
+                                keyboard?.hide()
+                                focusManager.clearFocus()
+                                showDiagnostics = !showDiagnostics
+                            }.padding(3.dp),
                 )
-                // «Новая сессия» — очистить все сессии и начать с чистого листа.
-                // Жёстко сбрасывает активную (в т.ч. зависшую на огромном контексте),
-                // когда abort не пробивает сервер.
+                // «Новая сессия»: тап — создать свежую (старые остаются в списке);
+                // long-press — «очистить все сессии» (диалог подтверждения).
+                // Подсветка по creatingSession (UI-19), а не showMcpList.
                 Icon(
                     imageVector = Icons.Filled.Add,
-                    contentDescription = "Обновить / новая сессия",
-                    tint = if (showMcpList) Color(0xFF7BD88F) else Color(0xFFBDBDBD),
-                    modifier = Modifier
-                        .padding(start = 8.dp)
-                        .size(22.dp)
-                        .clip(CircleShape)
-                        .background(Color.Transparent)
-                        .clickable { newSession() }
-                        .padding(3.dp)
+                    contentDescription = "Новая сессия (long-press — очистить все сессии)",
+                    tint = if (creatingSession) Color(0xFF7BD88F) else Color(0xFFBDBDBD),
+                    modifier =
+                        Modifier
+                            .padding(start = 8.dp)
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .background(Color.Transparent)
+                            .combinedClickable(
+                                onClick = { newSession() },
+                                onLongClick = { confirmClearAll = true },
+                            ).padding(3.dp),
                 )
             }
             // Выпадающий список подключённых MCP-серверов (тап по индикатору «N MCP»).
@@ -936,9 +1055,10 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
             if (showMcpList) {
                 McpServerList(
                     servers = snapshot?.mcpServers ?: emptyList(),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp, bottom = 2.dp)
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp, bottom = 2.dp),
                 )
             }
             // Цветовой пикер для ответов модели: квадрат-градиент (X — оттенок, Y — яркость), тап/драг точкой.
@@ -949,7 +1069,7 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                         .fillMaxWidth()
                         .padding(top = 8.dp, bottom = 2.dp)
                         .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
                 ) {
                     Text("Цвет ответов модели (тап/тяни точку):", color = Color(0xFF8A8A8A), fontSize = 11.sp)
                     Canvas(
@@ -962,8 +1082,7 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                                     val v = 1f - (off.y / pickSize).coerceIn(0f, 1f)
                                     setModelColor("%06X".format(android.graphics.Color.HSVToColor(floatArrayOf(h, 1f, v)) and 0xFFFFFF))
                                 }
-                            }
-                            .pointerInput(Unit) {
+                            }.pointerInput(Unit) {
                                 detectDragGestures(
                                     onDragStart = { off ->
                                         val h = (off.x / pickSize).coerceIn(0f, 1f) * 360f
@@ -974,24 +1093,31 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                                         val h = (change.position.x / pickSize).coerceIn(0f, 1f) * 360f
                                         val v = 1f - (change.position.y / pickSize).coerceIn(0f, 1f)
                                         setModelColor("%06X".format(android.graphics.Color.HSVToColor(floatArrayOf(h, 1f, v)) and 0xFFFFFF))
-                                    }
+                                    },
                                 )
-                            }
+                            },
                     ) {
                         drawRect(
                             Brush.horizontalGradient(
                                 listOf(
-                                    Color(0xFFFF0000), Color(0xFFFFFF00), Color(0xFF00FF00),
-                                    Color(0xFF00FFFF), Color(0xFF0000FF), Color(0xFFFF00FF), Color(0xFFFF0000)
+                                    Color(0xFFFF0000),
+                                    Color(0xFFFFFF00),
+                                    Color(0xFF00FF00),
+                                    Color(0xFF00FFFF),
+                                    Color(0xFF0000FF),
+                                    Color(0xFFFF00FF),
+                                    Color(0xFFFF0000),
                                 ),
-                                startX = 0f, endX = size.width
-                            )
+                                startX = 0f,
+                                endX = size.width,
+                            ),
                         )
                         drawRect(
                             Brush.verticalGradient(
                                 listOf(Color.White.copy(alpha = 0f), Color.Black),
-                                startY = 0f, endY = size.height
-                            )
+                                startY = 0f,
+                                endY = size.height,
+                            ),
                         )
                         val hsv = FloatArray(3)
                         android.graphics.Color.colorToHSV(modelColor.toArgb(), hsv)
@@ -1005,7 +1131,7 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                                 .size(26.dp)
                                 .clip(CircleShape)
                                 .background(modelColor)
-                                .border(1.dp, Color.White, CircleShape)
+                                .border(1.dp, Color.White, CircleShape),
                         )
                         Text("#$modelColorHex", color = Color(0xFFBDBDBD), fontSize = 12.sp, modifier = Modifier.padding(start = 10.dp))
                     }
@@ -1018,60 +1144,91 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                         .fillMaxWidth()
                         .padding(top = 8.dp, bottom = 2.dp)
                         .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
                 ) {
                     Text("Голосовое распознавание:", color = Color(0xFFBDBDBD), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                sttEngine = "system"
-                                prefs.edit().putString("stt_engine", "system").apply()
-                            }
-                            .padding(vertical = 6.dp)
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    sttEngine = "system"
+                                    prefs.edit().putString("stt_engine", "system").apply()
+                                }.padding(vertical = 6.dp),
                     ) {
-                        Text(if (sttEngine == "system") "● " else "○ ", color = Color(0xFFFF6D00), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            if (sttEngine ==
+                                "system"
+                            ) {
+                                "● "
+                            } else {
+                                "○ "
+                            },
+                            color = Color(0xFFFF6D00),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
                         Text("Системный Android (Google)", color = Color(0xFFE6E6E6), fontSize = 13.sp)
                     }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .combinedClickable(
-                                enabled = true,
-                                onClick = {
-                                    sttEngine = "ncnn"
-                                    // Переключение на ncnn всегда подразумевает turbo (base битый)
-                                    prefs.edit().putString("stt_engine", "ncnn").putString("stt_model", "turbo").apply()
-                                },
-                                onDoubleClick = { ncnnTipVisible = !ncnnTipVisible }
-                            )
-                            .padding(vertical = 6.dp)
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .combinedClickable(
+                                    enabled = true,
+                                    onClick = {
+                                        sttEngine = "ncnn"
+                                        // Переключение на ncnn всегда подразумевает turbo (base битый)
+                                        prefs
+                                            .edit()
+                                            .putString("stt_engine", "ncnn")
+                                            .putString("stt_model", "turbo")
+                                            .apply()
+                                    },
+                                    onDoubleClick = { ncnnTipVisible = !ncnnTipVisible },
+                                ).padding(vertical = 6.dp),
                     ) {
-                        Text(if (sttEngine == "ncnn") "● " else "○ ", color = Color(0xFFFF6D00), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            if (sttEngine ==
+                                "ncnn"
+                            ) {
+                                "● "
+                            } else {
+                                "○ "
+                            },
+                            color = Color(0xFFFF6D00),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
                         Text("NCNN (CPU encoder int8)", color = Color(0xFFE6E6E6), fontSize = 13.sp)
                     }
                     if (ncnnTipVisible) {
                         Text(
                             "Как работает: int8-энкодер (блочная квантование, ~2× быстрее fp32) → fp16/32-декодер с KV-cache (шаг по токену ~64мс).",
-                            color = Color(0xFF90A4AE), fontSize = 10.sp,
-                            modifier = Modifier.padding(start = 20.dp, top = 2.dp, bottom = 4.dp)
+                            color = Color(0xFF90A4AE),
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(start = 20.dp, top = 2.dp, bottom = 4.dp),
                         )
                     }
                     Text(
                         if (ttsTestRunning) "TTS-тест: синтезирую и распознаю…" else "Диагностика: синтез → распознавание (см. лог VOICE)",
                         color = Color(0xFF5A8DEE),
                         fontSize = 11.sp,
-                        modifier = Modifier
-                            .padding(top = 6.dp)
-                            .clickable(enabled = !ttsTestRunning) { runTtsTest() }
+                        modifier =
+                            Modifier
+                                .padding(top = 6.dp)
+                                .clickable(enabled = !ttsTestRunning) { runTtsTest() },
                     )
                 }
             }
             val msgs = snapshot?.messages ?: emptyList()
             LaunchedEffect(msgs.size, snapshot?.thinking, snapshot?.liveTool) {
-                android.util.Log.d("ChatOverlay", "RENDER msgs=${msgs.size} thinking=${snapshot?.thinking} live=${snapshot?.liveTool?.name}")
+                android.util.Log.d(
+                    "ChatOverlay",
+                    "RENDER msgs=${msgs.size} thinking=${snapshot?.thinking} live=${snapshot?.liveTool?.name}",
+                )
             }
             // Палитра шрифтов (настройка): тап по варианту — мгновенно применяется и сохраняется.
             if (showFontPicker) {
@@ -1080,39 +1237,39 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                         .fillMaxWidth()
                         .padding(top = 8.dp, bottom = 2.dp)
                         .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
                 ) {
                     Text("Шрифт ответов модели (тап — применить):", color = Color(0xFF8A8A8A), fontSize = 11.sp)
                     fontEntries.forEach { (key, name, ff) ->
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    modelFontKey = key
-                                    prefs.edit().putString("model_font_key", key).apply()
-                                    showFontPicker = false
-                                }
-                                .padding(vertical = 6.dp)
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        modelFontKey = key
+                                        prefs.edit().putString("model_font_key", key).apply()
+                                        showFontPicker = false
+                                    }.padding(vertical = 6.dp),
                         ) {
                             Text(
                                 if (key == modelFontKey) "● " else "○ ",
                                 color = modelColor,
                                 fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
                             )
                             Text(
                                 name,
                                 color = Color(0xFF9E9E9E),
                                 fontSize = 10.sp,
-                                modifier = Modifier.width(88.dp)
+                                modifier = Modifier.width(88.dp),
                             )
                             Text(
                                 "Привет, я модель!",
                                 color = modelColor,
                                 fontFamily = ff,
                                 fontSize = 16.sp,
-                                maxLines = 1
+                                maxLines = 1,
                             )
                         }
                     }
@@ -1123,16 +1280,17 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                     "Сообщений пока нет — напиши в поле внизу.",
                     color = Color(0xFF8A8A8A),
                     fontSize = 14.sp,
-                    modifier = Modifier.padding(vertical = 16.dp)
+                    modifier = Modifier.padding(vertical = 16.dp),
                 )
             } else {
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .padding(top = 6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(top = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     // Позиционный ключ (без кастомного key). Кастомный key из контента
                     // крашил LazyColumn (Key "…was already used") при дубликатах сообщений
@@ -1166,43 +1324,44 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                         .fillMaxWidth()
                         .padding(top = 8.dp)
                         .background(Color(0xFF1E2B1E), RoundedCornerShape(12.dp))
-                        .padding(10.dp)
+                        .padding(10.dp),
                 ) {
                     Text(
                         "Модель спрашивает:",
                         color = Color(0xFF7BD88F),
                         fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
                     )
                     Text(
                         q.text.ifBlank { "…" },
                         color = Color(0xFFEDEDED),
                         fontSize = 14.sp,
                         lineHeight = 19.sp,
-                        modifier = Modifier.padding(top = 2.dp)
+                        modifier = Modifier.padding(top = 2.dp),
                     )
                     if (q.options.isEmpty()) {
                         Text(
                             "Напиши ответ в поле и нажми →",
                             color = Color(0xFF8A8A8A),
                             fontSize = 13.sp,
-                            modifier = Modifier.padding(top = 6.dp)
+                            modifier = Modifier.padding(top = 6.dp),
                         )
                     } else {
                         q.options.forEach { label ->
                             Surface(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 6.dp)
-                                    .clickable { answerQuestion(q, label) },
+                                modifier =
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 6.dp)
+                                        .clickable { answerQuestion(q, label) },
                                 shape = RoundedCornerShape(8.dp),
-                                color = Color(0xFF24401F)
+                                color = Color(0xFF24401F),
                             ) {
                                 Text(
                                     label,
                                     color = Color(0xFFE6E6E6),
                                     fontSize = 14.sp,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                                 )
                             }
                         }
@@ -1210,7 +1369,7 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                             "…или напиши свой ответ в поле ↓",
                             color = Color(0xFF8A8A8A),
                             fontSize = 12.sp,
-                            modifier = Modifier.padding(top = 6.dp)
+                            modifier = Modifier.padding(top = 6.dp),
                         )
                     }
                 }
@@ -1224,29 +1383,32 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                     },
                     color = if (listening) Color(0xFFFF6F5A) else Color(0xFF8A8A8A),
                     fontSize = 12.sp,
-                    modifier = Modifier.padding(top = 6.dp)
+                    modifier = Modifier.padding(top = 6.dp),
                 )
             }
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp),
-                verticalAlignment = Alignment.Bottom
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                verticalAlignment = Alignment.Bottom,
             ) {
                 BasicTextField(
                     value = draft,
                     onValueChange = { draft = it },
-                    modifier = Modifier
-                        .weight(1f)
-                        .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    modifier =
+                        Modifier
+                            .weight(1f)
+                            .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
                     textStyle = TextStyle(color = Color(0xFFF0F0F0), fontSize = 15.sp),
                     cursorBrush = SolidColor(Color(0xFF7BA6F8)),
                     maxLines = 4,
-                    keyboardOptions = KeyboardOptions(
-                        capitalization = KeyboardCapitalization.Sentences,
-                        imeAction = ImeAction.Send
-                    ),
+                    keyboardOptions =
+                        KeyboardOptions(
+                            capitalization = KeyboardCapitalization.Sentences,
+                            imeAction = ImeAction.Send,
+                        ),
                     keyboardActions = KeyboardActions(onSend = { send() }),
                     decorationBox = { inner ->
                         Box {
@@ -1255,65 +1417,74 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
                             }
                             inner()
                         }
-                    }
+                    },
                 )
                 Surface(
-                    modifier = Modifier
-                        .padding(start = 8.dp)
-                        .size(46.dp)
-                        .pointerInput(Unit) {
-                            detectTapGestures(
-                                onPress = {
-                                    if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                                        micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                    } else {
-                                        startVoice()
-                                    }
-                                    try { awaitRelease() } finally { stopVoice() }
-                                }
-                            )
-                        },
+                    modifier =
+                        Modifier
+                            .padding(start = 8.dp)
+                            .size(46.dp)
+                            .pointerInput(Unit) {
+                                detectTapGestures(
+                                    onPress = {
+                                        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
+                                            PackageManager.PERMISSION_GRANTED
+                                        ) {
+                                            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                        } else {
+                                            startVoice()
+                                        }
+                                        try {
+                                            awaitRelease()
+                                        } finally {
+                                            stopVoice()
+                                        }
+                                    },
+                                )
+                            },
                     shape = CircleShape,
-                    color = if (listening) Color(0xFFB71C1C) else Color(0xFF252525)
+                    color = if (listening) Color(0xFFB71C1C) else Color(0xFF252525),
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Mic,
                         contentDescription = "Голосовой ввод (удерживай для записи)",
                         tint = if (listening) Color.White else Color(0xFFE0E0E0),
-                        modifier = Modifier.size(26.dp)
+                        modifier = Modifier.size(26.dp),
                     )
                 }
                 // Кнопка Stop: ВСЕГДА видна рядом с микрофоном.
                 // Прерывает текущую генерацию модели (POST /session/{id}/abort).
                 // Если модель не думает — abort просто не сработает, сессия не сломается.
                 Surface(
-                    modifier = Modifier
-                        .padding(start = 8.dp)
-                        .size(46.dp)
-                        .clickable { stopGen() },
+                    modifier =
+                        Modifier
+                            .padding(start = 8.dp)
+                            .size(46.dp)
+                            .clickable { stopGen() },
                     shape = CircleShape,
-                    color = Color(0xFF9E1C1C)
+                    color = Color(0xFF9E1C1C),
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Stop,
                         contentDescription = "Прервать генерацию",
                         tint = Color.White,
-                        modifier = Modifier.size(26.dp)
+                        modifier = Modifier.size(26.dp),
                     )
                 }
                 Surface(
-                    modifier = Modifier
-                        .padding(start = 8.dp)
-                        .size(46.dp)
-                        .clickable { send() },
+                    modifier =
+                        Modifier
+                            .padding(start = 8.dp)
+                            .size(46.dp)
+                            .clickable { send() },
                     shape = CircleShape,
-                    color = if (sending) Color(0xFF3A3A3A) else Color(0xFF2E5E8E)
+                    color = if (sending) Color(0xFF3A3A3A) else Color(0xFF2E5E8E),
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.Send,
                         contentDescription = "Отправить сообщение",
                         tint = Color.White,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(24.dp),
                     )
                 }
             }
@@ -1325,7 +1496,29 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
         if (showDiagnostics) {
             DiagnosticsScreen(
                 onClose = { showDiagnostics = false },
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+
+        // Подтверждение жёсткой очистки всех сессий (long-press на +): удаление
+        // необратимое (включая активную сессию) — только через явный диалог.
+        if (confirmClearAll) {
+            AlertDialog(
+                onDismissRequest = { confirmClearAll = false },
+                containerColor = Color(0xFF1C1C1C),
+                titleContentColor = Color(0xFFE6E6E6),
+                textContentColor = Color(0xFFBDBDBD),
+                title = { Text("Очистить все сессии?") },
+                text = { Text("Будут удалены ВСЕ сессии, включая активную. История чата пропадёт безвозвратно.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmClearAll = false
+                        clearAllSessions()
+                    }) { Text("Очистить", color = Color(0xFFFF6F5A)) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmClearAll = false }) { Text("Отмена", color = Color(0xFFBDBDBD)) }
+                },
             )
         }
     }
@@ -1334,33 +1527,37 @@ fun ChatOverlay(modifier: Modifier = Modifier, serverPort: Int = 4096) {
 @Composable
 private fun ThinkingRow() {
     val transition = rememberInfiniteTransition(label = "thinking")
-    val bars = listOf(
-        transition.animateFloat(
-            initialValue = 0.35f, targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(380, delayMillis = 0), RepeatMode.Reverse),
-            label = "bar0"
-        ),
-        transition.animateFloat(
-            initialValue = 0.35f, targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(380, delayMillis = 130), RepeatMode.Reverse),
-            label = "bar1"
-        ),
-        transition.animateFloat(
-            initialValue = 0.35f, targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(380, delayMillis = 260), RepeatMode.Reverse),
-            label = "bar2"
+    val bars =
+        listOf(
+            transition.animateFloat(
+                initialValue = 0.35f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(tween(380, delayMillis = 0), RepeatMode.Reverse),
+                label = "bar0",
+            ),
+            transition.animateFloat(
+                initialValue = 0.35f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(tween(380, delayMillis = 130), RepeatMode.Reverse),
+                label = "bar1",
+            ),
+            transition.animateFloat(
+                initialValue = 0.35f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(tween(380, delayMillis = 260), RepeatMode.Reverse),
+                label = "bar2",
+            ),
         )
-    )
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.padding(vertical = 6.dp)
+        modifier = Modifier.padding(vertical = 6.dp),
     ) {
         bars.forEach { h ->
             Box(
                 Modifier
                     .padding(horizontal = 1.5.dp)
                     .size(width = 5.dp, height = 16.dp * h.value)
-                    .background(Color(0xFF7BD88F), RoundedCornerShape(2.dp))
+                    .background(Color(0xFF7BD88F), RoundedCornerShape(2.dp)),
             )
         }
         Spacer(Modifier.width(10.dp))
@@ -1373,40 +1570,43 @@ private fun LiveToolRow(tool: ChatTool) {
     // Живой чип: какой инструмент модель вызывает ПРЯМО СЕЙЧАС (пока работает).
     val transition = rememberInfiniteTransition(label = "liveTool")
     val pulse by transition.animateFloat(
-        initialValue = 0.4f, targetValue = 1f,
+        initialValue = 0.4f,
+        targetValue = 1f,
         animationSpec = infiniteRepeatable(tween(460, delayMillis = 0), RepeatMode.Reverse),
-        label = "pulse"
+        label = "pulse",
     )
     // Иконка по типу инструмента.
-    val (icon, accent) = when (tool.name) {
-        "websearch", "webfetch", "context7" -> "🔍" to Color(0xFF5B9BD5)
-        "bash", "shell" -> "🛠" to Color(0xFFD97706)
-        "read", "grep", "glob" -> "📄" to Color(0xFF7BD88F)
-        "write", "edit" -> "✏️" to Color(0xFFB48AD9)
-        else -> "⚙️" to Color(0xFF9AA5B1)
-    }
+    val (icon, accent) =
+        when (tool.name) {
+            "websearch", "webfetch", "context7" -> "🔍" to Color(0xFF5B9BD5)
+            "bash", "shell" -> "🛠" to Color(0xFFD97706)
+            "read", "grep", "glob" -> "📄" to Color(0xFF7BD88F)
+            "write", "edit" -> "✏️" to Color(0xFFB48AD9)
+            else -> "⚙️" to Color(0xFF9AA5B1)
+        }
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .padding(vertical = 6.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(accent.copy(alpha = 0.12f * pulse))
-            .border(width = 1.dp, color = accent.copy(alpha = 0.5f), shape = RoundedCornerShape(14.dp))
-            .padding(horizontal = 12.dp, vertical = 7.dp)
+        modifier =
+            Modifier
+                .padding(vertical = 6.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(accent.copy(alpha = 0.12f * pulse))
+                .border(width = 1.dp, color = accent.copy(alpha = 0.5f), shape = RoundedCornerShape(14.dp))
+                .padding(horizontal = 12.dp, vertical = 7.dp),
     ) {
         // Пульсирующая точка «активно».
         Box(
             Modifier
                 .size(8.dp)
                 .graphicsLayer { alpha = pulse }
-                .background(accent, CircleShape)
+                .background(accent, CircleShape),
         )
         Spacer(Modifier.width(8.dp))
         Text(
             "$icon ${tool.name}",
             color = Color.White.copy(alpha = 0.92f),
             fontSize = 13.sp,
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.Bold,
         )
         if (tool.detail.isNotBlank()) {
             Spacer(Modifier.width(10.dp))
@@ -1415,7 +1615,7 @@ private fun LiveToolRow(tool: ChatTool) {
                 color = Color.White.copy(alpha = 0.72f),
                 fontSize = 12.sp,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -1425,17 +1625,18 @@ private fun LiveToolRow(tool: ChatTool) {
 private fun StalledRow() {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.padding(vertical = 6.dp)
+        modifier = Modifier.padding(vertical = 6.dp),
     ) {
         Box(
             Modifier
                 .size(10.dp)
-                .background(Color(0xFFE25822), RoundedCornerShape(3.dp))
+                .background(Color(0xFFE25822), RoundedCornerShape(3.dp)),
         )
         Spacer(Modifier.width(10.dp))
         Text(
             "Нет ответа (зависло) — проверь сеть/провайдера",
-            color = Color(0xFFE25822), fontSize = 13.sp
+            color = Color(0xFFE25822),
+            fontSize = 13.sp,
         )
     }
 }
@@ -1450,17 +1651,22 @@ private fun StalledRow() {
  * компакт. Полоска занимает всю доступную ширину (weight 1f).
  */
 @Composable
-private fun ContextGauge(filled: Long, limit: Long, modifier: Modifier = Modifier) {
+private fun ContextGauge(
+    filled: Long,
+    limit: Long,
+    modifier: Modifier = Modifier,
+) {
     val ratio = if (limit <= 0) 0f else (filled.toFloat() / limit.toFloat()).coerceIn(0f, 1f)
     // Цвет прогресса по мере заполнения: зелёный → жёлтый → красный.
     val g = Color(0xFF4CAF50)
     val y = Color(0xFFFFC107)
     val r = Color(0xFFE53935)
-    val active = when {
-        ratio < 0.50f -> g
-        ratio < 0.80f -> y
-        else -> r
-    }
+    val active =
+        when {
+            ratio < 0.50f -> g
+            ratio < 0.80f -> y
+            else -> r
+        }
     val track = Color(0xFF242424)
     val filledCubes = (ratio * SEGMENTS).toInt().coerceIn(0, SEGMENTS)
     Canvas(modifier.height(40.dp).fillMaxWidth()) {
@@ -1474,13 +1680,14 @@ private fun ContextGauge(filled: Long, limit: Long, modifier: Modifier = Modifie
             val cx = size.width * (i + 0.5f) / SEGMENTS
             val cy = size.height / 2f
             val color = if (i < filledCubes) active else track
-            val path = Path().apply {
-                moveTo(cx - halfX + skew, cy - halfY)   // верх-лево (сдвинут вправо)
-                lineTo(cx + halfX + skew, cy - halfY)   // верх-право
-                lineTo(cx + halfX, cy + halfY)          // низ-право
-                lineTo(cx - halfX, cy + halfY)          // низ-лево
-                close()
-            }
+            val path =
+                Path().apply {
+                    moveTo(cx - halfX + skew, cy - halfY) // верх-лево (сдвинут вправо)
+                    lineTo(cx + halfX + skew, cy - halfY) // верх-право
+                    lineTo(cx + halfX, cy + halfY) // низ-право
+                    lineTo(cx - halfX, cy + halfY) // низ-лево
+                    close()
+                }
             drawPath(path, color)
         }
     }
@@ -1493,7 +1700,12 @@ private fun ContextGauge(filled: Long, limit: Long, modifier: Modifier = Modifie
  * цвет, мягкое свечение вокруг точки (shadowBlur), точка плавно мигает.
  */
 @Composable
-private fun MCPIndicator(connected: Int, total: Int, modifier: Modifier = Modifier, onClick: () -> Unit = {}) {
+private fun MCPIndicator(
+    connected: Int,
+    total: Int,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit = {},
+) {
     // Все работают: есть серверы, и все подключённые дошли до connected.
     val allOk = total > 0 && connected == total
     val neon = if (allOk) Color(0xFF39FF88) else Color(0xFFFF3B3B)
@@ -1528,7 +1740,7 @@ private fun MCPIndicator(connected: Int, total: Int, modifier: Modifier = Modifi
                 }
                 val a = 0.35f + 0.65f * ((kotlin.math.sin(t) + 1.0) / 2.0).toFloat()
                 blink = a
-                t += 0.785  // ~0.785 рад/тик → период волны ≈ 8 тиков ≈ 0.96с
+                t += 0.785 // ~0.785 рад/тик → период волны ≈ 8 тиков ≈ 0.96с
                 if (t > kotlin.math.PI * 2.0) t -= kotlin.math.PI * 2.0
                 delay(120)
             }
@@ -1547,13 +1759,13 @@ private fun MCPIndicator(connected: Int, total: Int, modifier: Modifier = Modifi
         // «N MCP» — сначала число, потом слово; надпись ВСЕГДА бирюзовая (яркий неон),
         // не зависит от статуса. Статус показывает только точка-светодиод.
         Text(
-            "${connected} MCP",
+            "$connected MCP",
             color = Color(0xFF00E5FF),
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = 1.sp,
             softWrap = false,
-            maxLines = 1
+            maxLines = 1,
         )
     }
 }
@@ -1564,19 +1776,22 @@ private fun MCPIndicator(connected: Int, total: Int, modifier: Modifier = Modifi
  * красная (не работает / отключён). Если серверов нет — подпись «нет MCP».
  */
 @Composable
-private fun McpServerList(servers: List<McpInfo>, modifier: Modifier = Modifier) {
+private fun McpServerList(
+    servers: List<McpInfo>,
+    modifier: Modifier = Modifier,
+) {
     Column(
         modifier
             .background(Color(0xFF161616), RoundedCornerShape(12.dp))
             .border(1.dp, Color(0xFF2A2A2A), RoundedCornerShape(12.dp))
-            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
         Text(
             "MCP-серверы",
             color = Color(0xFF00E5FF),
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
-            letterSpacing = 1.sp
+            letterSpacing = 1.sp,
         )
         Spacer(Modifier.height(6.dp))
         if (servers.isEmpty()) {
@@ -1597,12 +1812,12 @@ private fun McpServerList(servers: List<McpInfo>, modifier: Modifier = Modifier)
                         srv.name,
                         color = Color(0xFFE6E6E6),
                         fontSize = 13.sp,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
                     )
                     Text(
                         if (ok) "работает" else "не работает",
                         color = if (ok) Color(0xFF39FF88) else Color(0xFFFF3B3B),
-                        fontSize = 11.sp
+                        fontSize = 11.sp,
                     )
                 }
                 Spacer(Modifier.height(5.dp))
@@ -1614,45 +1829,48 @@ private fun McpServerList(servers: List<McpInfo>, modifier: Modifier = Modifier)
 // «big-pickle» → «Big Pickle»; пусто/нет — «Модель»
 private fun prettyModel(id: String?): String {
     if (id.isNullOrBlank()) return "Модель"
-    val words = id.trim()
-        .split('-', '_', '.', '/', ':')
-        .filter { it.isNotBlank() }
+    val words =
+        id
+            .trim()
+            .split('-', '_', '.', '/', ':')
+            .filter { it.isNotBlank() }
     if (words.isEmpty()) return "Модель"
     return words.joinToString(" ") { w -> w.replaceFirstChar { c -> c.uppercaseChar() } }
 }
 
 // Доступные шрифты ответов модели: (ключ сохранения, имя в палитре, FontFamily)
-private val fontEntries = listOf(
-    Triple("mono", "Моноширинный", FontFamily.Monospace),
-    Triple("jbm", "JetBrains Mono", FontFamily(Font(R.font.jbm))),
-    Triple("play", "Play", FontFamily(Font(R.font.play))),
-    Triple("lobster", "Lobster", FontFamily(Font(R.font.lobster))),
-    Triple("vt323", "VT323", FontFamily(Font(R.font.vt323))),
-    Triple("caveat", "Caveat", FontFamily(Font(R.font.caveat))),
-    Triple("montserrat", "Montserrat", FontFamily(Font(R.font.montserrat))),
-    Triple("russo", "Russo One", FontFamily(Font(R.font.russo_one))),
-    Triple("neucha", "Neucha", FontFamily(Font(R.font.neucha))),
-    Triple("badscript", "Bad Script", FontFamily(Font(R.font.bad_script))),
-    Triple("raleway", "Raleway", FontFamily(Font(R.font.raleway))),
-    Triple("rubik", "Rubik", FontFamily(Font(R.font.rubik))),
-    Triple("exo2", "Exo 2", FontFamily(Font(R.font.exo2))),
-    Triple("ptsans", "PT Sans", FontFamily(Font(R.font.ptsans))),
-    Triple("ptserif", "PT Serif", FontFamily(Font(R.font.ptserif))),
-    Triple("dancing", "Dancing Script", FontFamily(Font(R.font.dancing))),
-    Triple("comfortaa", "Comfortaa", FontFamily(Font(R.font.comfortaa))),
-    Triple("kurale", "Kurale", FontFamily(Font(R.font.kurale))),
-    Triple("pangolin", "Pangolin", FontFamily(Font(R.font.pangolin))),
-    Triple("cormorant", "Cormorant", FontFamily(Font(R.font.cormorant)))
-)
+private val fontEntries =
+    listOf(
+        Triple("mono", "Моноширинный", FontFamily.Monospace),
+        Triple("jbm", "JetBrains Mono", FontFamily(Font(R.font.jbm))),
+        Triple("play", "Play", FontFamily(Font(R.font.play))),
+        Triple("lobster", "Lobster", FontFamily(Font(R.font.lobster))),
+        Triple("vt323", "VT323", FontFamily(Font(R.font.vt323))),
+        Triple("caveat", "Caveat", FontFamily(Font(R.font.caveat))),
+        Triple("montserrat", "Montserrat", FontFamily(Font(R.font.montserrat))),
+        Triple("russo", "Russo One", FontFamily(Font(R.font.russo_one))),
+        Triple("neucha", "Neucha", FontFamily(Font(R.font.neucha))),
+        Triple("badscript", "Bad Script", FontFamily(Font(R.font.bad_script))),
+        Triple("raleway", "Raleway", FontFamily(Font(R.font.raleway))),
+        Triple("rubik", "Rubik", FontFamily(Font(R.font.rubik))),
+        Triple("exo2", "Exo 2", FontFamily(Font(R.font.exo2))),
+        Triple("ptsans", "PT Sans", FontFamily(Font(R.font.ptsans))),
+        Triple("ptserif", "PT Serif", FontFamily(Font(R.font.ptserif))),
+        Triple("dancing", "Dancing Script", FontFamily(Font(R.font.dancing))),
+        Triple("comfortaa", "Comfortaa", FontFamily(Font(R.font.comfortaa))),
+        Triple("kurale", "Kurale", FontFamily(Font(R.font.kurale))),
+        Triple("pangolin", "Pangolin", FontFamily(Font(R.font.pangolin))),
+        Triple("cormorant", "Cormorant", FontFamily(Font(R.font.cormorant))),
+    )
 
-private fun fontFor(key: String): FontFamily =
-    fontEntries.firstOrNull { it.first == key }?.third ?: FontFamily.Monospace
+private fun fontFor(key: String): FontFamily = fontEntries.firstOrNull { it.first == key }?.third ?: FontFamily.Monospace
 
-private fun parseHexColor(hex: String): Color = try {
-    Color(("FF$hex").toLong(16))
-} catch (_: Exception) {
-    Color(0xFFD97706)
-}
+private fun parseHexColor(hex: String): Color =
+    try {
+        Color(("FF$hex").toLong(16))
+    } catch (_: Exception) {
+        Color(0xFFD97706)
+    }
 
 // Создаёт системный распознаватель речи, если он доступен на устройстве.
 private fun ContextCompatSpeechRecognizer(context: Context): SpeechRecognizer? =
@@ -1663,16 +1881,26 @@ private fun ContextCompatSpeechRecognizer(context: Context): SpeechRecognizer? =
     }
 
 /** Чтение PCM16 WAV → FloatArray 16кГц моно (микс каналов средним + ресемпл линейной интерполяцией). */
-private fun readWavPcm16(f: File, targetRate: Int = 16000): FloatArray {
+private fun readWavPcm16(
+    f: File,
+    targetRate: Int = 16000,
+): FloatArray {
     val b = f.readBytes()
+
     fun le16(o: Int) = ((b[o + 1].toInt() and 0xFF) shl 8) or (b[o].toInt() and 0xFF)
-    fun le32(o: Int) = ((b[o + 3].toInt() and 0xFF) shl 24) or ((b[o + 2].toInt() and 0xFF) shl 16) or
+
+    fun le32(o: Int) =
+        ((b[o + 3].toInt() and 0xFF) shl 24) or ((b[o + 2].toInt() and 0xFF) shl 16) or
             ((b[o + 1].toInt() and 0xFF) shl 8) or (b[o].toInt() and 0xFF)
-    if (b.size < 44 || String(b, 0, 4, Charsets.US_ASCII) != "RIFF" || String(b, 8, 4, Charsets.US_ASCII) != "WAVE")
+    if (b.size < 44 || String(b, 0, 4, Charsets.US_ASCII) != "RIFF" || String(b, 8, 4, Charsets.US_ASCII) != "WAVE") {
         throw RuntimeException("не WAV-файл")
+    }
     var pos = 12
-    var channels = 1; var rate = 16000; var bits = 16
-    var dataStart = -1; var dataLen = 0
+    var channels = 1
+    var rate = 16000
+    var bits = 16
+    var dataStart = -1
+    var dataLen = 0
     while (pos + 8 <= b.size) {
         val id = String(b, pos, 4, Charsets.US_ASCII)
         val len = le32(pos + 4)
@@ -1681,24 +1909,27 @@ private fun readWavPcm16(f: File, targetRate: Int = 16000): FloatArray {
             rate = le32(pos + 12)
             bits = le16(pos + 22)
         } else if (id == "data") {
-            dataStart = pos + 8; dataLen = len
+            dataStart = pos + 8
+            dataLen = len
         }
         pos += 8 + len + (len and 1)
     }
     if (dataStart < 0 || channels < 1 || bits != 16) throw RuntimeException("WAV: нет data/не PCM16 (bits=$bits)")
     val n = (dataLen / (2 * channels)).coerceAtMost((b.size - dataStart) / (2 * channels))
-    val mono = FloatArray(n) { i ->
-        var acc = 0
-        for (c in 0 until channels) acc += le16(dataStart + (i * channels + c) * 2).toShort().toInt()
-        (acc / channels) / 32768f
-    }
+    val mono =
+        FloatArray(n) { i ->
+            var acc = 0
+            for (c in 0 until channels) acc += le16(dataStart + (i * channels + c) * 2).toShort().toInt()
+            (acc / channels) / 32768f
+        }
     if (rate == targetRate) return mono
     // линейный ресемпл
     val ratio = rate.toDouble() / targetRate
     val outLen = (n / ratio).toInt()
     return FloatArray(outLen) { i ->
         val src = i * ratio
-        val i0 = src.toInt(); val i1 = (i0 + 1).coerceAtMost(n - 1)
+        val i0 = src.toInt()
+        val i1 = (i0 + 1).coerceAtMost(n - 1)
         val frac = (src - i0).toFloat()
         mono[i0] * (1 - frac) + mono[i1] * frac
     }
@@ -1708,23 +1939,30 @@ private fun readWavPcm16(f: File, targetRate: Int = 16000): FloatArray {
 // Пишем 48000 Гц (нативная частота телефона) и ресемплим в 16к СВОИМ FIR-фильтром:
 // встроенный ресемплер OPPO сыпет паразитные пики 2.5/4/6/7.5 кГц, от которых
 // whisper путает слова. Стерео: L/R — два микрофона, берём более громкий.
-private class AudioRecorder(private val sampleRate: Int = 16000) {
+private class AudioRecorder(
+    private val sampleRate: Int = 16000,
+) {
     private val captureRate = 48000 // частота захвата (нативная)
     private var recorder: AudioRecord? = null
     private var thread: Thread? = null
+
     @Volatile private var running = false
     private val raw = mutableListOf<Short>() // interleaved (L,R,L,R…) если стерео
     private var channels = 1
 
-    private fun buildRecorder(fmt: Int, bufSize: Int): AudioRecord? {
+    private fun buildRecorder(
+        fmt: Int,
+        bufSize: Int,
+    ): AudioRecord? {
         // UNPROCESSED (сырой тракт): MIC-тракт OPPO замусорен артефактами
         // ресемплинга (паразитные пики 2.5/4/7.5 кГц у Найквиста) — whisper
         // на таком сигнале путает слова. Если UNPROCESSED не поддержан — MIC.
-        val sources = listOf(
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION, // телефонный тракт с AGC: самый громкий и чистый
-            MediaRecorder.AudioSource.UNPROCESSED,
-            MediaRecorder.AudioSource.MIC
-        )
+        val sources =
+            listOf(
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION, // телефонный тракт с AGC: самый громкий и чистый
+                MediaRecorder.AudioSource.UNPROCESSED,
+                MediaRecorder.AudioSource.MIC,
+            )
         for (src in sources) {
             try {
                 val r = AudioRecord(src, captureRate, fmt, AudioFormat.ENCODING_PCM_16BIT, bufSize)
@@ -1733,7 +1971,9 @@ private class AudioRecorder(private val sampleRate: Int = 16000) {
                     return r
                 }
                 r.release()
-            } catch (_: Throwable) { /* пробуем следующий source */ }
+            } catch (_: Throwable) {
+                // пробуем следующий source
+            }
         }
         return null
     }
@@ -1743,7 +1983,9 @@ private class AudioRecorder(private val sampleRate: Int = 16000) {
         var fmt = AudioFormat.CHANNEL_IN_STEREO
         var minBuf = AudioRecord.getMinBufferSize(captureRate, fmt, enc)
         var r = if (minBuf > 0) buildRecorder(fmt, maxOf(minBuf * 4, 8192)) else null
-        if (r != null) channels = 2 else {
+        if (r != null) {
+            channels = 2
+        } else {
             fmt = AudioFormat.CHANNEL_IN_MONO
             minBuf = AudioRecord.getMinBufferSize(captureRate, fmt, enc)
             r = buildRecorder(fmt, maxOf(minBuf * 4, 8192)) ?: throw RuntimeException("микрофон не инициализирован")
@@ -1755,20 +1997,24 @@ private class AudioRecorder(private val sampleRate: Int = 16000) {
         running = true
         r.startRecording()
         Log.d("VOICE", "recorder: channels=$channels, ${captureRate}Hz")
-        thread = thread(name = "whisper-record") {
-            val buf = ShortArray(bufSize / 2)
-            while (running) {
-                val n = r.read(buf, 0, buf.size)
-                if (n > 0) synchronized(raw) { for (i in 0 until n) raw.add(buf[i]) }
+        thread =
+            thread(name = "whisper-record") {
+                val buf = ShortArray(bufSize / 2)
+                while (running) {
+                    val n = r.read(buf, 0, buf.size)
+                    if (n > 0) synchronized(raw) { for (i in 0 until n) raw.add(buf[i]) }
+                }
             }
-        }
     }
 
     fun stop(): FloatArray {
         running = false
         thread?.join(1500)
         val r = recorder ?: return FloatArray(0)
-        try { r.stop() } catch (_: Exception) {}
+        try {
+            r.stop()
+        } catch (_: Exception) {
+        }
         r.release()
         recorder = null
         val data = synchronized(raw) { raw.toShortArray() }
@@ -1786,7 +2032,8 @@ private class AudioRecorder(private val sampleRate: Int = 16000) {
         // High-pass 150 Гц: убираем сетевой фон 100 Гц.
         l = highPass(l)
         if (rr.isNotEmpty()) rr = highPass(rr)
-        val rmsL = rms(l); val rmsR = if (rr.isNotEmpty()) rms(rr) else -1.0
+        val rmsL = rms(l)
+        val rmsR = if (rr.isNotEmpty()) rms(rr) else -1.0
         val best = if (rmsL >= rmsR) l else rr
         Log.d("VOICE", "48к→16к: rmsL=${"%.3f".format(rmsL)} rmsR=${"%.3f".format(rmsR)} → беру ${if (rmsL >= rmsR) "L" else "R"}")
         return best
@@ -1796,11 +2043,12 @@ private class AudioRecorder(private val sampleRate: Int = 16000) {
     private fun resample4to1(x: FloatArray): FloatArray {
         val taps = 63
         val cut = 7400.0 / 48000.0
-        val h = DoubleArray(taps) { i ->
-            val n = i - (taps - 1) / 2.0
-            val sinc = if (n == 0.0) 2 * cut else kotlin.math.sin(2 * Math.PI * cut * n) / (Math.PI * n)
-            sinc * (0.54 - 0.46 * kotlin.math.cos(2 * Math.PI * i / (taps - 1)))
-        }
+        val h =
+            DoubleArray(taps) { i ->
+                val n = i - (taps - 1) / 2.0
+                val sinc = if (n == 0.0) 2 * cut else kotlin.math.sin(2 * Math.PI * cut * n) / (Math.PI * n)
+                sinc * (0.54 - 0.46 * kotlin.math.cos(2 * Math.PI * i / (taps - 1)))
+            }
         val hSum = h.sum()
         for (i in h.indices) h[i] /= hSum
         val half = (taps - 1) / 2
@@ -1819,17 +2067,32 @@ private class AudioRecorder(private val sampleRate: Int = 16000) {
     }
 
     /** High-pass 150 Гц (биквад RBJ, Q=0.707) — срез сетевого фона 100 Гц. */
-    private fun highPass(x: FloatArray, fc: Double = 150.0, q: Double = 0.707): FloatArray {
+    private fun highPass(
+        x: FloatArray,
+        fc: Double = 150.0,
+        q: Double = 0.707,
+    ): FloatArray {
         val w0 = 2.0 * Math.PI * fc / sampleRate
-        val cosw = Math.cos(w0); val sinw = Math.sin(w0)
+        val cosw = Math.cos(w0)
+        val sinw = Math.sin(w0)
         val alpha = sinw / (2.0 * q)
-        val b0 = (1.0 + cosw) / 2.0; val b1 = -(1.0 + cosw); val b2 = (1.0 + cosw) / 2.0
-        val a0 = 1.0 + alpha; val a1 = -2.0 * cosw; val a2 = 1.0 - alpha
+        val b0 = (1.0 + cosw) / 2.0
+        val b1 = -(1.0 + cosw)
+        val b2 = (1.0 + cosw) / 2.0
+        val a0 = 1.0 + alpha
+        val a1 = -2.0 * cosw
+        val a2 = 1.0 - alpha
         val out = FloatArray(x.size)
-        var x1 = 0f; var x2 = 0f; var y1 = 0f; var y2 = 0f
+        var x1 = 0f
+        var x2 = 0f
+        var y1 = 0f
+        var y2 = 0f
         for (i in x.indices) {
             val y = ((b0 / a0) * x[i] + (b1 / a0) * x1 + (b2 / a0) * x2 - (a1 / a0) * y1 - (a2 / a0) * y2).toFloat()
-            x2 = x1; x1 = x[i]; y2 = y1; y1 = y
+            x2 = x1
+            x1 = x[i]
+            y2 = y1
+            y1 = y
             out[i] = y
         }
         return out
@@ -1843,24 +2106,31 @@ private class AudioRecorder(private val sampleRate: Int = 16000) {
 }
 
 @Composable
-private fun MessageRow(m: ChatMsg, modelName: String = "Модель", modelFont: FontFamily = FontFamily.Monospace, modelColor: Color = Color(0xFFD97706)) {
+private fun MessageRow(
+    m: ChatMsg,
+    modelName: String = "Модель",
+    modelFont: FontFamily = FontFamily.Monospace,
+    modelColor: Color = Color(0xFFD97706),
+) {
     val isModel = m.role == "assistant"
-    val roleColor = when (m.role) {
-        "user" -> Color(0xFF8AB4F8)
-        "assistant" -> Color(0xFF9C27B0)
-        else -> Color(0xFFB0B0B0)
-    }
-    val roleLabel = when (m.role) {
-        "user" -> "Ты"
-        "assistant" -> modelName
-        else -> "Система"
-    }
+    val roleColor =
+        when (m.role) {
+            "user" -> Color(0xFF8AB4F8)
+            "assistant" -> Color(0xFF9C27B0)
+            else -> Color(0xFFB0B0B0)
+        }
+    val roleLabel =
+        when (m.role) {
+            "user" -> "Ты"
+            "assistant" -> modelName
+            else -> "Система"
+        }
     Column(Modifier.fillMaxWidth()) {
         Text(
             roleLabel,
             color = roleColor,
             fontSize = 15.sp,
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.Bold,
         )
         if (m.text.isNotBlank()) {
             // SelectionContainer — системное выделение текста длинным нажатием:
@@ -1871,211 +2141,264 @@ private fun MessageRow(m: ChatMsg, modelName: String = "Модель", modelFont
                     color = if (isModel) modelColor else Color(0xFFEDEDED),
                     fontFamily = if (isModel) modelFont else FontFamily.Default,
                     fontSize = 14.sp,
-                    lineHeight = 19.sp
+                    lineHeight = 19.sp,
                 )
             }
         }
     }
 }
 
-private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? = withContext(Dispatchers.IO) {
-    val p = port ?: return@withContext null
-    try {
-        val sessionsRaw = get("http://127.0.0.1:$p/session") ?: return@withContext null
-        val sessions = JSONArray(sessionsRaw)
-        var bestId: String? = null
-        var bestTs = -1L
-        var bestModelId = ""
-        for (i in 0 until sessions.length()) {
-            val s = sessions.getJSONObject(i)
-            val t = s.optJSONObject("time")?.optLong("updated") ?: -1L
-            if (t > bestTs) {
-                bestTs = t
-                bestId = s.optString("id", null)
-                bestModelId = s.optJSONObject("model")?.optString("id", "") ?: ""
-            }
-        }
-        if (bestId == null) return@withContext ChatSnapshot(emptyList(), "нет сессий", null)
-        val label = titleOf(sessions, bestId)
-        // Вариант 2: /message (главный, тащит всю ленту) и /mcp стартуют ПАРАЛЛЕЛЬНО.
-        // Оба — блокирующие get() на Dispatchers.IO; async даёт им работать одновременно,
-        // а не последовательно (экономия ~11-58мс на поллинг в худшем случае).
-        val msgDeferred = async { get("http://127.0.0.1:$p/session/$bestId/message") }
-        // MCP-серверы: GET /mcp → Record<name, McpServer{name,enabled,status,...}> (иначе пустой {}).
-        // Читаем из кэша (обновляется раз в MCP_CACHE_MS), чтобы не дёргать сервис каждый поллинг.
-        // Подключёнными считаем тех, у кого status == "connected". Показываем «N MCP».
-        var mcpConnected = 0
-        var mcpTotal = 0
-        val mcpServers = ArrayList<McpInfo>()
+private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
+    withContext(Dispatchers.IO) {
+        val p = port ?: return@withContext null
         try {
-            val mcpRaw = getMcpCached(p)
-            if (mcpRaw != null) {
-                val trimmed = mcpRaw.trim()
-                if (trimmed.startsWith("[")) {
-                    val marr = JSONArray(trimmed)
-                    mcpTotal = marr.length()
-                    for (i in 0 until marr.length()) {
-                        val ms = marr.optJSONObject(i)
-                        val name = ms?.optString("name", "") ?: ""
-                        val status = ms?.optString("status", "") ?: ""
-                        if (status == "connected") mcpConnected++
-                        if (name.isNotBlank()) mcpServers.add(McpInfo(name, status))
-                    }
-                } else if (trimmed.startsWith("{")) {
-                    val mobj = JSONObject(trimmed)
-                    val names = mobj.keys()
-                    while (names.hasNext()) {
-                        mcpTotal++
-                        val key = names.next()
-                        val ms = mobj.optJSONObject(key)
-                        val status = ms?.optString("status", "") ?: ""
-                        if (status == "connected") mcpConnected++
-                        mcpServers.add(McpInfo(ms?.optString("name", "")?.takeIf { it.isNotBlank() } ?: key, status))
-                    }
+            val sessionsRaw = get("http://127.0.0.1:$p/session") ?: return@withContext null
+            val sessions = JSONArray(sessionsRaw)
+            var bestId: String? = null
+            var bestTs = -1L
+            var bestModelId = ""
+            for (i in 0 until sessions.length()) {
+                val s = sessions.getJSONObject(i)
+                val t = s.optJSONObject("time")?.optLong("updated") ?: -1L
+                if (t > bestTs) {
+                    bestTs = t
+                    bestId = s.optString("id", null)
+                    bestModelId = s.optJSONObject("model")?.optString("id", "") ?: ""
                 }
             }
-        } catch (_: Exception) { /* MCP недоступен — покажем 0 красным */ }
-        val msgRaw = msgDeferred.await() ?: return@withContext ChatSnapshot(emptyList(), label, bestId)
-        // Инкрементальный кэш: если за этой сессией тот же самый сырой JSON /message
-        // (hash совпал) — лента и все производные (thinking/liveTool/ctxTokens/question)
-        // гарантированно идентичны. Переиспользуем готовые объекты, НЕ пересоздавая
-        // их: это убирает самое тяжёлое — полный JSON-парсинг и построение строк —
-        // на каждый тик поллинга (2.5 раза/с), пока контент чата статичен.
-        val rawHash = msgRaw.hashCode()
-        val cached = ChatCache.result
-        if (ChatCache.sessionId == bestId && ChatCache.rawHash == rawHash && cached != null) {
-            val q = cached.question
-            val thinking = cached.thinking
-            val liveTool = cached.liveTool
-            val take = cached.messages
-            val snap = ChatSnapshot(take, "$label", bestId, q, thinking, prettyModel(bestModelId), liveTool = liveTool, contextTokens = cached.contextTokens, mcpConnected = mcpConnected, mcpTotal = mcpTotal, mcpServers = mcpServers)
-            android.util.Log.d("ChatOverlay", "FETCH(cached) out=${take.size} thinking=$thinking q=${q != null} label=$label model=$bestModelId")
-            return@withContext snap
-        }
-        val arr = JSONArray(msgRaw)
-        val out = ArrayList<ChatMsg>(arr.length())
-        // Параллельные out флаги: была ли у сообщения «активность» шага
-        // (step-start/reasoning/tool) и был ли step-finish. Нужны, чтобы отличать
-        // реально думающего assistant (активность есть, финиша нет) от оборванного
-        // пустого шага после abort (parts=[], активности нет).
-        val hasActivity = ArrayList<Boolean>(arr.length())
-        val hasFinish = ArrayList<Boolean>(arr.length())
-        // Живой инструмент, вызываемый моделью в ТЕКУЩЕМ ответе. Накопительный по
-        // assistant-шагам одного ответа (сбрасывается на новом user-сообщении), поэтому
-        // чип НЕ моргает между tool-вызовами. На шагах с тулом запоминаем его; пустой
-        // промежуточный шаг сохраняет предыдущий тул. Из UI показывается только пока
-        // думает (thinking=true) — после завершения ответа гаснет.
-        var lastTool: ChatTool? = null
-        // ЧЕСТНАЯ оценка активного контекста сессии: сумма символов всех текущих
-        // частей (text + tool output/input + reasoning). `tokens.input` из /session
-        // кумулятивный (включает уже компактированные хвосты), поэтому для индикатора
-        // считаем именно активное окно: символы -> токены (≈ /4) + overhead (×1.15).
-        var ctxChars = 0L
-        for (i in 0 until arr.length()) {
-            val msg = arr.getJSONObject(i)
-            val info = msg.optJSONObject("info") ?: continue
-            val role = info.optString("role", "system")
-            val parts = msg.optJSONArray("parts") ?: continue
-            val sb = StringBuilder()
-            var hasText = false
-            var finish = false
-            var activity = false
-            // Новый ВОПРОС (user-сообщение) — сбрасываем живой тул: начинается новый
-            // ответ модели, чип должен отражать только инструменты ЭТОГО ответа.
-            // На assistant-шагах НЕ сбрасываем: между tool-вызовами одного ответа есть
-            // пустые промежуточные шаги, и live-чип не должен моргать (bash→пусто→bash).
-            if (role == "user")
-                lastTool = null
-            for (ph in 0 until parts.length()) {
-                val part = parts.getJSONObject(ph)
-                val type = part.optString("type", "")
-                if (type == "text") {
-                    hasText = true
-                    val t = part.optString("text", "")
-                    ctxChars += t.length
-                    if (sb.isNotEmpty() && t.isNotEmpty()) sb.append("\n")
-                    sb.append(t)
-                } else if (type == "step-finish") {
-                    finish = true
-                } else if (type == "tool") {
-                    activity = true
-                    ctxChars += (part.optJSONObject("state")?.optString("output", "") ?: "").length
-                    // Запомнить имя инструмента + краткое действие (команда/запрос).
-                    val st = part.optJSONObject("state")
-                    val input = st?.optJSONObject("input")
-                    val title = st?.optString("title", "") ?: ""
-                    val cmd = input?.optString("command", "") ?: ""
-                    val qry = input?.optString("query", "") ?: ""
-                    val det = when {
-                        cmd.isNotBlank() -> cmd
-                        qry.isNotBlank() -> qry
-                        title.isNotBlank() -> title
-                        else -> ""
+            if (bestId == null) return@withContext ChatSnapshot(emptyList(), "нет сессий", null)
+            val label = titleOf(sessions, bestId)
+            // Вариант 2: /message (главный, тащит всю ленту) и /mcp стартуют ПАРАЛЛЕЛЬНО.
+            // Оба — блокирующие get() на Dispatchers.IO; async даёт им работать одновременно,
+            // а не последовательно (экономия ~11-58мс на поллинг в худшем случае).
+            val msgDeferred = async { get("http://127.0.0.1:$p/session/$bestId/message") }
+            // MCP-серверы: GET /mcp → Record<name, McpServer{name,enabled,status,...}> (иначе пустой {}).
+            // Читаем из кэша (обновляется раз в MCP_CACHE_MS), чтобы не дёргать сервис каждый поллинг.
+            // Подключёнными считаем тех, у кого status == "connected". Показываем «N MCP».
+            var mcpConnected = 0
+            var mcpTotal = 0
+            val mcpServers = ArrayList<McpInfo>()
+            try {
+                val mcpRaw = getMcpCached(p)
+                if (mcpRaw != null) {
+                    val trimmed = mcpRaw.trim()
+                    if (trimmed.startsWith("[")) {
+                        val marr = JSONArray(trimmed)
+                        mcpTotal = marr.length()
+                        for (i in 0 until marr.length()) {
+                            val ms = marr.optJSONObject(i)
+                            val name = ms?.optString("name", "") ?: ""
+                            val status = ms?.optString("status", "") ?: ""
+                            if (status == "connected") mcpConnected++
+                            if (name.isNotBlank()) mcpServers.add(McpInfo(name, status))
+                        }
+                    } else if (trimmed.startsWith("{")) {
+                        val mobj = JSONObject(trimmed)
+                        val names = mobj.keys()
+                        while (names.hasNext()) {
+                            mcpTotal++
+                            val key = names.next()
+                            val ms = mobj.optJSONObject(key)
+                            val status = ms?.optString("status", "") ?: ""
+                            if (status == "connected") mcpConnected++
+                            mcpServers.add(McpInfo(ms?.optString("name", "")?.takeIf { it.isNotBlank() } ?: key, status))
+                        }
                     }
-                    lastTool = ChatTool(part.optString("tool", ""), det)
-                } else if (type == "step-start" || type == "reasoning") {
-                    activity = true
-                    ctxChars += part.optString("text", "").length
                 }
+            } catch (_: Exception) {
+                // MCP недоступен — покажем 0 красным
             }
-            // Завершённый tool-only шаг (step-start->tool...->step-finish без text)
-            // не должен отображаться как «… генерируется …» — это не зависание,
-            // а просто шаг без текста. Фильтруем его из ленты. ДУМАЮЩИЙ assistant
-            // (без step-finish) остаётся, чтобы UI показал «генерируется».
-            if (role == "assistant" && !hasText && finish) continue
-            out.add(ChatMsg(role, sb.toString()))
-            hasActivity.add(activity)
-            hasFinish.add(finish)
-        }
-        val lastIndex = out.size - 1
-        fun hasActivityFor(idx: Int): Boolean = idx in hasActivity.indices && hasActivity[idx]
-        fun hasFinishFor(idx: Int): Boolean = idx in hasFinish.indices && hasFinish[idx]
-        val take = if (out.size > MAX_SHOWN) out.subList(out.size - MAX_SHOWN, out.size) else out
-        val q = questionOf(p, bestId)
-        val last = out.lastOrNull()
-        // «Думает» = модель реально начала отвечать (есть шаг: step-start/reasoning/tool)
-        // И НЕ завершилась (нет step-finish). После abort opencode добавляет ПУСТОЙ
-        // assistant-шаг parts=[] (без step-start, без finish, без text) — такой НЕ
-        // считается думающим: иначе UI вечно показывал бы «Модель думает» после Stop.
-        val thinking = q == null && when {
-            last == null -> false
-            last.role == "user" -> true
-            // «Думает» также = открыт assistant-шаг, ещё НЕ завершённый (нет step-finish),
-            // даже если модель пока не отдала ни одного part (step-start/reasoning/tool).
-            // Такой период = модель уже работает (греет предикт, выполняет websearch/tool),
-            // и юзер должен ВИДЕТЬ анимацию/живой чип, иначе кажется, что всё зависло.
-            // Раньше требовали hasActivityFor(lastIndex) — из-за этого пустой открытый шаг
-            // (первый тик после вопроса) давал thinking=false → никакой анимации до первых
-            // частей. Форсируем hint, что работа идёт: assistant без finish = думает.
-            last.role == "assistant" && !hasFinishFor(lastIndex) -> true
-            else -> false
-        }
-        // Live-чип показываем только пока модель ещё работает (thinking). Когда она
-        // закончила (дала финальный ответ) — lastTool не показываем как «текущее».
-        val liveTool = if (thinking) lastTool else null
-        // Токены оцениваем через суммарную длину активных частей сессии (ctxChars):
-        // ≈ символов/4 (ok для кода/HTML/русского в среднем), плюс небольшой
-        // оверхед на системный промпт/структуру (×1.15). Это и есть ТЕКУЩИЙ
-        // активный контекст, а не кумулятивный tokens.input.
-        val ctxTokens = (ctxChars / 4L * 115 / 100)
-        // Записываем кэш ТОЛЬКО после успешного полного парсинга.
-        ChatCache.sessionId = bestId
-        ChatCache.rawHash = rawHash
-        ChatCache.result = ChatParseResult(
-            take, q, thinking, liveTool, ctxTokens,
-            hasActivity, hasFinish, lastTool
-        )
-        val snap = ChatSnapshot(take, "$label", bestId, q, thinking, prettyModel(bestModelId), liveTool = liveTool, contextTokens = ctxTokens, mcpConnected = mcpConnected, mcpTotal = mcpTotal, mcpServers = mcpServers)
-        val lastDiag = last?.let { "role=${it.role} text='${it.text.take(30)}'" } ?: "null"
-        android.util.Log.d("ChatOverlay", "FETCH parse out=${out.size} take=${take.size} thinking=$thinking q=${q != null} label=$label model=$bestModelId liveTool=${liveTool?.name} LAST=[$lastDiag] hasAct=${hasActivityFor(lastIndex)} hasFin=${hasFinishFor(lastIndex)}")
-        snap
-    } catch (e: Exception) {
-        if (e is InterruptedException) throw e
-        null
-    }
-}
+            val msgRaw = msgDeferred.await() ?: return@withContext ChatSnapshot(emptyList(), label, bestId)
+            // Инкрементальный кэш: если за этой сессией тот же самый сырой JSON /message
+            // (hash совпал) — лента и все производные (thinking/liveTool/ctxTokens/question)
+            // гарантированно идентичны. Переиспользуем готовые объекты, НЕ пересоздавая
+            // их: это убирает самое тяжёлое — полный JSON-парсинг и построение строк —
+            // на каждый тик поллинга (2.5 раза/с), пока контент чата статичен.
+            val rawHash = msgRaw.hashCode()
+            val cached = ChatCache.result
+            if (ChatCache.sessionId == bestId && ChatCache.rawHash == rawHash && cached != null) {
+                val q = cached.question
+                val thinking = cached.thinking
+                val liveTool = cached.liveTool
+                val take = cached.messages
+                val snap =
+                    ChatSnapshot(
+                        take,
+                        "$label",
+                        bestId,
+                        q,
+                        thinking,
+                        prettyModel(bestModelId),
+                        liveTool = liveTool,
+                        contextTokens = cached.contextTokens,
+                        mcpConnected = mcpConnected,
+                        mcpTotal = mcpTotal,
+                        mcpServers = mcpServers,
+                    )
+                android.util.Log.d(
+                    "ChatOverlay",
+                    "FETCH(cached) out=${take.size} thinking=$thinking q=${q != null} label=$label model=$bestModelId",
+                )
+                return@withContext snap
+            }
+            val arr = JSONArray(msgRaw)
+            val out = ArrayList<ChatMsg>(arr.length())
+            // Параллельные out флаги: была ли у сообщения «активность» шага
+            // (step-start/reasoning/tool) и был ли step-finish. Нужны, чтобы отличать
+            // реально думающего assistant (активность есть, финиша нет) от оборванного
+            // пустого шага после abort (parts=[], активности нет).
+            val hasActivity = ArrayList<Boolean>(arr.length())
+            val hasFinish = ArrayList<Boolean>(arr.length())
+            // Живой инструмент, вызываемый моделью в ТЕКУЩЕМ ответе. Накопительный по
+            // assistant-шагам одного ответа (сбрасывается на новом user-сообщении), поэтому
+            // чип НЕ моргает между tool-вызовами. На шагах с тулом запоминаем его; пустой
+            // промежуточный шаг сохраняет предыдущий тул. Из UI показывается только пока
+            // думает (thinking=true) — после завершения ответа гаснет.
+            var lastTool: ChatTool? = null
+            // ЧЕСТНАЯ оценка активного контекста сессии: сумма символов всех текущих
+            // частей (text + tool output/input + reasoning). `tokens.input` из /session
+            // кумулятивный (включает уже компактированные хвосты), поэтому для индикатора
+            // считаем именно активное окно: символы -> токены (≈ /4) + overhead (×1.15).
+            var ctxChars = 0L
+            for (i in 0 until arr.length()) {
+                val msg = arr.getJSONObject(i)
+                val info = msg.optJSONObject("info") ?: continue
+                val role = info.optString("role", "system")
+                val parts = msg.optJSONArray("parts") ?: continue
+                val sb = StringBuilder()
+                var hasText = false
+                var finish = false
+                var activity = false
+                // Новый ВОПРОС (user-сообщение) — сбрасываем живой тул: начинается новый
+                // ответ модели, чип должен отражать только инструменты ЭТОГО ответа.
+                // На assistant-шагах НЕ сбрасываем: между tool-вызовами одного ответа есть
+                // пустые промежуточные шаги, и live-чип не должен моргать (bash→пусто→bash).
+                if (role == "user") {
+                    lastTool = null
+                }
+                for (ph in 0 until parts.length()) {
+                    val part = parts.getJSONObject(ph)
+                    val type = part.optString("type", "")
+                    if (type == "text") {
+                        hasText = true
+                        val t = part.optString("text", "")
+                        ctxChars += t.length
+                        if (sb.isNotEmpty() && t.isNotEmpty()) sb.append("\n")
+                        sb.append(t)
+                    } else if (type == "step-finish") {
+                        finish = true
+                    } else if (type == "tool") {
+                        activity = true
+                        ctxChars += (part.optJSONObject("state")?.optString("output", "") ?: "").length
+                        // Запомнить имя инструмента + краткое действие (команда/запрос).
+                        val st = part.optJSONObject("state")
+                        val input = st?.optJSONObject("input")
+                        val title = st?.optString("title", "") ?: ""
+                        val cmd = input?.optString("command", "") ?: ""
+                        val qry = input?.optString("query", "") ?: ""
+                        val det =
+                            when {
+                                cmd.isNotBlank() -> cmd
+                                qry.isNotBlank() -> qry
+                                title.isNotBlank() -> title
+                                else -> ""
+                            }
+                        lastTool = ChatTool(part.optString("tool", ""), det)
+                    } else if (type == "step-start" || type == "reasoning") {
+                        activity = true
+                        ctxChars += part.optString("text", "").length
+                    }
+                }
+                // Завершённый tool-only шаг (step-start->tool...->step-finish без text)
+                // не должен отображаться как «… генерируется …» — это не зависание,
+                // а просто шаг без текста. Фильтруем его из ленты. ДУМАЮЩИЙ assistant
+                // (без step-finish) остаётся, чтобы UI показал «генерируется».
+                if (role == "assistant" && !hasText && finish) continue
+                out.add(ChatMsg(role, sb.toString()))
+                hasActivity.add(activity)
+                hasFinish.add(finish)
+            }
+            val lastIndex = out.size - 1
 
-private fun titleOf(sessions: JSONArray, id: String): String {
+            fun hasActivityFor(idx: Int): Boolean = idx in hasActivity.indices && hasActivity[idx]
+
+            fun hasFinishFor(idx: Int): Boolean = idx in hasFinish.indices && hasFinish[idx]
+            val take = if (out.size > MAX_SHOWN) out.subList(out.size - MAX_SHOWN, out.size) else out
+            val q = questionOf(p, bestId)
+            val last = out.lastOrNull()
+            // «Думает» = модель реально начала отвечать (есть шаг: step-start/reasoning/tool)
+            // И НЕ завершилась (нет step-finish). После abort opencode добавляет ПУСТОЙ
+            // assistant-шаг parts=[] (без step-start, без finish, без text) — такой НЕ
+            // считается думающим: иначе UI вечно показывал бы «Модель думает» после Stop.
+            val thinking =
+                q == null &&
+                    when {
+                        last == null -> false
+                        last.role == "user" -> true
+                        // «Думает» также = открыт assistant-шаг, ещё НЕ завершённый (нет step-finish),
+                        // даже если модель пока не отдала ни одного part (step-start/reasoning/tool).
+                        // Такой период = модель уже работает (греет предикт, выполняет websearch/tool),
+                        // и юзер должен ВИДЕТЬ анимацию/живой чип, иначе кажется, что всё зависло.
+                        // Раньше требовали hasActivityFor(lastIndex) — из-за этого пустой открытый шаг
+                        // (первый тик после вопроса) давал thinking=false → никакой анимации до первых
+                        // частей. Форсируем hint, что работа идёт: assistant без finish = думает.
+                        last.role == "assistant" && !hasFinishFor(lastIndex) -> true
+                        else -> false
+                    }
+            // Live-чип показываем только пока модель ещё работает (thinking). Когда она
+            // закончила (дала финальный ответ) — lastTool не показываем как «текущее».
+            val liveTool = if (thinking) lastTool else null
+            // Токены оцениваем через суммарную длину активных частей сессии (ctxChars):
+            // ≈ символов/4 (ok для кода/HTML/русского в среднем), плюс небольшой
+            // оверхед на системный промпт/структуру (×1.15). Это и есть ТЕКУЩИЙ
+            // активный контекст, а не кумулятивный tokens.input.
+            val ctxTokens = (ctxChars / 4L * 115 / 100)
+            // Записываем кэш ТОЛЬКО после успешного полного парсинга.
+            ChatCache.sessionId = bestId
+            ChatCache.rawHash = rawHash
+            ChatCache.result =
+                ChatParseResult(
+                    take,
+                    q,
+                    thinking,
+                    liveTool,
+                    ctxTokens,
+                    hasActivity,
+                    hasFinish,
+                    lastTool,
+                )
+            val snap =
+                ChatSnapshot(
+                    take,
+                    "$label",
+                    bestId,
+                    q,
+                    thinking,
+                    prettyModel(bestModelId),
+                    liveTool = liveTool,
+                    contextTokens = ctxTokens,
+                    mcpConnected = mcpConnected,
+                    mcpTotal = mcpTotal,
+                    mcpServers = mcpServers,
+                )
+            val lastDiag = last?.let { "role=${it.role} text='${it.text.take(30)}'" } ?: "null"
+            android.util.Log.d(
+                "ChatOverlay",
+                "FETCH parse out=${out.size} take=${take.size} thinking=$thinking q=${q != null} label=$label " +
+                    "model=$bestModelId liveTool=${liveTool?.name} LAST=[$lastDiag] " +
+                    "hasAct=${hasActivityFor(lastIndex)} hasFin=${hasFinishFor(lastIndex)}",
+            )
+            snap
+        } catch (e: Exception) {
+            if (e is InterruptedException) throw e
+            null
+        }
+    }
+
+private fun titleOf(
+    sessions: JSONArray,
+    id: String,
+): String {
     for (i in 0 until sessions.length()) {
         val s = sessions.getJSONObject(i)
         if (s.optString("id") == id) {
@@ -2086,7 +2409,10 @@ private fun titleOf(sessions: JSONArray, id: String): String {
     return "сессия"
 }
 
-private fun questionOf(port: Int, sessionId: String): ChatQuestion? {
+private fun questionOf(
+    port: Int,
+    sessionId: String,
+): ChatQuestion? {
     try {
         val raw = get("http://127.0.0.1:$port/api/session/$sessionId/question") ?: return null
         val data = JSONObject(raw).optJSONArray("data") ?: return null
@@ -2103,7 +2429,12 @@ private fun questionOf(port: Int, sessionId: String): ChatQuestion? {
     }
 }
 
-private fun postAnswer(port: Int, sessionId: String, questionId: String, labels: List<String>): Boolean {
+private fun postAnswer(
+    port: Int,
+    sessionId: String,
+    questionId: String,
+    labels: List<String>,
+): Boolean {
     try {
         val conn = (URL("http://127.0.0.1:$port/api/session/$sessionId/question/$questionId/reply").openConnection() as HttpURLConnection)
         conn.requestMethod = "POST"
@@ -2131,7 +2462,10 @@ private fun postAnswer(port: Int, sessionId: String, questionId: String, labels:
     }
 }
 
-private suspend fun scrollToBottomFull(state: LazyListState, target: Int) {
+private suspend fun scrollToBottomFull(
+    state: LazyListState,
+    target: Int,
+) {
     if (target < 0) return
     state.scrollToItem(target)
     // scrollToItem ставит элемент началом видимой области; длинное сообщение
@@ -2171,10 +2505,12 @@ private fun playNotificationSound(context: Context) {
             val rt = RingtoneManager.getRingtone(context.applicationContext, uri)
             if (rt != null) {
                 if (Build.VERSION.SDK_INT >= 28) {
-                    rt.audioAttributes = AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build()
+                    rt.audioAttributes =
+                        AudioAttributes
+                            .Builder()
+                            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build()
                 }
                 rt.play()
             }
@@ -2208,8 +2544,11 @@ private fun createSession(port: Int): String? {
  * POST /session/{id}/abort (200 + "true"). Ответ приходит сразу, блокировать
  * нечего — это не долгий стрим.
  */
-private fun abortSession(port: Int, sessionId: String): Boolean {
-    return try {
+private fun abortSession(
+    port: Int,
+    sessionId: String,
+): Boolean =
+    try {
         val conn = (URL("http://127.0.0.1:$port/session/$sessionId/abort").openConnection() as HttpURLConnection)
         conn.requestMethod = "POST"
         conn.connectTimeout = 2000
@@ -2221,9 +2560,12 @@ private fun abortSession(port: Int, sessionId: String): Boolean {
     } catch (_: Exception) {
         false
     }
-}
 
-private fun postMessage(port: Int, sessionId: String, text: String): Boolean {
+private fun postMessage(
+    port: Int,
+    sessionId: String,
+    text: String,
+): Boolean {
     try {
         val conn = (URL("http://127.0.0.1:$port/session/$sessionId/message").openConnection() as HttpURLConnection)
         conn.requestMethod = "POST"

@@ -34,7 +34,6 @@ import org.opencode.mobile.R
  * не менялась).
  */
 class OpencodeServerService : Service() {
-
     enum class ServerStatus { STARTING, RUNNING, ERROR, STOPPED }
 
     data class ServerState(
@@ -104,10 +103,11 @@ class OpencodeServerService : Service() {
     @Volatile
     private var runtimeManager: RuntimeManager? = null
 
-    private fun manager(): RuntimeManager = synchronized(this) {
-        runtimeManager ?: RuntimeManager(applicationContext) { rt -> onRuntimeState(rt) }
-            .also { runtimeManager = it }
-    }
+    private fun manager(): RuntimeManager =
+        synchronized(this) {
+            runtimeManager ?: RuntimeManager(applicationContext) { rt -> onRuntimeState(rt) }
+                .also { runtimeManager = it }
+        }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -116,7 +116,11 @@ class OpencodeServerService : Service() {
         createChannel()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    override fun onStartCommand(
+        intent: Intent?,
+        flags: Int,
+        startId: Int,
+    ): Int {
         when (intent?.action) {
             ACTION_STOP -> {
                 // Обязательно перейти в foreground ПЕРЕД остановкой, иначе
@@ -179,31 +183,37 @@ class OpencodeServerService : Service() {
         // После onDestroy сервис считаем мёртвым: колбэки из in-flight корутины
         // не должны публиковать state и «воскрешать» нотификацию поверх STOP.
         if (!serviceActive) return
-        _state.value = ServerState(
-            status = rt.stage.toServerStatus(),
-            port = rt.port,
-            workspaceExternal = rt.workspaceExternal,
-            lastError = rt.lastError,
-            stopReason = rt.stopReason,
-            restartCount = rt.restartCount,
-        )
+        _state.value =
+            ServerState(
+                status = rt.stage.toServerStatus(),
+                port = rt.port,
+                workspaceExternal = rt.workspaceExternal,
+                lastError = rt.lastError,
+                stopReason = rt.stopReason,
+                restartCount = rt.restartCount,
+            )
         updateNotification(rt.stage.toNotificationText())
     }
 
-    private fun RuntimeStage.toServerStatus() = when (this) {
-        RuntimeStage.IDLE, RuntimeStage.STOPPING, RuntimeStage.STOPPED -> ServerStatus.STOPPED
-        RuntimeStage.PREPARING, RuntimeStage.STARTING_MEMORY, RuntimeStage.STARTING_SERVER -> ServerStatus.STARTING
-        RuntimeStage.HEALTHY, RuntimeStage.DEGRADED -> ServerStatus.RUNNING
-        RuntimeStage.CRASHED -> ServerStatus.ERROR
-    }
+    private fun RuntimeStage.toServerStatus() =
+        when (this) {
+            RuntimeStage.IDLE, RuntimeStage.STOPPING, RuntimeStage.STOPPED -> ServerStatus.STOPPED
+            RuntimeStage.PREPARING, RuntimeStage.STARTING_MEMORY, RuntimeStage.STARTING_SERVER,
+            RuntimeStage.RESTARTING,
+            -> ServerStatus.STARTING
+            RuntimeStage.HEALTHY, RuntimeStage.DEGRADED -> ServerStatus.RUNNING
+            RuntimeStage.CRASHED, RuntimeStage.FAILED_PERMANENTLY -> ServerStatus.ERROR
+        }
 
-    private fun RuntimeStage.toNotificationText() = when (this) {
-        RuntimeStage.IDLE, RuntimeStage.STOPPED -> "Stopped"
-        RuntimeStage.STOPPING -> "Stopping"
-        RuntimeStage.PREPARING, RuntimeStage.STARTING_MEMORY, RuntimeStage.STARTING_SERVER -> "Starting"
-        RuntimeStage.HEALTHY, RuntimeStage.DEGRADED -> "Running"
-        RuntimeStage.CRASHED -> "Error"
-    }
+    private fun RuntimeStage.toNotificationText() =
+        when (this) {
+            RuntimeStage.IDLE, RuntimeStage.STOPPED -> "Stopped"
+            RuntimeStage.STOPPING -> "Stopping"
+            RuntimeStage.PREPARING, RuntimeStage.STARTING_MEMORY, RuntimeStage.STARTING_SERVER -> "Starting"
+            RuntimeStage.RESTARTING -> "Restarting"
+            RuntimeStage.HEALTHY, RuntimeStage.DEGRADED -> "Running"
+            RuntimeStage.CRASHED, RuntimeStage.FAILED_PERMANENTLY -> "Error"
+        }
 
     private fun stopServer() {
         // requestStop неблокирующий: флаг + daemon-тред гасит процессы serve/memory.
@@ -245,7 +255,7 @@ class OpencodeServerService : Service() {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
             } else {
                 0
-            }
+            },
         )
     }
 
@@ -256,34 +266,44 @@ class OpencodeServerService : Service() {
         // setSound(null) часть устройств (OPPO/и др. скинки) проигрывает звук
         // канала при каждом повторном notify() — что давало «второй» (лишний)
         // звук при приходе ответа. Жёстко обнуляем звук на канале.
-        val channel = NotificationChannel(
-            CHANNEL_ID, getString(R.string.notif_channel_server), NotificationManager.IMPORTANCE_LOW
-        )
+        val channel =
+            NotificationChannel(
+                CHANNEL_ID,
+                getString(R.string.notif_channel_server),
+                NotificationManager.IMPORTANCE_LOW,
+            )
         channel.setSound(null, null)
         channel.enableVibration(false)
         nm.createNotificationChannel(channel)
     }
 
     private fun buildNotification(stateText: String): Notification {
-        val pi = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        var builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.notif_icon)
-            .setContentTitle(getString(R.string.app_name))
-            .setContentText("OpenCode server — $stateText")
-            .setContentIntent(pi)
-            .setOngoing(true)
-            // Дублирующая защита от звука на уровне самого уведомления: гарантирует
-            // тишину даже если канал переопределён скинкой устройства.
-            .setSilent(true)
+        val pi =
+            PendingIntent.getActivity(
+                this,
+                0,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        var builder =
+            NotificationCompat
+                .Builder(this, CHANNEL_ID)
+                .setSmallIcon(R.drawable.notif_icon)
+                .setContentTitle(getString(R.string.app_name))
+                .setContentText("OpenCode server — $stateText")
+                .setContentIntent(pi)
+                .setOngoing(true)
+                // Дублирующая защита от звука на уровне самого уведомления: гарантирует
+                // тишину даже если канал переопределён скинкой устройства.
+                .setSilent(true)
         // кнопка stop
-        val stopPi = PendingIntent.getService(
-            this, 1,
-            Intent(this, OpencodeServerService::class.java).setAction(ACTION_STOP),
-            PendingIntent.FLAG_IMMUTABLE
-        )
+        val stopPi =
+            PendingIntent.getService(
+                this,
+                1,
+                Intent(this, OpencodeServerService::class.java).setAction(ACTION_STOP),
+                PendingIntent.FLAG_IMMUTABLE,
+            )
         builder = builder.addAction(0, "Stop", stopPi)
         return builder.build()
     }
@@ -296,7 +316,10 @@ class OpencodeServerService : Service() {
 
 /** Минимальный хелпер: startForegroundService с fallback на startService (API<26). */
 object ContextCompatSafe {
-    fun startForegroundService(context: Context, intent: Intent) {
+    fun startForegroundService(
+        context: Context,
+        intent: Intent,
+    ) {
         if (android.os.Build.VERSION.SDK_INT >= 26) {
             context.startForegroundService(intent)
         } else {

@@ -11,9 +11,24 @@
 
 #include <jni.h>
 #include <android/log.h>
+#include <cstdlib> // getenv (NCNN_VERBOSE)
 
 // Пофазовые тайминги (INFO) в logcat, тег NcnnWhisper.
 #define NCNN_PHASE(...) __android_log_print(ANDROID_LOG_INFO, "NcnnWhisper", __VA_ARGS__)
+
+// Пер-шаговый трейс декодера (kv_in/kv_out/out0 shapes на КАЖДОМ авторегрессивном
+// шаге) — в проде спамил бы INFO в лог-буфер. Включается env NCNN_VERBOSE=1
+// (считается ОДИН раз при статической инициализации). Per-итерация decoder iter
+// (декодирование) и per-step shapes логируются ТОЛЬКО сюда (Native-14).
+static const bool g_ncnn_verbose = []() {
+    const char* v = getenv("NCNN_VERBOSE");
+    return v != nullptr && v[0] != '\0' && v[0] != '0';
+}();
+#define NCNN_TRACE(...)                                                             \
+    do {                                                                            \
+        if (g_ncnn_verbose)                                                         \
+            __android_log_print(ANDROID_LOG_DEBUG, "NcnnWhisper", __VA_ARGS__);     \
+    } while (0)
 
 #include <float.h>
 #include <math.h>
@@ -138,8 +153,8 @@ public:
 // кэш между prefill (step 0) и автогрегрессивными шагами (reuse=true в
 // create_or_grow_kvcache). Без него каждый шаг переаллоцировал бы кэш по
 // max_seqlen_hint (2=1638400) -> 8.4GB alloc -> rc=-100 (decoder step fail).
-// Объявлен статическим, живёт весь процесс.
-static ncnn::PoolAllocator* g_kvcache_allocator = nullptr;
+// Аллокатор — член Whisper (unique_ptr, RAII): освобождается вместе с инстансом
+// (g_whisper.reset() → ~Whisper), а не висит статиком на весь процесс (Native-12).
 
 class Whisper
 {
@@ -190,17 +205,22 @@ protected:
     ncnn::Net decoder;
     ncnn::Net proj_out;
     Tokenizer tokenizer;
+    // KV-cache PoolAllocator (RAII, см. комментарий у класса): живёт столько же,
+    // сколько Whisper. decoder.opt.kvcache_allocator указывает на него после load().
+    std::unique_ptr<ncnn::PoolAllocator> kv_allocator;
     std::vector<int> kv_cache_indexes;
     std::vector<int> out_kv_cache_indexes;
     // Cross-KV-оптимизация в run_decoder_step: подтверждение того, что парный layout
     // MHA в декодере действительно (self, cross) на слой. Cross-KV константен между
-    // шагами (зависит только от encoder) — если h cross-кандидата (i%4==2||3) меняется,
-    // это растущий self-KV (другой layout) — откатываемся на extract (иначе тихий мусор
-    // в расшифровке). mutable: run_decoder_step — const. БЕЗОПАСНОСТЬ ПОТОКОВ: transcribe()
-    // сериализован очередью STT (FIFO задач, очередь #2) — рефакторинг, снимающий
-    // сериализацию, обязан снять и cross-оптимизацию (вернуть extract-путь). Значения
-    // сбрасываются в load() при каждой загрузке модели.
+    // шагами (зависит только от encoder) — если ПОЛНАЯ ТРОЙКА (w,h,c) cross-кандидата
+    // (i%4==2||3) меняется, это растущий self-KV (другой layout) — откатываемся на
+    // extract (иначе тихий мусор в расшифровке). mutable: run_decoder_step — const.
+    // БЕЗОПАСНОСТЬ ПОТОКОВ: transcribe() сериализован очередью STT (FIFO задач,
+    // очередь #2) — рефакторинг, снимающий сериализацию, обязан снять и
+    // cross-оптимизацию (вернуть extract-путь). Значения сбрасываются в load().
+    mutable int m_cross_kv_w = -1;
     mutable int m_cross_kv_h = -1;
+    mutable int m_cross_kv_c = -1;
     mutable bool m_cross_layout_ok = true;
 };
 
@@ -245,10 +265,10 @@ int Whisper::load(const std::string& dir, const std::string& base)
     // reuse=true и без OOM. Второй залип: stall на извлечении kv_out[14]/[15]
     // (cross-attn 64x1500x20) на ~8-м шаге при живой длинной речи — чинится в
     // run_decoder_step (cross-KV берётся из входного кэша, extract не зовётся).
-    if (!g_kvcache_allocator)
-        g_kvcache_allocator = new ncnn::PoolAllocator();
-    g_kvcache_allocator->set_size_compare_ratio(0.5f);
-    decoder.opt.kvcache_allocator = g_kvcache_allocator;
+    if (!kv_allocator)
+        kv_allocator = std::make_unique<ncnn::PoolAllocator>();
+    kv_allocator->set_size_compare_ratio(0.5f);
+    decoder.opt.kvcache_allocator = kv_allocator.get();
     proj_out.opt.use_vulkan_compute = false;
     proj_out.opt.use_fp16_packed = fp16;
     proj_out.opt.use_fp16_storage = fp16;
@@ -261,6 +281,10 @@ std::string p = dir + "/" + base;
     // (int8-квантование Gemm/MHA через block-quant), иначе — обычный fp32.
     // ЗАМЕРЕНО 02.09: int8 быстрее FP32 и на CPU, и на Vulkan (int8-Vulkan 6.45s,
     // FP32-Vulkan 11.2s, int8-CPU 8.82s). Поэтому int8 всегда приоритетен.
+    // Грузим int8 СРАЗУ в encoder (Native-11): раньше сначала загружали копию в
+    // пробную enc_try, чтобы проверить валидность — на пике две копии 500MB сети
+    // в памяти, а выгоды ноль: параметры те же. При неудаче — encoder.clear()
+    // (убрать частично загруженные слои) и откат на обычный fp32.
     bool int8_ok = false;
     {
         std::string enc_param = p + "_encoder_int8.ncnn.param";
@@ -268,19 +292,25 @@ std::string p = dir + "/" + base;
         if (fint8)
         {
             fclose(fint8);
-            ncnn::Net enc_try;
-            enc_try.opt = encoder.opt;
-            if (enc_try.load_param(enc_param.c_str()) == 0 && enc_try.load_model((p + "_encoder_int8.ncnn.bin").c_str()) == 0)
+            if (encoder.load_param(enc_param.c_str()) == 0 &&
+                encoder.load_model((p + "_encoder_int8.ncnn.bin").c_str()) == 0)
             {
                 int8_ok = true;
             }
+            else
+            {
+                encoder.clear();
+            }
         }
     }
-    std::string enc_param = p + "_encoder" + (int8_ok ? "_int8" : "") + ".ncnn.param";
-    std::string enc_bin   = p + "_encoder" + (int8_ok ? "_int8" : "") + ".ncnn.bin";
-    if (encoder.load_param(enc_param.c_str()) != 0) return -1;
-    if (encoder.load_model(enc_bin.c_str()) != 0) return -1;
-    NCNN_PHASE("encoder mode: %s (%s) vulkan=%d", int8_ok ? "int8" : "fp32", enc_param.c_str(), (int)encoder.opt.use_vulkan_compute);
+    if (!int8_ok)
+    {
+        std::string enc_param = p + "_encoder.ncnn.param";
+        std::string enc_bin   = p + "_encoder.ncnn.bin";
+        if (encoder.load_param(enc_param.c_str()) != 0) return -1;
+        if (encoder.load_model(enc_bin.c_str()) != 0) return -1;
+    }
+    NCNN_PHASE("encoder mode: %s vulkan=%d", int8_ok ? "int8" : "fp32", (int)encoder.opt.use_vulkan_compute);
     if (embed_token.load_param((p + "_embed_token.ncnn.param").c_str()) != 0) return -1;
     if (embed_token.load_model((p + "_embed_token.ncnn.bin").c_str()) != 0) return -1;
     if (embed_position.load_param((p + "_embed_position.ncnn.param").c_str()) != 0) return -1;
@@ -296,7 +326,9 @@ std::string p = dir + "/" + base;
     // resolve kv cache blob indexes (each MultiHeadAttention with 3 outputs)
     // Сброс cross-guard: инвариант привязан к текущей модели; повторная загрузка
     // (смена модели на том же инстансе) обязана пере-подтвердить layout.
+    m_cross_kv_w = -1;
     m_cross_kv_h = -1;
+    m_cross_kv_c = -1;
     m_cross_layout_ok = true;
     for (size_t i = 0; i < decoder.layers().size(); i++)
     {
@@ -424,7 +456,9 @@ int Whisper::transcribe(const std::vector<short>& samples, const char* lang, std
         int id = 0;
         float conf = 0.f;
         argmax(logits, id, conf);
-        NCNN_PHASE("decoder iter step=%d decoded=%zu last_id=%d conf=%.3f", step, decoded.size(), id, conf);
+        // Пер-итерация декодера — TRACE (verbose), а не PHASE (INFO): на живой речи
+        // это десятки строк на каждое распознавание (Native-14).
+        NCNN_TRACE("decoder iter step=%d decoded=%zu last_id=%d conf=%.3f", step, decoded.size(), id, conf);
 
         if (id == token_endoftext) break;
         decoded.push_back(id);
@@ -585,13 +619,13 @@ int Whisper::run_decoder_step(const std::vector<int>& tokens, const ncnn::Mat& e
                 kvcache.size(), kv_cache_indexes.size(), out_kv_cache_indexes.size());
             return -1;
         }
-        NCNN_PHASE("decoder step in: embeds(%d,%d,%d) enc(%d,%d,%d) mask(%d,%d) kvidx=%d outidx=%d",
+        NCNN_TRACE("decoder step in: embeds(%d,%d,%d) enc(%d,%d,%d) mask(%d,%d) kvidx=%d outidx=%d",
             input_embeds.w,input_embeds.h,input_embeds.c,
             encoder_states.w,encoder_states.h,encoder_states.c,
             attention_mask.w,attention_mask.h,
             (int)kv_cache_indexes.size(),(int)out_kv_cache_indexes.size());
         for (size_t i = 0; i < kv_cache_indexes.size(); i++)
-            NCNN_PHASE("  kv_in[%d] blob=%d shape(%d,%d,%d) total=%d", (int)i, (int)kv_cache_indexes[i],
+            NCNN_TRACE("  kv_in[%d] blob=%d shape(%d,%d,%d) total=%d", (int)i, (int)kv_cache_indexes[i],
                 kvcache[i].w,kvcache[i].h,kvcache[i].c,(int)kvcache[i].total());
         ncnn::Extractor ex = decoder.create_extractor();
         ex.input("in0", input_embeds);
@@ -615,24 +649,33 @@ int Whisper::run_decoder_step(const std::vector<int>& tokens, const ncnn::Mat& e
             {
                 if (m_cross_kv_h == -1)
                 {
-                    if (kvcache[i].h <= 0)
+                    if (kvcache[i].w <= 0 || kvcache[i].h <= 0 || kvcache[i].c <= 0)
                     {
                         // Пустой/нулевой cross-кандидат: prefill не заполнил — не доверяем
-                        // схеме, откат на extract (иначе запомнили бы h=0 и откатили всё).
-                        NCNN_PHASE("  kv[%d] cross guess empty (h=%d) -> откат", (int)i, kvcache[i].h);
+                        // схеме, откат на extract (иначе запомнили бы нули и откатили всё).
+                        NCNN_PHASE("  kv[%d] cross guess empty (shape %dx%dx%d) -> откат",
+                            (int)i, kvcache[i].w, kvcache[i].h, kvcache[i].c);
                         m_cross_layout_ok = false;
                     }
                     else
                     {
+                        // Запоминаем ПОЛНУЮ тройку (w,h,c), а не только h (Native-13):
+                        // layout-подтверждение по одному h ложно-позитивно для сеток,
+                        // где у self/cross совпадает высота (многие whisper-варианты).
+                        m_cross_kv_w = kvcache[i].w;
                         m_cross_kv_h = kvcache[i].h;
-                        NCNN_PHASE("  kv cross guess: h=%d (layout [self,cross])", m_cross_kv_h);
+                        m_cross_kv_c = kvcache[i].c;
+                        NCNN_PHASE("  kv cross guess: shape %dx%dx%d (layout [self,cross])",
+                            m_cross_kv_w, m_cross_kv_h, m_cross_kv_c);
                         out_kvcache[i] = kvcache[i]; // shallow: refcount держит блок из prefill
                         continue;
                     }
                 }
-                else if (m_cross_kv_h == kvcache[i].h)
+                else if (m_cross_kv_w == kvcache[i].w &&
+                         m_cross_kv_h == kvcache[i].h &&
+                         m_cross_kv_c == kvcache[i].c)
                 {
-                    // Если у другого cross-слоя h иной (теоретически: encoder_states один
+                    // Если у другого cross-слоя shape иной (теоретически: encoder_states один
                     // на всех, поэтому нет) — здесь получим !=  → откат, НЕ тихий мусор.
                     out_kvcache[i] = kvcache[i]; // shallow: refcount живого блока из prefill;
                     // аллокатор (PoolAllocator) не отдаст занятый блок, пока жив хоть один
@@ -642,8 +685,9 @@ int Whisper::run_decoder_step(const std::vector<int>& tokens, const ncnn::Mat& e
                 }
                 else
                 {
-                    NCNN_PHASE("  kv[%d] layout mismatch: h=%d != %d -> откат cross-оптимизации",
-                        (int)i, kvcache[i].h, m_cross_kv_h);
+                    NCNN_PHASE("  kv[%d] layout mismatch: shape %dx%dx%d != %dx%dx%d -> откат cross-оптимизации",
+                        (int)i, kvcache[i].w, kvcache[i].h, kvcache[i].c,
+                        m_cross_kv_w, m_cross_kv_h, m_cross_kv_c);
                     m_cross_layout_ok = false;
                 }
                 // fallthrough на extract: НЕ клонируем out_kvcache[i], даже если он
@@ -654,11 +698,11 @@ int Whisper::run_decoder_step(const std::vector<int>& tokens, const ncnn::Mat& e
                 // к тому же паттерну — дополнительная защита не нужна.
             }
             rc0 = ex.extract(out_kv_cache_indexes[i], out_kvcache[i], 1);
-            NCNN_PHASE("  kv_out[%d] extract rc=%d shape(%d,%d,%d)", (int)i, rc0, out_kvcache[i].w,out_kvcache[i].h,out_kvcache[i].c);
+            NCNN_TRACE("  kv_out[%d] extract rc=%d shape(%d,%d,%d)", (int)i, rc0, out_kvcache[i].w,out_kvcache[i].h,out_kvcache[i].c);
             if (rc0 != 0) rc1 = rc0;
         }
         rc2 = ex.extract("out0", output_states);
-        NCNN_PHASE("  out0 extract rc=%d shape(%d,%d,%d)", rc2, output_states.w,output_states.h,output_states.c);
+        NCNN_TRACE("  out0 extract rc=%d shape(%d,%d,%d)", rc2, output_states.w,output_states.h,output_states.c);
         if (rc1) return rc1;
         if (rc2) return rc2;
     }
