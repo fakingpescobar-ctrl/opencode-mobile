@@ -5,18 +5,18 @@
         <error line="26" column="1" source="standard:no-unused-imports" />
         <error line="59" column="1" source="standard:no-empty-first-line-in-class-body" />
         <error line="60" column="50" source="standard:no-multi-spaces" />
-        <error line="173" column="32" source="standard:class-signature" />
-        <error line="173" column="48" source="standard:class-signature" />
-        <error line="173" column="65" source="standard:class-signature" />
-        <error line="217" column="28" source="standard:function-signature" />
-        <error line="217" column="43" source="standard:function-signature" />
-        <error line="217" column="66" source="standard:function-signature" />
-        <error line="217" column="90" source="standard:function-signature" />
-        <error line="271" column="49" source="standard:function-signature" />
-        <error line="271" column="65" source="standard:function-signature" />
-        <error line="271" column="77" source="standard:function-signature" />
-        <error line="312" column="49" source="standard:trailing-comma-on-declaration-site" />
-        <error line="324" column="39" source="standard:trailing-comma-on-declaration-site" />
+        <error line="175" column="32" source="standard:class-signature" />
+        <error line="175" column="48" source="standard:class-signature" />
+        <error line="175" column="65" source="standard:class-signature" />
+        <error line="219" column="28" source="standard:function-signature" />
+        <error line="219" column="43" source="standard:function-signature" />
+        <error line="219" column="66" source="standard:function-signature" />
+        <error line="219" column="90" source="standard:function-signature" />
+        <error line="273" column="49" source="standard:function-signature" />
+        <error line="273" column="65" source="standard:function-signature" />
+        <error line="273" column="77" source="standard:function-signature" />
+        <error line="314" column="49" source="standard:trailing-comma-on-declaration-site" />
+        <error line="326" column="39" source="standard:trailing-comma-on-declaration-site" />
     </file>
     <file name="src/main/java/org/opencode/mobile/OpencodeApp.kt">
         <error line="19" column="1" source="standard:no-empty-first-line-in-class-body" />
@@ -52,23 +52,19 @@
         <error line="28" column="51" source="standard:no-multi-spaces" />
         <error line="29" column="34" source="standard:no-multi-spaces" />
         <error line="119" column="25" source="standard:no-multi-spaces" />
-        <error line="166" column="39" source="standard:chain-method-continuation" />
-        <error line="166" column="52" source="standard:chain-method-continuation" />
-        <error line="166" column="63" source="standard:chain-method-continuation" />
-        <error line="166" column="80" source="standard:chain-method-continuation" />
-        <error line="217" column="23" source="standard:statement-wrapping" />
-        <error line="217" column="39" source="standard:statement-wrapping" />
-        <error line="217" column="62" source="standard:statement-wrapping" />
-        <error line="224" column="60" source="standard:function-expression-body" />
-        <error line="243" column="1" source="standard:indent" />
-        <error line="244" column="1" source="standard:indent" />
-        <error line="275" column="27" source="standard:function-signature" />
-        <error line="275" column="45" source="standard:function-signature" />
-        <error line="275" column="60" source="standard:function-signature" />
-        <error line="275" column="81" source="standard:function-signature" />
-        <error line="283" column="25" source="standard:no-multi-spaces" />
-        <error line="284" column="22" source="standard:no-multi-spaces" />
-        <error line="285" column="38" source="standard:no-multi-spaces" />
+        <error line="207" column="23" source="standard:statement-wrapping" />
+        <error line="207" column="39" source="standard:statement-wrapping" />
+        <error line="207" column="62" source="standard:statement-wrapping" />
+        <error line="214" column="60" source="standard:function-expression-body" />
+        <error line="233" column="1" source="standard:indent" />
+        <error line="234" column="1" source="standard:indent" />
+        <error line="265" column="27" source="standard:function-signature" />
+        <error line="265" column="45" source="standard:function-signature" />
+        <error line="265" column="60" source="standard:function-signature" />
+        <error line="265" column="81" source="standard:function-signature" />
+        <error line="273" column="25" source="standard:no-multi-spaces" />
+        <error line="274" column="22" source="standard:no-multi-spaces" />
+        <error line="275" column="38" source="standard:no-multi-spaces" />
     </file>
     <file name="src/main/java/org/opencode/mobile/server/ProcessSupervisor.kt">
         <error line="17" column="1" source="standard:no-empty-first-line-in-class-body" />
@@ -82,11 +78,6 @@
         <error line="70" column="81" source="standard:try-catch-finally-spacing" />
         <error line="84" column="35" source="standard:function-signature" />
         <error line="89" column="1" source="standard:final-newline" />
-    </file>
-    <file name="src/main/java/org/opencode/mobile/server/ServerAuth.kt">
-        <error line="41" column="30" source="standard:chain-method-continuation" />
-        <error line="62" column="46" source="standard:argument-list-wrapping" />
-        <error line="65" column="1" source="standard:final-newline" />
     </file>
     <file name="src/main/java/org/opencode/mobile/server/Workspace.kt">
         <error line="24" column="1" source="standard:no-empty-first-line-in-class-body" />

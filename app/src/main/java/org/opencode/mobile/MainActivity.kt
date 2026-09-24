@@ -89,7 +89,9 @@ class MainActivity : ComponentActivity() {
         requestAllFilesAccessIfNeeded()
         // Пароль serve читаем сразу: WebView (SPA) стартует раньше сервиса и
         // должен успеть авторизоваться Basic-заголовком с первого запроса.
-        ServerAuth.setPasswordFromPrefs(this)
+        // load-or-create: если сервис/старый ран уже генерили — читаем тот же,
+        // иначе создаём и шифруем в Keystore сами (serve потом прочитает).
+        ServerAuth.ensurePassword(this)
         OpencodeServerService.start(this)
         requestNotificationPermission()
         setContent {
@@ -323,13 +325,12 @@ fun OpencodeWebView(paused: Boolean = false) {
                         host: String?,
                         realm: String?
                     ) {
-                        // Рассчитываем на ServerAuth (заполнен в onCreate из prefs),
-                        // но подстраховываемся повторным чтением — serve мог
-                        // сгенерировать пароль уже после нашего onCreate.
+                        // Рассчитываем на ServerAuth (заполнен в onCreate), но подстраховываемся
+                        // повторным вызовом — serve мог стартовать уже после нашего onCreate.
                         if (ServerAuth.password.isNullOrEmpty()) {
                             // OpencodeWebView — top-level функция, контекст берём из WebView.
                             val ctx = view?.context ?: return
-                            ServerAuth.setPasswordFromPrefs(ctx)
+                            ServerAuth.ensurePassword(ctx)
                         }
                         val pwd = ServerAuth.password
                         if (handler != null && pwd != null) {
