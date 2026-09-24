@@ -386,8 +386,9 @@ class WhisperTranscribeService : Service() {
             val app = requireAppContext()
             val dir = File(ModelDownloader.modelsDir(app), "ncnn-turbo")
             val baseName = "whisper_turbo"
-            if (!File(dir, "${baseName}_fbank.ncnn.param").exists() || !File(dir, "whisper_vocab.txt").exists()) {
-                throw IllegalStateException("ncnn-модель не найдена в $dir — закинь ncnn-turbo/ (param+bin+vocab) в filesDir/models")
+            val check = NcnnModelValidator.checkModelDir(dir, baseName)
+            check(check.ok) {
+                "ncnn-модель неполная в $dir — отсутствуют: ${check.missing.joinToString(", ")}"
             }
             Log.d(TAG, "гружу ncnn-модель из $dir (CPU, $baseName)")
             NcnnWhisperContext.createFromFilesDir(dir, baseName)

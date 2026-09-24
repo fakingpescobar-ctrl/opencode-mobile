@@ -145,17 +145,25 @@ class RuntimeManager(
                 // isAlive + TCP-коннект на MEMORY_PORT (окно ~5s).
                 emit { copy(stage = RuntimeStage.STARTING_MEMORY, workspaceExternal = ext) }
                 val memProc = OpencodeRuntime.startMemoryServer(context, logFile = logFile, workDir = workspace)
-                val memoryStarted = memProc != null && waitForMemory(memProc)
-                if (memoryStarted) {
+                // Регистрируем процесс СРАЗУ после запуска: даже если TCP-порт не
+                // поднимется (timeout/быстрая смерть), ProcessSupervisor обязан знать
+                // о процессе — иначе memory.stop() в finally не погасит orphan, и порт
+                // 4199 останется занят для следующего витка.
+                if (memProc != null) {
                     memory.setProcess(memProc)
-                } else {
+                }
+                val memoryStarted = memProc != null && waitForMemory(memProc)
+                if (!memoryStarted) {
+                    // Гасим явно: процесс мог стартовать, но не поднять MCP-порт
+                    // (битый старт). Без stop() следующий виток создал бы ещё один.
+                    memory.stop()
                     emit {
                         copy(
                             lastError =
                                 RuntimeError(
                                     stage = RuntimeStage.STARTING_MEMORY,
                                     code = RuntimeErrorCode.MEMORY_START_FAILED,
-                                    message = "локальная память MCP не поднялась — чат работает без неё",
+                                    message = "������ ������ MCP �� ����﫠�� - �� ࠡ�⠥� ��� ���",
                                     recoverable = true,
                                 ),
                         )

@@ -48,6 +48,7 @@ import kotlinx.coroutines.withContext
 import org.opencode.mobile.server.OpencodeServerService
 import org.opencode.mobile.server.OpencodeServerService.ServerStatus
 import org.opencode.mobile.stt.ModelDownloader
+import org.opencode.mobile.stt.NcnnModelValidator
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -86,10 +87,10 @@ fun DiagnosticsScreen(
     BackHandler(onBack = onClose)
 
     // Снапшот собирается ОДИН раз при открытии, на IO-диспатчере: проверка
-    // ncnn-каталога (fbank.param + vocab, как в obtainNcnnContext), суммарный
-    // размер файлов, хвост лога serve. В композиции эти вызовы выполнялись бы
-    // на main при КАЖДОЙ рекомпозиции (серверный StateFlow тикает) — фризы.
-    // Здесь всё собрано в один IO-блок.
+    // ncnn-каталога (полный набор файлов — NcnnModelValidator, тот же, что в
+    // obtainNcnnContext), суммарный размер файлов, хвост лога serve. В
+    // композиции эти вызовы выполнялись бы на main при КАЖДОЙ рекомпозиции
+    // (серверный StateFlow тикает) — фризы. Здесь всё собрано в один IO-блок.
     var snap by remember { mutableStateOf<StorageSnapshot?>(null) }
     LaunchedEffect(Unit) {
         snap =
@@ -97,15 +98,11 @@ fun DiagnosticsScreen(
                 val modelsDir = ModelDownloader.modelsDir(context)
 
                 // Готовность ncnn-каталога — тот же критерий, что в
-                // WhisperTranscribeService.obtainNcnnContext: fbank.param + vocab.
-                fun ncnnSnap(name: String): Pair<Boolean, Long> {
-                    val model = name.removePrefix("ncnn-")
-                    val dir = File(modelsDir, name)
-                    val ready = File(dir, "whisper_${model}_fbank.ncnn.param").exists() && File(dir, "whisper_vocab.txt").exists()
-                    val size = dir.listFiles()?.sumOf { it.length() } ?: 0L
-                    return ready to size
-                }
-                val (tReady, tSize) = ncnnSnap("ncnn-turbo")
+                // WhisperTranscribeService.obtainNcnnContext (полный набор сетей,
+                // а не только fbank+vocab: декодер/embed/proj_out обязательны).
+                val turboDir = File(modelsDir, "ncnn-turbo")
+                val tReady = NcnnModelValidator.checkModelDir(turboDir).ok
+                val tSize = turboDir.listFiles()?.sumOf { it.length() } ?: 0L
                 StorageSnapshot(
                     free = ModelDownloader.freeBytes(context),
                     used = ModelDownloader.modelsUsedBytes(context),
