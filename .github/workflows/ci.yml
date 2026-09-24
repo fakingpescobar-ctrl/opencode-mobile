@@ -55,16 +55,12 @@ jobs:
         run: |
           ./gradlew :app:assembleDebug -PskipNativeBuild=true --no-daemon --console=plain
 
-      # Нативные артефакты НЕ генерируются на CI (внешние зависимости,
-      # /third_party/ и whisper.cpp вне git): проверяем, что prebuilt в репо
-      # на месте. Полная native-сборка — windows-джоба ниже (+ локально на
-      # машине разработчика с whisper.cpp/VulkanSDK, CI-16).
-      - name: "Нативная проверка (prebuilt jniLibs)"
-        run: |
-          test -s app/src/main/jniLibs/arm64-v8a/libopencode.so
-          test -s app/src/main/jniLibs/arm64-v8a/libbun-musl.so
-          echo "native artifacts: OK (prebuilt opencode/bun .so; ncnn/whisper.cpp/VulkanSDK — external, собираются windows-джобой)"
-
+      # Нативные prebuilt (libopencode.so/libbun-musl.so, ~270 MB) НЕ в git —
+      # app/src/main/jniLibs/ в .gitignore (бинарники >100 MB), генерируются
+      # локально (build-release.ps1). Поэтому ubuntu-APK — Kotlin/ресурсный
+      # артефакт БЕЗ opencode-ядра; реальная нативка с ncnn/whisper собирается
+      # windows-джобой. Полный прод-APK — локальная сборка на машине
+      # разработчика (CI-16).
       - name: Upload APK
         if: always()
         uses: actions/upload-artifact@v4
