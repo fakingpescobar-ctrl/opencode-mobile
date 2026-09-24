@@ -99,11 +99,13 @@
 - [ ] **ЭКСП-5: потоковый пайплайн/чанкинг** (UX-мгновенность 1–2 s) — главный следующий шаг.
 - [ ] **ЭКСП-3: 4-bit + KV-quant** (следующий после потокового, ~4 s).
 - [ ] WER-прогон фикс-набора после каждого.
+- [x] **PR5: бенч-стенд готов** (генератор wav + BenchSttTest + CSV). Ждёт прогона на устройстве — см. §10.
+- [ ] PR5: живой прогон матрицы int8/fp32 (3 повторения) → заполнить §10.2.
 - [ ] Если стабильно и <3 s → ROADMAP Track 3 done.
 
 ---
 
-## 8. Оборудование / контекст
+## 8. Оборудование / контекст (актуально для бенч-прогонов)
 
 - OPPO arm64-v8a, 8× AArch64 CPU, Adreno GPU (ColorOS).
 - Stack: official ncnn master (`0a4e85a`), **NCNN_VULKAN=ON** (собран; glslang submodule подтянут).
@@ -118,3 +120,65 @@
 - ncnn_llm (futz12): вынос encoder на Vulkan + bf16-storage, decoder отдельной сетью.
 - YOLOX-android: `use_vulkan_compute=true` + `workspace_allocator` + `use_packing_layout`.
 - whisper.cpp ggml-vulkan — валидация Vulkan-пути для Whisper.
+
+## 10. Бенч-стенд (PR5) — воспроизводимые замеры латентности
+
+Зачем: старые замеры (§1–2) снимались вручную (AUTOSTT + разбор logcat), их сложно
+повторять и сравнивать. PR5 добавляет **инструментированный стенд**: фикс-набор wav,
+тест-класс и CSV-выгрузку. Прогон полностью автономный (модель уже на устройстве).
+
+### 10.1 Состав стенда
+
+| Компонент | Что | Где |
+|---|---|---|
+| Генератор | ставит silence/noise/tone/jfk + (опц.) ru | `tools/gen_bench_wavs.py` |
+| Набор wav | 16 кГц mono PCM16 | `app/src/androidTest/assets/bench/` |
+| Бенч-тест | init → warmup → 3×транскрипция, медиана | `BenchSttTest.kt` |
+| Выход | logcat `STTBENCH` + CSV | `/sdcard/Android/data/org.opencode.mobile.debug/files/stt-bench.csv` |
+
+Модели (обе лежат в `files/models/`):
+- **int8**: `ncnn-turbo/` — прод-каталог (encoder int8, 694 МБ bin);
+- **fp32**: `ncnn-bench-fp32/` — копия `ncnn-turbo/` БЕЗ файлов `*_encoder_int8.*`
+  (load() тогда берёт fp32-encoder 1219 МБ). Оба варианта уже конвертированы:
+  `tools/ncnn-int8/turbo/`.
+
+Ограничение: `g_whisper` в C++ — синглтон; конфиги считаются ПОСЛЕДОВАТЕЛЬНО
+(release() между). Потоки: `setThreads(8)` после init (encoder gemm фиксируется
+при load — для матрицы «потоки» нужна пересборка с другими значениями в
+`nativeInit`: encoder=8/decoder=4 сейчас).
+
+### 10.2 Матрица (заполняется живым прогоном на устройстве)
+
+| Модель | Вход | t₁ | t₂ | t₃ | медиана | Текст (≈) |
+|---|---|---|---|---|---|---|
+| int8-CPU | silence | | | | | (пусто) |
+| int8-CPU | noise | | | | | (пусто) |
+| int8-CPU | tone | | | | | — |
+| int8-CPU | jfk (en) | | | | | — |
+| fp32-CPU | silence | | | | | |
+| fp32-CPU | noise | | | | | |
+| fp32-CPU | tone | | | | | |
+| fp32-CPU | jfk (en) | | | | | |
+
+База для сверки (29.08–02.09, 48k сэмплов, lang=ru, **int8-CPU**): fbank ≈ 0.8 с,
+encoder ≈ 8.8 с, decoder ≈ 0.5 с, полный цикл ≈ 10.1 с; fp32-CPU encoder ≈ 17.9 с;
+int8-Vulkan (эксп.) ≈ 6.5 с. Бенч-стенд меряет ПОЛНЫЙ ncnn-цикл (как юзер видит).
+
+### 10.3 Как прогнать
+
+```bash
+# 1. Сгенерировать wav-набор (или уже в git) + закинуть fp32-копию на устройство:
+python tools/gen_bench_wavs.py
+# на устройстве (после первого прогона int8), один раз:
+adb shell run-as org.opencode.mobile.debug sh -c 'cp -r files/models/ncnn-turbo files/models/ncnn-bench-fp32 && rm files/models/ncnn-bench-fp32/whisper_turbo_encoder_int8.ncnn.*'
+# 2. Собрать и прогнать (устройство по adb):
+#    ./gradlew :app:connectedDebugAndroidTest  (классы: SmokeSttTest + BenchSttTest)
+# 3. Результат:
+adb shell run-as org.opencode.mobile.debug cat files/stt-bench.csv   # версия для pull:
+adb pull /sdcard/Android/data/org.opencode.mobile.debug/files/stt-bench.csv .
+```
+
+Внимание: `run-as` команда с `&&` ломается в PowerShell — выполнять её через
+`adb shell` целиком в кавычках либо bash-оболочкой.
+
+---

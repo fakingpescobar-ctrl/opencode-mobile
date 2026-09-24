@@ -73,6 +73,19 @@ class NcnnWhisperContext private constructor(
         }
     }
 
+    /**
+     * Переустановка числа потоков в рантайме (JNI nativeSetThreads).
+     * ВАЖНО: gemm-слои encoder фиксируют потоки при load (nativeInit ставит 8);
+     * вызов после init полностью применяется к decoder/fbank/proj_out и,
+     * частично, к новым extractor encoder. Для честной матрицы «потоки»
+     * нужен перезапуск процесса/пересборка с другими значениями в nativeInit.
+     * Используется бенч-стендом (PR5); в проде не вызывается.
+     */
+    fun setThreads(n: Int): Boolean {
+        if (!initialized) return false
+        return NcnnWhisperLib.nativeSetThreads(n)
+    }
+
     protected fun finalize() {
         runBlocking { release() }
     }
