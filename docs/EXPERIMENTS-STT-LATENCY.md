@@ -151,34 +151,57 @@
 
 | Модель | Вход | t₁ | t₂ | t₃ | медиана | Текст (≈) |
 |---|---|---|---|---|---|---|
-| int8-CPU | silence | | | | | (пусто) |
-| int8-CPU | noise | | | | | (пусто) |
-| int8-CPU | tone | | | | | — |
-| int8-CPU | jfk (en) | | | | | — |
-| fp32-CPU | silence | | | | | |
-| fp32-CPU | noise | | | | | |
-| fp32-CPU | tone | | | | | |
-| fp32-CPU | jfk (en) | | | | | |
+| int8-CPU | silence | 6814 | 6775 | 7059 | **6814** | Продолжение следует… (галл.) |
+| int8-CPU | noise | 6987 | 6884 | 6892 | **6892** | Хороший вечер DimaTorzok (галл.) |
+| int8-CPU | tone | 7479 | 8228 | 8281 | **8228** | Поехали! |
+| int8-CPU | jfk (en) | 7386 | 7263 | 7390 | **7386** | В реке, текущей мимо деревни… |
+| fp32-CPU | silence | 14583 | 14506 | 14621 | **14583** | Продолжение следует… (галл.) |
+| fp32-CPU | noise | 14576 | 14552 | 14694 | **14576** | Хороший вечер DimaTorzok (галл.) |
+| fp32-CPU | tone | 14469 | 14463 | 14535 | **14469** | Поехали! |
+| fp32-CPU | jfk (en) | 15190 | 15129 | 15614 | **15190** | В реке, текущей мимо деревни… |
 
-База для сверки (29.08–02.09, 48k сэмплов, lang=ru, **int8-CPU**): fbank ≈ 0.8 с,
-encoder ≈ 8.8 с, decoder ≈ 0.5 с, полный цикл ≈ 10.1 с; fp32-CPU encoder ≈ 17.9 с;
-int8-Vulkan (эксп.) ≈ 6.5 с. Бенч-стенд меряет ПОЛНЫЙ ncnn-цикл (как юзер видит).
+Полный прогон: `:app:connectedDebugAndroidTest` вручную (am instrument), 2 теста OK,
+24.09.2026, OPPO CPH2747 (arm64). CSV: `docs/stt-bench-2026-09-24.csv`.
 
-### 10.3 Как прогнать
+Выводы:
+- **int8-CPU 6.8–8.2 s полный цикл** — заметно лучше старой базы «≈10.1 s» (потоки
+  `setThreads(8)` в дело: старые замеры шли до фиксации потоков). Фактически почти
+  догоняет ЭКСП-1 Vulkan (6.5 s) без GPU-рисков. int8 vs fp32 = **2.1×** — выбор
+  int8 в проде подтверждён (декодер при этом не int8 и не страдает).
+- Сигнал-вал: вход почти не влияет (silence 1.5s → 6.8s; jfk 10s → 7.4s) — платится
+  фиксированный накладной encoder+load, а не длина речи. Для UX важнее пайплайн,
+  чем ещё раз конвертация.
+- **Галлюцинации на тишине/шуме** («Продолжение следует…», «Хороший вечер
+  DimaTorzok») у int8 и fp32 ОДИНАКОВО — движок без VAD/энерго-фильтра. Проблема
+  не в int8, а в Whisper Turbo в целом → нужен входной VAD или фильтр «пустого»
+  (энергия < порога → вернуть пусто), кандидат в ЭКСП-5.
+- Воспроизводимость отличная: разброс 1–7% (int8 jfk 7263–7390).
+
+### 10.3 Как прогнать### 10.3 Как прогнать
 
 ```bash
-# 1. Сгенерировать wav-набор (или уже в git) + закинуть fp32-копию на устройство:
-python tools/gen_bench_wavs.py
-# на устройстве (после первого прогона int8), один раз:
-adb shell run-as org.opencode.mobile.debug sh -c 'cp -r files/models/ncnn-turbo files/models/ncnn-bench-fp32 && rm files/models/ncnn-bench-fp32/whisper_turbo_encoder_int8.ncnn.*'
-# 2. Собрать и прогнать (устройство по adb):
-#    ./gradlew :app:connectedDebugAndroidTest  (классы: SmokeSttTest + BenchSttTest)
-# 3. Результат:
-adb shell run-as org.opencode.mobile.debug cat files/stt-bench.csv   # версия для pull:
+# 1. Собрать APK С нативкой (cridical: обычный gradle с -PskipNativeBuild даёт APK
+#    БЕЗ whisper-библиотек → dlopen fail):
+./build-install.ps1          # vcvars + :app:assembleDebug (без скипа)
+./gradlew :app:assembleDebugAndroidTest   # тест-APK, без скипа
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+
+# 2. Доставка моделей. ПРОВЕРЕНО: run-as НЕ видит /sdcard (FUSE ColorOS) —
+#    только через /data/local/tmp + chmod:
+#    (файлы моделей: tools/ncnn-int8/turbo/ — полный int8+fp32 конверт)
+adb push tools/ncnn-int8/turbo /data/local/tmp/ncnn-turbo    # после удаления fp32 encoder
+adb push fp32-копия /data/local/tmp/ncnn-bench-fp32          # без *_encoder_int8.*
+adb shell "chmod -R 777 /data/local/tmp/ncnn-turbo /data/local/tmp/ncnn-bench-fp32 && run-as org.opencode.mobile.debug sh -c 'mkdir -p files/models && cp -r /data/local/tmp/ncnn-turbo files/models/ && cp -r /data/local/tmp/ncnn-bench-fp32 files/models/'"
+# ВНИМАНИЕ: install -r на ColorOS стирает данные приложения — раскатку моделей
+# делать ПОСЛЕ установки APK, и после неё НЕ переустанавливать.
+
+# 3. Прогон (2 теста: BenchSttTest + SmokeSttTest), результат текст в logcat STTBENCH:
+adb logcat -c
+adb shell am instrument -w -r org.opencode.mobile.debug.test/androidx.test.runner.AndroidJUnitRunner
+
+# 4. Результат:
 adb pull /sdcard/Android/data/org.opencode.mobile.debug/files/stt-bench.csv .
 ```
-
-Внимание: `run-as` команда с `&&` ломается в PowerShell — выполнять её через
-`adb shell` целиком в кавычках либо bash-оболочкой.
 
 ---
