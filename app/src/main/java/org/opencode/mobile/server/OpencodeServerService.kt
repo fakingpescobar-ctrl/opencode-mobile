@@ -121,6 +121,7 @@ class OpencodeServerService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        android.util.Log.i("RM", "Service onCreate")
         createChannel()
     }
 
@@ -129,6 +130,7 @@ class OpencodeServerService : Service() {
         flags: Int,
         startId: Int,
     ): Int {
+        android.util.Log.i("RM", "onStartCommand action=${intent?.action} flags=$flags startId=$startId jobActive=${serverJob?.isActive}")
         when (intent?.action) {
             ACTION_STOP -> {
                 // Обязательно перейти в foreground ПЕРЕД остановкой, иначе
@@ -170,7 +172,9 @@ class OpencodeServerService : Service() {
                 stopRequested = false
                 if (serverJob?.isActive != true) {
                     startAsForeground(buildNotification("Starting"))
+                    android.util.Log.i("RM", "ACTION_START: launching run()")
                     serverJob = scope.launch { manager().run() }
+                    android.util.Log.i("RM", "ACTION_START: launched, job=${serverJob?.isActive}")
                 }
             }
             null -> {
@@ -179,6 +183,7 @@ class OpencodeServerService : Service() {
                 if (stopRequested) return START_NOT_STICKY
                 if (serverJob?.isActive != true) {
                     startAsForeground(buildNotification("Starting"))
+                    android.util.Log.i("RM", "null-action (sticky recrеate): launching run()")
                     serverJob = scope.launch { manager().run() }
                 }
             }
