@@ -66,17 +66,23 @@ IPv4-first через `InetAddress`/Netd) + `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY
 **Боль:** большие модели душатся до 1-5% (ColorOS/OPPO), turbo медленный.
 
 ### 6. ncnn-int8 для энкодера
-- Следовать планам: `tools/ncnn-int8-plan.md` + `tools/ncnn-whisper-plan.md`.
-  int8-квантование ncnn-энкодера убирает память/латентность.
-- KV-cache уже внедрён — int8 сверху добавит.
+- ✅ **Внедрено** (следовали `tools/ncnn-int8-plan.md`; KV-cache уже был). int8-encoder
+  (block-quant) грузится сразу в сеть (при неудаче — откат fp32), замерено:
+  **int8-CPU 8.82 s vs fp32-CPU 17.9 s (~2×)**, int8-Vulkan 6.45 s (эксперимент,
+  в проде выключен — см. `docs/EXPERIMENTS-STT-LATENCY.md` §2).
+- Исполнитель: `ModelDownloader` качает int8-варианты турбо; `ncnn_jni.cpp::load()`
+  выбирает их автоматически.
 
-### 7. Многопоточность / foreground
-- `WhisperTranscribeService` уже держит приоритет. Оценить `setThreads` ncnn
-  (1-2 ядра), тюнинг `VOICE_COMMUNICATION` vs `MIC` под железо.
-- Бенч: base/turbo на int8, замерить WER и латентность на реальном OPPO.
+### 7. Многопоточность / foreground / потоковый пайплайн
+- `WhisperTranscribeService` уже держит приоритет (foreground).
+- Следующий шаг — **потоковый пайплайн/чанкинг** (ЭКСП-5): первый результат через
+  1–2 s, пока юзер говорит. Перцептивная латентность падает резко, raw — остаётся.
+- Затем: тюнинг `setThreads` (1–2 ядра), `VOICE_COMMUNICATION` vs `MIC` под железо;
+  бенч turbo int8, замерить WER и латентность на реальном OPPO.
 
 **Готово когда:** turbo на int8 заметно быстрее (ориентир ≥2× латентности)
-без критичного падения WER.
+без критичного падения WER — **int8-CPU уже даёт ~2×**; финальный критерий —
+потоковый пайплайн с первым результатом 1–2 s + WER-прогон.
 
 ---
 
@@ -86,4 +92,4 @@ IPv4-first через `InetAddress`/Netd) + `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY
 |------|--------|
 | 1. Release-контур | **В процессе** — R8 + shrinkResources включены (374 → 274 → **147 MB**), base вынесена в lazy, пакет чистый `org.opencode.mobile`, smoke OK. Осталось: upload-key подпись и опционально ужать `libopencode.so`/bun |
 | 2. Сеть без прокси | **Выполнен** — встроенный `Ipv4Proxy` (CONNECT, IPv4-first); туннели к context7/grep/npm открываются автоматически. Остаётся удалить legacy `connect_proxy.py` |
-| 3. STT turbo на CPU | Частично (KV-cache внедрён; int8 — план) |
+| 3. STT turbo на CPU | Частично — **int8-encoder внедрён (8.82 s CPU, ~2× fp32; KV-cache done; Vulkan эксперимент выключен в проде)**. Осталось: потоковый пайплайн/чанкинг (ЭКСП-5), WER-бенч OPPO, тюнинг потоков |

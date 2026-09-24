@@ -7,7 +7,7 @@
 Android-приложение, которое запускает **opencode serve** прямо на устройстве
 (без Termux, без root) и даёт полноценный чат с AI-моделью в нативном интерфейсе.
 
-`Kotlin` · `Jetpack Compose` · `WebView` · `whisper.cpp` · `ncnn`
+`Kotlin` · `Jetpack Compose` · `WebView` · `ncnn`(STT)` · `musl`
 
 ---
 
@@ -42,19 +42,22 @@ Android-приложение, которое запускает **opencode serve
 - Поддержка **вопросов от модели**: если модель спрашивает выбор/уточнение —
   приложение показывает варианты-кнопки и поле для своего ответа.
 
-### Голосовой ввод (STT) — три движка
+### Голосовой ввод (STT) — два движка
 1. **Системный Android (Google)** — встроенный распознаватель, не требует
    загрузки моделей, нужен доступ к сети.
-2. **Whisper (локально)** — whisper.cpp прямо на устройстве, работает офлайн.
-3. **NCNN (CPU/NEON fp16 · KV-cache)** — тот же whisper через ncnn, локально,
-   оптимизирован под CPU и KV-cache.
+2. **NCNN (локально, int8-encoder)** — тот же whisper через ncnn, офлайн:
+   CPU int8 encoder (block-quant) ~2× быстрее fp32, KV-cache в decoder.
+   Движок **whisper.cpp/ggml убран из настроек** (legacy: `use_gpu=false`,
+   скрыт) — рабочий локальный путь только через ncnn.
 
 Движок выбирается в настройках (шестерёнка в шапке чата).
 
 ### Модель STT
-- **base (141 МБ)** — скачивается по требованию при первом выборе (lazy, как turbo).
-- **large-v3-turbo (574 МБ)** — точнее на быстрой речи; скачивается по
-  требованию из панели настроек (с прогрессом и докачкой при разрыве).
+- **large-v3-turbo (574 МБ)** — единственная рабочая модель; скачивается по
+  требованию из панели настроек (прогресс, докачка при разрыве, проверка
+  целостности — SHA-256 + размер в sidecar `.size`).
+- **base (141 МБ)** — **убрана/не выбирается**: конвертация в ncnn даёт мусор
+  на выходе; код остался в `ModelDownloader`, но в UI отсутствует.
 
 ### Настройки чата
 - **Шрифт ответов модели** — 20+ встроенных шрифтов (тап по образцу — сразу
@@ -98,12 +101,17 @@ Android-ядро позволяет `execve` только с **PIE**-бинар�
    зависимые либы копируются в `filesDir/musl` с правильными DT_NEEDED-именами,
    на них указывает `LD_LIBRARY_PATH`.
 
-### STT на CPU
+### STT на CPU (ncnn, int8)
 
 На ColorOS/OPPO фоновые compute-потоки душатся до 1–5% CPU. Поэтому
 распознавание выполняется в **foreground-сервисе** (`WhisperTranscribeService`) —
 так ОС даёт процессу нормальный приоритет. Модель кэшируется в память между
 вызовами (грузится один раз), что критично для тяжёлого turbo (574 МБ).
+
+Производительность (OPPO, 02.09.2026): **encoder int8 ≈ 8.82 s** (fp32 — 17.9 s;
+Vulkan-эксперимент 6.45 s — стабилен, но в проде выключен), decoder с KV-cache
+~0.5–0.6 s → полное распознавание ~10 s. Следующий шаг — потоковый пайплайн
+(первые слова через 1–2 s). Подробности: `docs/EXPERIMENTS-STT-LATENCY.md`.
 
 Запись: `AudioRecord` → PCM16 16кГц → нормализация пика (телефоны пишут тихо) →
 подкладка тишины (whisper врёт на очень коротких клипах) → распознавание →
@@ -133,21 +141,17 @@ Android-ядро позволяет `execve` только с **PIE**-бинар�
 
 ### Про бинари (важно)
 
-Сам бинарь `opencode` (**~185 МБ**) и модели **НЕ лежат в git** — они слишком
-большие (лимит GitHub — 100 МБ на файл). В репозитории — только исходники.
-Чтобы собрать рабочий APK, нужно положить бинари на место:
-
-- `app/src/main/jniLibs/arm64-v8a/libopencode.so` — бинарь
-  `opencode-linux-arm64-musl` (переименовать в `libopencode.so`).
-- Остальные `libldmusl.so`, `libc_musl.so`, `libstdcxx.so`, `libgcc_s.so` —
-  musl-библиотеки (см. раздел выше).
-- `app/src/main/assets/mcp/memory.js` — MCP-память.
-  whisper модели (**base**, **turbo**) в assets **не хранятся** — качаются по
-  требованию через `ModelDownloader` в `filesDir/models/`.
-
-Бинарь и модели можно получить пересборкой/скачиванием; в текущем состоянии
-этот процесс не автоматизирован в репозитории (кроме самих моделей — они
-скачиваются прямо в приложении).
+- `app/src/main/jniLibs/arm64-v8a/` — **в git**: prebuilt `libopencode.so` (~184МБ,
+  opencode, musl-сборка), musl-libs, `libbun-musl.so`; приложение собирается и
+  запускается из них напрямую (CI проверяет их наличие).
+- whisper-нативка (`whisperlib`) **собирается при сборке приложения** из
+  исходников: `third_party/ncnn` (in-repo) + **внешний** `whisper.cpp` (вне репо)
+  и VulkanSDK (Windows). Пути конфигурируются: `-PwhisperCppDir=...`,
+  `-PvulkanSdkDir=...`, отключение нативки — `-PskipNativeBuild=true`
+  (используется в CI — ubuntu не имеет ни whisper.cpp, ни VulkanSDK).
+- Модели whisper (turbo) в assets **не хранятся** — качаются по требованию через
+  `ModelDownloader` в `filesDir/models/` (ncnn-формат: `.ncnn.param/.bin`,
+  int8-вариант энкодера — automatically).
 
 ---
 
@@ -192,20 +196,25 @@ app/
         Ipv4Proxy.kt             # вспомогательный (исходящая сеть)
       stt/
         WhisperTranscribeService.kt  # foreground-сервис распознавания
-        ModelDownloader.kt           # скачивание whisper base/turbo (lazy, resume)
+        ModelDownloader.kt           # скачивание turbo (lazy, resume, integrity SHA-256)
       ui/
         ChatOverlay.kt           # нативный чат поверх WebView + настройки
         theme/Theme.kt
     assets/                       # ТОЛЬКО шрифты + MCP-память (моделей нет)
-    jniLibs/arm64-v8a/           # opencode-бинарь + musl-libs (не в git)
-whisperlib/                      # JNI-обёртки над whisper.cpp и ncnn
+    jniLibs/arm64-v8a/           # prebuilt opencode-бинарь + musl-libs (в git)
+whisperlib/                      # JNI-обёртки: ncnn (рабочий) + whisper.cpp (legacy)
   src/main/jni/
-    whisper/                     # whisper.cpp (CMake, CPU)
-    ncnn/                        # ncnn-whisper (CPU/NEON, KV-cache)
+    whisper/                     # whisper.cpp-gw (использует ggml; use_gpu=false)
+    whisper/CMakeLists.txt       # переменные внешних путей: WHISPER_LIB_DIR, NCNN_DIR
+    ncnn/                        # ncnn-whisper (int8 encoder, KV-cache) — основной путь
+docs/
+  ROADMAP.md                     # три трека к релизу
+  EXPERIMENTS-STT-LATENCY.md     # замеры ncnn: int8/Vulkan/KV
 tools/
-  connect_proxy.py               # помощник по исходящей сети
+  connect_proxy.py               # legacy-помощник по исходящей сети (можно удалить)
   ncnn-whisper-plan.md           # план интеграции ncnn-whisper
-  ncnn-int8-plan.md              # план int8-квантования ncnn-encoder
+  ncnn-int8-plan.md              # int8-квантование (внедрено) + тулзы квантования
+  ncnn-int8/                     # quantize_block.py, compare_encoder.cpp (хост-бенч)
 ```
 
 ---
@@ -254,8 +263,11 @@ tools/
 - **SELinux**: маппинг либ из `filesDir` (`mmap PROT_EXEC`) может быть ограничен
   политикой `untrusted_app` — проверено на реальном OPPO, на других устройствах
   стоит делать smoke-тест.
-- **Performance STT**: тяжёлый turbo на CPU считается долго. Многопоточность и
-  int8-квантование ncnn-энкодера — в планах (см. `tools/ncnn-int8-plan.md`).
+- **Performance STT**: полное распознавание turbo ncnn ~10 s (encoder int8 8.82 s).
+  Движки: foreground-сервис + int8-encoder внедрены; следующий шаг — потоковый
+  пайплайн/чанкинг (первые слова 1–2 s) и WER-бенч (см. `docs/EXPERIMENTS-STT-LATENCY.md`).
+- **Vulkan (GPU)**: экспериментально (int8-Vulkan 6.45 s, стабилен), но в проде
+  выключен — включение = `encoder.opt.use_vulkan_compute=true` в `ncnn_jni.cpp`.
 
 ---
 
