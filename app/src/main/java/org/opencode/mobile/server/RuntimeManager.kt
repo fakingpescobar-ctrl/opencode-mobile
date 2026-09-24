@@ -114,12 +114,10 @@ class RuntimeManager(
 
     /** Главный цикл. Вызывается из корутины сервиса; завершается сам по running=false. */
     suspend fun run() {
-        android.util.Log.i("RM", "run() start, assembled=${OpencodeRuntime.isAssembled(context)}")
         running = true
         emit { copy(restartCount = 0) }
 
         try {
-            android.util.Log.i("RM", "run() в try, isAssembled -> ${OpencodeRuntime.isAssembled(context)}")
             // Терминальная валидация: бинарь/лоадер обязаны быть, иначе рестарты
             // бессмысленны (каждый виток упал бы на startServe).
             if (!OpencodeRuntime.isAssembled(context)) {
@@ -151,7 +149,6 @@ class RuntimeManager(
                         stopReason = null,
                     )
                 }
-                android.util.Log.i("RM", "виток №$consecutiveFailures: PREPARING emit ok, steps ahead")
 
                 // Рабочая директория (workspace): без неё у opencode serve нет ни одного
                 // проекта — SPA показывал "Здесь пока ничего нет". Эта версия serve не
@@ -185,16 +182,20 @@ class RuntimeManager(
                 val (workspace, ext) = wsResult.getOrThrow()
                 android.util.Log.i("OpencodeServer", "workspace=${workspace.absolutePath} external=$ext")
 
+                // Регистрируем локальную память в конфиге serve как remote MCP
+                // (иначе serve о ней не знает — индикатор «0 MCP», инструменты
+                // памяти недоступны модели). До старта serve: он читает конфиг
+                // при инициализации MCP. Не фатал — память продолжит работать
+                // как TCP-сервер, просто без регистрации.
+                OpencodeRuntime.ensureMcpConfig(context)
+
                 // Локальная память MCP как HTTP/TCP-сервер (MEMORY_PORT) — ДО serve.
                 // Не стартовала/умерла — НЕ фатал: serve продолжит, статус DEGRADED.
                 // Живой process != поднятая память: startMemoryServer возвращает процесс,
                 // который может мгновенно упасть или не открыть сокет — верифицируем
                 // isAlive + TCP-коннект на MEMORY_PORT (окно ~5s).
                 emit { copy(stage = RuntimeStage.STARTING_MEMORY, workspaceExternal = ext) }
-                android.util.Log.i("RM", "STARTING_MEMORY, вызываю startMemoryServer t=${System.currentTimeMillis() % 100000}")
-                val tMem0 = System.currentTimeMillis()
                 val memProc = OpencodeRuntime.startMemoryServer(context, logFile = logFile, workDir = workspace)
-                android.util.Log.i("RM", "startMemoryServer -> ${if (memProc != null) "ok(alive=${memProc.isAlive})" else "NULL"} за ${System.currentTimeMillis() - tMem0}ms")
                 // Регистрируем процесс СРАЗУ после запуска: даже если TCP-порт не
                 // поднимется (timeout/быстрая смерть), ProcessSupervisor обязан знать
                 // о процессе — иначе memory.stop() в finally не погасит orphan, и порт
@@ -216,10 +217,7 @@ class RuntimeManager(
                 }
 
                 emit { copy(stage = RuntimeStage.STARTING_SERVER) }
-                android.util.Log.i("RM", "STARTING_SERVER, вызываю startServe t=${System.currentTimeMillis() % 100000}")
-                val tSrv0 = System.currentTimeMillis()
                 val proc = OpencodeRuntime.startServe(context, logFile = logFile, workDir = workspace)
-                android.util.Log.i("RM", "startServe -> ${if (proc != null) "ok(alive=${proc.isAlive})" else "NULL"} за ${System.currentTimeMillis() - tSrv0}ms")
                 if (proc == null) {
                     consecutiveFailures++
                     emitFailure(
@@ -238,7 +236,6 @@ class RuntimeManager(
                 serve.setProcess(proc)
 
                 val healthy = waitForHttp(OpencodeApp.ServerConfig.PORT)
-                android.util.Log.i("RM", "waitForHttp done, healthy=$healthy (виток №$consecutiveFailures)")
                 // Штатная отмена (стоп сервиса / рестарт юзера) во время health-ожидания
                 // не должна трактоваться как HEALTH_TIMEOUT и растить счётчик крашей.
                 if (!running || !currentCoroutineContext().isActive) break
@@ -340,7 +337,6 @@ class RuntimeManager(
                 }
             }
         } finally {
-            android.util.Log.i("RM", "run() finally: stage=${currentState.stage} running=$running")
             // Выход из цикла в любом случае означает конец рантайма: сбрасываем
             // флаг (при отмене корутины его не сбрасывает ни один emitTerminal*),
             // процессы гасём (двойной stop безопасен — synchronized; при
@@ -435,7 +431,6 @@ class RuntimeManager(
      *  зависший CRASHED. Пауза отменяемая (стоп/рестарт выходят сразу). */
     private suspend fun restartBackoff(failures: Int) {
         emit { copy(stage = RuntimeStage.RESTARTING) }
-        android.util.Log.i("RM", "backoff ${backoff(failures)}ms (фейлов=$failures)")
         delay(backoff(failures))
     }
 

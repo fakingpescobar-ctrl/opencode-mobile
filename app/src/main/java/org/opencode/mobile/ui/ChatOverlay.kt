@@ -121,12 +121,10 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import org.opencode.mobile.R
-import org.opencode.mobile.server.ServerAuth
+import org.opencode.mobile.server.LocalOpenCodeClient
 import org.opencode.mobile.stt.NcnnModelValidator
 import org.opencode.mobile.stt.WhisperTranscribeService
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.Locale
 import kotlin.concurrent.thread
 
@@ -194,7 +192,7 @@ private fun getMcpCached(port: Int): String? {
     val now = System.currentTimeMillis()
     val cached = McpCache.raw
     if (cached != null && now - McpCache.at < MCP_CACHE_MS) return cached
-    val fresh = get("http://127.0.0.1:$port/mcp")
+    val fresh = LocalOpenCodeClient.get(port, "/mcp")
     if (fresh != null) {
         McpCache.raw = fresh
         McpCache.at = now
@@ -484,38 +482,14 @@ fun ChatOverlay(
                         // «залипает»). Поэтому каждую умирающую сессию сначала глушим abort-ом
                         // (идемпотентен, безвреден для пустых/404) — независимо от того, была
                         // ли она активной на момент сброса.
-                        val raw =
-                            try {
-                                java.net.URL("http://127.0.0.1:$serverPort/session").openConnection().let {
-                                    (it as java.net.HttpURLConnection).apply {
-                                        requestMethod = "GET"
-                                        connectTimeout = 2000
-                                        readTimeout = 4000
-                                        ServerAuth.basicHeader()?.let { h -> setRequestProperty("Authorization", h) }
-                                    }
-                                    it.inputStream.bufferedReader().use { r -> r.readText() }
-                                }
-                            } catch (_: Exception) {
-                                "[]"
-                            }
+                        val raw = LocalOpenCodeClient.get(serverPort, "/session") ?: "[]"
                         try {
                             val arr = org.json.JSONArray(raw)
                             for (i in 0 until arr.length()) {
                                 val sid = arr.getJSONObject(i).optString("id", null) ?: continue
                                 if (sid != id) {
                                     abortSession(serverPort, sid)
-                                    try {
-                                        java.net.URL("http://127.0.0.1:$serverPort/session/$sid").openConnection().let {
-                                            (it as java.net.HttpURLConnection).apply {
-                                                requestMethod = "DELETE"
-                                                connectTimeout = 2000
-                                                readTimeout = 4000
-                                                ServerAuth.basicHeader()?.let { h -> setRequestProperty("Authorization", h) }
-                                            }
-                                            it.responseCode
-                                        }
-                                    } catch (_: Exception) {
-                                    }
+                                    LocalOpenCodeClient.delete(serverPort, "/session/$sid")
                                 }
                             }
                         } catch (_: Exception) {
@@ -2152,7 +2126,7 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
     withContext(Dispatchers.IO) {
         val p = port ?: return@withContext null
         try {
-            val sessionsRaw = get("http://127.0.0.1:$p/session") ?: return@withContext null
+            val sessionsRaw = LocalOpenCodeClient.get(p, "/session") ?: return@withContext null
             val sessions = JSONArray(sessionsRaw)
             var bestId: String? = null
             var bestTs = -1L
@@ -2171,7 +2145,7 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             // Вариант 2: /message (главный, тащит всю ленту) и /mcp стартуют ПАРАЛЛЕЛЬНО.
             // Оба — блокирующие get() на Dispatchers.IO; async даёт им работать одновременно,
             // а не последовательно (экономия ~11-58мс на поллинг в худшем случае).
-            val msgDeferred = async { get("http://127.0.0.1:$p/session/$bestId/message") }
+            val msgDeferred = async { LocalOpenCodeClient.get(p, "/session/$bestId/message") }
             // MCP-серверы: GET /mcp → Record<name, McpServer{name,enabled,status,...}> (иначе пустой {}).
             // Читаем из кэша (обновляется раз в MCP_CACHE_MS), чтобы не дёргать сервис каждый поллинг.
             // Подключёнными считаем тех, у кого status == "connected". Показываем «N MCP».
@@ -2414,7 +2388,7 @@ private fun questionOf(
     sessionId: String,
 ): ChatQuestion? {
     try {
-        val raw = get("http://127.0.0.1:$port/api/session/$sessionId/question") ?: return null
+        val raw = LocalOpenCodeClient.get(port, "/api/session/$sessionId/question") ?: return null
         val data = JSONObject(raw).optJSONArray("data") ?: return null
         if (data.length() == 0) return null
         val q = data.getJSONObject(0)
@@ -2435,31 +2409,12 @@ private fun postAnswer(
     questionId: String,
     labels: List<String>,
 ): Boolean {
-    try {
-        val conn = (URL("http://127.0.0.1:$port/api/session/$sessionId/question/$questionId/reply").openConnection() as HttpURLConnection)
-        conn.requestMethod = "POST"
-        conn.connectTimeout = 2000
-        conn.doOutput = true
-        conn.setRequestProperty("Content-Type", "application/json")
-        ServerAuth.basicHeader()?.let { conn.setRequestProperty("Authorization", it) }
-        val answers = JSONArray()
-        val one = JSONArray()
-        one.put(labels.firstOrNull() ?: "")
-        answers.put(one)
-        val body = JSONObject().put("answers", answers).toString()
-        conn.outputStream.use { it.write(body.toByteArray()) }
-        thread(isDaemon = true) {
-            try {
-                conn.responseCode
-            } catch (_: Exception) {
-            } finally {
-                conn.disconnect()
-            }
-        }
-        return true
-    } catch (_: Exception) {
-        return false
-    }
+    val answers = JSONArray()
+    val one = JSONArray()
+    one.put(labels.firstOrNull() ?: "")
+    answers.put(one)
+    val body = JSONObject().put("answers", answers).toString()
+    return LocalOpenCodeClient.postAsync(port, "/api/session/$sessionId/question/$questionId/reply", body)
 }
 
 private suspend fun scrollToBottomFull(
@@ -2520,22 +2475,11 @@ private fun playNotificationSound(context: Context) {
 }
 
 private fun createSession(port: Int): String? {
-    val conn = (URL("http://127.0.0.1:$port/session").openConnection() as HttpURLConnection)
-    try {
-        conn.requestMethod = "POST"
-        conn.connectTimeout = 2000
-        conn.readTimeout = 4000
-        conn.doOutput = true
-        conn.setRequestProperty("Content-Type", "application/json")
-        ServerAuth.basicHeader()?.let { conn.setRequestProperty("Authorization", it) }
-        conn.outputStream.use { it.write("{}".toByteArray()) }
-        if (conn.responseCode != 200) return null
-        val body = conn.inputStream.bufferedReader().use { it.readText() }
-        return JSONObject(body).optString("id", null)
+    val body = LocalOpenCodeClient.post(port, "/session", "{}") ?: return null
+    return try {
+        JSONObject(body).optString("id", null)
     } catch (_: Exception) {
-        return null
-    } finally {
-        conn.disconnect()
+        null
     }
 }
 
@@ -2547,63 +2491,13 @@ private fun createSession(port: Int): String? {
 private fun abortSession(
     port: Int,
     sessionId: String,
-): Boolean =
-    try {
-        val conn = (URL("http://127.0.0.1:$port/session/$sessionId/abort").openConnection() as HttpURLConnection)
-        conn.requestMethod = "POST"
-        conn.connectTimeout = 2000
-        conn.readTimeout = 3000
-        ServerAuth.basicHeader()?.let { conn.setRequestProperty("Authorization", it) }
-        val ok = conn.responseCode == 200
-        conn.disconnect()
-        ok
-    } catch (_: Exception) {
-        false
-    }
+): Boolean = LocalOpenCodeClient.post(port, "/session/$sessionId/abort", "") != null
 
 private fun postMessage(
     port: Int,
     sessionId: String,
     text: String,
 ): Boolean {
-    try {
-        val conn = (URL("http://127.0.0.1:$port/session/$sessionId/message").openConnection() as HttpURLConnection)
-        conn.requestMethod = "POST"
-        conn.connectTimeout = 2000
-        conn.doOutput = true
-        conn.setRequestProperty("Content-Type", "application/json")
-        ServerAuth.basicHeader()?.let { conn.setRequestProperty("Authorization", it) }
-        val body = "{\"parts\":[{\"type\":\"text\",\"text\":${JSONObject.quote(text)}}]}"
-        conn.outputStream.use { it.write(body.toByteArray()) }
-        // opencode отвечает на этот POST только после завершения генерации.
-        // Не блокируем UI и НЕ рвём соединение: фоновый поток дочитает ответ —
-        // так сервер считает запрос завершённым и гарантированно запишет сообщение.
-        thread(isDaemon = true) {
-            try {
-                conn.responseCode
-            } catch (_: Exception) {
-            } finally {
-                conn.disconnect()
-            }
-        }
-        return true
-    } catch (_: Exception) {
-        return false
-    }
-}
-
-private fun get(url: String): String? {
-    val conn = (URL(url).openConnection() as HttpURLConnection)
-    try {
-        conn.connectTimeout = 1500
-        conn.readTimeout = 3000
-        conn.requestMethod = "GET"
-        ServerAuth.basicHeader()?.let { conn.setRequestProperty("Authorization", it) }
-        if (conn.responseCode != 200) return null
-        return conn.inputStream.bufferedReader().use { it.readText() }
-    } catch (_: Exception) {
-        return null
-    } finally {
-        conn.disconnect()
-    }
+    val body = "{\"parts\":[{\"type\":\"text\",\"text\":${JSONObject.quote(text)}}]}"
+    return LocalOpenCodeClient.postAsync(port, "/session/$sessionId/message", body)
 }

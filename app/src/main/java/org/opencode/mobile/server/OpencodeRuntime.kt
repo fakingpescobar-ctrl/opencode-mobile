@@ -310,4 +310,72 @@ object OpencodeRuntime {
             android.util.Log.e("OpencodeRuntime", "failed to start memory server: ${e.message}")
         }.getOrNull()
     }
+
+    /**
+     * Гарантирует, что opencode serve знает про локальную память MCP как
+     * remote-сервер (http://127.0.0.1:MEMORY_PORT/mcp). Без регистрации в
+     * конфиге serve память слушает порт, но индикатор чата показывает «0 MCP»,
+     * а модель не получает её инструменты.
+     *
+     * Конфиг serve: $XDG_CONFIG_HOME/opencode/opencode.jsonc (opencode читает
+     * Global.Path.config = XDG_CONFIG_HOME + "/opencode", см. opencode-src
+     * packages/opencode/src/config/config.ts:379-381). Формат MCP-секции:
+     * "mcp": { "<имя>": { "type": "remote", "url": "..." } }.
+     *
+     * Идемпотентно: если в конфиге уже есть секция "memory" — не трогаем
+     * (сохраняем ручные правки юзера). Пишем атомарно (tmp + rename), чтобы
+     * обрыв записи не оставил битый jsonc (serve бы упал на парсинге).
+     * @return true когда конфиг гарантированно содержит memory-MCP.
+     */
+    fun ensureMcpConfig(context: Context): Boolean {
+        return try {
+            val cfg = OpencodeApp.ServerConfig
+            val dir = File(cfg.opencodeConfig, "opencode")
+            val file = File(dir, "opencode.jsonc")
+            val mcpBlock =
+                "\"mcp\": {\n" +
+                    "    \"memory\": {\n" +
+                    "      \"type\": \"remote\",\n" +
+                    "      \"url\": \"http://127.0.0.1:$MEMORY_PORT/mcp\"\n" +
+                    "    }\n" +
+                    "  }"
+            // Экранированный $schema (в строке Kotlin $ начинал бы интерполяцию).
+            val schemaMarker = "\$schema"
+
+            // Идемпотентность: уже есть секция memory (в т.ч. с другим портом —
+            // не переписываем поверх осознанной ручной настройки).
+            if (file.exists() && file.readText().contains("\"memory\"")) return true
+
+            val text = if (file.exists()) file.readText() else ""
+            val updated: String =
+                if (text.contains(schemaMarker)) {
+                    // Вставляем после строки $schema (opencode всегда создаёт её первым полем).
+                    // $0 в replacement — вся matched строка (схема + запятая, если была).
+                    text.replaceFirst(
+                        Regex("(\"\\\$schema\"\\s*:\\s*\"[^\"]*\"\\s*,?)"),
+                        "$0\n  $mcpBlock,",
+                    )
+                } else if (text.isBlank()) {
+                    "{\n  \"\$schema\": \"https://opencode.ai/config.json\",\n  $mcpBlock\n}"
+                } else {
+                    // Произвольный jsonc без $schema: вставляем перед последней "}".
+                    val idx = text.lastIndexOf('}')
+                    if (idx <= 0) return false
+                    text.substring(0, idx) + ",\n  " + mcpBlock + "\n" + text.substring(idx)
+                }
+
+            dir.mkdirs()
+            val tmp = File(dir, "opencode.jsonc.tmp")
+            tmp.writeText(updated)
+            if (!tmp.renameTo(file)) {
+                android.util.Log.e("OpencodeRuntime", "ensureMcpConfig: tmp->rename failed, retry direct")
+                file.writeText(updated)
+            }
+            android.util.Log.i("OpencodeRuntime", "ensureMcpConfig: memory MCP registered in ${file.absolutePath}")
+            true
+        } catch (e: Exception) {
+            android.util.Log.e("OpencodeRuntime", "ensureMcpConfig failed: ${e.message}")
+            false
+        }
+    }
 }

@@ -50,3 +50,7 @@ local.properties
 # Logs
 *.log
 /build_log.txt
+
+# Local build/device artifacts
+/build-inst.err
+/opencode.jsonc.device

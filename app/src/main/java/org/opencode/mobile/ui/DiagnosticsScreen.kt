@@ -268,7 +268,7 @@ fun DiagnosticsScreen(
                     )
                     InfoRow(
                         "Локальная память (MCP)",
-                        if (v.memoryMcp) "✔ порт слушается" else "✘ не поднята",
+                        if (v.memoryMcp) "✔ отвечает (/mcp 200)" else "✘ не отвечает по HTTP",
                         if (v.memoryMcp) ok else bad,
                     )
                     InfoRow(
