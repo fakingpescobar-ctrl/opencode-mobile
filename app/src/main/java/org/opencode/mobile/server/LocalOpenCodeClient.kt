@@ -14,7 +14,7 @@ import kotlin.concurrent.thread
  * заголовок (получив молчаливый 401, как было с /mcp).
  *
  * Соглашения:
- *  - Таймауты: connect 1500-2000мс, read 3000-4000мс (локальный loopback).
+ *  - Таймауты: connect/read 2 000/4 000 мс (локальный loopback).
  *  - get/post возвращают тело ТОЛЬКО при 2xx, иначе null (вызывающий не
  *    различает 401/404/таимаут — для UI это одинаково «сервер не готов»).
  *  - postAsync — fire-and-forget для долгих POST (message/reply): opencode
@@ -24,8 +24,16 @@ import kotlin.concurrent.thread
  *    Dispatchers.IO, как и раньше.
  */
 object LocalOpenCodeClient {
-
     private const val TAG = "OpenCodeClient"
+
+    /** Таймаут установки соединения, мс (локальный loopback — щедро). */
+    private const val CONNECT_TIMEOUT_MS = 2000
+
+    /** Таймаут чтения ответа, мс. */
+    private const val READ_TIMEOUT_MS = 4000
+
+    /** Успешный HTTP-код ответа serve. */
+    private const val HTTP_OK = 200
 
     private fun auth(conn: HttpURLConnection) {
         val h = ServerAuth.basicHeader()
@@ -43,12 +51,12 @@ object LocalOpenCodeClient {
     ): String? {
         val conn = (URL("http://127.0.0.1:$port$path").openConnection() as HttpURLConnection)
         try {
-            conn.connectTimeout = 1500
-            conn.readTimeout = 3000
+            conn.connectTimeout = CONNECT_TIMEOUT_MS
+            conn.readTimeout = READ_TIMEOUT_MS
             conn.requestMethod = "GET"
             auth(conn)
-            if (conn.responseCode != 200) return null
-            return conn.inputStream.bufferedReader().use { it.readText() }
+            val ok = conn.responseCode == HTTP_OK
+            return if (ok) conn.inputStream.bufferedReader().use { it.readText() } else null
         } catch (_: Exception) {
             return null
         } finally {
@@ -64,10 +72,10 @@ object LocalOpenCodeClient {
         val conn = (URL("http://127.0.0.1:$port$path").openConnection() as HttpURLConnection)
         try {
             conn.requestMethod = "DELETE"
-            conn.connectTimeout = 2000
-            conn.readTimeout = 4000
+            conn.connectTimeout = CONNECT_TIMEOUT_MS
+            conn.readTimeout = READ_TIMEOUT_MS
             auth(conn)
-            return conn.responseCode == 200
+            return conn.responseCode == HTTP_OK
         } catch (_: Exception) {
             return false
         } finally {
@@ -88,16 +96,16 @@ object LocalOpenCodeClient {
         val conn = (URL("http://127.0.0.1:$port$path").openConnection() as HttpURLConnection)
         try {
             conn.requestMethod = "POST"
-            conn.connectTimeout = 2000
-            conn.readTimeout = 4000
+            conn.connectTimeout = CONNECT_TIMEOUT_MS
+            conn.readTimeout = READ_TIMEOUT_MS
             auth(conn)
             if (body.isNotEmpty()) {
                 conn.doOutput = true
                 conn.setRequestProperty("Content-Type", contentType)
                 conn.outputStream.use { it.write(body.toByteArray()) }
             }
-            if (conn.responseCode != 200) return null
-            return conn.inputStream.bufferedReader().use { it.readText() }
+            val ok = conn.responseCode == HTTP_OK
+            return if (ok) conn.inputStream.bufferedReader().use { it.readText() } else null
         } catch (_: Exception) {
             return null
         } finally {
@@ -119,7 +127,7 @@ object LocalOpenCodeClient {
         try {
             val conn = (URL("http://127.0.0.1:$port$path").openConnection() as HttpURLConnection)
             conn.requestMethod = "POST"
-            conn.connectTimeout = 2000
+            conn.connectTimeout = CONNECT_TIMEOUT_MS
             conn.doOutput = true
             conn.setRequestProperty("Content-Type", contentType)
             auth(conn)

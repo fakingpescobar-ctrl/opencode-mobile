@@ -187,7 +187,7 @@ class RuntimeManager(
                 // памяти недоступны модели). До старта serve: он читает конфиг
                 // при инициализации MCP. Не фатал — память продолжит работать
                 // как TCP-сервер, просто без регистрации.
-                OpencodeRuntime.ensureMcpConfig(context)
+                OpencodeRuntime.ensureMcpConfig()
 
                 // Локальная память MCP как HTTP/TCP-сервер (MEMORY_PORT) — ДО serve.
                 // Не стартовала/умерла — НЕ фатал: serve продолжит, статус DEGRADED.

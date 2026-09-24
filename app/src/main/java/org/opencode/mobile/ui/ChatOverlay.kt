@@ -336,8 +336,13 @@ fun ChatOverlay(
     // локальная модель готова (переустановка сбрасывает prefs: system-Google на
     // OPPO работает странно, а ncnn — единственный отлаженный путь).
     val defaultEngine =
-        if (prefs.contains("stt_engine")) prefs.getString("stt_engine", "system")!!
-        else if (NcnnModelValidator.checkTurbo(context).ok) "ncnn" else "system"
+        if (prefs.contains("stt_engine")) {
+            prefs.getString("stt_engine", "system")!!
+        } else if (NcnnModelValidator.checkTurbo(context).ok) {
+            "ncnn"
+        } else {
+            "system"
+        }
     var sttEngine by remember { mutableStateOf(defaultEngine) }
     // double-tap на "NCNN": показ подсказки о том, как работает двигатель (int8-энкодер и т.д.)
     var ncnnTipVisible by remember { mutableStateOf(false) }

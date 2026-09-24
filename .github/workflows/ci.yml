@@ -55,16 +55,15 @@ jobs:
         run: |
           ./gradlew :app:assembleDebug -PskipNativeBuild=true --no-daemon --console=plain
 
-      # Нативные артефакты НЕ генерируются на CI (внешние зависимости): проверяем,
-      # что prebuilt в репо на месте и ncnn-исходники (in-repo) присутствуют.
-      # Полная native-сборка — локально на машине разработчика (build_ncnn.bat /
-      # build-release.ps1) с whisper.cpp + VulkanSDK (CI-16).
-      - name: "Нативная проверка (prebuilt jniLibs + ncnn in-repo)"
+      # Нативные артефакты НЕ генерируются на CI (внешние зависимости,
+      # /third_party/ и whisper.cpp вне git): проверяем, что prebuilt в репо
+      # на месте. Полная native-сборка — windows-джоба ниже (+ локально на
+      # машине разработчика с whisper.cpp/VulkanSDK, CI-16).
+      - name: "Нативная проверка (prebuilt jniLibs)"
         run: |
           test -s app/src/main/jniLibs/arm64-v8a/libopencode.so
           test -s app/src/main/jniLibs/arm64-v8a/libbun-musl.so
-          test -d third_party/ncnn/src
-          echo "native artifacts: OK (prebuilt opencode/bun .so + ncnn sources in-repo; whisper.cpp/VulkanSDK — external, собираются локально)"
+          echo "native artifacts: OK (prebuilt opencode/bun .so; ncnn/whisper.cpp/VulkanSDK — external, собираются windows-джобой)"
 
       - name: Upload APK
         if: always()
@@ -85,7 +84,8 @@ jobs:
           if-no-files-found: ignore
 
   # Windows native job (CI-17): реальная сборка whisper-нативки против
-  # закреплённого пина whisper.cpp + ncnn (in-repo), БЕЗ VulkanSDK:
+  # закреплённого пина whisper.cpp + ncnn (third_party, вне git — фетчим на
+  # runner), БЕЗ VulkanSDK:
   # -PggmlVulkan=OFF (прод-путь STT — CPU/int8, Vulkan эксперимент выключен;
   # локально ggmlVulkan по умолчанию ON — поведение разработчика не меняется).
   # Проверяет, что НАСТОЯЩАЯ сборка (CMake/NDK, без skipNativeBuild) проходит на
@@ -106,6 +106,17 @@ jobs:
           ref: c4ac0012a8f5a2082dfca6aad4ddfd8b2c02b337
           path: whisper.cpp
           fetch-depth: 1
+
+      # ncnn — НЕ в git (/third_party/ в .gitignore, идеитично локальной
+      # машине разработчика): клонируем ровно тот коммит, что лежит локально
+      # (0a4e85a), + submodule glslang (нужен SPIR-V-слоям ncnn даже с CPU-путем).
+      - name: Fetch ncnn (pinned 0a4e85a + glslang submodule)
+        shell: pwsh
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/Tencent/ncnn.git third_party/ncnn
+          git -C third_party/ncnn checkout 0a4e85a
+          git -C third_party/ncnn submodule update --init --depth 1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: JDK 17 (AGP 8.x)
         uses: actions/setup-java@v4

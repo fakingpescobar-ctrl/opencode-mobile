@@ -20,8 +20,14 @@ object RuntimeValidation {
     const val SERVER_PORT = OpencodeApp.ServerConfig.PORT
     const val MEMORY_PORT = OpencodeRuntime.MEMORY_PORT
 
-    /** TCP-таймаут коннекта при проверке порта (мс). */
+/** TCP-таймаут коннекта при проверке порта (мс). */
     private const val CONNECT_TIMEOUT_MS = 1_000
+
+    /** Нижняя граница успешного HTTP-кода (2xx = MCP-протокол жив). */
+    private const val HTTP_OK_MIN = 200
+
+    /** Верхняя граница успешного HTTP-кода. */
+    private const val HTTP_OK_MAX = 299
 
     /** Итог валидации: boolean-срез каждой подсистемы. */
     data class Report(
@@ -61,6 +67,7 @@ object RuntimeValidation {
      * serve реально может подключиться. Стрим не читаем (SSE бесконечный),
      * рвём соединение сразу после получения заголовков.
      */
+    @Suppress("SwallowedException") // Диагностика: любой отказ = «память не готова», причина не влияет на вердикт.
     fun memoryHttpOk(): Boolean {
         try {
             val conn =
@@ -73,7 +80,7 @@ object RuntimeValidation {
                     }
             return try {
                 val code = conn.responseCode
-                code in 200..299
+                code in HTTP_OK_MIN..HTTP_OK_MAX
             } finally {
                 conn.disconnect()
             }
