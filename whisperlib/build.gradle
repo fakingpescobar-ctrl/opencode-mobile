@@ -11,6 +11,38 @@ def whisperCppDir = project.findProperty('whisperCppDir') ?: 'C:/Projects/whispe
 def vulkanSdkDir = project.findProperty('vulkanSdkDir') ?: 'C:/VulkanSDK/1.4.357.0'
 def skipNativeBuild = project.hasProperty('skipNativeBuild')
 
+// ---- Пин внешнего whisper.cpp (PR3): fail-fast против неизвестного состояния ----
+// Нативка собирается ТОЛЬКО против зафиксированного коммита (WHISPER_PIN).
+// Молчаливая сборка против произвольного HEAD = невоспроизводимые артефакты.
+if (!skipNativeBuild) {
+    def pinFile = file('src/main/jni/whisper/WHISPER_PIN')
+    if (!pinFile.exists()) {
+        throw new GradleException(
+            "WHISPER_PIN отсутствует: ${pinFile} — восстановите файл, он закрепляет ревизию whisper.cpp для нативной сборки")
+    }
+    def pinned = pinFile.text.trim()
+    def actual = ''
+    new ByteArrayOutputStream().withStream { buf ->
+        try {
+            exec {
+                commandLine 'git', '-C', whisperCppDir, 'rev-parse', 'HEAD'
+                standardOutput = buf
+            }
+        } catch (Exception e) {
+            throw new GradleException(
+                "Не могу прочитать HEAD whisper.cpp в '${whisperCppDir}' (нужен git-клон). Задайте -PwhisperCppDir=...", e)
+        }
+        actual = buf.toString().trim()
+    }
+    if (!pinned.equals(actual)) {
+        throw new GradleException(
+            "whisper.cpp не на пине: закреплён ${pinned}, HEAD в '${whisperCppDir}' = ${actual}. " +
+            "Обновите клон: git -C ${whisperCppDir} fetch && git -C ${whisperCppDir} checkout ${pinned}. " +
+            "Если нужна новая ревизия — обновите WHISPER_PIN и пересоберите нативные артефакты.")
+    }
+    println "whisper.cpp pin OK: ${pinned}"
+}
+
 android {
     namespace 'com.whispercpp'
     compileSdk 36

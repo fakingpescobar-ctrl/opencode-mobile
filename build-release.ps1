@@ -1,7 +1,4 @@
-# Build release APK (ASCII-only log)
-$log = 'C:\Projects\opencode-mobile\build-release.log'
-Remove-Item $log -ErrorAction SilentlyContinue
-$env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'
-$env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
-& 'C:\Projects\opencode-mobile\gradlew.bat' :app:assembleRelease --console=plain *> $log
-'EXIT: ' + $LASTEXITCODE | Out-File $log -Append
+# Build release APK (portable, ASCII-only log). Обёртка над build.ps1:
+# корень и JDK опредляются автоматически, лог — build-release.log.
+& "$PSScriptRoot\build.ps1" -Task release -Log (Join-Path $PSScriptRoot 'build-release.log')
+exit $LASTEXITCODE

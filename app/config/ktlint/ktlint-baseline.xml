@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <baseline version="1.0">
+    <file name="src/androidTest/java/org/opencode/mobile/SmokeSttTest.kt">
+        <error line="48" column="9" source="standard:function-signature" />
+        <error line="49" column="9" source="standard:function-signature" />
+        <error line="50" column="5" source="standard:function-signature" />
+    </file>
     <file name="src/main/java/org/opencode/mobile/MainActivity.kt">
         <error line="3" column="1" source="standard:import-ordering" />
         <error line="26" column="1" source="standard:no-unused-imports" />

@@ -1,7 +1,4 @@
-# Build debug APK (ASCII-only log)
-$log = 'C:\Projects\opencode-mobile\build-assemble.log'
-Remove-Item $log -ErrorAction SilentlyContinue
-$env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'
-$env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
-& 'C:\Projects\opencode-mobile\gradlew.bat' :app:assembleDebug --console=plain *> $log
-'EXIT: ' + $LASTEXITCODE | Out-File $log -Append
+# Build debug APK (portable, ASCII-only log). Обёртка над build.ps1:
+# корень и JDK опредляются автоматически, лог — build-assemble.log.
+& "$PSScriptRoot\build.ps1" -Task debug -Log (Join-Path $PSScriptRoot 'build-assemble.log')
+exit $LASTEXITCODE
