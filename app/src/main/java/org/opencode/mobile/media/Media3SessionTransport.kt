@@ -10,6 +10,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionCommands
 import androidx.media3.session.SessionResult
 import androidx.media3.session.SessionToken
 import java.util.concurrent.CountDownLatch
@@ -19,6 +20,18 @@ import java.util.concurrent.TimeoutException
 
 private const val TAG = "Media3Session"
 private const val COMMAND_TIMEOUT_MS = 2_000L
+
+/**
+ * Команды оценки, которые сессия Яндекс Музыки публикует вместо состояния в метаданных.
+ *
+ * Имена — контракт сессии, а не перевод: ставить оценку можно и другой командой
+ * (`ru.yandex.music.action.ADD_LIKE`, её шлёт mobile_media_like), но состояние читается только
+ * по этой паре. Проверено на устройстве: до оценки есть `actionLike`, после неё `actionUndoLike`.
+ */
+internal const val ACTION_LIKE = "actionLike"
+internal const val ACTION_UNDO_LIKE = "actionUndoLike"
+internal const val ACTION_DISLIKE = "actionDislike"
+internal const val ACTION_UNDO_DISLIKE = "actionUndoDislike"
 
 /**
  * Транспорт до сессии, опубликованной по протоколу media3
@@ -251,6 +264,10 @@ internal class Media3SessionTransport(
  */
 private fun readMedia3(controller: MediaController): MediaPlaybackSnapshot {
     val metadata = controller.mediaMetadata
+    // Оценка трека у Яндекс Музыки лежит не в метаданных, а в самом наборе команд: «нравится» и
+    // «отменить нравится» — это две разные команды, и сессия переключает их при оценке. Проверено
+    // на устройстве: после like в списке actionLike исчезает и появляется actionUndoLike.
+    val actions = controller.availableSessionCommands.customActionNames()
     return MediaPlaybackSnapshot(
         state = media3State(controller),
         isPlaying = controller.isPlaying,
@@ -259,8 +276,29 @@ private fun readMedia3(controller: MediaController): MediaPlaybackSnapshot {
         album = metadata.albumTitle.cleanMedia3Text(),
         durationMs = controller.duration.takeIf { it > 0L },
         positionMs = controller.currentPosition,
+        liked = actions.ratingState(ACTION_LIKE, ACTION_UNDO_LIKE),
+        disliked = actions.ratingState(ACTION_DISLIKE, ACTION_UNDO_DISLIKE),
     )
 }
+
+/** Имена кастомных команд сессии: состояние оценки видно только среди них. */
+private fun SessionCommands.customActionNames(): List<String> = commands.mapNotNull { it.customAction }
+
+/**
+ * Состояние одной оценки по паре команд «поставить»/«отменить».
+ *
+ * `null`, если сессия не публикует ни одну из них: это «сессия не умеет оценивать», и путать его
+ * с `false` нельзя — иначе «не лайкнут» будет выдуманным чтением там, где его никто не отдавал.
+ */
+internal fun List<String>.ratingState(
+    rate: String,
+    undo: String,
+): Boolean? =
+    when {
+        contains(undo) -> true
+        contains(rate) -> false
+        else -> null
+    }
 
 private fun media3State(controller: MediaController): String =
     when {

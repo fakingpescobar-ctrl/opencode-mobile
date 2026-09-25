@@ -228,7 +228,10 @@ const MOBILE_MEDIA_TOOLS = [
       "Music session publishes no track id at all: its queue index and queue item id are hidden " +
       "platform APIs, its media3 controller returns a positional counter with a null uri, and no isrc " +
       "exists on either side. So no id from mobile_media_search can be checked against it - the title " +
-      "is the only verification available, and you must say so instead of claiming an id match.",
+      "is the only verification available, and you must say so instead of claiming an id match. " +
+      "Read it again after mobile_media_like to confirm the rating really landed: liked and disliked " +
+      "are true/false when the session publishes a rating, and null when it does not - null is " +
+      "'unknown', never 'not liked'.",
     inputSchema: {
       type: "object",
       properties: {
@@ -316,6 +319,10 @@ const MOBILE_MEDIA_TOOLS = [
       "in this app while the rating lands. Only the current track can be rated - to rate a specific track, " +
       "start it first with mobile_media_play. result_code=0 means the player accepted the rating; " +
       "anything else means it did not, and you must report that instead of claiming the like worked. " +
+      "The rating lands in the user's real Yandex Music library, because the player's own session " +
+      "applies it - there is no login and no OAuth anywhere in this path. The snapshot in the answer " +
+      "was read BEFORE the command, so it still shows the old state: to prove the rating took effect, " +
+      "read mobile_media_status afterwards and check its liked field. " +
       "Call this only in direct response to an explicit user request.",
     inputSchema: {
       type: "object",

@@ -776,6 +776,13 @@ object AppInstallBridge {
             .put("album", album ?: JSONObject.NULL)
             .put("duration_ms", durationMs ?: JSONObject.NULL)
             .put("position_ms", positionMs ?: JSONObject.NULL)
+            // null здесь — «сессия не публикует оценку», а не «трек не лайкнут»: агент обязан
+            // сказать «не знаю», а не выдавать отсутствие ответа за отрицательный ответ.
+            .put("liked", liked.asJsonFlag())
+            .put("disliked", disliked.asJsonFlag())
+
+    /** Трёхзначный флаг: true, false и «сессия не ответила» — это три разных значения. */
+    private fun Boolean?.asJsonFlag(): Any = this ?: JSONObject.NULL
 
     private fun MediaControlResult.toJson(): JSONObject =
         JSONObject()

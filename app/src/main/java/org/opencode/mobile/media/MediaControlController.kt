@@ -51,6 +51,13 @@ data class MediaPlaybackSnapshot(
     val album: String?,
     val durationMs: Long?,
     val positionMs: Long?,
+    /**
+     * Оценка сессией текущего трека. `null` — не «не лайкнут», а «сессия молчит»: у Яндекс Музыки
+     * состояние приходит переключением самой команды (`actionLike` ⇄ `actionUndoLike`), и если
+     * сессия не публикует ни одну из пары, сказать «не нравится» было бы выдумкой, а не чтением.
+     */
+    val liked: Boolean? = null,
+    val disliked: Boolean? = null,
 ) {
     /** Сессия считается живой, если у неё есть состояние воспроизведения или метаданные. */
     val isUsable: Boolean
