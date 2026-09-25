@@ -144,6 +144,35 @@ object ApkInstaller {
     }
 
     @Synchronized
+    fun submitLocal(spec: LocalApkInstallSpec): InstallJobSnapshot {
+        initialize(contextOrThrow())
+        val id = UUID.randomUUID().toString()
+        val initial =
+            update(
+                id,
+                "local",
+                InstallState.QUEUED,
+                spec.packageName,
+                "Local APK queued",
+            )
+        scope.launchSafely(id, spec.packageName) {
+            update(id, "local", InstallState.DOWNLOADING, spec.packageName, "Copying local APK")
+            val apk =
+                LocalApkStager.stage(
+                    jobId = id,
+                    path = spec.path,
+                    expectedSize = spec.sizeBytes,
+                    expectedSha256 = spec.sha256,
+                    directory = installDirectory(),
+                )
+            update(id, "local", InstallState.VERIFYING, spec.packageName, "Verifying local APK")
+            val verified = verifyPackage(apk, spec.packageName, spec.signingCertificateSha256, id)
+            commit(apk, id, verified.packageName, spec.sha256)
+        }
+        return initial
+    }
+
+    @Synchronized
     fun status(id: String): InstallJobSnapshot? = jobs[id]?.toSnapshot()
 
     internal fun onInstallerStatus(
@@ -589,6 +618,7 @@ object ApkInstaller {
                 block()
             } catch (cancelled: CancellationException) {
                 update(jobId, sourceForJob(jobId), InstallState.CANCELLED, packageName, "Installation cancelled")
+                deleteDownload(jobId)
                 throw cancelled
             } catch (error: Exception) {
                 update(jobId, sourceForJob(jobId), InstallState.FAILED, packageName, safeMessage(error))

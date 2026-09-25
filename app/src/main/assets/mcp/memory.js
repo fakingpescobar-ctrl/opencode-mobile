@@ -127,27 +127,28 @@ const MOBILE_INSTALL_TOOLS = [
     description:
       "Install an app on this Android phone without root. First look for the app on Google Play; " +
       "use action=play with the package id when known, otherwise a Play search query. If the " +
-      "requested app is not in Play, " +
-      "use the available web search/fetch tools to look only on trusted sources: the official app " +
-      "site when its APK is on an allowlisted host, f-droid.org, GitHub Releases, or GitLab Releases; " +
-      "never download an arbitrary search " +
-      "result. For action=apk provide the HTTPS URL, exact SHA-256, trusted source, and (when the " +
-      "source publishes it) signing_certificate_sha256. The Android bridge re-checks the host, " +
-      "package name, hash, and signing certificate. It downloads in the background, then shows the " +
-      "system confirmation; the user must tap Install. The call returns when that confirmation is " +
-      "visible; use mobile_app_install_status afterwards. Never claim success until the returned job " +
-      "state is installed.",
+      "requested app is not in Play, use the available web search/fetch tools to look only on trusted " +
+      "sources: the official app site when its APK is on an allowlisted host, f-droid.org, GitHub " +
+      "Releases, or GitLab Releases; never download an arbitrary search result. For action=apk provide " +
+      "the HTTPS URL, exact SHA-256, trusted source, and (when the source publishes it) " +
+      "signing_certificate_sha256. If the APK is already on the phone, use action=local with its " +
+      "absolute Download-folder path, exact SHA-256, and size_bytes; do not use bash, am, or file://. " +
+      "The Android bridge re-checks the host/path, package name, hash, and signing certificate. It " +
+      "copies or downloads in the background, then shows the system confirmation; the user must tap " +
+      "Install. The call returns when that confirmation is visible; use mobile_app_install_status " +
+      "afterwards. Never claim success until the returned job state is installed.",
     inputSchema: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["play", "apk"] },
+        action: { type: "string", enum: ["play", "apk", "local"] },
         package: { type: "string", description: "Android package id for Play or optional APK verification" },
         query: { type: "string", description: "Play Store search terms when package is unknown" },
         url: { type: "string", description: "Direct HTTPS APK URL for action=apk" },
-        sha256: { type: "string", description: "Required 64-character APK SHA-256 for action=apk" },
+        path: { type: "string", description: "Absolute local APK path in Download for action=local" },
+        sha256: { type: "string", description: "Required 64-character APK SHA-256 for action=apk or local" },
         source: { type: "string", enum: ["f_droid", "github", "gitlab"], description: "Trusted APK source; it must match the URL host" },
         signing_certificate_sha256: { type: "string", description: "Optional expected APK signer certificate SHA-256 from trusted metadata" },
-        size_bytes: { type: "integer", description: "Optional exact APK size in bytes" }
+        size_bytes: { type: "integer", description: "Exact APK size in bytes; required for action=local" }
       },
       required: ["action"]
     }
@@ -230,12 +231,45 @@ function requireApkUrl(value, expectedSource) {
   return { url: url.toString(), source: detectedSource };
 }
 
+function requireLocalApkPath(value) {
+  const path = String(value || "").trim();
+  if (!path || path.length > 4096 || !path.startsWith("/") || !path.toLowerCase().endsWith(".apk")) {
+    throw new Error("Local APK path must be an absolute Download .apk path");
+  }
+  if (/[\u0000\r\n]/.test(path) || path.split("/").includes("..")) {
+    throw new Error("Local APK path contains an unsafe segment");
+  }
+  return path;
+}
+
 function isTerminalInstallState(state) {
   return ["store_opened", "installed", "failed", "cancelled"].includes(state);
 }
 
 function isInstallCompleted(state) {
   return ["installed", "failed", "cancelled"].includes(state);
+}
+
+async function waitForApkInstall(payload) {
+  const accepted = await mobileBridge("/v1/apps/install", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+  let job = accepted.job;
+  const deadline = Date.now() + APK_POLL_TIMEOUT_MS;
+  while (
+    !isTerminalInstallState(job.state) &&
+    job.state !== "awaiting_user" &&
+    Date.now() < deadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, APK_POLL_MS));
+    job = await mobileAppInstallStatus({ job_id: job.id });
+  }
+  return {
+    ...job,
+    completed: isInstallCompleted(job.state),
+    requires_user_tap: job.state === "awaiting_user"
+  };
 }
 
 async function mobileAppInstall(args) {
@@ -256,15 +290,43 @@ async function mobileAppInstall(args) {
     return { ...result.job, completed: false, requires_user_tap: true };
   }
 
-  if (action !== "apk") throw new Error("action must be play or apk");
-  const apkTarget = requireApkUrl(args.url, args.source);
+  if (action === "apk") {
+    const apkTarget = requireApkUrl(args.url, args.source);
+    const payload = {
+      action,
+      url: apkTarget.url,
+      source: apkTarget.source,
+      sha256: String(args.sha256 || "").trim().toLowerCase()
+    };
+    if (!SHA256.test(payload.sha256)) throw new Error("APK sha256 must contain 64 hexadecimal characters");
+    if (args.signing_certificate_sha256) {
+      const signer = String(args.signing_certificate_sha256).trim().toLowerCase();
+      if (!SHA256.test(signer)) {
+        throw new Error("signing_certificate_sha256 must contain 64 hexadecimal characters");
+      }
+      payload.signing_certificate_sha256 = signer;
+    }
+    if (args.package) payload.package = requireAndroidPackage(args.package);
+    if (args.size_bytes !== undefined && args.size_bytes !== null) {
+      if (!Number.isSafeInteger(args.size_bytes) || args.size_bytes < 1 || args.size_bytes > MAX_APK_BYTES) {
+        throw new Error("size_bytes is outside the safe APK range");
+      }
+      payload.size_bytes = args.size_bytes;
+    }
+    return waitForApkInstall(payload);
+  }
+
+  if (action !== "local") throw new Error("action must be play, apk, or local");
   const payload = {
     action,
-    url: apkTarget.url,
-    source: apkTarget.source,
+    path: requireLocalApkPath(args.path),
     sha256: String(args.sha256 || "").trim().toLowerCase()
   };
   if (!SHA256.test(payload.sha256)) throw new Error("APK sha256 must contain 64 hexadecimal characters");
+  if (!Number.isSafeInteger(args.size_bytes) || args.size_bytes < 1 || args.size_bytes > MAX_APK_BYTES) {
+    throw new Error("size_bytes is required and must be a positive safe integer for action=local");
+  }
+  payload.size_bytes = args.size_bytes;
   if (args.signing_certificate_sha256) {
     const signer = String(args.signing_certificate_sha256).trim().toLowerCase();
     if (!SHA256.test(signer)) {
@@ -273,32 +335,7 @@ async function mobileAppInstall(args) {
     payload.signing_certificate_sha256 = signer;
   }
   if (args.package) payload.package = requireAndroidPackage(args.package);
-  if (args.size_bytes !== undefined && args.size_bytes !== null) {
-    if (!Number.isSafeInteger(args.size_bytes) || args.size_bytes < 1 || args.size_bytes > MAX_APK_BYTES) {
-      throw new Error("size_bytes is outside the safe APK range");
-    }
-    payload.size_bytes = args.size_bytes;
-  }
-
-  const accepted = await mobileBridge("/v1/apps/install", {
-    method: "POST",
-    body: JSON.stringify(payload)
-  });
-  let job = accepted.job;
-  const deadline = Date.now() + APK_POLL_TIMEOUT_MS;
-  while (
-    !isTerminalInstallState(job.state) &&
-    job.state !== "awaiting_user" &&
-    Date.now() < deadline
-  ) {
-    await new Promise((resolve) => setTimeout(resolve, APK_POLL_MS));
-    job = await mobileAppInstallStatus({ job_id: job.id });
-  }
-  return {
-    ...job,
-    completed: isInstallCompleted(job.state),
-    requires_user_tap: job.state === "awaiting_user"
-  };
+  return waitForApkInstall(payload);
 }
 
 async function mobileAppInstallStatus(args) {

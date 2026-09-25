@@ -157,9 +157,16 @@ object AppInstallBridge {
                 throw IllegalArgumentException("body must be a JSON object")
             }
         val action = body.optString("action")
-        require(action == "play" || action == "apk") { "action must be play or apk" }
-        val status = if (action == "play") playRequest(body) else apkRequest(body)
-        val code = if (action == "apk") 202 else 200
+        require(action == "play" || action == "apk" || action == "local") {
+            "action must be play, apk, or local"
+        }
+        val status =
+            when (action) {
+                "play" -> playRequest(body)
+                "apk" -> apkRequest(body)
+                else -> localApkRequest(body)
+            }
+        val code = if (action == "play") 200 else 202
         writeJson(output, code, JSONObject().put("ok", true).put("job", status.toJson()))
     }
 
@@ -189,6 +196,17 @@ object AppInstallBridge {
             ),
         )
     }
+
+    private fun localApkRequest(body: JSONObject): InstallJobSnapshot =
+        ApkInstaller.submitLocal(
+            AppInstallRequestValidator.local(
+                path = body.getString("path"),
+                sha256 = body.getString("sha256"),
+                sizeBytes = body.getLong("size_bytes"),
+                expectedPackageName = body.optionalString("package"),
+                signingCertificateSha256 = body.optionalString("signing_certificate_sha256"),
+            ),
+        )
 
     private fun authorized(headers: Map<String, String>): Boolean {
         val provided = headers["authorization"]?.removePrefix("Bearer ").orEmpty()

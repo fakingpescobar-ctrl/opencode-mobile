@@ -24,6 +24,15 @@ data class ApkInstallSpec(
     val signingCertificateSha256: String?,
 ) : AppInstallSpec
 
+/** APK, уже скачанный в пользовательскую папку Downloads. */
+data class LocalApkInstallSpec(
+    val path: String,
+    val sha256: String,
+    val sizeBytes: Long,
+    override val packageName: String?,
+    val signingCertificateSha256: String?,
+) : AppInstallSpec
+
 /** Источник APK, который Android-мост принимает для автоматической загрузки. */
 enum class TrustedApkSource(
     val wireName: String,
@@ -75,6 +84,7 @@ data class InstallJobSnapshot(
 object AppInstallRequestValidator {
     const val MAX_APK_BYTES: Long = 2L * 1024 * 1024 * 1024
     private const val MAX_URL_LENGTH = 2048
+    private const val MAX_LOCAL_PATH_LENGTH = 4096
     private const val MAX_QUERY_LENGTH = 120
     private const val MAX_PACKAGE_LENGTH = 255
     private val PACKAGE_PART = Regex("[A-Za-z][A-Za-z0-9_]*")
@@ -134,6 +144,43 @@ object AppInstallRequestValidator {
             sizeBytes = sizeBytes,
             packageName = cleanPackage,
             source = trustedSource,
+            signingCertificateSha256 = cleanSigner,
+        )
+    }
+
+    @Suppress("LongParameterList")
+    fun local(
+        path: String,
+        sha256: String,
+        sizeBytes: Long,
+        expectedPackageName: String?,
+        signingCertificateSha256: String? = null,
+    ): LocalApkInstallSpec {
+        val cleanPath = path.trim()
+        require(cleanPath.length in 1..MAX_LOCAL_PATH_LENGTH) { "local APK path has invalid length" }
+        require(cleanPath.startsWith('/')) { "local APK path must be absolute" }
+        require(cleanPath.endsWith(".apk", ignoreCase = true)) { "local APK path must end with .apk" }
+        require(cleanPath.none { it == '\u0000' || it.isISOControl() }) {
+            "local APK path contains control characters"
+        }
+        require(cleanPath.split('/').none { it == ".." }) { "local APK path must not traverse directories" }
+        val cleanHash = sha256.trim().lowercase(Locale.ROOT)
+        require(SHA256.matches(cleanHash)) { "sha256 must contain exactly 64 hexadecimal characters" }
+        require(sizeBytes in 1..MAX_APK_BYTES) {
+            "size_bytes must be between 1 and $MAX_APK_BYTES"
+        }
+        val cleanPackage = expectedPackageName?.trim()?.takeIf { it.isNotEmpty() }
+        cleanPackage?.let(::validatePackageName)
+        val cleanSigner =
+            signingCertificateSha256?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() }
+        require(cleanSigner == null || SHA256.matches(cleanSigner)) {
+            "signing_certificate_sha256 must contain exactly 64 hexadecimal characters"
+        }
+        return LocalApkInstallSpec(
+            path = cleanPath,
+            sha256 = cleanHash,
+            sizeBytes = sizeBytes,
+            packageName = cleanPackage,
             signingCertificateSha256 = cleanSigner,
         )
     }

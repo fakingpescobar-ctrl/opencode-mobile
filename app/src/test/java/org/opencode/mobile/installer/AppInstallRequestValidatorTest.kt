@@ -40,6 +40,46 @@ class AppInstallRequestValidatorTest {
     }
 
     @Test
+    fun `local apk request normalizes path, hash, and signer`() {
+        val spec =
+            AppInstallRequestValidator.local(
+                path = "/storage/emulated/0/Download/SberbankOnline.apk",
+                sha256 = "A".repeat(64),
+                sizeBytes = 175077993,
+                expectedPackageName = "ru.sberbankmobile",
+                signingCertificateSha256 = "B".repeat(64),
+            )
+
+        assertEquals("/storage/emulated/0/Download/SberbankOnline.apk", spec.path)
+        assertEquals("a".repeat(64), spec.sha256)
+        assertEquals(175077993L, spec.sizeBytes)
+        assertEquals("ru.sberbankmobile", spec.packageName)
+        assertEquals("b".repeat(64), spec.signingCertificateSha256)
+    }
+
+    @Test
+    fun `local apk request rejects unsafe paths and sizes`() {
+        listOf(
+            "Download/app.apk",
+            "/storage/emulated/0/Download/app.txt",
+            "/storage/emulated/0/Download/../private.apk",
+            "/storage/emulated/0/Download/app\n.apk",
+        ).forEach { path ->
+            assertThrows(IllegalArgumentException::class.java) {
+                AppInstallRequestValidator.local(path, "a".repeat(64), 1, null)
+            }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            AppInstallRequestValidator.local(
+                "/storage/emulated/0/Download/app.apk",
+                "a".repeat(64),
+                0,
+                null,
+            )
+        }
+    }
+
+    @Test
     fun `apk request rejects untrusted host and source mismatch`() {
         listOf(
             "https://example.com/app.apk",
