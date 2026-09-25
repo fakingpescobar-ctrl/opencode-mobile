@@ -270,7 +270,21 @@ const MOBILE_MEDIA_TOOLS = [
   }
 ];
 
-const tools = [...memoryTools, ...MOBILE_INSTALL_TOOLS, ...MOBILE_APP_CONTROL_TOOLS, ...MOBILE_MEDIA_TOOLS];
+// Два независимых набора инструментов, обслуживаемые ОДНИМ процессом на разных
+// маршрутах (/mcp и /mobile). Смешивать их в одном сервере нельзя: serve показывает
+// пользователю имя сервера из конфига, и сервер с именем "memory", внутри которого
+// лежат ещё и инструменты управления телефоном, вводит в заблуждение.
+const memoryToolSet = [...memoryTools];
+const mobileToolSet = [...MOBILE_INSTALL_TOOLS, ...MOBILE_APP_CONTROL_TOOLS, ...MOBILE_MEDIA_TOOLS];
+
+// stdio-клиент (дочерний MCP, который поднимает сам opencode) получает полный набор:
+// за ним не стоит UI-список серверов, и резать его поведение незачем.
+const STDIO_SCOPE = { name: "opencode-mobile-memory", tools: [...memoryToolSet, ...mobileToolSet] };
+const MEMORY_SCOPE = { name: "opencode-mobile-memory", tools: memoryToolSet };
+const MOBILE_SCOPE = { name: "opencode-mobile-phone", tools: mobileToolSet };
+const HTTP_SCOPES = { "/mcp": MEMORY_SCOPE, "/mobile": MOBILE_SCOPE };
+
+const tools = [...memoryToolSet, ...mobileToolSet];
 
 const MOBILE_BRIDGE_TOKEN = process.env.MOBILE_INSTALL_TOKEN || "";
 const MOBILE_BRIDGE_PORT = Number(process.env.MOBILE_INSTALL_PORT) || 4202;
@@ -639,16 +653,18 @@ function send(obj) { process.stdout.write(JSON.stringify(obj) + "\n"); }
 
 // Общий обработчик одного JSON-RPC сообщения. Возвращает ответ (объект) или null
 // (для notifications/без id). Вызывается как из stdio-транспорта, так и из HTTP.
-async function handleMessage(msg) {
+// scope задаёт набор инструментов и имя сервера в initialize — по нему клиент
+// понимает, к какому MCP (память или управление телефоном) он подключён.
+async function handleMessage(msg, scope = STDIO_SCOPE) {
   const id = msg.id;
   if (msg.method === "initialize") {
     return { id, result: {
       protocolVersion: (msg.params && msg.params.protocolVersion) || "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "opencode-mobile-memory", version: "1.0.0" } } };
+      serverInfo: { name: scope.name, version: "1.0.0" } } };
   }
   if (msg.method === "notifications/initialized" || msg.method === "initialized") return null;
-  if (msg.method === "tools/list") return { id, result: { tools } };
+  if (msg.method === "tools/list") return { id, result: { tools: scope.tools } };
   if (msg.method === "tools/call") {
     const p = msg.params || {};
     try {
@@ -685,14 +701,16 @@ function isMemoryRequestAuthorized(req, url) {
 }
 
 if (TCP_PORT > 0) {
-  // Streamable HTTP MCP server: GET /mcp = SSE stream, POST /mcp = JSON-RPC (object|array).
+  // Streamable HTTP MCP server: GET <route> = SSE stream, POST <route> = JSON-RPC
+  // (object|array). Два маршрута на одном порту: /mcp — память, /mobile — телефон.
   const sseClients = new Set();
   const server = Bun.serve({
     port: TCP_PORT,
     hostname: "127.0.0.1",
     fetch(req, srv) {
       const url = new URL(req.url);
-      if (url.pathname !== "/mcp") return new Response("not found", { status: 404 });
+      const scope = HTTP_SCOPES[url.pathname];
+      if (!scope) return new Response("not found", { status: 404 });
       if (!isMemoryRequestAuthorized(req, url)) {
         return new Response("unauthorized", {
           status: 401,
@@ -707,7 +725,7 @@ if (TCP_PORT > 0) {
         const stream = new ReadableStream({
           start(controller) {
             sseClients.add(controller);
-            controller.enqueue("event: endpoint\ndata: /mcp\n\n");
+            controller.enqueue("event: endpoint\ndata: " + url.pathname + "\n\n");
             const iv = setInterval(() => {
               try { controller.enqueue(": keepalive\n\n"); } catch (_) { closeStream(); }
             }, 15000);
@@ -730,7 +748,7 @@ if (TCP_PORT > 0) {
           let notify = true; // has any non-notification message
           for (const m of batch) {
             if (m === null || m === undefined || typeof m !== "object") continue;
-            const r = await handleMessage(m);
+            const r = await handleMessage(m, scope);
             if (r !== null) { responses.push({ jsonrpc: "2.0", ...r }); notify = false; }
           }
           if (responses.length === 0) return new Response(null, { status: 202 });
@@ -758,7 +776,7 @@ if (TCP_PORT > 0) {
     let msg;
     try { msg = JSON.parse(line); } catch { return; }
     try {
-      const response = await handleMessage(msg);
+      const response = await handleMessage(msg, STDIO_SCOPE);
       if (response !== null) send(response);
     } catch (error) {
       if (msg.id !== undefined) {

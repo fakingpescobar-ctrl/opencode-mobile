@@ -122,6 +122,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.opencode.mobile.R
 import org.opencode.mobile.server.LocalOpenCodeClient
+import org.opencode.mobile.server.MemoryMcp
 import org.opencode.mobile.server.OpenCodePermissionApi
 import org.opencode.mobile.server.OpenCodePermissionRequest
 import org.opencode.mobile.server.PermissionDecision
@@ -299,9 +300,12 @@ private data class ChatTool(
 )
 
 // Отдельный MCP-сервер: имя + статус ("connected" / "disconnected" / ...).
+// tools — сколько инструментов отдаёт сервер; null, если это не наш локальный
+// сервер памяти (или память не поднята) и посчитать нечем.
 private data class McpInfo(
     val name: String,
     val status: String,
+    val tools: Int? = null,
 )
 
 private data class ChatSnapshot(
@@ -2008,8 +2012,9 @@ private fun MCPIndicator(
 
 /**
  * Выпадающий список MCP-серверов (по тапу на индикатор MCP в шапке). Для каждого
- * имени — мигающая точка-светодиод: зелёная (работает, status=="connected") или
- * красная (не работает / отключён). Если серверов нет — подпись «нет MCP».
+ * имени — точка-светодиод: зелёная (работает, status=="connected") или красная
+ * (не работает / отключён), плюс голубое число = сколько инструментов отдаёт
+ * сервер (если сервер наш локальный и ответил tools/list). Пусто — «нет MCP».
  */
 @Composable
 private fun McpServerList(
@@ -2048,8 +2053,19 @@ private fun McpServerList(
                         srv.name,
                         color = Color(0xFFE6E6E6),
                         fontSize = 13.sp,
-                        modifier = Modifier.weight(1f),
                     )
+                    // Сколько инструментов отдаёт сервер — считает сам сервер
+                    // (MemoryMcp.toolCounts), для чужих серверов вывода нет.
+                    srv.tools?.let { count ->
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "$count",
+                            color = Color(0xFF00E5FF),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
                     Text(
                         if (ok) "работает" else "не работает",
                         color = if (ok) Color(0xFF39FF88) else Color(0xFFFF3B3B),
@@ -2426,6 +2442,9 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             var mcpConnected = 0
             var mcpTotal = 0
             val mcpServers = ArrayList<McpInfo>()
+            // Счётчик инструментов спрашиваем у наших локальных серверов (кэш 30с):
+            // числа в коде разъехались бы с реальностью после обновления приложения.
+            val mcpToolCounts = MemoryMcp.toolCounts()
             try {
                 val mcpRaw = getMcpCached(p)
                 if (mcpRaw != null) {
@@ -2438,7 +2457,7 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                             val name = ms?.optString("name", "") ?: ""
                             val status = ms?.optString("status", "") ?: ""
                             if (status == "connected") mcpConnected++
-                            if (name.isNotBlank()) mcpServers.add(McpInfo(name, status))
+                            if (name.isNotBlank()) mcpServers.add(McpInfo(name, status, mcpToolCounts[name]))
                         }
                     } else if (trimmed.startsWith("{")) {
                         val mobj = JSONObject(trimmed)
@@ -2449,7 +2468,8 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                             val ms = mobj.optJSONObject(key)
                             val status = ms?.optString("status", "") ?: ""
                             if (status == "connected") mcpConnected++
-                            mcpServers.add(McpInfo(ms?.optString("name", "")?.takeIf { it.isNotBlank() } ?: key, status))
+                            val name = ms?.optString("name", "")?.takeIf { it.isNotBlank() } ?: key
+                            mcpServers.add(McpInfo(name, status, mcpToolCounts[name]))
                         }
                     }
                 }

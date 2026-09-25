@@ -355,24 +355,33 @@ object OpencodeRuntime {
 
     private fun ensureMcpConfigFile(file: File): Boolean {
         val text = if (file.exists()) file.readText() else null
+        val memoryKey = "\"${MemoryMcp.MEMORY_NAME}\""
         return when {
             text == null -> writeManagedConfig(file, managedConfigBlock())
-            !text.contains("\"memory\"") && !text.contains("\"mcp\"") ->
+            !text.contains(memoryKey) && !text.contains("\"mcp\"") ->
                 writeManagedConfig(file, managedConfigBlock())
-            !text.contains("\"memory\"") -> {
+            !text.contains(memoryKey) -> {
                 android.util.Log.w(
                     "OpencodeRuntime",
                     "Existing mcp config is not managed; refusing to append a duplicate mcp object",
                 )
                 false
             }
+            // Старая форма без auth-заголовка: доращиваем до двух серверов.
             text.contains(legacyMemoryBlock()) ->
-                ensureManagedLaunchPermission(
-                    file,
-                    text.replace(legacyMemoryBlock(), mcpMemoryBlock()),
-                )
-            text.contains("\"Authorization\": \"Bearer {env:MCP_MEMORY_TOKEN}\"") &&
-                text.contains("127.0.0.1:$MEMORY_PORT/mcp") -> ensureManagedLaunchPermission(file, text)
+                upgradeMcpSection(file, text.replace(legacyMemoryBlock(), mcpEntries()))
+            // Управляемая форма, но одним сервером: memory прятала в себе ещё и
+            // инструменты телефона, из-за чего в UI она называлась «1 MCP» с
+            // семью мобильными тулзами внутри. Разносим на два сервера.
+            text.contains(singleServerMcpObject()) ->
+                upgradeMcpSection(file, text.replace(singleServerMcpObject(), mcpBlock()))
+            // Промежуточная форма: сервер управления телефоном назывался "mobile".
+            text.contains(mobileAliasMcpObject()) ->
+                upgradeMcpSection(file, text.replace(mobileAliasMcpObject(), mcpBlock()))
+            // Уже актуальная двухсерверная форма — осталось только проверить auth.
+            text.contains(mcpBlock()) &&
+                text.contains(AUTH_HEADER) &&
+                text.contains(MEMORY_MCP_URL) -> ensureManagedLaunchPermission(file, text)
             else -> {
                 android.util.Log.w("OpencodeRuntime", "Existing memory MCP config has no managed auth header")
                 false
@@ -380,22 +389,47 @@ object OpencodeRuntime {
         }
     }
 
-    private fun mcpMemoryBlock(): String =
-        "\"memory\": {\n" +
+    private const val AUTH_HEADER = "\"Authorization\": \"Bearer {env:MCP_MEMORY_TOKEN}\""
+    private const val MEMORY_MCP_URL = "http://127.0.0.1:$MEMORY_PORT${MemoryMcp.MEMORY_PATH}"
+    private const val MOBILE_MCP_URL = "http://127.0.0.1:$MEMORY_PORT${MemoryMcp.TOOLS_PATH}"
+
+    private fun remoteServerBlock(
+        name: String,
+        url: String,
+    ): String =
+        "\"$name\": {\n" +
             "      \"type\": \"remote\",\n" +
-            "      \"url\": \"http://127.0.0.1:$MEMORY_PORT/mcp\",\n" +
+            "      \"url\": \"$url\",\n" +
             "      \"headers\": {\n" +
-            "        \"Authorization\": \"Bearer {env:MCP_MEMORY_TOKEN}\"\n" +
+            "        $AUTH_HEADER\n" +
             "      }\n" +
             "    }"
 
+    private fun mcpMemoryBlock(): String = remoteServerBlock(MemoryMcp.MEMORY_NAME, MEMORY_MCP_URL)
+
+    /** Управление телефоном: установка, запуск, медиа. Отдельный сервер ради честного UI. */
+    private fun mcpMobileBlock(): String = remoteServerBlock(MemoryMcp.TOOLS_NAME, MOBILE_MCP_URL)
+
+    /** Содержимое объекта "mcp" — обе записи, разделённые запятой. */
+    private fun mcpEntries(): String = "${mcpMemoryBlock()},\n    ${mcpMobileBlock()}"
+
     private fun legacyMemoryBlock(): String =
-        "\"memory\": {\n" +
+        "\"${MemoryMcp.MEMORY_NAME}\": {\n" +
             "      \"type\": \"remote\",\n" +
-            "      \"url\": \"http://127.0.0.1:$MEMORY_PORT/mcp\"\n" +
+            "      \"url\": \"$MEMORY_MCP_URL\"\n" +
             "    }"
 
-    private fun mcpBlock(): String = "\"mcp\": {\n    ${mcpMemoryBlock()}\n  }"
+    private fun mcpObject(entries: String): String = "\"mcp\": {\n    $entries\n  }"
+
+    private fun mcpBlock(): String = mcpObject(mcpEntries())
+
+    /** Прежняя управляемая форма: один сервер memory. Только для миграции, не для записи. */
+    private fun singleServerMcpObject(): String = mcpObject(mcpMemoryBlock())
+
+    /** Промежуточная форма: второй сервер назывался "mobile". Только для миграции. */
+    private fun mobileAliasMcpObject(): String = mcpObject("${mcpMemoryBlock()},\n    ${mobileAliasBlock()}")
+
+    private fun mobileAliasBlock(): String = remoteServerBlock("mobile", MOBILE_MCP_URL)
 
     private fun managedConfigBlock(): String =
         buildString {
@@ -406,6 +440,24 @@ object OpencodeRuntime {
                     "    \"mobile_media_control\": \"ask\"\n" +
                     "  }",
             )
+        }
+
+    /**
+     * Секция mcp уже обновлена до двух серверов — осталось её записать.
+     *
+     * Ловушка, из-за которой миграция молча терялась: если оба ключа permission
+     * уже есть, [ensureManagedLaunchPermission] выходит с true по первой ветке и
+     * НИЧЕГО не пишет, а её аргумент — новый текст — уходит в никуда. Поэтому при
+     * полном наборе разрешений пишем файл сами, иначе delegate дозапишет ключи.
+     */
+    private fun upgradeMcpSection(
+        file: File,
+        upgraded: String,
+    ): Boolean =
+        if (upgraded.contains(LAUNCH_PERMISSION_KEY) && upgraded.contains(MEDIA_PERMISSION_KEY)) {
+            writeMemoryConfigText(file, upgraded)
+        } else {
+            ensureManagedLaunchPermission(file, upgraded)
         }
 
     private fun ensureManagedLaunchPermission(
@@ -532,7 +584,8 @@ object OpencodeRuntime {
         val keysIntact =
             text.contains(LAUNCH_PERMISSION_KEY) &&
                 text.contains(MEDIA_PERMISSION_KEY) &&
-                text.contains("\"memory\"")
+                text.contains("\"${MemoryMcp.MEMORY_NAME}\"") &&
+                text.contains("\"${MemoryMcp.TOOLS_NAME}\"")
         return !leakedKotlinObject && keysIntact && text.count { it == '{' } == text.count { it == '}' }
     }
 }
