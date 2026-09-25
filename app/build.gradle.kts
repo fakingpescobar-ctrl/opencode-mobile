@@ -80,6 +80,10 @@ dependencies {
     // цвета текста. Library прогнана R8/minify в release, деб-APK чуть больше — ок.
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.4")
+    // Транспорт до сессий, публикуемых по протоколу media3 (androidx.media3.session.*):
+    // Яндекс Музыка, YouTube Music и другие современные плееры. Платформенный
+    // MediaBrowser к ним не подключается — это другой Binder, нужен свой клиент.
+    implementation("androidx.media3:media3-session:1.5.1")
     implementation(project(":whisperlib"))
     // Терминальный эмулятор для TUI opencode (Termux lib, не приложение):
     // рендер ANSI-вывода + PTY-управление.

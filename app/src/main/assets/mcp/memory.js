@@ -222,9 +222,9 @@ const MOBILE_MEDIA_TOOLS = [
     description:
       "Read the current media session state: track title, artist, album, playback state and position. " +
       "Omit package to auto-detect the app that currently owns the live session. Works while the app is " +
-      "minimized or in the background. Needs an EXPORTED media session, so some players (Yandex Music " +
-      "among them) only allow control and return an error here; check hidden_session_services in " +
-      "mobile_list_media_apps. Returns an error when nothing is playing and no package is given.",
+      "minimized or in the background, and even when the player is fully stopped - an explicit package " +
+      "returns state=none instead of an error. Needs an EXPORTED media session, so players that keep it " +
+      "private still fail here; check hidden_session_services in mobile_list_media_apps.",
     inputSchema: {
       type: "object",
       properties: {
@@ -241,12 +241,15 @@ const MOBILE_MEDIA_TOOLS = [
     name: "mobile_media_control",
     description:
       "Control a media session: play, pause, play_pause, next, previous, stop. This is the right tool for " +
-      "'pause the music', 'skip this track', 'resume playback' - it drives the app's own media session, so it " +
-      "works when the player is minimized or in the background and does not need screen taps. Omit package to " +
-      "control whichever app owns the live session. First call mobile_list_media_apps and only pick an app " +
-      "with controlable=true: an app that publishes no exported session (Yandex Music) cannot be driven from " +
-      "here, because Android routes media buttons only from the system, so the call fails with an explicit " +
-      "reason - say that instead of claiming success. verified=true means the session state really changed; " +
+      "'play Yandex Music', 'pause the music', 'skip this track', 'resume playback' - it drives the app's " +
+      "own media session, so it works when the player is minimized, in the background, or fully stopped, " +
+      "and it does not need screen taps or bring the player to the foreground. Omit package to control " +
+      "whichever app owns the live session; pass an explicit package to start a stopped player. Yandex " +
+      "Music is supported: its Media3 library session is driven natively, and no other app is shown or " +
+      "focused. First call mobile_list_media_apps and only pick an app with controlable=true: an app that " +
+      "publishes no exported session (YouTube among them) cannot be driven from here, because Android " +
+      "routes media buttons only from the system, so the call fails with an explicit reason - say that " +
+      "instead of claiming success. verified=true means the session state really changed; " +
       "verified=false means the player took the command and reported nothing - report that honestly too. " +
       "Call this only in direct response to an explicit user " +
       "request. It sends no shell, no UI input, and reads no app data beyond media metadata.",

@@ -59,6 +59,10 @@ data class MediaPlaybackSnapshot(
     val isDegenerate: Boolean
         get() = title == null && (state == STATE_ERROR || positionMs == 0L)
 
+    /** Ничего не играет и трека нет: значит плеер спит и команду play придётся будить с нуля. */
+    val isIdle: Boolean
+        get() = state == STATE_NONE && title == null && !isPlaying
+
     companion object {
         const val STATE_NONE = "none"
         const val STATE_ERROR = "error"
@@ -109,6 +113,7 @@ object MediaControlController {
     private const val PROBE_CONNECT_TIMEOUT_MS = 1_200L
     private const val STATE_TIMEOUT_MS = 800L
     private const val AFTER_STATE_TIMEOUT_MS = 2_500L
+    private const val COLD_START_TIMEOUT_MS = 9_000L
     private const val PROBE_LIMIT = 8
     private const val PROBE_PARALLELISM = 4
     private const val PROBE_TOTAL_TIMEOUT_MS = 3_000L
@@ -126,8 +131,26 @@ object MediaControlController {
             "androidx.media3.session.MediaSessionService",
         )
 
+    /** Подмножество action-ов, которые говорят на протоколе media3, а не на платформенном. */
+    private val MEDIA3_SERVICE_ACTIONS =
+        setOf(
+            "androidx.media3.session.MediaLibraryService",
+            "androidx.media3.session.MediaSessionService",
+        )
+
+    /** Порядок попыток: родной протокол приложения первым, платформенный — запасным. */
+    private val MEDIA3_FIRST_PASSES = listOf(true, false)
+
+    /**
+     * action-ы, по которым найдены сервисы: ключ — flattened-компонент. Нужен, чтобы не
+     * гадать протокол при подключении: один и тот же компонент может быть найден и как
+     * legacy MediaBrowserService, и как media3-сервис.
+     */
+    @Volatile
+    private var serviceActions: Map<String, String> = emptyMap()
+
     private val retainLock = Any()
-    private var retainedSession: MediaSessionHandle? = null
+    private var retainedSession: MediaSessionTransport? = null
     private var retainedAt = 0L
 
     @Volatile
@@ -189,6 +212,58 @@ object MediaControlController {
     }
 
     /**
+     * Ждём реального эффекта команды, а не фиксированную паузу: плееры отражают паузу с
+     * задержкой, и короткое окно превращало бы `verified=true` в ложь. Позиция при игре
+     * растёт сама по себе, поэтому сравнение по ней не годится — ловим смену состояния
+     * или перемотки, а по истечении таймаута отдаём как есть и оставляем verified=false.
+     */
+    private fun awaitEffect(
+        transport: MediaSessionTransport,
+        previous: MediaPlaybackSnapshot,
+        command: MediaCommand,
+        timeoutMs: Long,
+    ): MediaPlaybackSnapshot {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        var current = transport.read()
+        while (!hasEffect(previous, current, command) && SystemClock.elapsedRealtime() < deadline) {
+            Thread.sleep(AFTER_POLL_MS)
+            current = transport.read()
+        }
+        return current
+    }
+
+    /**
+     * Считаем ли мы изменение эффектом команды. Смена состояния и смена трека очевидны;
+     * для next/previous/догоняющего play засчитываем ещё и перемотку, потому что там
+     * состояние может остаться playing. Рост позиции при обычной игре эффектом не считаем.
+     */
+    private fun hasEffect(
+        previous: MediaPlaybackSnapshot,
+        current: MediaPlaybackSnapshot,
+        command: MediaCommand,
+    ): Boolean {
+        val trackChanged = current.title != previous.title || current.album != previous.album
+        val stateChanged = current.state != previous.state
+        val seeked = jumped(previous.positionMs, current.positionMs) && seeks(command)
+        return stateChanged || trackChanged || seeked
+    }
+
+    private fun seeks(command: MediaCommand): Boolean =
+        command == MediaCommand.NEXT ||
+            command == MediaCommand.PREVIOUS ||
+            command == MediaCommand.PLAY
+
+    /** Перемотка назад или резкий скачок вперёд, в отличие от обычного хода времени. */
+    private fun jumped(
+        beforeMs: Long?,
+        afterMs: Long?,
+    ): Boolean {
+        val from = beforeMs
+        val to = afterMs
+        return from != null && to != null && (to - from < SEEK_BACKWARD_MS || to - from > SEEK_FORWARD_MS)
+    }
+
+    /**
      * Честная причина отказа. Media button broadcast из стороннего приложения платформа
      * не маршрутизирует: проверено на устройстве — broadcast с KEYCODE_MEDIA_PLAY доходит
      * до receiver Яндекс Музыки, но сессия не стартует, тогда как системный
@@ -210,7 +285,7 @@ object MediaControlController {
 
     private fun controlWithSession(
         app: MediaAppSnapshot,
-        session: MediaSessionHandle,
+        session: MediaSessionTransport,
         command: MediaCommand,
     ): MediaControlResult {
         val before = session.awaitPlayback(STATE_TIMEOUT_MS)
@@ -220,7 +295,13 @@ object MediaControlController {
                 else -> command
             }
         session.send(effective)
-        val after = session.awaitEffect(before, effective, AFTER_STATE_TIMEOUT_MS)
+        // Остановленный плеер на play должен сначала проснуться: поднять процесс, построить
+        // сессию, загрузить библиотеку и только потом начать звук. Короткого окна на это не
+        // хватает, и команда выглядит как «не сработала», хотя music уже играет. Поэтому
+        // холодный старт ждём дольше, а не отдаём verified=false по нетерпению.
+        val effectTimeoutMs =
+            if (before.isIdle && effective == MediaCommand.PLAY) COLD_START_TIMEOUT_MS else AFTER_STATE_TIMEOUT_MS
+        val after = awaitEffect(session, before, effective, effectTimeoutMs)
         val verified = after.state != before.state || after.title != before.title
         Log.i(
             TAG,
@@ -237,7 +318,7 @@ object MediaControlController {
                     "Android media session accepted the command"
                 } else {
                     "Android media session took the command but reported no state change within " +
-                        "${AFTER_STATE_TIMEOUT_MS}ms; the player may have ignored it"
+                        "${effectTimeoutMs}ms; the player may have ignored it"
                 },
             before = before,
             after = after,
@@ -245,13 +326,21 @@ object MediaControlController {
         )
     }
 
-    /** Явный package: подключаемся к его сессии, без неё управление невозможно. */
+    /**
+     * Явный package: подключаемся к его сессии, без неё управление невозможно.
+     * Usable здесь не требуется: «включи Яндекс Музыку» должно работать и когда
+     * ничего не играет — сессия остановленного плеера тоже валидная цель.
+     */
     private fun targetFor(
         apps: List<MediaAppSnapshot>,
         packageName: String?,
     ): MediaTarget {
         val explicit = packageName?.let { required -> requiredApp(apps, required) }
-        return if (explicit != null) MediaTarget(explicit, sessionFor(explicit)) else liveSessionTarget(apps)
+        return if (explicit != null) {
+            MediaTarget(explicit, sessionFor(explicit, requireUsable = false))
+        } else {
+            liveSessionTarget(apps)
+        }
     }
 
     /**
@@ -262,7 +351,7 @@ object MediaControlController {
     private fun liveSessionTarget(apps: List<MediaAppSnapshot>): MediaTarget {
         val cached = cachedPackage()?.let { name -> apps.firstOrNull { it.packageName == name } }
         if (cached != null) {
-            val session = sessionFor(cached)
+            val session = sessionFor(cached, requireUsable = true)
             if (session != null) {
                 val playback = session.awaitPlayback(STATE_TIMEOUT_MS)
                 if (playback.isUsable && !playback.isDegenerate) {
@@ -338,13 +427,13 @@ object MediaControlController {
 
     private data class Probe(
         val app: MediaAppSnapshot,
-        val session: MediaSessionHandle?,
+        val session: MediaSessionTransport?,
         val playback: MediaPlaybackSnapshot?,
         val score: Int,
     )
 
     private fun probeOne(app: MediaAppSnapshot): Probe {
-        val session = openSession(app, PROBE_CONNECT_TIMEOUT_MS)
+        val session = openSession(app, PROBE_CONNECT_TIMEOUT_MS, requireUsable = true)
         val playback = session?.awaitPlayback(STATE_TIMEOUT_MS)
         return Probe(app, session, playback, playback?.let(::scoreOf) ?: SCORE_USABLE)
     }
@@ -360,22 +449,39 @@ object MediaControlController {
             else -> SCORE_USABLE
         }
 
-    private fun sessionFor(app: MediaAppSnapshot): MediaSessionHandle? {
+    private fun sessionFor(
+        app: MediaAppSnapshot,
+        requireUsable: Boolean,
+    ): MediaSessionTransport? {
         val retained = freshRetainedSession()
         return if (retained != null) {
             retained
         } else {
-            openSession(app, CONNECT_TIMEOUT_MS)?.also(::retainSession)
+            openSession(app, CONNECT_TIMEOUT_MS, requireUsable)?.also(::retainSession)
         }
     }
 
-    private fun freshRetainedSession(): MediaSessionHandle? =
+    /**
+     * Отдаёт живую сессию из кэша, а протухшую закрывает: иначе MediaController продолжал бы
+     * держатьbind чужого сервиса после простоя. Закрытие вне synchronize, потому что оно
+     * ждёт ответа с media-looper и держать под ним замок нельзя.
+     */
+    private fun freshRetainedSession(): MediaSessionTransport? {
+        var fresh: MediaSessionTransport? = null
+        var stale: MediaSessionTransport? = null
         synchronized(retainLock) {
             val handle = retainedSession
-            if (handle != null && SystemClock.elapsedRealtime() - retainedAt <= RETAIN_MS) handle else null
+            if (handle != null) {
+                fresh = handle.takeIf { SystemClock.elapsedRealtime() - retainedAt <= RETAIN_MS }
+                stale = handle.takeIf { fresh !== it }
+                if (stale != null) retainedSession = null
+            }
         }
+        stale?.closeQuietly()
+        return fresh
+    }
 
-    private fun retainSession(session: MediaSessionHandle) {
+    private fun retainSession(session: MediaSessionTransport) {
         synchronized(retainLock) {
             retainedSession?.closeQuietly()
             retainedSession = session
@@ -384,7 +490,7 @@ object MediaControlController {
     }
 
     /** Закрывает сессию, если она больше не нужна как кэш для следующего вызова. */
-    private fun releaseUnused(session: MediaSessionHandle?) {
+    private fun releaseUnused(session: MediaSessionTransport?) {
         if (session == null) return
         val keep =
             synchronized(retainLock) {
@@ -394,27 +500,86 @@ object MediaControlController {
         if (!keep) session.closeQuietly()
     }
 
+    /** Компонент сессии вместе с action-ом, по которому он найден. */
+    private data class SessionRef(
+        val flattened: String,
+        val component: ComponentName,
+        val action: String?,
+    ) {
+        val isMedia3: Boolean
+            get() = action in MEDIA3_SERVICE_ACTIONS
+    }
+
+    /**
+     * Подключается к сессии приложения, перебирая сервисы в порядке актуальности протокола.
+     *
+     * Сначала идут media3-сервисы: это родной протокол современных плееров, и именно на них
+     * держится Яндекс Музыка. Платформенный MediaBrowserService — запасной путь для старых
+     * плееров. Попытка не выбирается наугад: action известен из запроса PackageManager,
+     * поэтому приложение без media3-сервисов не тратит таймаут на заведомо бесполезный bind.
+     *
+     * requireUsable отличает две задачи: автоопределение живьевой сессии должно отбросить
+     * молчащий сервис, а явный package наоборот принимает и остановленного плеера — иначе
+     * «включи Яндекс Музыку» не сработало бы ровно тогда, когда оно нужнее всего.
+     */
     private fun openSession(
         app: MediaAppSnapshot,
         connectTimeoutMs: Long,
-    ): MediaSessionHandle? {
-        app.sessionServices.forEach { flattened ->
-            val component = ComponentName.unflattenFromString(flattened) ?: return@forEach
-            val browser =
-                runCatching { connectBrowser(component, connectTimeoutMs) }
-                    .onFailure { error -> Log.w(TAG, "cannot bind $flattened", error) }
-                    .getOrNull()
-                    ?: return@forEach
-            val handle =
-                runCatching { openHandle(browser, browser.sessionToken) }.getOrElse { error ->
-                    Log.w(TAG, "cannot open session for $flattened", error)
-                    browser.disconnect()
-                    return@forEach
-                }
-            if (handle.awaitPlayback(STATE_TIMEOUT_MS).isUsable) return handle
-            handle.closeQuietly()
-        }
+        requireUsable: Boolean,
+    ): MediaSessionTransport? {
+        val refs = sessionRefs(app)
+        val ordered = MEDIA3_FIRST_PASSES.flatMap { pass -> refs.filter { it.isMedia3 == pass } }
+        return ordered
+            .asSequence()
+            .mapNotNull { ref -> connectTransport(ref, connectTimeoutMs) }
+            .firstNotNullOfOrNull { transport -> acceptTransport(transport, requireUsable) }
+    }
+
+    private fun sessionRefs(app: MediaAppSnapshot): List<SessionRef> =
+        app.sessionServices
+            .mapNotNull { flattened ->
+                val component = ComponentName.unflattenFromString(flattened) ?: return@mapNotNull null
+                SessionRef(flattened, component, serviceActions[flattened])
+            }
+
+    /**
+     * Транспорт годится, если для автоопределения он живой. Негодный закрываем: удерживать
+     * bind к молчащему сервису незачем, иначе следующий вызов поедет уже в него.
+     */
+    private fun acceptTransport(
+        transport: MediaSessionTransport,
+        requireUsable: Boolean,
+    ): MediaSessionTransport? {
+        val playback = transport.awaitPlayback(STATE_TIMEOUT_MS)
+        if (!requireUsable || playback.isUsable) return transport
+        transport.closeQuietly()
         return null
+    }
+
+    private fun connectTransport(
+        ref: SessionRef,
+        timeoutMs: Long,
+    ): MediaSessionTransport? {
+        if (!ref.isMedia3) return connectPlatform(ref.component, timeoutMs)
+        return runCatching { Media3SessionTransport.connect(contextOrThrow(), looper, ref.component, timeoutMs) }
+            .onFailure { error -> Log.w(TAG, "cannot bind media3 session ${ref.flattened}", error) }
+            .getOrNull()
+    }
+
+    private fun connectPlatform(
+        component: ComponentName,
+        timeoutMs: Long,
+    ): MediaSessionTransport? {
+        val browser =
+            runCatching { connectBrowser(component, timeoutMs) }
+                .onFailure { error -> Log.w(TAG, "cannot bind $component", error) }
+                .getOrNull()
+                ?: return null
+        return runCatching { openHandle(browser, browser.sessionToken) }.getOrElse { error ->
+            Log.w(TAG, "cannot open session for $component", error)
+            browser.disconnect()
+            null
+        }
     }
 
     /**
@@ -482,10 +647,12 @@ object MediaControlController {
     private data class ServiceIndex(
         val connectable: Map<String, List<String>>,
         val blocked: Map<String, Int>,
+        val actions: Map<String, String>,
     )
 
     private fun mediaApps(): List<MediaAppSnapshot> {
         val services = collectSessionServices()
+        serviceActions = services.actions
         val buttons = collectMediaButtons()
         return (services.connectable.keys + buttons.keys)
             .sorted()
@@ -508,16 +675,37 @@ object MediaControlController {
     private fun collectSessionServices(): ServiceIndex {
         val connectable = mutableMapOf<String, MutableList<String>>()
         val blocked = mutableMapOf<String, MutableSet<String>>()
-        SESSION_SERVICE_ACTIONS.flatMap(::queryServices).forEach { resolveInfo ->
-            val service = resolveInfo.serviceInfo ?: return@forEach
-            val flattened = ComponentName(service.packageName, service.name).flattenToString()
-            if (service.enabled && service.exported) {
-                connectable.getOrPut(service.packageName) { mutableListOf() }.addIfAbsent(flattened)
-            } else {
-                blocked.getOrPut(service.packageName) { mutableSetOf() }.add(flattened)
+        val actions = mutableMapOf<String, String>()
+        SESSION_SERVICE_ACTIONS.forEach { action ->
+            queryServices(action).forEach { resolveInfo ->
+                val service = resolveInfo.serviceInfo ?: return@forEach
+                val flattened = ComponentName(service.packageName, service.name).flattenToString()
+                // Сервис отвечает на несколько media-действий сразу: Media3LibraryService висит
+                // ещё и на legacy-экшене. Классифицировать надо по самому «родному» протоколу,
+                // иначе media3-сервис уедет в платформенный bind и не ответит.
+                if (actions[flattened] !in MEDIA3_SERVICE_ACTIONS) actions[flattened] = action
+                Log.d(
+                    TAG,
+                    "media service ${service.packageName}/${service.name} action=$action " +
+                        "exported=${service.exported} enabled=${service.enabled}",
+                )
+                // Гейт — только экспортированность: bind к чужому компоненту иначе запрещён.
+                // Включённость из ServiceInfo брать нельзя, PackageManager отдаёт манифестное
+                // значение, а Яндекс Музыка переключает Media3LibraryService в рантайме и
+                // манифест там android:enabled="false". Решает bind, и его промах мы логируем.
+                if (service.exported) {
+                    connectable.getOrPut(service.packageName) { mutableListOf() }.addIfAbsent(flattened)
+                } else {
+                    blocked.getOrPut(service.packageName) { mutableSetOf() }.add(flattened)
+                }
             }
         }
-        return ServiceIndex(connectable, blocked.mapValues { it.value.size })
+        // Показываем и пробуем родной протокол первым: для Яндекс Музыки это Media3LibraryService.
+        val media3Actions = actions.filterValues { action -> action in MEDIA3_SERVICE_ACTIONS }.keys
+        val ordered = connectable.mapValues { (_, services) ->
+            services.sortedByDescending { flattened -> flattened in media3Actions }
+        }
+        return ServiceIndex(ordered, blocked.mapValues { it.value.size }, actions)
     }
 
     private fun collectMediaButtons(): Map<String, String> {
@@ -547,14 +735,24 @@ object MediaControlController {
             ?.takeIf(String::isNotEmpty)
             ?: packageName
 
+    /**
+     * Компоненты чужих плееров переключают в рантайме: Яндекс Музыка держит Media3LibraryService
+     * выключенным в манифесте и включает его экспериментом, а legacy-сервис наоборот гасит.
+     * Без MATCH_DISABLED_COMPONENTS PackageManager отдаёт только манифестную картину, и мы бы
+     * заключили «сессии нет», хотя она есть. Поэтому спрашиваем и выключенные компоненты, а
+     * актуальное состояние берём из ServiceInfo.
+     */
     @Suppress("DEPRECATION")
     private fun queryServices(action: String): List<ResolveInfo> {
         val packageManager = contextOrThrow().packageManager
         val intent = Intent(action)
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            packageManager.queryIntentServices(intent, PackageManager.ResolveInfoFlags.of(0L))
+            packageManager.queryIntentServices(
+                intent,
+                PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_DISABLED_COMPONENTS.toLong()),
+            )
         } else {
-            packageManager.queryIntentServices(intent, 0)
+            packageManager.queryIntentServices(intent, PackageManager.MATCH_DISABLED_COMPONENTS)
         }
     }
 
@@ -587,10 +785,34 @@ object MediaControlController {
         }
 }
 
+/**
+ * Живое подключение к чужой медиасессии.
+ *
+ * Контракт минимален, потому что протоколов два: платформенный MediaBrowser и media3.
+ * Общее у них только чтение состояния и транспортная команда; проверка эффекта команды
+ * живёт в вызывающем коде, чтобы не расходилась между реализациями.
+ */
+internal interface MediaSessionTransport {
+    /** Дождаться первого ответа сессии: метаданных либо состояния воспроизведения. */
+    fun awaitReady(timeoutMs: Long)
+
+    fun read(): MediaPlaybackSnapshot
+
+    fun send(command: MediaCommand)
+
+    fun closeQuietly()
+}
+
 private data class MediaTarget(
     val app: MediaAppSnapshot,
-    val session: MediaSessionHandle?,
+    val session: MediaSessionTransport?,
 )
+
+/** Ожидание готовности и чтение состояния — так начинается любая работа с транспортом. */
+private fun MediaSessionTransport.awaitPlayback(timeoutMs: Long): MediaPlaybackSnapshot {
+    awaitReady(timeoutMs)
+    return read()
+}
 
 /**
  * Живое подключение к чужой MediaSession. Создаётся только на media-looper:
@@ -604,64 +826,12 @@ private class MediaSessionHandle(
     private val ready: CountDownLatch,
     private val handler: Handler,
     private val looper: HandlerThread,
-) {
-    fun awaitPlayback(timeoutMs: Long): MediaPlaybackSnapshot {
+) : MediaSessionTransport {
+    override fun awaitReady(timeoutMs: Long) {
         ready.await(timeoutMs, TimeUnit.MILLISECONDS)
-        return read()
     }
 
-    /**
-     * Ждём реального эффекта команды, а не фиксированную паузу: плееры отражают паузу с
-     * задержкой, и короткое окно превращало бы `verified=true` в ложь. Позиция при игре
-     * растёт сама по себе, поэтому сравнение по ней не годится — ловим смену состояния
-     * или перемотки, а по истечении таймаута отдаём как есть и оставляем verified=false.
-     */
-    fun awaitEffect(
-        previous: MediaPlaybackSnapshot,
-        command: MediaCommand,
-        timeoutMs: Long,
-    ): MediaPlaybackSnapshot {
-        val deadline = SystemClock.elapsedRealtime() + timeoutMs
-        var current = read()
-        while (!hasEffect(previous, current, command) && SystemClock.elapsedRealtime() < deadline) {
-            Thread.sleep(AFTER_POLL_MS)
-            current = read()
-        }
-        return current
-    }
-
-    /**
-     * Считаем ли мы изменение эффектом команды. Смена состояния и смена трека очевидны;
-     * для next/previous/догоняющего play засчитываем ещё и перемотку, потому что там
-     * состояние может остаться playing. Рост позиции при обычной игре эффектом не считаем.
-     */
-    private fun hasEffect(
-        previous: MediaPlaybackSnapshot,
-        current: MediaPlaybackSnapshot,
-        command: MediaCommand,
-    ): Boolean {
-        val trackChanged = current.title != previous.title || current.album != previous.album
-        val stateChanged = current.state != previous.state
-        val seeked = jumped(previous.positionMs, current.positionMs) && seeks(command)
-        return stateChanged || trackChanged || seeked
-    }
-
-    private fun seeks(command: MediaCommand): Boolean =
-        command == MediaCommand.NEXT ||
-            command == MediaCommand.PREVIOUS ||
-            command == MediaCommand.PLAY
-
-    /** Перемотка назад или резкий скачок вперёд, в отличие от обычного хода времени. */
-    private fun jumped(
-        beforeMs: Long?,
-        afterMs: Long?,
-    ): Boolean {
-        val from = beforeMs
-        val to = afterMs
-        return from != null && to != null && (to - from < SEEK_BACKWARD_MS || to - from > SEEK_FORWARD_MS)
-    }
-
-    fun send(command: MediaCommand) {
+    override fun send(command: MediaCommand) {
         onMediaLooper(looper, COMMAND_TIMEOUT_MS) {
             val controls = controller.transportControls
             when (command) {
@@ -675,7 +845,7 @@ private class MediaSessionHandle(
         }
     }
 
-    fun closeQuietly() {
+    override fun closeQuietly() {
         runCatching {
             // MediaController.release() скрыт в публичном SDK: сессия отпускается через disconnect.
             onMediaLooper(looper, COMMAND_TIMEOUT_MS) {
@@ -685,7 +855,7 @@ private class MediaSessionHandle(
         }.onFailure { Log.w(TAG, "closing session failed", it) }
     }
 
-    private fun read(): MediaPlaybackSnapshot = readPlayback(controller)
+    override fun read(): MediaPlaybackSnapshot = readPlayback(controller)
 }
 
 private fun readPlayback(controller: MediaController): MediaPlaybackSnapshot {
@@ -739,7 +909,7 @@ private fun MediaMetadata?.durationMs(): Long? {
  * Выполняет короткую задачу на media-looper и возвращает её результат вызывающему потоку.
  * Сама задача ничего не ждёт: блокировка looper-а затормозила бы и MediaBrowser-коллбэки.
  */
-private fun <T> onMediaLooper(
+internal fun <T> onMediaLooper(
     looper: HandlerThread,
     timeoutMs: Long,
     block: () -> T,
