@@ -302,6 +302,8 @@ object MediaControlController {
             query = result.query,
             artist = result.artist,
             tracks = result.tracks,
+            exactTrackId = result.exactTrackId,
+            resolvedBy = result.resolvedBy,
         )
     }
 

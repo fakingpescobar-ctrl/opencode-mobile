@@ -43,13 +43,21 @@ data class CatalogArtist(
  *
  * Здесь нет авторизации намеренно: каталог открыт, а избранное живёт в сессии, а не в REST.
  */
+// Один открытый API и его формы ответа держим в одном объекте: вынос сети и парсинга по
+// отдельным объектам разбросает по проекту одно и то же знание о shape каталога.
+@Suppress("TooManyFunctions")
 object YandexCatalog {
+    /** Чем разобран запрос поиска: по названию или по каталожному id. */
+    const val RESOLVED_BY_ID = "id"
+    const val RESOLVED_BY_TEXT = "text"
+
     private const val API = "https://api.music.yandex.net"
     private const val CONNECT_TIMEOUT_MS = 5_000
     private const val READ_TIMEOUT_MS = 10_000
     private const val USER_AGENT = "opencode-mobile/1.0"
     private const val TRACK_LIMIT = 20
     private const val MAX_SEARCH_LIMIT = 20
+    private const val MAX_ID_LENGTH = 32
     private const val HTTP_OK = 200
     private const val HTTP_MAX = 299
     private const val JSON_ID = "id"
@@ -62,11 +70,17 @@ object YandexCatalog {
     /**
      * Что нашлось: артист (если запрос был про него) и треки. Треки берём и из выдачи, и из
      * карточки артиста — иначе «включи артиста» на запросе-артисте нечего было бы играть.
+     *
+     * [exactTrackId] отвечает на вопрос, который выдача сама не отвечает: есть ли трек, названный
+     * ровно как запрос. Без него «включи Get Low Remix» и «включи Busta Rymes Get Low Remix» выглядят
+     * одинаково — а это разные вещи, и второй запрос в каталоге просто не существует.
      */
     data class Result(
         val query: String,
         val artist: CatalogArtist?,
         val tracks: List<CatalogTrack>,
+        val exactTrackId: String? = null,
+        val resolvedBy: String = RESOLVED_BY_TEXT,
     )
 
     fun search(
@@ -75,17 +89,65 @@ object YandexCatalog {
     ): Result {
         val text = query.trim()
         require(text.isNotEmpty()) { "search query is empty" }
-        val root = getJson("/search?text=${encode(text)}&type=all&page=0&sortBy=relevance")
-        val result = root.optJSONObject("result") ?: JSONObject()
+        val id = text.takeIf(::isTrackId)
+        // Запрос-сам-id: ответ точный по построению, а не «трек с похожим названием». Не
+        // нашлось — честно пусто, а не чужая дорожка из выдачи.
+        if (id != null) {
+            val found = track(id).firstOrNull()
+            return Result(text, null, found?.let(::listOf) ?: emptyList(), found?.id, RESOLVED_BY_ID)
+        }
+        return searchText(text, limit)
+    }
+
+    /** Поиск по названию: единственный путь, где нужен разбор выдачи. */
+    private fun searchText(
+        text: String,
+        limit: Int,
+    ): Result {
+        // `page` обязателен: без него каталог отвечает 400 и пустым result.
+        val url = "/search?text=${URLEncoder.encode(text, StandardCharsets.UTF_8.name())}" +
+            "&type=all&page=0&sortBy=relevance"
+        val result = getJson(url).optJSONObject("result") ?: JSONObject()
         // `best` — это конверт: {type, result}. Если запрос про артиста, то треки берём из его
         // карточки, а не из выдачи: у выдачи они перемешаны с чужими.
-        val best = result.optJSONObject("best")?.takeIf { it.optString("type") == "artist" }
-        val artist = best?.optJSONObject("result")?.let { readArtist(it) }
-        if (artist != null) {
-            return Result(text, artist, artistTracks(artist.id, limit))
-        }
-        val tracks = result.optJSONObject("tracks")?.optJSONArray("results") ?: JSONArray()
-        return Result(text, null, readTracks(tracks).take(capped(limit)))
+        val artist = result
+            .optJSONObject("best")
+            ?.takeIf { it.optString("type") == "artist" }
+            ?.optJSONObject("result")
+            ?.let { readArtist(it) }
+        if (artist != null) return Result(text, artist, artistTracks(artist.id, limit))
+        val found = readTracks(result.optJSONObject("tracks")?.optJSONArray("results") ?: JSONArray())
+            .take(limit.coerceIn(1, MAX_SEARCH_LIMIT))
+        return Result(text, null, found, exactTrackId(found, text))
+    }
+
+    /**
+     * Трек по его каталожному id. Тот же открытый каталог, только адресной запрос: агент получает
+     * id из ссылки, из сообщения пользователя или из прошлого поиска и хочет узнать, что это.
+     */
+    private fun track(trackId: String): List<CatalogTrack> {
+        val id = trackId.trim()
+        require(isTrackId(id)) { "track id must be numeric" }
+        return readTracks(getJson("/tracks/$id").optJSONArray("result") ?: JSONArray())
+    }
+
+    /**
+     * Трек с ровно таким названием, как запрос. Сравнение строгое, без угадывания: разница между
+     * «есть такой трек» и «нашлось что-то похожее» слишком дорогая, чтобы её размывать.
+     */
+    fun exactTrackId(
+        tracks: List<CatalogTrack>,
+        query: String,
+    ): String? {
+        val wanted = query.trim()
+        if (wanted.isEmpty()) return null
+        return tracks.firstOrNull { it.title.trim().equals(wanted, ignoreCase = true) }?.id
+    }
+
+    /** Каталожные id — только цифры; такой запрос не может быть названием. */
+    internal fun isTrackId(value: String): Boolean {
+        if (value.isEmpty() || value.length > MAX_ID_LENGTH) return false
+        return value.all(Char::isDigit)
     }
 
     /** Треки артиста: `/artists/{id}/tracks` отдаёт их без всякой авторизации. */
@@ -93,17 +155,15 @@ object YandexCatalog {
         artistId: String,
         limit: Int = TRACK_LIMIT,
     ): List<CatalogTrack> {
-        val page = capped(limit)
+        // Каталог сам зажимает страницу на 20, а limit агента — ещё ниже: режем у себя.
+        val page = limit.coerceIn(1, MAX_SEARCH_LIMIT)
         val root = getJson("/artists/$artistId/tracks?page=0&perPage=$page")
         val result = root.optJSONObject("result") ?: return emptyList()
         val raw = result.optJSONArray("tracks") ?: result.optJSONArray("collection")
         return readTracks(raw ?: JSONArray()).take(page)
     }
 
-    /** Каталог сам зажимает страницу на 20, а limit агента — ещё ниже: режем у себя. */
-    private fun capped(limit: Int): Int = limit.coerceIn(1, MAX_SEARCH_LIMIT)
-
-    private fun readArtist(node: JSONObject): CatalogArtist? {
+    internal fun readArtist(node: JSONObject): CatalogArtist? {
         val id = node.optString(JSON_ID).takeIf(String::isNotEmpty)
         val name = node.optString(JSON_NAME).takeIf(String::isNotEmpty)
         if (id == null || name == null) return null
@@ -111,15 +171,19 @@ object YandexCatalog {
         return CatalogArtist(id, name, counts?.optInt(TRACKS_COUNT) ?: 0)
     }
 
-    private fun readTracks(array: JSONArray): List<CatalogTrack> =
+    internal fun readTracks(array: JSONArray): List<CatalogTrack> =
         (0 until array.length()).mapNotNull { index ->
             val node = array.optJSONObject(index) ?: return@mapNotNull null
             val id = node.optString("realId").takeIf(String::isNotEmpty) ?: node.optString("id")
-            if (id.isEmpty()) return@mapNotNull null
+            val title = node.optString(JSON_TITLE).trim()
+            // На несуществующий id каталог отвечает узлом, где id есть, а остального нет. Такой
+            // трек нечего ни показать, ни сверить, и «точное совпадение» из него делать нельзя —
+            // поэтому он отбрасывается, а не попадает в выдачу пустым рядом.
+            if (id.isEmpty() || title.isEmpty()) return@mapNotNull null
             val durationMs = node.optLong("durationMs", 0L)
             CatalogTrack(
                 id = id,
-                title = node.optString(JSON_TITLE),
+                title = title,
                 artist = readArtists(node),
                 album = readAlbum(node),
                 durationMs = durationMs,
@@ -149,8 +213,6 @@ object YandexCatalog {
         return node.optString("artist")
     }
 
-    private fun encode(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8.name())
-
     private fun getJson(path: String): JSONObject {
         val connection = URI.create(API + path).toURL().openConnection() as HttpURLConnection
         try {
@@ -178,9 +240,14 @@ object YandexCatalog {
         val head = result.tracks.take(LOG_TRACKS).joinToString("; ") { "${it.artist} - ${it.title}" }
         return buildString {
             append(result.query)
+            append(" [")
+            append(result.resolvedBy)
+            append("]")
             append(" -> ")
             append(result.artist?.let { "artist ${it.name} [${it.id}]; " } ?: "")
-            append("${result.tracks.size} tracks: ")
+            append("${result.tracks.size} tracks")
+            append(result.exactTrackId?.let { "; exact=$it" } ?: "; exact=none")
+            append(": ")
             append(head)
         }.lowercase(Locale.ROOT)
     }

@@ -709,7 +709,11 @@ object AppInstallBridge {
     private fun MediaSearchResult.toJson(): JSONObject =
         JSONObject()
             .put("query", query)
+            .put("resolved_by", resolvedBy)
             .put("artist", artist?.toJson() ?: JSONObject.NULL)
+            // null означает «трека с таким названием в каталоге нет» — это и есть ответ на
+            // «включи то, что я назвал», а не пустой список на выбор.
+            .put("exact_track_id", exactTrackId ?: JSONObject.NULL)
             .put(
                 "tracks",
                 JSONArray().apply {

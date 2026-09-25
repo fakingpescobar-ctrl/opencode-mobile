@@ -224,7 +224,11 @@ const MOBILE_MEDIA_TOOLS = [
       "Omit package to auto-detect the app that currently owns the live session. Works while the app is " +
       "minimized or in the background, and even when the player is fully stopped - an explicit package " +
       "returns state=none instead of an error. Needs an EXPORTED media session, so players that keep it " +
-      "private still fail here; check hidden_session_services in mobile_list_media_apps.",
+      "private still fail here; check hidden_session_services in mobile_list_media_apps. The Yandex " +
+      "Music session publishes no track id at all: its queue index and queue item id are hidden " +
+      "platform APIs, its media3 controller returns a positional counter with a null uri, and no isrc " +
+      "exists on either side. So no id from mobile_media_search can be checked against it - the title " +
+      "is the only verification available, and you must say so instead of claiming an id match.",
     inputSchema: {
       type: "object",
       properties: {
@@ -274,19 +278,25 @@ const MOBILE_MEDIA_TOOLS = [
   {
     name: "mobile_media_search",
     description:
-      "Search the Yandex Music catalog by name - no login, no token, no screen taps. Use it to turn " +
-      "'play Bastard Rampage' or 'what is this track called' into a concrete id: an artist query returns " +
-      "the artist with its id and their tracks, a track query returns matching tracks. Each track carries " +
-      "id, title, artist, album, duration_ms, available and the uri to hand to mobile_media_play. The " +
-      "catalog is not exhaustive: an unknown artist may come back with no artist block and no exact match - " +
-      "say so instead of inventing an id. Then call mobile_media_play to start one of the returned tracks.",
+      "Resolve a Yandex Music request into concrete catalog tracks - no login, no token, no screen taps. " +
+      "Use it before anything else when the user names an artist or a track. A numeric query is looked up " +
+      "as a catalog id directly (resolved_by=id), a text query is searched (resolved_by=text); an artist " +
+      "query returns the artist with its id and their tracks, a track query returns matching tracks. Each " +
+      "track carries id, title, artist, album, duration_ms, available and the uri to hand to " +
+      "mobile_media_play. Read exact_track_id: it is the track whose title is exactly the query, and null " +
+      "means the catalog has no such title, so the user's phrasing is off - then show the returned " +
+      "candidates instead of inventing an id. The catalog is not exhaustive: an unknown artist may come " +
+      "back with no artist block and no exact match - say so. The id here is the catalog's own and the " +
+      "player session does not publish a comparable one, so never present an id match as proof of what " +
+      "is playing: verify by the title reported by mobile_media_status, or tell the user you could not " +
+      "confirm it.",
     inputSchema: {
       type: "object",
       properties: {
         query: {
           type: "string",
           maxLength: 120,
-          description: "Artist or track name as the user said it"
+          description: "Artist or track name as the user said it, or a numeric catalog id"
         },
         limit: {
           type: "integer",
@@ -337,9 +347,12 @@ const MOBILE_MEDIA_TOOLS = [
       "Checked on a real device and not a guess: Yandex ignores both yandexmusic://track/<id> and " +
       "https://music.yandex.ru/track/<id> in setMediaItem, and its Media3LibraryService answers " +
       "getLibraryRoot and getSearchResult with permission_denied while advertising no library_* " +
-      "command at all. So on that app a catalog id cannot be turned into playback by any public " +
-      "API - do not burn turns retrying it, and say plainly that starting an arbitrary track " +
-      "needs a different approach.",
+      "command at all. Opening that same yandexmusic://track/<id> as an intent is not a way out either - " +
+      "the app starts its own radio around the track instead of that track, so never report the uri from " +
+      "mobile_media_search as played. So on that app a catalog id cannot be turned into playback by any " +
+      "public API - do not burn turns retrying it; use mobile_media_search to confirm which track is " +
+      "meant, then mobile_media_ui_text and mobile_media_ui_click to start it, and verify with " +
+      "mobile_media_status.",
     inputSchema: {
       type: "object",
       properties: {
@@ -372,8 +385,10 @@ const MOBILE_MEDIA_TOOLS = [
       "(favourites, downloads - not the public catalog, that is mobile_media_search). Read state: " +
       "'ok' means entries came back, 'empty' means the node really has nothing, 'not_supported' or " +
       "'permission_denied' means this app has no public library at all - Yandex Music answers " +
-      "permission_denied here, so on that app say so instead of retrying. Use it to check what a player " +
-      "really exposes before promising the user a track can be started.",
+      "permission_denied here, so on that app say so instead of retrying. Entries carry the session's " +
+      "own media_id, which is a position in its queue and not a Yandex Music catalog id, so never match " +
+      "those ids against mobile_media_search results. Use the library walk to check what a player really " +
+      "exposes before promising the user a track can be started.",
     inputSchema: {
       type: "object",
       properties: {
@@ -421,7 +436,11 @@ const MOBILE_MEDIA_TOOLS = [
       "ui.gesture_used says the tap fell back to a swipe gesture. The service is scoped to ru.yandex.music and " +
       "reads nothing else. Matching is word based and case/punctuation insensitive, so 'my temper' matches " +
       "'My Temper (feat. M. Vegas)'. Name labels OR bounds, never both in one call: a rect is how you reach " +
-      "an unnamed control such as the search magnifier, and the tightest control under the point wins. Call " +
+      "an unnamed control such as the search field or a track row, and the tightest control under the point " +
+      "wins. Typing does not search: in Yandex Music the app stays on its 'Моя волна' tab and answers " +
+      "'Здесь ничего не нашли', so after mobile_media_ui_text you must tap the 'Треки' tab and only then the " +
+      "row you want. Re-read the tree between those taps - the result list re-renders and a remembered rect " +
+      "lands on the wrong card. Call " +
       "this only in direct response to an explicit user request to act in the player, and pair it with " +
       "mobile_media_ui_shield when the user asked not to see the app switch.",
     inputSchema: {
