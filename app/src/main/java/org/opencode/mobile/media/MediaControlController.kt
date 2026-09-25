@@ -1,0 +1,759 @@
+package org.opencode.mobile.media
+
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ResolveInfo
+import android.media.MediaMetadata
+import android.media.browse.MediaBrowser
+import android.media.session.MediaController
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
+import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.SystemClock
+import android.util.Log
+import java.util.Locale
+import java.util.concurrent.Callable
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+
+/** Установленное приложение, способное отдать медиасессию или принять media button. */
+data class MediaAppSnapshot(
+    val packageName: String,
+    val label: String,
+    val sessionServices: List<String>,
+    val mediaButtonReceiver: String?,
+    /** Сколько session-сервисов есть, но они не экспортированы — к ним нельзя подключиться. */
+    val hiddenSessionServices: Int = 0,
+) {
+    /**
+     * Управляемо ли приложение отсюда. Только экспортированная сессия: media button
+     * broadcast платформа от стороннего приложения не маршрутизирует, проверено на
+     * устройстве — receiver событие получает, но плеер на него не реагирует.
+     */
+    val controlable: Boolean
+        get() = sessionServices.isNotEmpty()
+}
+
+/** Снимок состояния медиасессии в момент чтения. */
+data class MediaPlaybackSnapshot(
+    val state: String,
+    val isPlaying: Boolean,
+    val title: String?,
+    val artist: String?,
+    val album: String?,
+    val durationMs: Long?,
+    val positionMs: Long?,
+) {
+    /** Сессия считается живой, если у неё есть состояние воспроизведения или метаданные. */
+    val isUsable: Boolean
+        get() = state != STATE_NONE || title != null
+
+    /** Системная сессия без единого трека: state=error и пустые метаданные — не целевой плеер. */
+    val isDegenerate: Boolean
+        get() = title == null && (state == STATE_ERROR || positionMs == 0L)
+
+    companion object {
+        const val STATE_NONE = "none"
+        const val STATE_ERROR = "error"
+    }
+}
+
+data class MediaControlResult(
+    val packageName: String,
+    val label: String,
+    val transport: String,
+    val command: String,
+    val message: String,
+    val before: MediaPlaybackSnapshot?,
+    val after: MediaPlaybackSnapshot?,
+    /** true только когда состояние прочитано до и после: media button это подтвердить не может. */
+    val verified: Boolean,
+)
+
+data class MediaStatusResult(
+    val packageName: String,
+    val label: String,
+    val transport: String,
+    val message: String,
+    val playback: MediaPlaybackSnapshot,
+)
+
+private const val TAG = "MediaControlController"
+private const val COMMAND_TIMEOUT_MS = 2_000L
+private const val AFTER_POLL_MS = 80L
+private const val SEEK_BACKWARD_MS = -1_000L
+private const val SEEK_FORWARD_MS = 5_000L
+
+/**
+ * Управление чужими медиасессиями Android через публичный MediaBrowserService.
+ *
+ * Привилегированный MEDIA_CONTENT_CONTROL не нужен: сессия публикуется самим приложением,
+ * мы лишь подключаемся к ней как MediaBrowser-клиент и шлём транспортные команды.
+ * Запасного пути через ACTION_MEDIA_BUTTON нет намеренно: платформа маршрутизирует
+ * media buttons только из системы, поэтому broadcast из стороннего приложения не управляет
+ * плеером (проверено на устройстве — receiver событие получает, но сессия не реагирует).
+ * Ни shell, ни UI-автоматизация, ни доступ к данным приложений здесь не используются.
+ */
+@Suppress("TooManyFunctions")
+object MediaControlController {
+    const val TRANSPORT_SESSION = "media_session"
+
+    private const val CONNECT_TIMEOUT_MS = 4_000L
+    private const val PROBE_CONNECT_TIMEOUT_MS = 1_200L
+    private const val STATE_TIMEOUT_MS = 800L
+    private const val AFTER_STATE_TIMEOUT_MS = 2_500L
+    private const val PROBE_LIMIT = 8
+    private const val PROBE_PARALLELISM = 4
+    private const val PROBE_TOTAL_TIMEOUT_MS = 3_000L
+    private const val CANDIDATE_LIMIT = 5
+    private const val RETAIN_MS = 30_000L
+    private const val RESOLVE_CACHE_MS = 20_000L
+    private const val SCORE_PLAYING = 3
+    private const val SCORE_WITH_METADATA = 2
+    private const val SCORE_USABLE = 1
+
+    private val SESSION_SERVICE_ACTIONS =
+        listOf(
+            "android.media.browse.MediaBrowserService",
+            "androidx.media3.session.MediaLibraryService",
+            "androidx.media3.session.MediaSessionService",
+        )
+
+    private val retainLock = Any()
+    private var retainedSession: MediaSessionHandle? = null
+    private var retainedAt = 0L
+
+    @Volatile
+    private var resolvedPackage: String? = null
+
+    @Volatile
+    private var resolvedAt = 0L
+
+    private lateinit var context: Context
+
+    private val looper: HandlerThread by lazy { HandlerThread("media-control").apply { start() } }
+    private val handler: Handler by lazy { Handler(looper.looper) }
+
+    @Synchronized
+    fun initialize(context: Context) {
+        if (::context.isInitialized) return
+        this.context = context.applicationContext
+    }
+
+    fun listApps(spec: MediaAppListSpec): List<MediaAppSnapshot> {
+        val normalizedQuery = spec.query?.lowercase(Locale.ROOT)
+        return mediaApps()
+            .filter { app ->
+                normalizedQuery == null ||
+                    app.label.lowercase(Locale.ROOT).contains(normalizedQuery) ||
+                    app.packageName.lowercase(Locale.ROOT).contains(normalizedQuery)
+            }.take(spec.limit)
+    }
+
+    fun control(spec: MediaControlSpec): MediaControlResult {
+        val apps = mediaApps()
+        require(apps.isNotEmpty()) { "no installed app exposes a media session or media button" }
+        val target = targetFor(apps, spec.packageName)
+        val session = target.session ?: error(unreadableReason(target.app))
+        return try {
+            controlWithSession(target.app, session, spec.command)
+        } finally {
+            releaseUnused(session)
+        }
+    }
+
+    fun status(packageName: String?): MediaStatusResult {
+        val apps = mediaApps()
+        require(apps.isNotEmpty()) { "no installed app exposes a media session" }
+        val target = targetFor(apps, packageName)
+        val session = target.session ?: error(unreadableReason(target.app))
+        return try {
+            val playback = session.awaitPlayback(STATE_TIMEOUT_MS)
+            MediaStatusResult(
+                packageName = target.app.packageName,
+                label = target.app.label,
+                transport = TRANSPORT_SESSION,
+                message = "Android media session read",
+                playback = playback,
+            )
+        } finally {
+            releaseUnused(session)
+        }
+    }
+
+    /**
+     * Честная причина отказа. Media button broadcast из стороннего приложения платформа
+     * не маршрутизирует: проверено на устройстве — broadcast с KEYCODE_MEDIA_PLAY доходит
+     * до receiver Яндекс Музыки, но сессия не стартует, тогда как системный
+     * `input keyevent 85` переключает её. Значит управлять можно только через сессию,
+     * которую приложение отдаёт само.
+     */
+    private fun unreadableReason(app: MediaAppSnapshot): String =
+        when {
+            app.sessionServices.isEmpty() && app.hiddenSessionServices > 0 ->
+                "${app.packageName} keeps its media session private; without MEDIA_CONTENT_CONTROL it can " +
+                    "only be driven through the system media keys, not from this app"
+            app.sessionServices.isNotEmpty() ->
+                "media session of ${app.packageName} published ${app.sessionServices.first()} " +
+                    "but did not answer; the player may be stopped"
+            else ->
+                "no exported media session for ${app.packageName}; its media button receiver is reached by " +
+                    "the system only, so this app cannot drive it"
+        }
+
+    private fun controlWithSession(
+        app: MediaAppSnapshot,
+        session: MediaSessionHandle,
+        command: MediaCommand,
+    ): MediaControlResult {
+        val before = session.awaitPlayback(STATE_TIMEOUT_MS)
+        val effective =
+            when (command) {
+                MediaCommand.PLAY_PAUSE -> if (before.isPlaying) MediaCommand.PAUSE else MediaCommand.PLAY
+                else -> command
+            }
+        session.send(effective)
+        val after = session.awaitEffect(before, effective, AFTER_STATE_TIMEOUT_MS)
+        val verified = after.state != before.state || after.title != before.title
+        Log.i(
+            TAG,
+            "media command=${effective.wireName} package=${app.packageName} " +
+                "state=${before.state}->${after.state} verified=$verified",
+        )
+        return MediaControlResult(
+            packageName = app.packageName,
+            label = app.label,
+            transport = TRANSPORT_SESSION,
+            command = effective.wireName,
+            message =
+                if (verified) {
+                    "Android media session accepted the command"
+                } else {
+                    "Android media session took the command but reported no state change within " +
+                        "${AFTER_STATE_TIMEOUT_MS}ms; the player may have ignored it"
+                },
+            before = before,
+            after = after,
+            verified = verified,
+        )
+    }
+
+    /** Явный package: подключаемся к его сессии, без неё управление невозможно. */
+    private fun targetFor(
+        apps: List<MediaAppSnapshot>,
+        packageName: String?,
+    ): MediaTarget {
+        val explicit = packageName?.let { required -> requiredApp(apps, required) }
+        return if (explicit != null) MediaTarget(explicit, sessionFor(explicit)) else liveSessionTarget(apps)
+    }
+
+    /**
+     * Без явного package работаем только с той сессией, что отвечает прямо сейчас.
+     * Кэш переиспользуем лишь пока сессия живая: иначе протухший target уводил бы
+     * команду в приложение, которое уже ничего не играет.
+     */
+    private fun liveSessionTarget(apps: List<MediaAppSnapshot>): MediaTarget {
+        val cached = cachedPackage()?.let { name -> apps.firstOrNull { it.packageName == name } }
+        if (cached != null) {
+            val session = sessionFor(cached)
+            if (session != null) {
+                val playback = session.awaitPlayback(STATE_TIMEOUT_MS)
+                if (playback.isUsable && !playback.isDegenerate) {
+                    return MediaTarget(cached, session)
+                }
+                releaseUnused(session)
+            }
+        }
+        val probed = probeForLiveSession(apps)
+        if (probed != null) {
+            rememberResolved(probed.app.packageName)
+            return probed
+        }
+        error("no live media session found; pass package, candidates: ${candidateNames(apps)}")
+    }
+
+    private fun candidateNames(apps: List<MediaAppSnapshot>): String {
+        val names = apps.take(CANDIDATE_LIMIT).map { it.packageName }
+        return names.joinToString()
+    }
+
+    private fun requiredApp(
+        apps: List<MediaAppSnapshot>,
+        packageName: String,
+    ): MediaAppSnapshot =
+        apps.firstOrNull { it.packageName == packageName }
+            ?: throw IllegalArgumentException(
+                "no media session service or media button receiver for $packageName",
+            )
+
+    /**
+     * Опрашивает кандидатов параллельно: последовательный обход с таймаутом на каждого
+     * упирается в сокетный таймаут моста и всегда смотрит только на первые N пакетов
+     * по алфавиту. Здесь важно увидеть настоящий плеер, а не bluetooth-сессию.
+     */
+    private fun probeForLiveSession(apps: List<MediaAppSnapshot>): MediaTarget? {
+        val candidates = apps.filter { it.sessionServices.isNotEmpty() }.take(PROBE_LIMIT)
+        if (candidates.isEmpty()) return null
+        return probeAll(candidates)
+    }
+
+    private fun probeAll(candidates: List<MediaAppSnapshot>): MediaTarget? {
+        val pool = Executors.newFixedThreadPool(minOf(candidates.size, PROBE_PARALLELISM))
+        val probes =
+            try {
+                pool.invokeAll(
+                    candidates.map { app -> Callable { probeOne(app) } },
+                    PROBE_TOTAL_TIMEOUT_MS,
+                    TimeUnit.MILLISECONDS,
+                )
+            } finally {
+                pool.shutdownNow()
+            }
+        val alive = probes.filter { it.isDone && !it.isCancelled }
+        // null = сессия не ответила. Такой пакет не цель: иначе останавливаемся на первом
+        // приложении с сервисом, а не на том, что реально играет.
+        val winner =
+            alive
+                .mapNotNull { runCatching { it.get() }.getOrNull() }
+                .filter { it.playback?.isUsable == true && !it.playback.isDegenerate }
+                .maxByOrNull { it.score }
+        alive
+            .mapNotNull { runCatching { it.get() }.getOrNull() }
+            .filter { winner == null || it.session !== winner.session }
+            .forEach { probe -> releaseUnused(probe.session) }
+        if (winner == null) {
+            Log.i(TAG, "auto session probe found no live player")
+            return null
+        }
+        Log.i(TAG, "auto session target=${winner.app.packageName} score=${winner.score}")
+        return MediaTarget(winner.app, winner.session)
+    }
+
+    private data class Probe(
+        val app: MediaAppSnapshot,
+        val session: MediaSessionHandle?,
+        val playback: MediaPlaybackSnapshot?,
+        val score: Int,
+    )
+
+    private fun probeOne(app: MediaAppSnapshot): Probe {
+        val session = openSession(app, PROBE_CONNECT_TIMEOUT_MS)
+        val playback = session?.awaitPlayback(STATE_TIMEOUT_MS)
+        return Probe(app, session, playback, playback?.let(::scoreOf) ?: SCORE_USABLE)
+    }
+
+    /**
+     * Bluetooth и прочие системные сессии отвечают и держат state=error без метаданных.
+     * Для автоопределения это шум: настоящий плеер выдаёт playing либо хотя бы метаданные.
+     */
+    private fun scoreOf(playback: MediaPlaybackSnapshot): Int =
+        when {
+            playback.isPlaying -> SCORE_PLAYING
+            playback.title != null -> SCORE_WITH_METADATA
+            else -> SCORE_USABLE
+        }
+
+    private fun sessionFor(app: MediaAppSnapshot): MediaSessionHandle? {
+        val retained = freshRetainedSession()
+        return if (retained != null) {
+            retained
+        } else {
+            openSession(app, CONNECT_TIMEOUT_MS)?.also(::retainSession)
+        }
+    }
+
+    private fun freshRetainedSession(): MediaSessionHandle? =
+        synchronized(retainLock) {
+            val handle = retainedSession
+            if (handle != null && SystemClock.elapsedRealtime() - retainedAt <= RETAIN_MS) handle else null
+        }
+
+    private fun retainSession(session: MediaSessionHandle) {
+        synchronized(retainLock) {
+            retainedSession?.closeQuietly()
+            retainedSession = session
+            retainedAt = SystemClock.elapsedRealtime()
+        }
+    }
+
+    /** Закрывает сессию, если она больше не нужна как кэш для следующего вызова. */
+    private fun releaseUnused(session: MediaSessionHandle?) {
+        if (session == null) return
+        val keep =
+            synchronized(retainLock) {
+                val handle = retainedSession
+                handle === session && SystemClock.elapsedRealtime() - retainedAt <= RETAIN_MS
+            }
+        if (!keep) session.closeQuietly()
+    }
+
+    private fun openSession(
+        app: MediaAppSnapshot,
+        connectTimeoutMs: Long,
+    ): MediaSessionHandle? {
+        app.sessionServices.forEach { flattened ->
+            val component = ComponentName.unflattenFromString(flattened) ?: return@forEach
+            val browser =
+                runCatching { connectBrowser(component, connectTimeoutMs) }
+                    .onFailure { error -> Log.w(TAG, "cannot bind $flattened", error) }
+                    .getOrNull()
+                    ?: return@forEach
+            val handle =
+                runCatching { openHandle(browser, browser.sessionToken) }.getOrElse { error ->
+                    Log.w(TAG, "cannot open session for $flattened", error)
+                    browser.disconnect()
+                    return@forEach
+                }
+            if (handle.awaitPlayback(STATE_TIMEOUT_MS).isUsable) return handle
+            handle.closeQuietly()
+        }
+        return null
+    }
+
+    /**
+     * Публичный SDK-конструктор MediaBrowser не принимает Handler, поэтому объект обязан быть
+     * создан на потоке с Looper, иначе коллбэки соединения некуда доставить.
+     */
+    private fun connectBrowser(
+        component: ComponentName,
+        timeoutMs: Long,
+    ): MediaBrowser? {
+        val connected = AtomicBoolean(false)
+        val latch = CountDownLatch(1)
+        val browser =
+            onMediaLooper(looper, COMMAND_TIMEOUT_MS) {
+                MediaBrowser(
+                    contextOrThrow(),
+                    component,
+                    object : MediaBrowser.ConnectionCallback() {
+                        override fun onConnected() {
+                            connected.set(true)
+                            latch.countDown()
+                        }
+
+                        override fun onConnectionFailed() {
+                            latch.countDown()
+                        }
+
+                        override fun onConnectionSuspended() {
+                            latch.countDown()
+                        }
+                    },
+                    null,
+                ).also { created -> created.connect() }
+            }
+        latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        // getSessionToken() бросает IllegalStateException до connect, поэтому читать его можно
+        // только после успешного коллбэка, а не «на всякий случай».
+        val usable = connected.get() && runCatching { browser.sessionToken }.isSuccess
+        if (!usable) runCatching { browser.disconnect() }
+        return browser.takeIf { usable }
+    }
+
+    private fun openHandle(
+        browser: MediaBrowser,
+        token: MediaSession.Token?,
+    ): MediaSessionHandle =
+        onMediaLooper(looper, COMMAND_TIMEOUT_MS) {
+            requireNotNull(token) { "media session token is missing" }
+            val controller = MediaController(contextOrThrow(), token)
+            val ready = CountDownLatch(1)
+            val callback =
+                object : MediaController.Callback() {
+                    override fun onMetadataChanged(metadata: MediaMetadata?) {
+                        ready.countDown()
+                    }
+
+                    override fun onPlaybackStateChanged(state: PlaybackState?) {
+                        ready.countDown()
+                    }
+                }
+            controller.registerCallback(callback, handler)
+            MediaSessionHandle(browser, controller, callback, ready, handler, looper)
+        }
+
+    private data class ServiceIndex(
+        val connectable: Map<String, List<String>>,
+        val blocked: Map<String, Int>,
+    )
+
+    private fun mediaApps(): List<MediaAppSnapshot> {
+        val services = collectSessionServices()
+        val buttons = collectMediaButtons()
+        return (services.connectable.keys + buttons.keys)
+            .sorted()
+            .map { packageName ->
+                MediaAppSnapshot(
+                    packageName = packageName,
+                    label = labelOf(packageName),
+                    sessionServices = services.connectable[packageName].orEmpty(),
+                    mediaButtonReceiver = buttons[packageName],
+                    hiddenSessionServices = services.blocked[packageName] ?: 0,
+                )
+            }
+    }
+
+    /**
+     * Собирает session-сервисы по трём action-ам. Не подключиться можно к выключенному
+     * или неэкспортированному компоненту, поэтому такие считаем отдельно: по ним видно,
+     * что приложение прячет сессию, а не что её нет.
+     */
+    private fun collectSessionServices(): ServiceIndex {
+        val connectable = mutableMapOf<String, MutableList<String>>()
+        val blocked = mutableMapOf<String, MutableSet<String>>()
+        SESSION_SERVICE_ACTIONS.flatMap(::queryServices).forEach { resolveInfo ->
+            val service = resolveInfo.serviceInfo ?: return@forEach
+            val flattened = ComponentName(service.packageName, service.name).flattenToString()
+            if (service.enabled && service.exported) {
+                connectable.getOrPut(service.packageName) { mutableListOf() }.addIfAbsent(flattened)
+            } else {
+                blocked.getOrPut(service.packageName) { mutableSetOf() }.add(flattened)
+            }
+        }
+        return ServiceIndex(connectable, blocked.mapValues { it.value.size })
+    }
+
+    private fun collectMediaButtons(): Map<String, String> {
+        val buttons = mutableMapOf<String, String>()
+        queryReceivers(Intent.ACTION_MEDIA_BUTTON).forEach { resolveInfo ->
+            val receiver = resolveInfo.activityInfo ?: return@forEach
+            if (receiver.enabled && receiver.exported) {
+                buttons.putIfAbsent(
+                    receiver.packageName,
+                    ComponentName(receiver.packageName, receiver.name).flattenToString(),
+                )
+            }
+        }
+        return buttons
+    }
+
+    private fun <T> MutableList<T>.addIfAbsent(value: T) {
+        if (!contains(value)) add(value)
+    }
+
+    private fun labelOf(packageName: String): String =
+        runCatching {
+            val packageManager = contextOrThrow().packageManager
+            val application = packageManager.getApplicationInfo(packageName, 0)
+            packageManager.getApplicationLabel(application).toString().trim()
+        }.getOrNull()
+            ?.takeIf(String::isNotEmpty)
+            ?: packageName
+
+    @Suppress("DEPRECATION")
+    private fun queryServices(action: String): List<ResolveInfo> {
+        val packageManager = contextOrThrow().packageManager
+        val intent = Intent(action)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.queryIntentServices(intent, PackageManager.ResolveInfoFlags.of(0L))
+        } else {
+            packageManager.queryIntentServices(intent, 0)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun queryReceivers(action: String): List<ResolveInfo> {
+        val packageManager = contextOrThrow().packageManager
+        val intent = Intent(action)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.queryBroadcastReceivers(intent, PackageManager.ResolveInfoFlags.of(0L))
+        } else {
+            packageManager.queryBroadcastReceivers(intent, 0)
+        }
+    }
+
+    private fun cachedPackage(): String? {
+        val name = resolvedPackage ?: return null
+        return if (SystemClock.elapsedRealtime() - resolvedAt <= RESOLVE_CACHE_MS) name else null
+    }
+
+    private fun rememberResolved(packageName: String) {
+        resolvedPackage = packageName
+        resolvedAt = SystemClock.elapsedRealtime()
+    }
+
+    private fun contextOrThrow(): Context =
+        if (::context.isInitialized) {
+            context
+        } else {
+            error("MediaControlController is not initialized")
+        }
+}
+
+private data class MediaTarget(
+    val app: MediaAppSnapshot,
+    val session: MediaSessionHandle?,
+)
+
+/**
+ * Живое подключение к чужой MediaSession. Создаётся только на media-looper:
+ * MediaController требует Looper, а ожидание callback-ов идёт с другого потока,
+ * поэтому этот looper никогда не блокируется.
+ */
+private class MediaSessionHandle(
+    private val browser: MediaBrowser,
+    private val controller: MediaController,
+    private val callback: MediaController.Callback,
+    private val ready: CountDownLatch,
+    private val handler: Handler,
+    private val looper: HandlerThread,
+) {
+    fun awaitPlayback(timeoutMs: Long): MediaPlaybackSnapshot {
+        ready.await(timeoutMs, TimeUnit.MILLISECONDS)
+        return read()
+    }
+
+    /**
+     * Ждём реального эффекта команды, а не фиксированную паузу: плееры отражают паузу с
+     * задержкой, и короткое окно превращало бы `verified=true` в ложь. Позиция при игре
+     * растёт сама по себе, поэтому сравнение по ней не годится — ловим смену состояния
+     * или перемотки, а по истечении таймаута отдаём как есть и оставляем verified=false.
+     */
+    fun awaitEffect(
+        previous: MediaPlaybackSnapshot,
+        command: MediaCommand,
+        timeoutMs: Long,
+    ): MediaPlaybackSnapshot {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        var current = read()
+        while (!hasEffect(previous, current, command) && SystemClock.elapsedRealtime() < deadline) {
+            Thread.sleep(AFTER_POLL_MS)
+            current = read()
+        }
+        return current
+    }
+
+    /**
+     * Считаем ли мы изменение эффектом команды. Смена состояния и смена трека очевидны;
+     * для next/previous/догоняющего play засчитываем ещё и перемотку, потому что там
+     * состояние может остаться playing. Рост позиции при обычной игре эффектом не считаем.
+     */
+    private fun hasEffect(
+        previous: MediaPlaybackSnapshot,
+        current: MediaPlaybackSnapshot,
+        command: MediaCommand,
+    ): Boolean {
+        val trackChanged = current.title != previous.title || current.album != previous.album
+        val stateChanged = current.state != previous.state
+        val seeked = jumped(previous.positionMs, current.positionMs) && seeks(command)
+        return stateChanged || trackChanged || seeked
+    }
+
+    private fun seeks(command: MediaCommand): Boolean =
+        command == MediaCommand.NEXT ||
+            command == MediaCommand.PREVIOUS ||
+            command == MediaCommand.PLAY
+
+    /** Перемотка назад или резкий скачок вперёд, в отличие от обычного хода времени. */
+    private fun jumped(
+        beforeMs: Long?,
+        afterMs: Long?,
+    ): Boolean {
+        val from = beforeMs
+        val to = afterMs
+        return from != null && to != null && (to - from < SEEK_BACKWARD_MS || to - from > SEEK_FORWARD_MS)
+    }
+
+    fun send(command: MediaCommand) {
+        onMediaLooper(looper, COMMAND_TIMEOUT_MS) {
+            val controls = controller.transportControls
+            when (command) {
+                MediaCommand.PLAY -> controls.play()
+                MediaCommand.PAUSE -> controls.pause()
+                MediaCommand.PLAY_PAUSE -> Unit
+                MediaCommand.NEXT -> controls.skipToNext()
+                MediaCommand.PREVIOUS -> controls.skipToPrevious()
+                MediaCommand.STOP -> controls.stop()
+            }
+        }
+    }
+
+    fun closeQuietly() {
+        runCatching {
+            // MediaController.release() скрыт в публичном SDK: сессия отпускается через disconnect.
+            onMediaLooper(looper, COMMAND_TIMEOUT_MS) {
+                controller.unregisterCallback(callback)
+            }
+            browser.disconnect()
+        }.onFailure { Log.w(TAG, "closing session failed", it) }
+    }
+
+    private fun read(): MediaPlaybackSnapshot = readPlayback(controller)
+}
+
+private fun readPlayback(controller: MediaController): MediaPlaybackSnapshot {
+    val state = controller.playbackState
+    val metadata = controller.metadata
+    return MediaPlaybackSnapshot(
+        state = state.toWireState(),
+        isPlaying = state.toIsPlaying(),
+        title = metadata.cleanText(MediaMetadata.METADATA_KEY_TITLE),
+        artist = metadata.cleanText(MediaMetadata.METADATA_KEY_ARTIST),
+        album = metadata.cleanText(MediaMetadata.METADATA_KEY_ALBUM),
+        durationMs = metadata.durationMs(),
+        positionMs = state?.position,
+    )
+}
+
+private fun PlaybackState?.toWireState(): String =
+    when (this?.state) {
+        null, PlaybackState.STATE_NONE -> MediaPlaybackSnapshot.STATE_NONE
+        PlaybackState.STATE_PLAYING -> "playing"
+        PlaybackState.STATE_PAUSED -> "paused"
+        PlaybackState.STATE_BUFFERING, PlaybackState.STATE_CONNECTING -> "buffering"
+        PlaybackState.STATE_STOPPED -> "stopped"
+        PlaybackState.STATE_ERROR -> "error"
+        PlaybackState.STATE_SKIPPING_TO_NEXT,
+        PlaybackState.STATE_SKIPPING_TO_PREVIOUS,
+        PlaybackState.STATE_SKIPPING_TO_QUEUE_ITEM,
+        -> "skipping"
+        PlaybackState.STATE_FAST_FORWARDING,
+        PlaybackState.STATE_REWINDING,
+        -> "seeking"
+        else -> "other"
+    }
+
+/** PlaybackState.isPlaying() скрыт в публичном SDK, поэтому состояние выводим из state и speed. */
+private fun PlaybackState?.toIsPlaying(): Boolean {
+    val current = this
+    return current != null &&
+        (current.state == PlaybackState.STATE_PLAYING || (current.isActive && current.playbackSpeed > 0f))
+}
+
+private fun MediaMetadata?.cleanText(key: String): String? = this?.getString(key)?.trim()?.takeIf(String::isNotEmpty)
+
+/** PlaybackState.getDuration() скрыт в публичном SDK, поэтому длительность берём из метаданных. */
+private fun MediaMetadata?.durationMs(): Long? {
+    val value = runCatching { this?.getLong(MediaMetadata.METADATA_KEY_DURATION) }.getOrNull()
+    return value?.takeIf { it > 0L }
+}
+
+/**
+ * Выполняет короткую задачу на media-looper и возвращает её результат вызывающему потоку.
+ * Сама задача ничего не ждёт: блокировка looper-а затормозила бы и MediaBrowser-коллбэки.
+ */
+private fun <T> onMediaLooper(
+    looper: HandlerThread,
+    timeoutMs: Long,
+    block: () -> T,
+): T {
+    val result = AtomicReference<Result<T>>()
+    val latch = CountDownLatch(1)
+    val posted =
+        Handler(looper.looper).post {
+            runCatching(block)
+                .onSuccess { value -> result.set(Result.success(value)) }
+                .onFailure { error -> result.set(Result.failure(error)) }
+            latch.countDown()
+        }
+    check(posted) { "media looper rejected the task" }
+    check(latch.await(timeoutMs, TimeUnit.MILLISECONDS)) { "media control timed out" }
+    return result.get().getOrThrow()
+}

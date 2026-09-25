@@ -23,6 +23,9 @@ import java.io.FileOutputStream
  */
 @Suppress("TooManyFunctions")
 object OpencodeRuntime {
+    private const val LAUNCH_PERMISSION_KEY = "\"mobile_launch_app\""
+    private const val MEDIA_PERMISSION_KEY = "\"mobile_media_control\""
+    private val LAUNCH_PERMISSION_REGEX = Regex("\"mobile_launch_app\"\\s*:\\s*\"(?:ask|allow|deny)\"")
     private const val BIN_NAME = "libopencode.so" // в nativeLibraryDir
     private const val LOADER_NAME = "libldmusl.so" // в nativeLibraryDir
     private const val BUN_NAME = "libbun-musl.so" // встроенный musl-Bun в nativeLibraryDir
@@ -397,7 +400,12 @@ object OpencodeRuntime {
     private fun managedConfigBlock(): String =
         buildString {
             append(mcpBlock())
-            append(",\n  \"permission\": {\n    \"mobile_launch_app\": \"ask\"\n  }")
+            append(
+                ",\n  \"permission\": {\n" +
+                    "    \"mobile_launch_app\": \"ask\",\n" +
+                    "    \"mobile_media_control\": \"ask\"\n" +
+                    "  }",
+            )
         }
 
     private fun ensureManagedLaunchPermission(
@@ -405,11 +413,12 @@ object OpencodeRuntime {
         text: String,
     ): Boolean =
         when {
-            text.contains("\"mobile_launch_app\"") -> true
+            text.contains(LAUNCH_PERMISSION_KEY) && text.contains(MEDIA_PERMISSION_KEY) -> true
+            text.contains(LAUNCH_PERMISSION_KEY) -> appendManagedMediaPermission(file, text)
             text.contains("\"permission\"") -> {
                 android.util.Log.w(
                     "OpencodeRuntime",
-                    "Existing permission config is user-managed; leaving mobile_launch_app unchanged",
+                    "Existing permission config is user-managed; leaving mobile permissions unchanged",
                 )
                 true
             }
@@ -422,6 +431,28 @@ object OpencodeRuntime {
             }
             else -> writeMemoryConfigText(file, text.replace(mcpBlock(), managedConfigBlock()))
         }
+
+    /**
+     * Дописывает managed-ключ управления медиа в permission-блок, который мы же создали раньше,
+     * не трогая пользовательское значение mobile_launch_app.
+     */
+    private fun appendManagedMediaPermission(
+        file: File,
+        text: String,
+    ): Boolean {
+        val match = LAUNCH_PERMISSION_REGEX.find(text)
+        if (match == null) {
+            android.util.Log.w(
+                "OpencodeRuntime",
+                "Managed launch permission has unexpected formatting; cannot add media permission",
+            )
+            return false
+        }
+        // Именно ${match.value}: "$match.value" в Kotlin собирает только $match и дописывает
+        // литерал ".value", из-за чего в JSON попадает мусор.
+        val updated = text.replaceRange(match.range, "${match.value},\n    $MEDIA_PERMISSION_KEY: \"ask\"")
+        return writeMemoryConfigText(file, updated)
+    }
 
     /** Записывает managed-секцию mcp.memory и permission в opencode.jsonc атомарно. */
     private fun writeManagedConfig(
@@ -454,21 +485,54 @@ object OpencodeRuntime {
         return writeMemoryConfigText(file, updated)
     }
 
-    /** Атомарно записывает подготовленный конфиг памяти. */
+    /**
+     * Атомарно записывает подготовленный конфиг памяти и проверяет результат.
+     *
+     * Сначала проверяем текст, потом после записи перечитываем файл: битый opencode.jsonc
+     * не даёт подняться серверу, и приложение навсегда залипает на «Starting Open Code server».
+     * Поэтому любой сомнительный текст не пишем вовсе, а расхождение после записи откатываем.
+     */
     private fun writeMemoryConfigText(
         file: File,
         text: String,
     ): Boolean {
+        if (!looksLikeManagedConfig(text)) {
+            android.util.Log.e(
+                "OpencodeRuntime",
+                "Refusing to write a config that would not parse: ${file.absolutePath}",
+            )
+            return false
+        }
+        val previous = if (file.exists()) runCatching { file.readText() }.getOrNull() else null
         file.parentFile?.mkdirs()
         val tmp = File(file.parentFile, "opencode.jsonc.tmp")
         return runCatching {
             tmp.writeText(text)
             check(tmp.renameTo(file)) { "tmp->rename failed" }
+            check(file.readText() == text) { "config verification after write failed" }
             android.util.Log.i("OpencodeRuntime", "ensureMcpConfig: memory MCP config updated in ${file.absolutePath}")
             true
         }.onFailure { error ->
             tmp.delete()
+            previous?.let { runCatching { file.writeText(it) } }
             android.util.Log.e("OpencodeRuntime", "ensureMcpConfig: atomic config update failed: ${error.message}")
         }.getOrDefault(false)
+    }
+
+    /**
+     * Дешёвая проверка перед записью. Ловит ровно тот класс порчи, который уже brick-ил
+     * приложение: несработавшая интерполяция Kotlin попадала в JSON как
+     * `kotlin.text.MatcherMatchResult@...value`, и opencode отказывался стартовать.
+     */
+    private fun looksLikeManagedConfig(text: String): Boolean {
+        val leakedKotlinObject =
+            text.contains("kotlin.") ||
+                text.contains("MatcherMatchResult") ||
+                text.contains("\${")
+        val keysIntact =
+            text.contains(LAUNCH_PERMISSION_KEY) &&
+                text.contains(MEDIA_PERMISSION_KEY) &&
+                text.contains("\"memory\"")
+        return !leakedKotlinObject && keysIntact && text.count { it == '{' } == text.count { it == '}' }
     }
 }
