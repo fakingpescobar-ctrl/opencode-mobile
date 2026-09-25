@@ -9,6 +9,10 @@
     <ID>CyclomaticComplexMethod:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
     <ID>EmptyFunctionBlock:ChatOverlay.kt$&lt;no name provided&gt;${}</ID>
     <ID>ForEachOnRange:RuntimeManager.kt$RuntimeManager$(1..MAX_LOG_FILES) .map { File(parent, "opencode.log.$it") } .filter { it.exists() }</ID>
+    <ID>FunctionNaming:ChatOverlay.kt$@Composable internal fun ChatMirrorSurface(modifier: Modifier = Modifier)</ID>
+    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun ChatMirrorCircle( imageVector: ImageVector, color: Color, )</ID>
+    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun ChatMirrorComposerRow()</ID>
+    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun ColumnScope.ChatMirrorTranscript( snapshot: ChatSnapshot?, modelFont: FontFamily, modelColor: Color, )</ID>
     <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun ContextGauge( filled: Long, limit: Long, modifier: Modifier = Modifier, )</ID>
     <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun LiveToolRow(tool: ChatTool)</ID>
     <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun MCPIndicator( connected: Int, total: Int, modifier: Modifier = Modifier, onClick: () -&gt; Unit = {}, )</ID>
@@ -17,7 +21,6 @@
     <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun StalledRow()</ID>
     <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun ThinkingRow()</ID>
     <ID>FunctionNaming:ChatOverlay.kt$@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class) @Composable fun ChatOverlay( modifier: Modifier = Modifier, serverPort: Int = 4096, )</ID>
-    <ID>FunctionNaming:ChatOverlay.kt$private fun ContextCompatSpeechRecognizer(context: Context): SpeechRecognizer?</ID>
     <ID>FunctionNaming:DiagnosticsScreen.kt$@Composable fun DiagnosticsScreen( onClose: () -&gt; Unit, modifier: Modifier = Modifier, )</ID>
     <ID>FunctionNaming:DiagnosticsScreen.kt$@Composable private fun InfoRow( label: String, value: String, valueColor: Color = Color(0xFFE6E6E6), )</ID>
     <ID>FunctionNaming:DiagnosticsScreen.kt$@Composable private fun Section(title: String)</ID>
@@ -36,7 +39,6 @@
     <ID>LongMethod:ChatOverlay.kt$private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot?</ID>
     <ID>LongMethod:DiagnosticsScreen.kt$@Composable fun DiagnosticsScreen( onClose: () -&gt; Unit, modifier: Modifier = Modifier, )</ID>
     <ID>LongMethod:ModelDownloader.kt$ModelDownloader$private suspend fun downloadTo( context: Context, url: String, dest: File, minBytes: Long, label: String, requiredFree: Long, onProgress: (Long, Long) -&gt; Unit, ): File</ID>
-    <ID>LongMethod:OpencodeRuntime.kt$OpencodeRuntime$fun startServe( context: Context, additionalArgs: List&lt;String&gt; = emptyList(), logFile: File, workDir: File? = null, ): Process?</ID>
     <ID>LongMethod:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
     <ID>LongParameterList:ModelDownloader.kt$ModelDownloader$( context: Context, url: String, dest: File, minBytes: Long, label: String, requiredFree: Long, onProgress: (Long, Long) -&gt; Unit, )</ID>
     <ID>LoopWithTooManyJumpStatements:ChatOverlay.kt$for</ID>
@@ -108,12 +110,9 @@
     <ID>MagicNumber:ChatOverlay.kt$115</ID>
     <ID>MagicNumber:ChatOverlay.kt$12</ID>
     <ID>MagicNumber:ChatOverlay.kt$120</ID>
-    <ID>MagicNumber:ChatOverlay.kt$1500</ID>
     <ID>MagicNumber:ChatOverlay.kt$16</ID>
     <ID>MagicNumber:ChatOverlay.kt$1600</ID>
     <ID>MagicNumber:ChatOverlay.kt$16000</ID>
-    <ID>MagicNumber:ChatOverlay.kt$200</ID>
-    <ID>MagicNumber:ChatOverlay.kt$2000</ID>
     <ID>MagicNumber:ChatOverlay.kt$22</ID>
     <ID>MagicNumber:ChatOverlay.kt$24</ID>
     <ID>MagicNumber:ChatOverlay.kt$26</ID>
@@ -121,16 +120,13 @@
     <ID>MagicNumber:ChatOverlay.kt$2_000L</ID>
     <ID>MagicNumber:ChatOverlay.kt$3</ID>
     <ID>MagicNumber:ChatOverlay.kt$30</ID>
-    <ID>MagicNumber:ChatOverlay.kt$3000</ID>
     <ID>MagicNumber:ChatOverlay.kt$32767f</ID>
     <ID>MagicNumber:ChatOverlay.kt$32768f</ID>
     <ID>MagicNumber:ChatOverlay.kt$360f</ID>
     <ID>MagicNumber:ChatOverlay.kt$380</ID>
     <ID>MagicNumber:ChatOverlay.kt$4</ID>
-    <ID>MagicNumber:ChatOverlay.kt$4000</ID>
     <ID>MagicNumber:ChatOverlay.kt$44</ID>
     <ID>MagicNumber:ChatOverlay.kt$460</ID>
-    <ID>MagicNumber:ChatOverlay.kt$48000</ID>
     <ID>MagicNumber:ChatOverlay.kt$4L</ID>
     <ID>MagicNumber:ChatOverlay.kt$8</ID>
     <ID>MagicNumber:ChatOverlay.kt$80</ID>
@@ -176,7 +172,6 @@
     <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$4</ID>
     <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$512</ID>
     <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$60_000</ID>
-    <ID>MagicNumber:OpencodeRuntime.kt$OpencodeRuntime$24</ID>
     <ID>MagicNumber:OpencodeRuntime.kt$OpencodeRuntime$8192</ID>
     <ID>MagicNumber:OpencodeServerService.kt$ContextCompatSafe$26</ID>
     <ID>MagicNumber:OpencodeServerService.kt$OpencodeServerService$26</ID>
@@ -210,16 +205,13 @@
     <ID>MaxLineLength:ChatOverlay.kt$// Голосовой ввод: системный распознаватель (SpeechRecognizer). Удержание кнопки — запись, отпускание — распознавание и отправка.</ID>
     <ID>MaxLineLength:ChatOverlay.kt$AudioRecorder$Log.d("VOICE", "48к→16к: rmsL=${"%.3f".format(rmsL)} rmsR=${"%.3f".format(rmsR)} → беру ${if (rmsL &gt;= rmsR) "L" else "R"}")</ID>
     <ID>MaxLineLength:ChatOverlay.kt$AudioRecorder$Log.d("VOICE", "recorder source=$src (${if (src == MediaRecorder.AudioSource.UNPROCESSED) "UNPROCESSED" else "MIC"})")</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$ServerAuth.basicHeader()?.let { h -&gt; setRequestProperty("Authorization", h) }</ID>
     <ID>MaxLineLength:ChatOverlay.kt$Text("#$modelColorHex", color = Color(0xFFBDBDBD), fontSize = 12.sp, modifier = Modifier.padding(start = 10.dp))</ID>
     <ID>MaxLineLength:ChatOverlay.kt$Text("Голосовое распознавание:", color = Color(0xFFBDBDBD), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)</ID>
     <ID>MaxLineLength:ChatOverlay.kt$drawCircle(Color.Black, radius = 10.dp.toPx(), center = mark, style = Stroke(width = 1.dp.toPx()))</ID>
     <ID>MaxLineLength:ChatOverlay.kt$drawCircle(Color.White, radius = 10.dp.toPx(), center = mark, style = Stroke(width = 2.dp.toPx()))</ID>
     <ID>MaxLineLength:ChatOverlay.kt$if (ttsTestRunning) "TTS-тест: синтезирую и распознаю…" else "Диагностика: синтез → распознавание (см. лог VOICE)"</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$mcpServers.add(McpInfo(ms?.optString("name", "")?.takeIf { it.isNotBlank() } ?: key, status))</ID>
     <ID>MaxLineLength:ChatOverlay.kt$private fun fontFor(key: String): FontFamily</ID>
     <ID>MaxLineLength:ChatOverlay.kt$setModelColor("%06X".format(android.graphics.Color.HSVToColor(floatArrayOf(h, 1f, v)) and 0xFFFFFF))</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$val conn = (URL("http://127.0.0.1:$port/api/session/$sessionId/question/$questionId/reply").openConnection() as HttpURLConnection)</ID>
     <ID>MaxLineLength:DiagnosticsScreen.kt$InfoRow("Workspace", if (serverState.workspaceExternal) "Внешний (MANAGE_EXTERNAL_STORAGE)" else "Внутренний")</ID>
     <ID>MaxLineLength:DiagnosticsScreen.kt$Text("Пусто — opencode.log ещё не создан (сервер не запускался).", color = Color(0xFF8A8A8A), fontSize = 12.sp)</ID>
     <ID>MaxLineLength:MainActivity.kt$&lt;no name provided&gt;$Log.e(TAG, "onReceivedError code=${error?.errorCode} desc=${error?.description} url=${request?.url}")</ID>
@@ -252,11 +244,8 @@
     <ID>NestedBlockDepth:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
     <ID>NewLineAtEndOfFile:Ipv4Proxy.kt$org.opencode.mobile.server.Ipv4Proxy.kt</ID>
     <ID>NewLineAtEndOfFile:ProcessSupervisor.kt$org.opencode.mobile.server.ProcessSupervisor.kt</ID>
-    <ID>NewLineAtEndOfFile:ServerAuth.kt$org.opencode.mobile.server.ServerAuth.kt</ID>
     <ID>NewLineAtEndOfFile:Workspace.kt$org.opencode.mobile.server.Workspace.kt</ID>
     <ID>ReturnCount:ChatOverlay.kt$AudioRecorder$fun stop(): FloatArray</ID>
-    <ID>ReturnCount:ChatOverlay.kt$private fun createSession(port: Int): String?</ID>
-    <ID>ReturnCount:ChatOverlay.kt$private fun get(url: String): String?</ID>
     <ID>ReturnCount:ChatOverlay.kt$private fun prettyModel(id: String?): String</ID>
     <ID>ReturnCount:ChatOverlay.kt$private fun questionOf( port: Int, sessionId: String, ): ChatQuestion?</ID>
     <ID>ReturnCount:ChatOverlay.kt$private suspend fun scrollToBottomFull( state: LazyListState, target: Int, )</ID>
@@ -265,8 +254,6 @@
     <ID>ReturnCount:Ipv4Proxy.kt$Ipv4Proxy$private fun handleConn(client: Socket)</ID>
     <ID>ReturnCount:ModelDownloader.kt$ModelDownloader$fun checkIntegrity(file: File): ModelIntegrity</ID>
     <ID>ReturnCount:ModelDownloader.kt$ModelDownloader$private fun parseContentRangeStart(header: String?): Long?</ID>
-    <ID>ReturnCount:OpencodeRuntime.kt$OpencodeRuntime$fun startMemoryServer(context: Context, logFile: File, workDir: File? = null): Process?</ID>
-    <ID>ReturnCount:OpencodeRuntime.kt$OpencodeRuntime$fun startServe( context: Context, additionalArgs: List&lt;String&gt; = emptyList(), logFile: File, workDir: File? = null, ): Process?</ID>
     <ID>ReturnCount:OpencodeServerService.kt$OpencodeServerService$override fun onStartCommand( intent: Intent?, flags: Int, startId: Int, ): Int</ID>
     <ID>ReturnCount:RuntimeManager.kt$RuntimeManager$private fun rotateLogFile(logFile: File)</ID>
     <ID>ReturnCount:RuntimeManager.kt$RuntimeManager$private suspend fun waitForHttp(port: Int): Boolean</ID>

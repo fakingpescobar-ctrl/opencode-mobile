@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Least privilege on purpose: this service only ever sees Yandex Music, the one app whose play
+  button we have to reach. It retrieves window content, and it asks for
+  FLAG_RETRIEVE_INTERACTIVE_WINDOWS (flagRetrieveInteractiveWindows=64) because that flag is what
+  makes AccessibilityService.windows non-empty - without it there is no background window to click.
+  No window filters are configured, so it never captures screen text for any other app.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeWindowsChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagRetrieveInteractiveWindows"
+    android:canRetrieveWindowContent="true"
+    android:notificationTimeout="100"
+    android:packageNames="ru.yandex.music"
+    android:description="@string/media_ui_accessibility_description" />

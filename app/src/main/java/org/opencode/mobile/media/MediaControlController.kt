@@ -10,6 +10,7 @@ import android.media.browse.MediaBrowser
 import android.media.session.MediaController
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -105,9 +106,15 @@ private const val SEEK_FORWARD_MS = 5_000L
  * плеером (проверено на устройстве — receiver событие получает, но сессия не реагирует).
  * Ни shell, ни UI-автоматизация, ни доступ к данным приложений здесь не используются.
  */
-@Suppress("TooManyFunctions")
+// LargeClass: это диспетчер сессий, и его размер давно не про обход дерева -
+// сам обход живёт в MediaLibraryBrowser. Дальше дробить имеет смысл только вместе
+// с переездом probe/capabilities, а не из-за двух десятков строк входа в библиотеку.
+@Suppress("TooManyFunctions", "LargeClass")
 object MediaControlController {
     const val TRANSPORT_SESSION = "media_session"
+
+    /** Имя команды для «включить конкретный трек»: не транспортная кнопка, а элемент каталога. */
+    const val COMMAND_PLAY_ITEM = "play_item"
 
     private const val CONNECT_TIMEOUT_MS = 4_000L
     private const val PROBE_CONNECT_TIMEOUT_MS = 1_200L
@@ -138,8 +145,17 @@ object MediaControlController {
             "androidx.media3.session.MediaSessionService",
         )
 
+    /** Action-ы сервисов, которые умеют отдавать дерево, а не только кнопки. */
+    private val LIBRARY_SERVICE_ACTIONS =
+        setOf(
+            "androidx.media3.session.MediaLibraryService",
+            "android.media.browse.MediaBrowserService",
+        )
+
     /** Порядок попыток: родной протокол приложения первым, платформенный — запасным. */
     private val MEDIA3_FIRST_PASSES = listOf(true, false)
+
+/** Коды ошибок дерева media3: агенту без имени вообще не разбирает. */
 
     /**
      * action-ы, по которым найдены сервисы: ключ — flattened-компонент. Нужен, чтобы не
@@ -187,6 +203,150 @@ object MediaControlController {
         val session = target.session ?: error(unreadableReason(target.app))
         return try {
             controlWithSession(target.app, session, spec.command)
+        } finally {
+            releaseUnused(session)
+        }
+    }
+
+    /**
+     * Включение конкретного трека каталога. Эффект известен заранее — целевой трек, — поэтому
+     * verified требует именно его в метаданных. Любая смена состояния или чужой трек в ответе
+     * означают, что сессия элемент не взяла: сообщать об успехе по факту смены заголовка
+     * значило бы врать агенту, который потом скажет пользователю «включил».
+     */
+    fun play(spec: MediaPlaySpec): MediaControlResult {
+        val apps = mediaApps()
+        require(apps.isNotEmpty()) { "no installed app exposes a media session" }
+        val target = targetFor(apps, spec.packageName)
+        val session = target.session ?: error(unreadableReason(target.app))
+        return try {
+            val before = session.awaitPlayback(STATE_TIMEOUT_MS)
+            // Сессия отдаёт set_media_item только у уже запущенного плеера: на холодном
+            // старте команда молча игнорируется, поэтому сначала поднимаем воспроизведение.
+            if (before.isIdle || !session.supportsSetMediaItem()) session.send(MediaCommand.PLAY)
+            session.playItem(spec.mediaId, spec.uri, spec.title)
+            val after = awaitEffect(session, before, MediaCommand.PLAY, COLD_START_TIMEOUT_MS)
+            val expected = spec.title?.lowercase(Locale.ROOT)
+            val actual = after.title?.lowercase(Locale.ROOT).orEmpty()
+            val playing = after.isPlaying
+            val matched = expected == null || actual.contains(expected)
+            val verified = playing && matched
+            Log.i(
+                TAG,
+                "media play_item=${spec.mediaId} package=${spec.packageName} " +
+                    "state=${before.state}->${after.state} title=${after.title} verified=$verified",
+            )
+            MediaControlResult(
+                packageName = target.app.packageName,
+                label = target.app.label,
+                transport = TRANSPORT_SESSION,
+                command = COMMAND_PLAY_ITEM,
+                message =
+                    if (verified) {
+                        "Android media session started catalog item ${spec.mediaId}"
+                    } else {
+                        "Android media session did not start catalog item ${spec.mediaId}" +
+                            " (reported '${after.title}'${if (expected != null) ", expected '$expected'" else ""})"
+                    },
+                before = before,
+                after = after,
+                verified = verified,
+            )
+        } finally {
+            releaseUnused(session)
+        }
+    }
+
+    /**
+     * Лайк/анлайк через кастомную команду сессии: у Яндекс Музыки это
+     * `ru.yandex.music.action.ADD_LIKE`, поэтому OAuth и REST не нужны. Действует на текущий
+     * трек, поэтому до отправки читаем состояние — иначе «добавь в любимое» без включённого
+     * трека выглядело бы как успех.
+     */
+    fun like(spec: MediaLikeSpec): MediaLikeResult {
+        val apps = mediaApps()
+        require(apps.isNotEmpty()) { "no installed app exposes a media session" }
+        val target = targetFor(apps, spec.packageName)
+        val session = target.session ?: error(unreadableReason(target.app))
+        return try {
+            val before = session.awaitPlayback(STATE_TIMEOUT_MS)
+            val result = session.sendCustom(spec.sessionAction)
+            if (result == null) {
+                error("${target.app.label} session does not support custom actions")
+            }
+            Log.i(
+                TAG,
+                "media ${spec.action} package=${spec.packageName} title=${before.title} ok=${result.ok}",
+            )
+            MediaLikeResult(
+                packageName = target.app.packageName,
+                label = target.app.label,
+                action = spec.action,
+                ok = result.ok,
+                detail = result.detail,
+                playback = before,
+            )
+        } finally {
+            releaseUnused(session)
+        }
+    }
+
+    /**
+     * Поиск по каталогу. Живой сетевой вызов, поэтому делаем его вне внутренних замков и
+     * отдаём наружу только необходимое агенту: артист, треки и deep link для проигрывания.
+     */
+    fun search(spec: MediaSearchSpec): MediaSearchResult {
+        val result = YandexCatalog.search(spec.query, spec.limit)
+        Log.i(TAG, "media search ${YandexCatalog.describe(result)}")
+        return MediaSearchResult(
+            query = result.query,
+            artist = result.artist,
+            tracks = result.tracks,
+        )
+    }
+
+    /**
+     * Обход дерева библиотеки плеера.
+     *
+     * Смысл не в красоте, а в том, что отсюда берётся mediaId, который сессия признаёт своим.
+     * Трек из публичного каталога сессия игнорирует, а трек, на который она сама дала ссылку,
+     * принять обязана — иначе ссылка была бы неправильной.
+     */
+    fun library(spec: MediaLibrarySpec): MediaLibraryResult {
+        val apps = mediaApps()
+        require(apps.isNotEmpty()) { "no installed app exposes a media session" }
+        val app = apps.firstOrNull { it.packageName == spec.packageName }
+            ?: error("no media session app for ${spec.packageName}")
+        val components = libraryComponents(app)
+        require(components.isNotEmpty()) { "${spec.packageName} has no media library service" }
+        val result = MediaLibraryBrowser(contextOrThrow(), looper).browse(components, spec)
+        Log.i(
+            TAG,
+            "media library ${spec.packageName} node=${spec.node} query=${spec.query} " +
+                "entries=${result.entries.size} state=${result.message}",
+        )
+        return result
+    }
+
+    /**
+     * Кандидаты в порядке убывания правды: media3-библиотека умеет дерево по протоколу, обычная
+     * сессия — нет, legacy-браузер — последний шанс. Проверяем всех, потому что отказ одного
+     * сервиса ничего не говорит о втором, а молчаливый «первый ответ» скрыл бы различие.
+     */
+    private fun libraryComponents(app: MediaAppSnapshot): List<ComponentName> {
+        val refs = sessionRefs(app)
+        val library = refs.filter { ref -> ref.action in LIBRARY_SERVICE_ACTIONS }
+        val ordered = library.ifEmpty { refs }.sortedBy { ref -> if (ref.isMedia3) 0 else 1 }
+        return ordered.map { ref -> ref.component }
+    }
+
+    fun capabilities(packageName: String?): MediaCapabilities {
+        val apps = mediaApps()
+        require(apps.isNotEmpty()) { "no installed app exposes a media session" }
+        val target = targetFor(apps, packageName)
+        val session = target.session ?: error(unreadableReason(target.app))
+        return try {
+            session.capabilities() ?: error("${target.app.label} session does not report capabilities")
         } finally {
             releaseUnused(session)
         }
@@ -800,6 +960,32 @@ internal interface MediaSessionTransport {
 
     fun send(command: MediaCommand)
 
+    /**
+     * Включить конкретный трек каталога вместо транспортной кнопки. uri — deep link, который
+     * сессия умеет резолвить сама (`yandexmusic://track/<id>`); mediaId идёт идентификатором
+     * элемента, чтобы плеер показал нормальные метаданные, а не пустую очередь.
+     */
+    fun playItem(
+        mediaId: String,
+        uri: String,
+        title: String?,
+    )
+
+    /**
+     * Возможности сессии: player-команды, custom session-команды, умение принимать трек по id.
+     * null, если протокол их не сообщает (устаревшая MediaBrowser-сессия).
+     */
+    fun capabilities(): MediaCapabilities?
+
+    /** Есть ли у сессии право принимать новый элемент: у Яндекса это зависит от состояния. */
+    fun supportsSetMediaItem(): Boolean
+
+    /**
+     * Кастомная команда сессии (лайк, скип подкаста и прочее). null, когда протокол их не
+     * поддерживает: устаревшая сессия таких команд не знает в принципе.
+     */
+    fun sendCustom(action: String): MediaCustomCommandResult?
+
     fun closeQuietly()
 }
 
@@ -844,6 +1030,23 @@ private class MediaSessionHandle(
             }
         }
     }
+
+    override fun playItem(
+        mediaId: String,
+        uri: String,
+        title: String?,
+    ) {
+        onMediaLooper(looper, COMMAND_TIMEOUT_MS) {
+            // Устаревшая сессия умеет только playFromUri: id трека в неё не передать.
+            controller.transportControls.playFromUri(Uri.parse(uri), null)
+        }
+    }
+
+    override fun capabilities(): MediaCapabilities? = null
+
+    override fun supportsSetMediaItem(): Boolean = false
+
+    override fun sendCustom(action: String): MediaCustomCommandResult? = null
 
     override fun closeQuietly() {
         runCatching {

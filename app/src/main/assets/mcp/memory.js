@@ -270,6 +270,226 @@ const MOBILE_MEDIA_TOOLS = [
       },
       required: ["action"]
     }
+  },
+  {
+    name: "mobile_media_search",
+    description:
+      "Search the Yandex Music catalog by name - no login, no token, no screen taps. Use it to turn " +
+      "'play Bastard Rampage' or 'what is this track called' into a concrete id: an artist query returns " +
+      "the artist with its id and their tracks, a track query returns matching tracks. Each track carries " +
+      "id, title, artist, album, duration_ms, available and the uri to hand to mobile_media_play. The " +
+      "catalog is not exhaustive: an unknown artist may come back with no artist block and no exact match - " +
+      "say so instead of inventing an id. Then call mobile_media_play to start one of the returned tracks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          maxLength: 120,
+          description: "Artist or track name as the user said it"
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 20,
+          description: "Maximum tracks to return; default 10"
+        }
+      },
+      required: ["query"]
+    }
+  },
+  {
+    name: "mobile_media_like",
+    description:
+      "Rate the track that is playing right now in Yandex Music: like, unlike, dislike, undislike. This " +
+      "drives the player's own media session, so it needs no login and no OAuth, and the user can stay " +
+      "in this app while the rating lands. Only the current track can be rated - to rate a specific track, " +
+      "start it first with mobile_media_play. result_code=0 means the player accepted the rating; " +
+      "anything else means it did not, and you must report that instead of claiming the like worked. " +
+      "Call this only in direct response to an explicit user request.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["like", "unlike", "dislike", "undislike"],
+          description: "Rating to send to the player for the current track"
+        },
+        package: {
+          type: "string",
+          maxLength: 255,
+          pattern: "^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+$",
+          description: "Exact media app package, normally ru.yandex.music"
+        }
+      },
+      required: ["action", "package"]
+    }
+  },
+  {
+    name: "mobile_media_play",
+    description:
+      "Ask a media session to start one specific catalog track by id, the id returned by " +
+      "mobile_media_search. Honest limits, verified on a real device: Yandex Music accepts the request " +
+      "but its session plays its own current item instead, so verified=false with a different reported " +
+      "title is the expected outcome there, not a bug to retry. Always read verified: true only when the " +
+      "reported title really is the requested track, otherwise tell the user the player refused and " +
+      "offer the transport controls instead. No screen taps, no foreground switch, no root. " +
+      "Checked on a real device and not a guess: Yandex ignores both yandexmusic://track/<id> and " +
+      "https://music.yandex.ru/track/<id> in setMediaItem, and its Media3LibraryService answers " +
+      "getLibraryRoot and getSearchResult with permission_denied while advertising no library_* " +
+      "command at all. So on that app a catalog id cannot be turned into playback by any public " +
+      "API - do not burn turns retrying it, and say plainly that starting an arbitrary track " +
+      "needs a different approach.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        media_id: {
+          type: "string",
+          pattern: "^[0-9]{1,32}$",
+          description: "Numeric catalog track id from mobile_media_search"
+        },
+        title: {
+          type: "string",
+          maxLength: 200,
+          description: "Expected track title, used to verify that the right track actually started"
+        },
+        package: {
+          type: "string",
+          maxLength: 255,
+          pattern: "^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+$",
+          description: "Exact media app package, normally ru.yandex.music"
+        }
+      },
+      required: ["media_id", "package"]
+    }
+  },
+  {
+    name: "mobile_media_library",
+    description:
+      "Walk a media app's own library tree through its MediaLibrarySession and read the ids that session " +
+      "itself issued - the only ids it will later accept as playable. Omit node for the root, pass a node " +
+      "id from a previous answer to go one level deeper, pass query to search inside the app's own library " +
+      "(favourites, downloads - not the public catalog, that is mobile_media_search). Read state: " +
+      "'ok' means entries came back, 'empty' means the node really has nothing, 'not_supported' or " +
+      "'permission_denied' means this app has no public library at all - Yandex Music answers " +
+      "permission_denied here, so on that app say so instead of retrying. Use it to check what a player " +
+      "really exposes before promising the user a track can be started.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        package: {
+          type: "string",
+          maxLength: 255,
+          pattern: "^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+$",
+          description: "Exact media app package, normally ru.yandex.music"
+        },
+        node: {
+          type: "string",
+          maxLength: 200,
+          description: "Optional node id from a previous answer; omit to read the library root"
+        },
+        query: {
+          type: "string",
+          maxLength: 120,
+          description: "Optional search text inside the app's own library"
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 200,
+          description: "Maximum entries to return; default 50"
+        }
+      },
+      required: ["package"]
+    }
+  },
+  {
+    name: "mobile_media_ui_click",
+    description:
+      "Tap one control inside a media app's own window, by the text or accessibility label it shows. This " +
+      "is the last resort for 'play that exact track in Yandex Music': the media session route is " +
+      "verified not to start an arbitrary catalog id there, and a screen tap is the only public way " +
+      "left. Hard requirements, all checked and reported instead of guessed: the user must have enabled " +
+      "this app's accessibility service in Android Settings (otherwise the answer is " +
+      "reason='accessibility service is not enabled for opencode mobile' - ask the user to switch it on, " +
+      "never claim the tap happened); the app's window must be on screen, because a hidden window is " +
+      "invisible to accessibility; and at most one node is clicked per call. Read the answer honestly: " +
+      "click.outcome='clicked' is the only success, 'not_found' lists the clickable labels that were " +
+      "actually on screen (use them to correct your selector instead of guessing again), " +
+      "'click_rejected' means the node was there but the tap did not stick, and click.window_focused " +
+      "tells you whether that window was the one on top. The service is scoped to ru.yandex.music and " +
+      "reads nothing else. Matching is word based and case/punctuation insensitive, so 'my temper' " +
+      "matches 'My Temper (feat. M. Vegas)'. Call this only in direct response to an explicit user " +
+      "request to act in the player, and pair it with mobile_media_ui_shield when the user asked not to " +
+      "see the app switch.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        package: {
+          type: "string",
+          maxLength: 255,
+          pattern: "^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+$",
+          description: "Exact app package to look at, normally ru.yandex.music"
+        },
+        text_contains: {
+          type: "array",
+          items: { type: "string", minLength: 1, maxLength: 200 },
+          maxItems: 5,
+          description: "Any of these must appear as whole words in the node's visible text"
+        },
+        content_description: {
+          type: "array",
+          items: { type: "string", minLength: 1, maxLength: 200 },
+          maxItems: 5,
+          description: "Any of these must appear as whole words in the node's accessibility label"
+        },
+        resource_id: {
+          type: "array",
+          items: { type: "string", minLength: 1, maxLength: 200 },
+          maxItems: 5,
+          description: "Any of these must equal the node's resource id"
+        },
+        require_clickable: {
+          type: "boolean",
+          description: "Default true; set false only when the control is a container without its own click"
+        },
+        timeout_ms: {
+          type: "integer",
+          minimum: 500,
+          maximum: 30000,
+          description: "How long to wait for the window and the node; default 8000"
+        }
+      },
+      required: ["package"]
+    }
+  },
+  {
+    name: "mobile_media_ui_shield",
+    description:
+      "Put this app's own chat window on top of whatever is on screen, for a couple of seconds, and take " +
+      "it away again by itself. It exists so a tap in another player (mobile_media_ui_click) does not " +
+      "show the user that app popping up: the screen keeps looking like this app the whole time, and " +
+      "the window retracts on its own after lifetime_ms even if something goes wrong. The window is " +
+      "see-through for touches, so the tap still reaches the app underneath. Requires the Android " +
+      "permission 'display over other apps'; without it the answer is ok=false with " +
+      "reason='opencode mobile may not draw over other apps' and you must ask the user to grant it. " +
+      "Check shield.showing and shield.can_draw_overlays before promising anything. Show it before the " +
+      "tap and hide it right after, and do not leave it up longer than needed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        show: {
+          type: "boolean",
+          description: "true to raise the window, false to take it away now; default true"
+        },
+        lifetime_ms: {
+          type: "integer",
+          minimum: 200,
+          maximum: 8000,
+          description: "How long the window stays up on its own; default 2000"
+        }
+      }
+    }
   }
 ];
 
@@ -493,6 +713,7 @@ async function mobileLaunchApp(args) {
 }
 
 const MEDIA_ACTIONS = ["play", "pause", "play_pause", "next", "previous", "stop"];
+const MEDIA_RATING_ACTIONS = ["like", "unlike", "dislike", "undislike"];
 
 function optionalAndroidPackage(value) {
   const packageName = String(value || "").trim();
@@ -529,6 +750,101 @@ async function mobileMediaControl(args) {
     method: "POST",
     body: JSON.stringify({ action, ...(packageName ? { package: packageName } : {}) })
   });
+}
+
+async function mobileMediaSearch(args) {
+  const query = String(args.query || "").trim();
+  if (!query) throw new Error("query is required to search the catalog");
+  const limit = args.limit === undefined || args.limit === null ? 10 : args.limit;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) {
+    throw new Error("limit must be an integer between 1 and 20");
+  }
+  return mobileBridge(`/v1/media/search?${new URLSearchParams({ query, limit: String(limit) })}`);
+}
+
+async function mobileMediaLike(args) {
+  const action = String(args.action || "").trim().toLowerCase();
+  if (!MEDIA_RATING_ACTIONS.includes(action)) {
+    throw new Error("action must be one of: " + MEDIA_RATING_ACTIONS.join(", "));
+  }
+  return mobileBridge("/v1/media/like", {
+    method: "POST",
+    // Оценка всегда адресная: гадать, какой плеер оценивать, мост не станет.
+    body: JSON.stringify({ action, package: requireAndroidPackage(args.package) })
+  });
+}
+
+async function mobileMediaPlay(args) {
+  const mediaId = String(args.media_id || "").trim();
+  if (!/^[0-9]{1,32}$/.test(mediaId)) throw new Error("media_id must be a numeric catalog id");
+  const body = { media_id: mediaId, package: requireAndroidPackage(args.package) };
+  const title = typeof args.title === "string" ? args.title.trim() : "";
+  if (title) body.title = title;
+  return mobileBridge("/v1/media/play", { method: "POST", body: JSON.stringify(body) });
+}
+
+const MEDIA_UI_SELECTOR_FAMILIES = ["text_contains", "content_description", "resource_id"];
+
+function mediaUiSelectors(args) {
+  // Селекторы готовим здесь, а не на мосту: агент должен получить внятную ошибку про свою
+  // просьбу, а не 400 из Kotlin с require().
+  const payload = {};
+  let named = 0;
+  for (const family of MEDIA_UI_SELECTOR_FAMILIES) {
+    const raw = args[family];
+    if (raw === undefined || raw === null) continue;
+    if (!Array.isArray(raw) || raw.length === 0) {
+      throw new Error(`${family} must be a non-empty array of strings when given`);
+    }
+    if (raw.length > 5) throw new Error(`${family} accepts at most 5 entries`);
+    const values = raw.map((entry) => String(entry).trim());
+    for (const value of values) {
+      if (!value || value.length > 200) throw new Error(`${family} entries must be 1-200 characters`);
+    }
+    payload[family] = values;
+    named += 1;
+  }
+  if (named === 0) {
+    throw new Error("give at least one of: " + MEDIA_UI_SELECTOR_FAMILIES.join(", "));
+  }
+  return payload;
+}
+
+function mediaUiInteger(value, fallback, min, max, name) {
+  if (value === undefined || value === null) return fallback;
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < min || number > max) {
+    throw new Error(`${name} must be an integer between ${min} and ${max}`);
+  }
+  return number;
+}
+
+async function mobileMediaLibrary(args) {
+  const parameters = new URLSearchParams({ package: requireAndroidPackage(args.package) });
+  if (typeof args.node === "string" && args.node.trim()) parameters.set("node", args.node.trim());
+  if (typeof args.query === "string" && args.query.trim()) parameters.set("query", args.query.trim());
+  const limit = mediaUiInteger(args.limit, null, 1, 200, "limit");
+  if (limit !== null) parameters.set("limit", String(limit));
+  return mobileBridge(`/v1/media/library?${parameters.toString()}`);
+}
+
+async function mobileMediaUiClick(args) {
+  const payload = {
+    package: requireAndroidPackage(args.package),
+    ...mediaUiSelectors(args)
+  };
+  if (typeof args.require_clickable === "boolean") payload.require_clickable = args.require_clickable;
+  const timeout = mediaUiInteger(args.timeout_ms, null, 500, 30000, "timeout_ms");
+  if (timeout !== null) payload.timeout_ms = timeout;
+  return mobileBridge("/v1/media/ui/click", { method: "POST", body: JSON.stringify(payload) });
+}
+
+async function mobileMediaUiShield(args) {
+  const show = args.show === undefined || args.show === null ? true : Boolean(args.show);
+  const payload = { show };
+  const lifetime = mediaUiInteger(args.lifetime_ms, null, 200, 8000, "lifetime_ms");
+  if (lifetime !== null) payload.lifetime_ms = lifetime;
+  return mobileBridge("/v1/media/ui/shield", { method: "POST", body: JSON.stringify(payload) });
 }
 
 function store(args) {
@@ -648,6 +964,12 @@ async function callTool(name, args) {
     case "mobile_list_media_apps": return mobileListMediaApps(args || {});
     case "mobile_media_status": return mobileMediaStatus(args || {});
     case "mobile_media_control": return mobileMediaControl(args || {});
+    case "mobile_media_search": return mobileMediaSearch(args || {});
+    case "mobile_media_like": return mobileMediaLike(args || {});
+    case "mobile_media_play": return mobileMediaPlay(args || {});
+    case "mobile_media_library": return mobileMediaLibrary(args || {});
+    case "mobile_media_ui_click": return mobileMediaUiClick(args || {});
+    case "mobile_media_ui_shield": return mobileMediaUiShield(args || {});
     default: throw new Error("Unknown tool: " + name);
   }
 }

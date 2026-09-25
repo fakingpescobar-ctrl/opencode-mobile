@@ -5,11 +5,21 @@ import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import org.opencode.mobile.media.MediaAppSnapshot
+import org.opencode.mobile.media.MediaAutomationShield
+import org.opencode.mobile.media.MediaCapabilities
 import org.opencode.mobile.media.MediaControlController
 import org.opencode.mobile.media.MediaControlRequestValidator
 import org.opencode.mobile.media.MediaControlResult
+import org.opencode.mobile.media.MediaLibraryEntry
+import org.opencode.mobile.media.MediaLibraryResult
+import org.opencode.mobile.media.MediaLikeResult
 import org.opencode.mobile.media.MediaPlaybackSnapshot
+import org.opencode.mobile.media.MediaSearchResult
 import org.opencode.mobile.media.MediaStatusResult
+import org.opencode.mobile.media.MediaUiAutomation
+import org.opencode.mobile.media.MediaUiClickJob
+import org.opencode.mobile.media.MediaUiClickOutcome
+import org.opencode.mobile.media.MediaUiClickTarget
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
@@ -23,7 +33,9 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 /**
@@ -33,7 +45,7 @@ import kotlin.concurrent.thread
  * Каждый запрос обязан иметь Bearer-токен, выданный текущему процессу приложения.
  * Наружу сокет не слушает; токен передаётся memory.js через environment.
  */
-@Suppress("MagicNumber", "TooManyFunctions")
+@Suppress("MagicNumber", "TooManyFunctions", "LargeClass")
 object AppInstallBridge {
     const val PORT = 4202
     const val ENV_TOKEN = "MOBILE_INSTALL_TOKEN"
@@ -43,6 +55,8 @@ object AppInstallBridge {
     private const val MAX_HEADER_BYTES = 16 * 1024
     private const val MAX_BODY_BYTES = 32 * 1024
     private const val SOCKET_TIMEOUT_MS = 10_000
+    private const val DEFAULT_UI_CLICK_TIMEOUT_MS = 8_000L
+    private const val UI_CLICK_HARD_TIMEOUT_GRACE_MS = 3_000L
 
     private data class Request(
         val method: String,
@@ -55,6 +69,18 @@ object AppInstallBridge {
     private val lock = Any()
     private val executor = Executors.newFixedThreadPool(2) { runnable ->
         Thread(runnable, "app-install-rpc").apply {
+            isDaemon = true
+        }
+    }
+
+    /**
+     * Клик по чужому окну ждёт, пока нужное окно появится, - то есть блокирует поток на весь бюджет.
+     * На пуле RPC (а он на два потока) это значит «половина моста лежит», поэтому клики получают
+     * собственный поток. Побочный, но полезный эффект: клики выстраиваются в очередь, а не
+     * отбивают друг у друга занятость.
+     */
+    private val uiClickExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "media-ui-click").apply {
             isDaemon = true
         }
     }
@@ -72,6 +98,7 @@ object AppInstallBridge {
             ApkInstaller.initialize(context)
             InstalledAppController.initialize(context)
             MediaControlController.initialize(context)
+            MediaAutomationShield.initialize(context)
             val nextToken = token.ifBlank { UUID.randomUUID().toString() }
             val socket =
                 runCatching {
@@ -164,6 +191,13 @@ object AppInstallBridge {
             Route("GET", "/v1/media/apps", ::listMediaApps),
             Route("GET", "/v1/media/status", ::mediaStatus),
             Route("POST", "/v1/media/control", ::controlMedia),
+            Route("POST", "/v1/media/play", ::playMedia),
+            Route("GET", "/v1/media/capabilities", ::mediaCapabilities),
+            Route("POST", "/v1/media/like", ::likeMedia),
+            Route("GET", "/v1/media/search", ::searchMedia),
+            Route("GET", "/v1/media/library", ::mediaLibrary),
+            Route("POST", "/v1/media/ui/click", ::clickMediaUi),
+            Route("POST", "/v1/media/ui/shield", ::mediaUiShield),
         )
 
     private fun writeHealth(output: BufferedOutputStream) {
@@ -252,6 +286,152 @@ object AppInstallBridge {
                 packageName = body.optionalString("package"),
             )
         val result = MediaControlController.control(spec)
+        writeJson(output, 200, JSONObject().put("ok", true).put("media", result.toJson()))
+    }
+
+    private fun searchMedia(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val spec =
+            MediaControlRequestValidator.search(
+                query = parameter(request.query, "query"),
+                limit = optionalIntParameter(request.query, "limit"),
+            )
+        val result = MediaControlController.search(spec)
+        writeJson(output, 200, JSONObject().put("ok", true).put("search", result.toJson()))
+    }
+
+    private fun mediaLibrary(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val spec =
+            MediaControlRequestValidator.library(
+                packageName = parameter(request.query, "package"),
+                node = parameter(request.query, "node"),
+                query = parameter(request.query, "query"),
+                limit = optionalIntParameter(request.query, "limit"),
+            )
+        val result = MediaControlController.library(spec)
+        writeJson(output, 200, JSONObject().put("ok", true).put("library", result.toJson()))
+    }
+
+    private fun clickMediaUi(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val body = jsonObject(request)
+        val target =
+            MediaUiClickTarget(
+                packageName = body.optionalString("package").orEmpty(),
+                textContains = body.optionalStringList("text_contains"),
+                contentDescriptions = body.optionalStringList("content_description"),
+                resourceIds = body.optionalStringList("resource_id"),
+                requireClickable = body.optBoolean("require_clickable", true),
+            )
+        // Бюджет проверяем здесь, а не внутри задачи: иначе агент получил бы 200 с «ok=false»
+        // вместо внятного 400 на плохой аргумент.
+        val timeoutMs = body.optionalLong("timeout_ms", DEFAULT_UI_CLICK_TIMEOUT_MS)
+        require(timeoutMs in MediaUiClickJob.MIN_TIMEOUT_MS..MediaUiClickJob.MAX_TIMEOUT_MS) {
+            "timeout_ms must be between ${MediaUiClickJob.MIN_TIMEOUT_MS} and ${MediaUiClickJob.MAX_TIMEOUT_MS}"
+        }
+        val outcome = clickOffRpcPool { MediaUiAutomation.click(target = target, timeoutMs = timeoutMs) }
+        writeJson(
+            output,
+            200,
+            JSONObject()
+                .put("ok", outcome is MediaUiClickOutcome.Clicked)
+                .put("click", outcome.toJson()),
+        )
+    }
+
+    /**
+     * Уводим клик с пула RPC: сам он ждёт accessibility-сервис, а тот - чужое окно.
+     *
+     * Страховка по времени нужна, чтобы мост не завис, даже если accessibility-сервис вообще
+     * не ответит: поток клика вернёт неотговорённый результат, но RPC-ответ уйдёт вовремя.
+     */
+    private fun clickOffRpcPool(click: () -> MediaUiClickOutcome): MediaUiClickOutcome {
+        val settled = CompletableFuture<MediaUiClickOutcome>()
+        uiClickExecutor.execute {
+            val outcome =
+                runCatching { click() }.getOrElse { error ->
+                    MediaUiClickOutcome.Failed(error.message ?: "ui click failed")
+                }
+            settled.complete(outcome)
+        }
+        return runCatching {
+            settled.get(
+                MediaUiClickJob.MAX_TIMEOUT_MS + UI_CLICK_HARD_TIMEOUT_GRACE_MS,
+                TimeUnit.MILLISECONDS,
+            )
+        }.getOrElse { MediaUiClickOutcome.Failed("ui click did not answer inside its budget") }
+    }
+
+    private fun mediaUiShield(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val body = jsonObject(request)
+        val placed =
+            if (body.optBoolean("show", true)) {
+                MediaAutomationShield.show(body.optionalLong("lifetime_ms", 2_000L))
+            } else {
+                MediaAutomationShield.hide()
+                true
+            }
+        writeJson(
+            output,
+            200,
+            JSONObject()
+                .put("ok", placed)
+                .put(
+                    "shield",
+                    JSONObject()
+                        .put("showing", MediaAutomationShield.isShowing())
+                        .put("can_draw_overlays", MediaAutomationShield.canDraw())
+                        .put("reason", MediaAutomationShield.lastReason() ?: JSONObject.NULL),
+                ),
+        )
+    }
+
+    private fun likeMedia(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val body = jsonObject(request)
+        val spec =
+            MediaControlRequestValidator.like(
+                action = body.optionalString("action"),
+                packageName = body.optionalString("package"),
+            )
+        val result = MediaControlController.like(spec)
+        writeJson(output, 200, JSONObject().put("ok", result.ok).put("media", result.toJson()))
+    }
+
+    private fun mediaCapabilities(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val packageName = MediaControlRequestValidator.status(parameter(request.query, "package"))
+        val capabilities = MediaControlController.capabilities(packageName)
+        writeJson(output, 200, JSONObject().put("ok", true).put("capabilities", capabilities.toJson()))
+    }
+
+    private fun playMedia(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val body = jsonObject(request)
+        val spec =
+            MediaControlRequestValidator.play(
+                packageName = body.optionalString("package"),
+                mediaId = body.optionalString("media_id"),
+                uri = body.optionalString("uri"),
+                title = body.optionalString("title"),
+            )
+        val result = MediaControlController.play(spec)
         writeJson(output, 200, JSONObject().put("ok", true).put("media", result.toJson()))
     }
 
@@ -407,6 +587,46 @@ object AppInstallBridge {
     private fun JSONObject.optionalString(name: String): String? =
         if (has(name) && !isNull(name)) getString(name).takeIf { it.isNotBlank() } else null
 
+    private fun JSONObject.optionalLong(
+        name: String,
+        fallback: Long,
+    ): Long = if (has(name) && !isNull(name)) getLong(name) else fallback
+
+    private fun JSONObject.optionalStringList(name: String): List<String> {
+        if (!has(name) || isNull(name)) return emptyList()
+        val array = optJSONArray(name) ?: throw IllegalArgumentException("$name must be an array of strings")
+        return (0 until array.length()).map { index ->
+            array.optString(index).trim().takeIf { it.isNotEmpty() }
+                ?: throw IllegalArgumentException("$name[$index] must be a non empty string")
+        }
+    }
+
+    private fun MediaUiClickOutcome.toJson(): JSONObject =
+        when (this) {
+            is MediaUiClickOutcome.Clicked ->
+                JSONObject()
+                    .put("state", "clicked")
+                    .put("label", label)
+                    .put("window_focused", windowFocused)
+                    .put("gesture", gestureUsed)
+
+            is MediaUiClickOutcome.ClickRejected ->
+                JSONObject()
+                    .put("state", "click_rejected")
+                    .put("label", label)
+                    .put("reason", reason)
+
+            is MediaUiClickOutcome.NotFound ->
+                JSONObject()
+                    .put("state", "not_found")
+                    .put("seen", JSONArray(seenClickableLabels))
+
+            is MediaUiClickOutcome.Failed ->
+                JSONObject()
+                    .put("state", "failed")
+                    .put("reason", reason)
+        }
+
     private fun LaunchableAppSnapshot.toJson(): JSONObject =
         JSONObject()
             .put("package", packageName)
@@ -430,6 +650,63 @@ object AppInstallBridge {
             .put("media_button_receiver", mediaButtonReceiver ?: JSONObject.NULL)
             .put("hidden_session_services", hiddenSessionServices)
             .put("controlable", controlable)
+
+    private fun MediaSearchResult.toJson(): JSONObject =
+        JSONObject()
+            .put("query", query)
+            .put("artist", artist?.toJson() ?: JSONObject.NULL)
+            .put(
+                "tracks",
+                JSONArray().apply {
+                    tracks.forEach { track ->
+                        put(
+                            JSONObject()
+                                .put("id", track.id)
+                                .put("title", track.title)
+                                .put("artist", track.artist)
+                                .put("album", track.album)
+                                .put("duration_ms", track.durationMs)
+                                .put("available", track.available)
+                                .put("uri", track.deepLink),
+                        )
+                    }
+                },
+            )
+
+    private fun MediaLibraryResult.toJson(): JSONObject =
+        JSONObject()
+            .put("root", root?.toJson() ?: JSONObject.NULL)
+            .put("state", message)
+            .put("result_code", resultCode ?: JSONObject.NULL)
+            .put(
+                "entries",
+                JSONArray().apply { entries.forEach { put(it.toJson()) } },
+            )
+
+    private fun MediaLibraryEntry.toJson(): JSONObject =
+        JSONObject()
+            .put("media_id", mediaId)
+            .put("title", title)
+            .put("subtitle", subtitle)
+            .put("browsable", browsable)
+            .put("playable", playable)
+            .put("uri", uri ?: JSONObject.NULL)
+
+    private fun MediaLikeResult.toJson(): JSONObject =
+        JSONObject()
+            .put("package", packageName)
+            .put("label", label)
+            .put("action", action)
+            .put("ok", ok)
+            .put("detail", detail ?: JSONObject.NULL)
+            .put("playback", playback.toJson())
+
+    private fun MediaCapabilities.toJson(): JSONObject =
+        JSONObject()
+            .put("player_commands", JSONArray(playerCommands))
+            .put("session_commands", JSONArray(sessionCommands))
+            .put("supports_set_media_item", supportsSetMediaItem)
+            .put("player_error", playerError ?: JSONObject.NULL)
 
     private fun MediaPlaybackSnapshot.toJson(): JSONObject =
         JSONObject()

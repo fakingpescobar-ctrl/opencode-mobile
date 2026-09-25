@@ -5,4 +5,5 @@
     <string name="notif_text_running">opencode serve on port 4096</string>
     <string name="notif_title_starting">Starting OpenCode server…</string>
     <string name="notif_title_error">OpenCode server failed</string>
+    <string name="media_ui_accessibility_description">Lets OpenCode Mobile tap the play control in Yandex Music when you ask for a specific track. It only looks at Yandex Music windows.</string>
 </resources>
