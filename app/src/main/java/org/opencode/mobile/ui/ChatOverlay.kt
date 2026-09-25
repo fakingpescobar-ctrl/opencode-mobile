@@ -671,7 +671,7 @@ fun ChatOverlay(
         if (sttEngine == "whisper" || sttEngine == "ncnn") {
             // Локальный движок: ncnn (CPU) или whisper.cpp (CPU) — запись PCM16 16кГц в буфер.
             try {
-                val ar = AudioRecorder()
+                val ar = AudioRecorder(context.applicationContext)
                 ar.start()
                 whisperRecorder = ar
                 listening = true
@@ -2176,6 +2176,7 @@ private fun readWavPcm16(
 // встроенный ресемплер OPPO сыпет паразитные пики 2.5/4/6/7.5 кГц, от которых
 // whisper путает слова. Стерео: L/R — два микрофона, берём более громкий.
 private class AudioRecorder(
+    private val context: Context,
     private val sampleRate: Int = 16000,
 ) {
     private val captureRate = 48000 // частота захвата (нативная)
@@ -2186,10 +2187,14 @@ private class AudioRecorder(
     private val raw = mutableListOf<Short>() // interleaved (L,R,L,R…) если стерео
     private var channels = 1
 
+    @Suppress("ReturnCount")
     private fun buildRecorder(
         fmt: Int,
         bufSize: Int,
     ): AudioRecord? {
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            return null
+        }
         // UNPROCESSED (сырой тракт): MIC-тракт OPPO замусорен артефактами
         // ресемплинга (паразитные пики 2.5/4/7.5 кГц у Найквиста) — whisper
         // на таком сигнале путает слова. Если UNPROCESSED не поддержан — MIC.
@@ -2215,6 +2220,9 @@ private class AudioRecorder(
     }
 
     fun start() {
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            throw SecurityException("RECORD_AUDIO permission is not granted")
+        }
         val enc = AudioFormat.ENCODING_PCM_16BIT
         var fmt = AudioFormat.CHANNEL_IN_STEREO
         var minBuf = AudioRecord.getMinBufferSize(captureRate, fmt, enc)
