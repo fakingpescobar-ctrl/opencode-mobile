@@ -7,6 +7,7 @@ import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -53,6 +55,7 @@ import org.opencode.mobile.server.RuntimeError
 import org.opencode.mobile.server.RuntimeStage
 import org.opencode.mobile.server.RuntimeValidation
 import org.opencode.mobile.stt.ModelDownloader
+import org.opencode.mobile.stt.NcnnModelDownloader
 import org.opencode.mobile.stt.NcnnModelValidator
 import java.io.File
 import java.text.SimpleDateFormat
@@ -71,6 +74,13 @@ import java.util.Locale
 
 /** Сколько последних сбоев показываем в UI и дампе (кольцо хранит до MAX_ERROR_HISTORY). */
 private const val HISTORY_SHOWN = 5
+
+/** Состояние скачивания ncnn-набора (кнопка в секции «Голосовое распознавание»). */
+private sealed interface NcnnDownloadState {
+    data object Idle : NcnnDownloadState
+    data class Running(val done: Long, val total: Long) : NcnnDownloadState
+    data class Failed(val message: String) : NcnnDownloadState
+}
 
 /** Снапшот моделей и хранилища, собранный один раз на IO при открытии. */
 private data class StorageSnapshot(
@@ -104,6 +114,30 @@ fun DiagnosticsScreen(
     var snap by remember { mutableStateOf<StorageSnapshot?>(null) }
     // Кнопка «Проверить сейчас» инкрементит ключ — LaunchedEffect пересобирает снапшот.
     var refreshKey by remember { mutableIntStateOf(0) }
+    // Состояние скачивания ncnn-моделей. Обновляется из IO-корутины (snapshot-state
+    // потокобезопасен); выход с экрана отменяет корутину (CancellationException
+    // проходит сквозь downloadTurbo через ensureActive) — .part остаётся для resume.
+    var ncnnDl by remember { mutableStateOf<NcnnDownloadState>(NcnnDownloadState.Idle) }
+    val startNcnnDownload: () -> Unit = {
+        if (ncnnDl !is NcnnDownloadState.Running) {
+            ncnnDl = NcnnDownloadState.Running(0L, NcnnModelDownloader.TOTAL_BYTES)
+            scope.launch {
+                try {
+                    withContext(Dispatchers.IO) {
+                        NcnnModelDownloader.downloadTurbo(context) { done, total ->
+                            ncnnDl = NcnnDownloadState.Running(done, total)
+                        }
+                    }
+                    ncnnDl = NcnnDownloadState.Idle
+                    refreshKey++ // пересобрать снапшот: строка «ncnn-turbo» станет «✔ готов»
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e // уход с экрана — не трогаем состояние
+                } catch (e: Exception) {
+                    ncnnDl = NcnnDownloadState.Failed(e.message ?: e.javaClass.simpleName)
+                }
+            }
+        }
+    }
     LaunchedEffect(refreshKey) {
         snap =
             withContext(Dispatchers.IO) {
@@ -241,6 +275,41 @@ fun DiagnosticsScreen(
                     )
                     InfoRow("Модели заняли", fmtBytes(s.used))
                     InfoRow("Свободно", fmtBytes(s.free))
+                    when (val dl = ncnnDl) {
+                        is NcnnDownloadState.Running -> {
+                            val ratio = if (dl.total > 0) (dl.done.toFloat() / dl.total).coerceIn(0f, 1f) else 0f
+                            InfoRow(
+                                "Загрузка ncnn-моделей",
+                                "${(ratio * 100).toInt()}% · ${fmtBytes(dl.done)} из ${fmtBytes(dl.total)}",
+                                Color(0xFFFFC107),
+                            )
+                            Spacer(Modifier.height(3.dp))
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(3.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(Color(0xFF2A2A2A)),
+                            ) {
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth(ratio)
+                                        .height(3.dp)
+                                        .background(Color(0xFF7BD88F)),
+                                )
+                            }
+                            Spacer(Modifier.height(6.dp))
+                        }
+                        is NcnnDownloadState.Failed -> {
+                            InfoRow("Скачивание не удалось", dl.message, Color(0xFFFF6F5A))
+                            DownButton("Повторить (докачка)") { startNcnnDownload() }
+                        }
+                        NcnnDownloadState.Idle -> {
+                            if (!s.ncnnTurboReady) {
+                                DownButton("Скачать ncnn-модели (~2.5 ГБ)") { startNcnnDownload() }
+                            }
+                        }
+                    }
                 }
 
                 Section("Валидация runtime")
@@ -355,6 +424,31 @@ private fun InfoRow(
     Column(Modifier.fillMaxWidth().padding(top = 5.dp)) {
         Text(label, color = Color(0xFF8A8A8A), fontSize = 12.sp)
         Text(value, color = valueColor, fontSize = 13.sp, lineHeight = 17.sp)
+    }
+}
+
+/** Кнопка-плашка скачивания моделей (тёмный экран диагностики, акцент зелёный). */
+@Composable
+private fun DownButton(
+    label: String,
+    onClick: () -> Unit,
+) {
+    Surface(
+        color = Color(0xFF1E1E1E),
+        shape = RoundedCornerShape(8.dp),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp)
+                .clickable(onClick = onClick),
+    ) {
+        Text(
+            label,
+            color = Color(0xFF7BD88F),
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+        )
     }
 }
 
