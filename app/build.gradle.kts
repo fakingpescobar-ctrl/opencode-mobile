@@ -90,6 +90,8 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.6.2")
     // JVM-тесты (ЭКСП-5): чистый Kotlin — SpeechSegmenter без устройства.
     testImplementation("junit:junit:4.13.2")
+    // org.json из android.jar на JVM не имеет рабочей реализации.
+    testImplementation("org.json:json:20250517")
 }
 
 // ---- Линтеры (ktlint: формат/аккуратность; detekt: качество/«запахи») ----

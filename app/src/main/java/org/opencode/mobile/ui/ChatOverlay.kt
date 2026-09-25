@@ -122,6 +122,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.opencode.mobile.R
 import org.opencode.mobile.server.LocalOpenCodeClient
+import org.opencode.mobile.server.OpenCodePermissionApi
+import org.opencode.mobile.server.OpenCodePermissionRequest
+import org.opencode.mobile.server.PermissionDecision
 import org.opencode.mobile.stt.NcnnModelValidator
 import org.opencode.mobile.stt.WhisperTranscribeService
 import java.io.File
@@ -213,9 +216,6 @@ private data class ChatParseResult(
     val thinking: Boolean,
     val liveTool: ChatTool?,
     val contextTokens: Long,
-    val hasActivity: List<Boolean>,
-    val hasFinish: List<Boolean>,
-    val lastTool: ChatTool?,
 )
 
 private object ChatCache {
@@ -224,6 +224,61 @@ private object ChatCache {
     @Volatile var rawHash: Int = 0
 
     @Volatile var result: ChatParseResult? = null
+}
+
+private data class PermissionCacheEntry(
+    val sessionId: String,
+    val raw: String,
+    val request: OpenCodePermissionRequest?,
+)
+
+private object PermissionCache {
+    private var entry: PermissionCacheEntry? = null
+    private var generation = 0L
+
+    fun get(
+        port: Int,
+        sessionId: String,
+    ): OpenCodePermissionRequest? {
+        val (cached, startedAt) =
+            synchronized(this) {
+                if (entry?.sessionId != sessionId) {
+                    entry = null
+                    generation++
+                }
+                entry to generation
+            }
+        val raw = LocalOpenCodeClient.get(port, "/permission")
+        return synchronized(this) {
+            // Reply/session switch happened while GET was in flight. Its response describes
+            // already-mutated state and must not resurrect a permission card that was cleared.
+            if (generation != startedAt) {
+                null
+            } else if (raw == null) {
+                cached?.request
+            } else if (cached?.raw == raw) {
+                cached.request
+            } else {
+                val request = OpenCodePermissionApi.pendingForSession(raw, sessionId)
+                entry = PermissionCacheEntry(sessionId, raw, request)
+                request
+            }
+        }
+    }
+
+    fun clear(sessionId: String) {
+        synchronized(this) {
+            if (entry?.sessionId == sessionId) entry = null
+            generation++
+        }
+    }
+
+    fun clearAll() {
+        synchronized(this) {
+            entry = null
+            generation++
+        }
+    }
 }
 
 private data class ChatMsg(
@@ -267,6 +322,7 @@ private data class ChatSnapshot(
     val mcpTotal: Int = 0,
     // Полный список MCP-серверов (имя + статус) для выпадающего списка по тапу.
     val mcpServers: List<McpInfo> = emptyList(),
+    val permission: OpenCodePermissionRequest? = null,
 )
 
 /**
@@ -372,20 +428,24 @@ fun ChatOverlay(
     var creatingSession by remember { mutableStateOf(false) }
     // Диалог подтверждения «очистить все сессии» (long-press на +).
     var confirmClearAll by remember { mutableStateOf(false) }
+    var permissionRespondingId by remember { mutableStateOf<String?>(null) }
+    var permissionError by remember { mutableStateOf<String?>(null) }
+    var stopping by remember { mutableStateOf(false) }
     var whisperRecorder: AudioRecorder? = null
+    val permissionActionBusy = permissionRespondingId != null || stopping
 
     fun answerQuestion(
         q: ChatQuestion,
         text: String,
     ) {
         val sessionId = snapshot?.activeId ?: return
-        if (sending) return
+        if (sending || snapshot?.permission != null) return
         sending = true
         userScrolledUp = false
         scope.launch {
             val ok =
                 withContext(Dispatchers.IO) {
-                    if (sessionId != null) postAnswer(serverPort, sessionId, q.id, listOf(text)) else false
+                    postAnswer(serverPort, sessionId, q.id, listOf(text))
                 }
             sending = false
             if (ok) {
@@ -400,7 +460,7 @@ fun ChatOverlay(
 
     fun send() {
         val text = draft.trim()
-        if (text.isEmpty() || sending) return
+        if (text.isEmpty() || sending || snapshot?.permission != null) return
         val sessionId = snapshot?.activeId
         val pending = snapshot?.question
         if (pending != null) {
@@ -428,14 +488,61 @@ fun ChatOverlay(
         }
     }
 
-    fun stopGen() {
-        val sessionId = snapshot?.activeId ?: return
+    fun respondPermission(
+        request: OpenCodePermissionRequest,
+        decision: PermissionDecision,
+    ) {
+        if (permissionRespondingId != null || stopping) return
+        permissionRespondingId = request.id
+        permissionError = null
         scope.launch {
-            val ok = withContext(Dispatchers.IO) { abortSession(serverPort, sessionId) }
+            val replied = withContext(Dispatchers.IO) {
+                OpenCodePermissionApi.reply(serverPort, request.id, decision)
+            }
+            permissionRespondingId = null
+            if (!replied) {
+                permissionError = "Не удалось отправить ответ. Проверь сервер и повтори."
+                return@launch
+            }
+
+            PermissionCache.clear(request.sessionId)
+            snapshot =
+                snapshot?.let { current ->
+                    if (current.permission?.id == request.id) {
+                        current.copy(permission = null, stalled = false)
+                    } else {
+                        current
+                    }
+                }
+        }
+    }
+
+    fun stopGen() {
+        if (permissionRespondingId != null || stopping) return
+        val sessionId = snapshot?.activeId ?: return
+        val pendingPermission = snapshot?.permission
+        stopping = true
+        scope.launch {
+            val ok =
+                try {
+                    withContext(Dispatchers.IO) {
+                        val rejected =
+                            pendingPermission?.let {
+                                OpenCodePermissionApi.reply(serverPort, it.id, PermissionDecision.REJECT)
+                            } ?: false
+                        val aborted = abortSession(serverPort, sessionId)
+                        (pendingPermission != null && rejected) || aborted
+                    }
+                } finally {
+                    stopping = false
+                }
             if (ok) {
+                PermissionCache.clear(sessionId)
+                permissionError = null
+                snapshot = snapshot?.copy(permission = null, stalled = false)
                 vibrate(context)
             }
-            // thinking сбросится сам на следующем поллинге (2с): abort завершит
+            // thinking сбросится сам на следующем поллинге: abort завершит
             // стрим, и fetchChatSnapshot увидит step-finish → thinking=false.
         }
     }
@@ -455,6 +562,7 @@ fun ChatOverlay(
                         ChatCache.sessionId = null
                         ChatCache.rawHash = 0
                         ChatCache.result = null
+                        PermissionCache.clearAll()
                     }
                     id != null
                 }
@@ -481,6 +589,7 @@ fun ChatOverlay(
                         ChatCache.sessionId = null
                         ChatCache.rawHash = 0
                         ChatCache.result = null
+                        PermissionCache.clearAll()
                         // Удаляем ВСЕ остальные сессии — чистый старт. DELETE сам по себе не
                         // обязан останавливать бегущую генерацию: модель может продолжать
                         // писать ответ в сессию, которую мы удаляем (CPU горит впустую, сервер
@@ -491,7 +600,7 @@ fun ChatOverlay(
                         try {
                             val arr = org.json.JSONArray(raw)
                             for (i in 0 until arr.length()) {
-                                val sid = arr.getJSONObject(i).optString("id", null) ?: continue
+                                val sid = arr.getJSONObject(i).optString("id").takeIf(String::isNotBlank) ?: continue
                                 if (sid != id) {
                                     abortSession(serverPort, sid)
                                     LocalOpenCodeClient.delete(serverPort, "/session/$sid")
@@ -841,6 +950,22 @@ fun ChatOverlay(
             if (snap != null) {
                 val now = System.currentTimeMillis()
                 val completed = snap.messages.count { it.role == "assistant" && it.text.isNotBlank() }
+                val old = snapshot
+                if (old?.permission?.id != snap.permission?.id) {
+                    permissionError = null
+                }
+                val madeProgress =
+                    old != null &&
+                        (
+                            old.messages != snap.messages ||
+                                old.liveTool != snap.liveTool ||
+                                old.question != snap.question ||
+                                old.permission != snap.permission
+                        )
+                if (madeProgress || snap.permission != null) {
+                    stallSince = 0L
+                    emptyStallSince = 0L
+                }
                 val stalled =
                     if (!snap.thinking) {
                         stallSince = 0L
@@ -874,15 +999,15 @@ fun ChatOverlay(
                 val final = if (stalled) snap.copy(stalled = true) else snap
                 // Дельта-поллинг: ставим snapshot в UI только если содержимое реально
                 // изменилось (messages + thinking + stalled одинаковы — пропускаем).
-                // При частом поллинге (400мс) это не даёт Compose реконсилить всю
+                // При частом поллинге это не даёт Compose реконсилить всю
                 // ленту без необходимости, сохраняя рендер максимально дешёвым.
-                val old = snapshot
                 changed = old == null ||
                     old.messages != final.messages ||
                     old.thinking != final.thinking ||
                     old.stalled != final.stalled ||
                     old.liveTool != final.liveTool ||
-                    old.question != final.question
+                    old.question != final.question ||
+                    old.permission != final.permission
                 if (changed) {
                     snapshot = final
                 }
@@ -1353,6 +1478,14 @@ fun ChatOverlay(
                     }
                 }
             }
+            snapshot?.permission?.let { request ->
+                PermissionCard(
+                    request = request,
+                    responding = permissionActionBusy,
+                    error = permissionError,
+                    onDecision = { decision -> respondPermission(request, decision) },
+                )
+            }
             if (listening || speechError != null || whisperBusy) {
                 Text(
                     when {
@@ -1372,6 +1505,7 @@ fun ChatOverlay(
                         .padding(top = 8.dp),
                 verticalAlignment = Alignment.Bottom,
             ) {
+                val permissionBlocked = snapshot?.permission != null
                 BasicTextField(
                     value = draft,
                     onValueChange = { draft = it },
@@ -1383,6 +1517,7 @@ fun ChatOverlay(
                     textStyle = TextStyle(color = Color(0xFFF0F0F0), fontSize = 15.sp),
                     cursorBrush = SolidColor(Color(0xFF7BA6F8)),
                     maxLines = 4,
+                    enabled = !permissionBlocked,
                     keyboardOptions =
                         KeyboardOptions(
                             capitalization = KeyboardCapitalization.Sentences,
@@ -1392,7 +1527,15 @@ fun ChatOverlay(
                     decorationBox = { inner ->
                         Box {
                             if (draft.isEmpty()) {
-                                Text("Напиши сообщение…", color = Color(0xFF777777), fontSize = 15.sp)
+                                Text(
+                                    if (permissionBlocked) {
+                                        "Сначала ответь на запрос разрешения"
+                                    } else {
+                                        "Напиши сообщение…"
+                                    },
+                                    color = Color(0xFF777777),
+                                    fontSize = 15.sp,
+                                )
                             }
                             inner()
                         }
@@ -1439,9 +1582,9 @@ fun ChatOverlay(
                         Modifier
                             .padding(start = 8.dp)
                             .size(46.dp)
-                            .clickable { stopGen() },
+                            .clickable(enabled = !permissionActionBusy) { stopGen() },
                     shape = CircleShape,
-                    color = Color(0xFF9E1C1C),
+                    color = if (permissionActionBusy) Color(0xFF3A3A3A) else Color(0xFF9E1C1C),
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Stop,
@@ -1455,9 +1598,9 @@ fun ChatOverlay(
                         Modifier
                             .padding(start = 8.dp)
                             .size(46.dp)
-                            .clickable { send() },
+                            .clickable(enabled = !permissionBlocked) { send() },
                     shape = CircleShape,
-                    color = if (sending) Color(0xFF3A3A3A) else Color(0xFF2E5E8E),
+                    color = if (sending || permissionBlocked) Color(0xFF3A3A3A) else Color(0xFF2E5E8E),
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.Send,
@@ -1595,6 +1738,120 @@ private fun LiveToolRow(tool: ChatTool) {
                 fontSize = 12.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Suppress("FunctionNaming", "LongMethod", "MagicNumber")
+@Composable
+private fun PermissionCard(
+    request: OpenCodePermissionRequest,
+    responding: Boolean,
+    error: String?,
+    onDecision: (PermissionDecision) -> Unit,
+) {
+    val accent = Color(0xFFF2A93B)
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color(0xFF241D12))
+                .border(1.dp, accent.copy(alpha = 0.65f), RoundedCornerShape(12.dp))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Text(
+            "Нужно разрешение",
+            color = accent,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            "OpenCode ждёт решения перед выполнением инструмента.",
+            color = Color(0xFFE8DCC8),
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 2.dp),
+        )
+        if (request.command.isNotBlank()) {
+            Text(
+                request.command,
+                color = Color(0xFFF2E8D8),
+                fontSize = 12.sp,
+                lineHeight = 17.sp,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
+        Text(
+            "Инструмент: ${request.permission}",
+            color = Color(0xFFB9AA91),
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        request.patterns.forEach { pattern ->
+            Text(
+                pattern,
+                color = Color(0xFFF2E8D8),
+                fontSize = 11.sp,
+                lineHeight = 15.sp,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+        if (request.alwaysPatterns.isNotEmpty()) {
+            Text(
+                "Всегда разрешит: ${request.alwaysPatterns.joinToString(" · ")}",
+                color = Color(0xFF9FB89A),
+                fontSize = 10.sp,
+                lineHeight = 14.sp,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
+        if (error != null) {
+            Text(
+                error,
+                color = Color(0xFFFF8A75),
+                fontSize = 11.sp,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            TextButton(
+                onClick = { onDecision(PermissionDecision.REJECT) },
+                enabled = !responding,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Отклонить", color = Color(0xFFFF8A75), fontSize = 12.sp)
+            }
+            TextButton(
+                onClick = { onDecision(PermissionDecision.ALLOW_ONCE) },
+                enabled = !responding,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Разрешить", color = Color(0xFF9BD4A2), fontSize = 12.sp)
+            }
+            if (request.alwaysPatterns.isNotEmpty()) {
+                TextButton(
+                    onClick = { onDecision(PermissionDecision.ALLOW_ALWAYS) },
+                    enabled = !responding,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Всегда", color = accent, fontSize = 12.sp)
+                }
+            }
+        }
+        if (responding) {
+            Text(
+                "Отправляю ответ…",
+                color = Color(0xFF9E9E9E),
+                fontSize = 11.sp,
+                modifier = Modifier.padding(top = 2.dp),
             )
         }
     }
@@ -2141,16 +2398,20 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                 val t = s.optJSONObject("time")?.optLong("updated") ?: -1L
                 if (t > bestTs) {
                     bestTs = t
-                    bestId = s.optString("id", null)
+                    bestId = s.optString("id").takeIf(String::isNotBlank)
                     bestModelId = s.optJSONObject("model")?.optString("id", "") ?: ""
                 }
             }
-            if (bestId == null) return@withContext ChatSnapshot(emptyList(), "нет сессий", null)
-            val label = titleOf(sessions, bestId)
-            // Вариант 2: /message (главный, тащит всю ленту) и /mcp стартуют ПАРАЛЛЕЛЬНО.
-            // Оба — блокирующие get() на Dispatchers.IO; async даёт им работать одновременно,
-            // а не последовательно (экономия ~11-58мс на поллинг в худшем случае).
-            val msgDeferred = async { LocalOpenCodeClient.get(p, "/session/$bestId/message") }
+            if (bestId == null) {
+                PermissionCache.clearAll()
+                return@withContext ChatSnapshot(emptyList(), "нет сессий", null)
+            }
+            val activeId = bestId
+            val label = titleOf(sessions, activeId)
+            // /message (лента) и /permission стартуют параллельно: оба вызова
+            // блокирующие, поэтому async убирает их последовательную задержку.
+            val msgDeferred = async { LocalOpenCodeClient.get(p, "/session/$activeId/message") }
+            val permissionDeferred = async { PermissionCache.get(p, activeId) }
             // MCP-серверы: GET /mcp → Record<name, McpServer{name,enabled,status,...}> (иначе пустой {}).
             // Читаем из кэша (обновляется раз в MCP_CACHE_MS), чтобы не дёргать сервис каждый поллинг.
             // Подключёнными считаем тех, у кого status == "connected". Показываем «N MCP».
@@ -2187,7 +2448,10 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             } catch (_: Exception) {
                 // MCP недоступен — покажем 0 красным
             }
-            val msgRaw = msgDeferred.await() ?: return@withContext ChatSnapshot(emptyList(), label, bestId)
+            val permission = permissionDeferred.await()
+            val msgRaw =
+                msgDeferred.await()
+                    ?: return@withContext ChatSnapshot(emptyList(), label, activeId, permission = permission)
             // Инкрементальный кэш: если за этой сессией тот же самый сырой JSON /message
             // (hash совпал) — лента и все производные (thinking/liveTool/ctxTokens/question)
             // гарантированно идентичны. Переиспользуем готовые объекты, НЕ пересоздавая
@@ -2195,7 +2459,7 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             // на каждый тик поллинга (2.5 раза/с), пока контент чата статичен.
             val rawHash = msgRaw.hashCode()
             val cached = ChatCache.result
-            if (ChatCache.sessionId == bestId && ChatCache.rawHash == rawHash && cached != null) {
+            if (ChatCache.sessionId == activeId && ChatCache.rawHash == rawHash && cached != null) {
                 val q = cached.question
                 val thinking = cached.thinking
                 val liveTool = cached.liveTool
@@ -2204,7 +2468,7 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                     ChatSnapshot(
                         take,
                         "$label",
-                        bestId,
+                        activeId,
                         q,
                         thinking,
                         prettyModel(bestModelId),
@@ -2213,21 +2477,25 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                         mcpConnected = mcpConnected,
                         mcpTotal = mcpTotal,
                         mcpServers = mcpServers,
+                        permission = permission,
                     )
                 android.util.Log.d(
                     "ChatOverlay",
-                    "FETCH(cached) out=${take.size} thinking=$thinking q=${q != null} label=$label model=$bestModelId",
+                    "FETCH(cached) out=${take.size} thinking=$thinking q=${q != null} " +
+                        "permission=${permission != null} label=$label model=$bestModelId",
                 )
                 return@withContext snap
             }
             val arr = JSONArray(msgRaw)
             val out = ArrayList<ChatMsg>(arr.length())
-            // Параллельные out флаги: была ли у сообщения «активность» шага
-            // (step-start/reasoning/tool) и был ли step-finish. Нужны, чтобы отличать
-            // реально думающего assistant (активность есть, финиша нет) от оборванного
-            // пустого шага после abort (parts=[], активности нет).
-            val hasActivity = ArrayList<Boolean>(arr.length())
-            val hasFinish = ArrayList<Boolean>(arr.length())
+            // Состояние последнего сырого сообщения нужно отдельно от видимых строк:
+            // assistant с одним tool-чатом и step-finish скрывается из ленты ниже, но всё
+            // равно завершает ответ. Без этих полей последней видимой строкой остался бы
+            // user, и UI после Stop продолжал бы показывать «Модель думает…».
+            var latestRole: String? = null
+            var latestActivity = false
+            var latestFinish = false
+            var latestCompleted = false
             // Живой инструмент, вызываемый моделью в ТЕКУЩЕМ ответе. Накопительный по
             // assistant-шагам одного ответа (сбрасывается на новом user-сообщении), поэтому
             // чип НЕ моргает между tool-вызовами. На шагах с тулом запоминаем его; пустой
@@ -2244,6 +2512,8 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                 val info = msg.optJSONObject("info") ?: continue
                 val role = info.optString("role", "system")
                 val parts = msg.optJSONArray("parts") ?: continue
+                val messageCompleted =
+                    info.optJSONObject("time")?.optLong("completed", 0L)?.let { it > 0L } == true
                 val sb = StringBuilder()
                 var hasText = false
                 var finish = false
@@ -2288,42 +2558,32 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                         ctxChars += part.optString("text", "").length
                     }
                 }
+                latestRole = role
+                latestActivity = activity
+                latestFinish = finish
+                latestCompleted = messageCompleted
                 // Завершённый tool-only шаг (step-start->tool...->step-finish без text)
                 // не должен отображаться как «… генерируется …» — это не зависание,
                 // а просто шаг без текста. Фильтруем его из ленты. ДУМАЮЩИЙ assistant
                 // (без step-finish) остаётся, чтобы UI показал «генерируется».
                 if (role == "assistant" && !hasText && finish) continue
                 out.add(ChatMsg(role, sb.toString()))
-                hasActivity.add(activity)
-                hasFinish.add(finish)
             }
-            val lastIndex = out.size - 1
-
-            fun hasActivityFor(idx: Int): Boolean = idx in hasActivity.indices && hasActivity[idx]
-
-            fun hasFinishFor(idx: Int): Boolean = idx in hasFinish.indices && hasFinish[idx]
             val take = if (out.size > MAX_SHOWN) out.subList(out.size - MAX_SHOWN, out.size) else out
-            val q = questionOf(p, bestId)
+            val q = questionOf(p, activeId)
             val last = out.lastOrNull()
-            // «Думает» = модель реально начала отвечать (есть шаг: step-start/reasoning/tool)
-            // И НЕ завершилась (нет step-finish). После abort opencode добавляет ПУСТОЙ
-            // assistant-шаг parts=[] (без step-start, без finish, без text) — такой НЕ
-            // считается думающим: иначе UI вечно показывал бы «Модель думает» после Stop.
+            // «Думает» = последнее сырое сообщение открывает новый ответ. У завершённого
+            // assistant проверяем даже скрытый tool-only шаг: после Stop opencode может
+            // завершить его без step-finish, но с info.time.completed.
             val thinking =
                 q == null &&
-                    when {
-                        last == null -> false
-                        last.role == "user" -> true
-                        // «Думает» также = открыт assistant-шаг, ещё НЕ завершённый (нет step-finish),
-                        // даже если модель пока не отдала ни одного part (step-start/reasoning/tool).
-                        // Такой период = модель уже работает (греет предикт, выполняет websearch/tool),
-                        // и юзер должен ВИДЕТЬ анимацию/живой чип, иначе кажется, что всё зависло.
-                        // Раньше требовали hasActivityFor(lastIndex) — из-за этого пустой открытый шаг
-                        // (первый тик после вопроса) давал thinking=false → никакой анимации до первых
-                        // частей. Форсируем hint, что работа идёт: assistant без finish = думает.
-                        last.role == "assistant" && !hasFinishFor(lastIndex) -> true
+                    when (latestRole) {
+                        null -> false
+                        "user" -> true
+                        "assistant" -> !latestFinish && !latestCompleted
                         else -> false
                     }
+
             // Live-чип показываем только пока модель ещё работает (thinking). Когда она
             // закончила (дала финальный ответ) — lastTool не показываем как «текущее».
             val liveTool = if (thinking) lastTool else null
@@ -2333,7 +2593,7 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             // активный контекст, а не кумулятивный tokens.input.
             val ctxTokens = (ctxChars / 4L * 115 / 100)
             // Записываем кэш ТОЛЬКО после успешного полного парсинга.
-            ChatCache.sessionId = bestId
+            ChatCache.sessionId = activeId
             ChatCache.rawHash = rawHash
             ChatCache.result =
                 ChatParseResult(
@@ -2342,15 +2602,12 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                     thinking,
                     liveTool,
                     ctxTokens,
-                    hasActivity,
-                    hasFinish,
-                    lastTool,
                 )
             val snap =
                 ChatSnapshot(
                     take,
                     "$label",
-                    bestId,
+                    activeId,
                     q,
                     thinking,
                     prettyModel(bestModelId),
@@ -2359,13 +2616,16 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                     mcpConnected = mcpConnected,
                     mcpTotal = mcpTotal,
                     mcpServers = mcpServers,
+                    permission = permission,
                 )
             val lastDiag = last?.let { "role=${it.role} text='${it.text.take(30)}'" } ?: "null"
             android.util.Log.d(
                 "ChatOverlay",
-                "FETCH parse out=${out.size} take=${take.size} thinking=$thinking q=${q != null} label=$label " +
+                "FETCH parse out=${out.size} take=${take.size} thinking=$thinking q=${q != null} " +
+                    "permission=${permission != null} label=$label " +
                     "model=$bestModelId liveTool=${liveTool?.name} LAST=[$lastDiag] " +
-                    "hasAct=${hasActivityFor(lastIndex)} hasFin=${hasFinishFor(lastIndex)}",
+                    "latestRole=$latestRole latestAct=$latestActivity latestFin=$latestFinish " +
+                    "latestCompleted=$latestCompleted",
             )
             snap
         } catch (e: Exception) {
@@ -2482,7 +2742,7 @@ private fun playNotificationSound(context: Context) {
 private fun createSession(port: Int): String? {
     val body = LocalOpenCodeClient.post(port, "/session", "{}") ?: return null
     return try {
-        JSONObject(body).optString("id", null)
+        JSONObject(body).optString("id").takeIf(String::isNotBlank)
     } catch (_: Exception) {
         null
     }
