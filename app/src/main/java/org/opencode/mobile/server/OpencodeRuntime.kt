@@ -353,9 +353,9 @@ object OpencodeRuntime {
     private fun ensureMcpConfigFile(file: File): Boolean {
         val text = if (file.exists()) file.readText() else null
         return when {
-            text == null -> writeMemoryMcpConfig(file, mcpBlock())
+            text == null -> writeManagedConfig(file, managedConfigBlock())
             !text.contains("\"memory\"") && !text.contains("\"mcp\"") ->
-                writeMemoryMcpConfig(file, mcpBlock())
+                writeManagedConfig(file, managedConfigBlock())
             !text.contains("\"memory\"") -> {
                 android.util.Log.w(
                     "OpencodeRuntime",
@@ -364,12 +364,12 @@ object OpencodeRuntime {
                 false
             }
             text.contains(legacyMemoryBlock()) ->
-                writeMemoryConfigText(
+                ensureManagedLaunchPermission(
                     file,
                     text.replace(legacyMemoryBlock(), mcpMemoryBlock()),
                 )
             text.contains("\"Authorization\": \"Bearer {env:MCP_MEMORY_TOKEN}\"") &&
-                text.contains("127.0.0.1:$MEMORY_PORT/mcp") -> true
+                text.contains("127.0.0.1:$MEMORY_PORT/mcp") -> ensureManagedLaunchPermission(file, text)
             else -> {
                 android.util.Log.w("OpencodeRuntime", "Existing memory MCP config has no managed auth header")
                 false
@@ -394,13 +394,39 @@ object OpencodeRuntime {
 
     private fun mcpBlock(): String = "\"mcp\": {\n    ${mcpMemoryBlock()}\n  }"
 
-    /**
-     * Дописывает секцию mcp.memory в opencode.jsonc (атомарно tmp+rename).
-     * @return true, когда конфиг гарантированно содержит memory-MCP.
-     */
-    private fun writeMemoryMcpConfig(
+    private fun managedConfigBlock(): String =
+        buildString {
+            append(mcpBlock())
+            append(",\n  \"permission\": {\n    \"mobile_launch_app\": \"ask\"\n  }")
+        }
+
+    private fun ensureManagedLaunchPermission(
         file: File,
-        mcpBlock: String,
+        text: String,
+    ): Boolean =
+        when {
+            text.contains("\"mobile_launch_app\"") -> true
+            text.contains("\"permission\"") -> {
+                android.util.Log.w(
+                    "OpencodeRuntime",
+                    "Existing permission config is user-managed; leaving mobile_launch_app unchanged",
+                )
+                true
+            }
+            !text.contains(mcpBlock()) -> {
+                android.util.Log.w(
+                    "OpencodeRuntime",
+                    "Managed memory MCP block has unexpected formatting; cannot add launch permission safely",
+                )
+                false
+            }
+            else -> writeMemoryConfigText(file, text.replace(mcpBlock(), managedConfigBlock()))
+        }
+
+    /** Записывает managed-секцию mcp.memory и permission в opencode.jsonc атомарно. */
+    private fun writeManagedConfig(
+        file: File,
+        managedBlock: String,
     ): Boolean {
         // Экранированный $schema (в строке Kotlin $ начинал бы интерполяцию).
         val schemaMarker = "\$schema"
@@ -411,14 +437,18 @@ object OpencodeRuntime {
                 // $0 в replacement — вся matched строка (схема + запятая, если была).
                 text.replaceFirst(
                     Regex("(\"\\\$schema\"\\s*:\\s*\"[^\"]*\"\\s*,?)"),
-                    "$0\n  $mcpBlock,",
+                    "$0\n  $managedBlock,",
                 )
             } else if (text.isBlank()) {
-                "{\n  \"\$schema\": \"https://opencode.ai/config.json\",\n  $mcpBlock\n}"
+                "{\n  \"\$schema\": \"https://opencode.ai/config.json\",\n  $managedBlock\n}"
             } else {
                 // Произвольный jsonc без $schema: вставляем перед последней "}".
                 val idx = text.lastIndexOf('}')
-                if (idx <= 0) null else text.substring(0, idx) + ",\n  " + mcpBlock + "\n" + text.substring(idx)
+                if (idx <= 0) {
+                    null
+                } else {
+                    text.substring(0, idx) + ",\n  " + managedBlock + "\n" + text.substring(idx)
+                }
             }
         if (updated == null) return false
         return writeMemoryConfigText(file, updated)

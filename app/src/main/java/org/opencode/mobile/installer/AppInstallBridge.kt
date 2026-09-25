@@ -2,6 +2,7 @@ package org.opencode.mobile.installer
 
 import android.content.Context
 import android.util.Log
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -21,6 +22,7 @@ import kotlin.concurrent.thread
 
 /**
  * Небольшой loopback RPC только для локального opencode MCP.
+ * Поддерживает установку APK и ограниченный запуск launcher-приложений.
  *
  * Каждый запрос обязан иметь Bearer-токен, выданный текущему процессу приложения.
  * Наружу сокет не слушает; токен передаётся memory.js через environment.
@@ -62,6 +64,7 @@ object AppInstallBridge {
         synchronized(lock) {
             if (started) return
             ApkInstaller.initialize(context)
+            InstalledAppController.initialize(context)
             val nextToken = token.ifBlank { UUID.randomUUID().toString() }
             val socket =
                 runCatching {
@@ -132,10 +135,43 @@ object AppInstallBridge {
         when {
             request.method == "GET" && request.path == "/v1/health" ->
                 writeJson(output, 200, JSONObject().put("ok", true).put("service", "android-app-install"))
+            request.method == "GET" && request.path == "/v1/apps" -> listApps(output, request)
             request.method == "GET" && request.path == "/v1/apps/status" -> status(output, request)
+            request.method == "POST" && request.path == "/v1/apps/launch" -> launchApp(output, request)
             request.method == "POST" && request.path == "/v1/apps/install" -> install(output, request)
             else -> writeJson(output, 404, error("not found"))
         }
+    }
+
+    private fun listApps(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val spec =
+            AppControlRequestValidator.list(
+                query = parameter(request.query, "query"),
+                limit = optionalIntParameter(request.query, "limit"),
+            )
+        val apps = InstalledAppController.listApps(spec)
+        val items =
+            JSONArray().apply {
+                apps.forEach { app -> put(app.toJson()) }
+            }
+        writeJson(
+            output,
+            200,
+            JSONObject().put("ok", true).put("count", apps.size).put("apps", items),
+        )
+    }
+
+    private fun launchApp(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val body = jsonObject(request)
+        val spec = AppControlRequestValidator.launch(body.getString("package"))
+        val app = InstalledAppController.launchApp(spec)
+        writeJson(output, 200, JSONObject().put("ok", true).put("app", app.toJson()))
     }
 
     private fun status(
@@ -152,10 +188,7 @@ object AppInstallBridge {
         output: BufferedOutputStream,
         request: Request,
     ) {
-        val body =
-            runCatching { JSONObject(request.body) }.getOrElse {
-                throw IllegalArgumentException("body must be a JSON object")
-            }
+        val body = jsonObject(request)
         val action = body.optString("action")
         require(action == "play" || action == "apk" || action == "local") {
             "action must be play, apk, or local"
@@ -287,8 +320,35 @@ object AppInstallBridge {
             }
         }
 
+    private fun optionalIntParameter(
+        query: String,
+        name: String,
+    ): Int? {
+        val raw = parameter(query, name) ?: return null
+        return raw.toIntOrNull() ?: throw IllegalArgumentException("$name must be an integer")
+    }
+
+    private fun jsonObject(request: Request): JSONObject =
+        runCatching { JSONObject(request.body) }.getOrElse {
+            throw IllegalArgumentException("body must be a JSON object")
+        }
+
     private fun JSONObject.optionalString(name: String): String? =
         if (has(name) && !isNull(name)) getString(name).takeIf { it.isNotBlank() } else null
+
+    private fun LaunchableAppSnapshot.toJson(): JSONObject =
+        JSONObject()
+            .put("package", packageName)
+            .put("label", label)
+            .put("component", componentName)
+            .put("version", versionName)
+
+    private fun LaunchedAppSnapshot.toJson(): JSONObject =
+        JSONObject()
+            .put("package", packageName)
+            .put("label", label)
+            .put("component", componentName)
+            .put("message", message)
 
     private fun InstallJobSnapshot.toJson(): JSONObject =
         JSONObject()
