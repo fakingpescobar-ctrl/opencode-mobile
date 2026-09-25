@@ -124,8 +124,9 @@ object ModelDownloader {
     /**
      * Пишет манифест модели. digest можно передать готовым (считанный по tmp до
      * rename — содержимое то же), иначе считается заново.
+     * internal: используется и ncnn-качалкой (NcnnModelDownloader).
      */
-    private fun writeManifest(
+    internal fun writeManifest(
         file: File,
         digest: String? = null,
     ) {

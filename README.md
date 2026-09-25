@@ -263,6 +263,7 @@ app/
         ChunkedTranscriber.kt        # чанкинг: сегменты → отдельные распознавания
         NcnnModelValidator.kt        # валидация набора ncnn-моделей
         ModelDownloader.kt           # скачивание turbo (lazy, resume, integrity SHA-256)
+        NcnnModelDownloader.kt       # ncnn-turbo набор (16 файлов) из GitHub Releases
       ui/
         ChatOverlay.kt           # нативный чат поверх WebView + настройки
         DiagnosticsScreen.kt     # экран диагностики (порты/MCP/модели)
