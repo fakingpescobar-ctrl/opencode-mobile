@@ -2,11 +2,11 @@ package org.opencode.mobile.stt
 
 import android.content.Context
 import android.util.Log
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.coroutines.coroutineContext
@@ -37,37 +37,55 @@ object NcnnModelDownloader {
     private const val GITHUB_RELEASES =
         "https://github.com/fakingpescobar-ctrl/opencode-mobile/releases/download/$REL_TAG"
 
-    /** Файл набора: имя в каталоге модели → точный размер (байт) релиза. Размеры
-     *  сняты с локальной копии tools/ncnn-int8/turbo (25.09.2026) и совпадают с
-     *  опубликованными assets. */
-    private data class Asset(val name: String, val size: Long)
+    private const val ENCODER_BIN_BYTES = 1_278_526_472L
+    private const val ENCODER_PARAM_BYTES = 26_779L
+    private const val ENCODER_INT8_BIN_BYTES = 728_023_304L
+    private const val ENCODER_INT8_PARAM_BYTES = 27_782L
+    private const val ENCODER_TABLE_BYTES = 1_457_688L
+    private const val DECODER_BIN_BYTES = 210_063_552L
+    private const val DECODER_PARAM_BYTES = 5_503L
+    private const val FBANK_BIN_BYTES = 102_912L
+    private const val FBANK_PARAM_BYTES = 871L
+    private const val EMBED_TOKEN_BIN_BYTES = 132_776_964L
+    private const val EMBED_TOKEN_PARAM_BYTES = 163L
+    private const val EMBED_POSITION_BIN_BYTES = 1_146_884L
+    private const val EMBED_POSITION_PARAM_BYTES = 159L
+    private const val PROJ_OUT_BIN_BYTES = 132_776_964L
+    private const val PROJ_OUT_PARAM_BYTES = 178L
+    private const val VOCAB_BYTES = 444_543L
 
-    private val ASSETS: List<Asset> =
-        listOf(
-            Asset("whisper_turbo_encoder.ncnn.bin", 1_278_526_472L),
-            Asset("whisper_turbo_encoder.ncnn.param", 26_779L),
-            Asset("whisper_turbo_encoder_int8.ncnn.bin", 728_023_304L),
-            Asset("whisper_turbo_encoder_int8.ncnn.param", 27_782L),
-            Asset("whisper_turbo_encoder.table", 1_457_688L),
-            Asset("whisper_turbo_decoder.ncnn.bin", 210_063_552L),
-            Asset("whisper_turbo_decoder.ncnn.param", 5_503L),
-            Asset("whisper_turbo_fbank.ncnn.bin", 102_912L),
-            Asset("whisper_turbo_fbank.ncnn.param", 871L),
-            Asset("whisper_turbo_embed_token.ncnn.bin", 132_776_964L),
-            Asset("whisper_turbo_embed_token.ncnn.param", 163L),
-            Asset("whisper_turbo_embed_position.ncnn.bin", 1_146_884L),
-            Asset("whisper_turbo_embed_position.ncnn.param", 159L),
-            Asset("whisper_turbo_proj_out.ncnn.bin", 132_776_964L),
-            Asset("whisper_turbo_proj_out.ncnn.param", 178L),
-            Asset("whisper_vocab.txt", 444_543L),
+    /** Файлы набора и точные размеры (байт) из манифеста релиза. */
+    private val ASSETS: Map<String, Long> =
+        linkedMapOf(
+            "whisper_turbo_encoder.ncnn.bin" to ENCODER_BIN_BYTES,
+            "whisper_turbo_encoder.ncnn.param" to ENCODER_PARAM_BYTES,
+            "whisper_turbo_encoder_int8.ncnn.bin" to ENCODER_INT8_BIN_BYTES,
+            "whisper_turbo_encoder_int8.ncnn.param" to ENCODER_INT8_PARAM_BYTES,
+            "whisper_turbo_encoder.table" to ENCODER_TABLE_BYTES,
+            "whisper_turbo_decoder.ncnn.bin" to DECODER_BIN_BYTES,
+            "whisper_turbo_decoder.ncnn.param" to DECODER_PARAM_BYTES,
+            "whisper_turbo_fbank.ncnn.bin" to FBANK_BIN_BYTES,
+            "whisper_turbo_fbank.ncnn.param" to FBANK_PARAM_BYTES,
+            "whisper_turbo_embed_token.ncnn.bin" to EMBED_TOKEN_BIN_BYTES,
+            "whisper_turbo_embed_token.ncnn.param" to EMBED_TOKEN_PARAM_BYTES,
+            "whisper_turbo_embed_position.ncnn.bin" to EMBED_POSITION_BIN_BYTES,
+            "whisper_turbo_embed_position.ncnn.param" to EMBED_POSITION_PARAM_BYTES,
+            "whisper_turbo_proj_out.ncnn.bin" to PROJ_OUT_BIN_BYTES,
+            "whisper_turbo_proj_out.ncnn.param" to PROJ_OUT_PARAM_BYTES,
+            "whisper_vocab.txt" to VOCAB_BYTES,
         )
 
     /** Суммарный размер набора (для прогресса). */
-    val TOTAL_BYTES: Long = ASSETS.sumOf { it.size }
+    val TOTAL_BYTES: Long = ASSETS.values.sum()
 
     /** Минимально необходимое свободное место ПЕРЕД началом скачивания: набор
      *  ≈2.49 ГБ + запас на .part-хвосты и sidecar-ы. */
     private const val MIN_FREE_BYTES = 3_000L * 1024 * 1024 // ~3 ГБ
+    private const val BYTES_PER_MIB = 1024L
+    private const val CONNECT_TIMEOUT_MS = 30_000
+    private const val READ_TIMEOUT_MS = 60_000
+    private const val DOWNLOAD_BUFFER_BYTES = 256 * 1024
+    private const val HTML_SNIFF_BYTES = 512
 
     /** Каталог набора: <filesDir>/models/ncnn-turbo/. */
     fun dir(context: Context): File = File(ModelDownloader.modelsDir(context), "ncnn-turbo").apply { mkdirs() }
@@ -84,14 +102,16 @@ object NcnnModelDownloader {
      */
     fun isTurboReady(context: Context): Boolean {
         if (!NcnnModelValidator.isTurboReady(context)) return false
-        val d = dir(context)
-        return ASSETS.all { asset ->
-            val f = File(d, asset.name)
-            if (!f.isFile || f.length() != asset.size) {
-                if (f.exists()) Log.w(TAG, "не готов: ${asset.name} длина=${f.length()} эталон=${asset.size}")
+        val directory = dir(context)
+        return ASSETS.all { (name, expectedSize) ->
+            val file = File(directory, name)
+            if (!file.isFile || file.length() != expectedSize) {
+                if (file.exists()) {
+                    Log.w(TAG, "не готов: $name длина=${file.length()} эталон=$expectedSize")
+                }
                 return@all false
             }
-            ModelDownloader.checkIntegrity(f) != ModelDownloader.ModelIntegrity.CORRUPT
+            ModelDownloader.checkIntegrity(file) != ModelDownloader.ModelIntegrity.CORRUPT
         }
     }
 
@@ -109,37 +129,36 @@ object NcnnModelDownloader {
     ): File {
         val d = dir(context)
         val free = context.filesDir.usableSpace
-        if (free > 0 && free < MIN_FREE_BYTES) {
-            throw IllegalStateException(
-                "Недостаточно места для ncnn-моделей: нужно ~2.9 ГБ, свободно ${free / 1024 / 1024} МБ",
-            )
+        check(free <= 0L || free >= MIN_FREE_BYTES) {
+            "Недостаточно места для ncnn-моделей: нужно ~2.9 ГБ, " +
+                "свободно ${free / BYTES_PER_MIB / BYTES_PER_MIB} МБ"
         }
 
         var doneBytes = 0L
         // Уже скачанные (полные) файлы входят в прогресс с самого старта.
-        ASSETS.forEach { asset ->
-            val f = File(d, asset.name)
-            if (f.isFile && f.length() == asset.size) {
-                doneBytes += asset.size
-                Log.d(TAG, "уже есть: ${asset.name}")
+        ASSETS.forEach { (name, expectedSize) ->
+            val file = File(d, name)
+            if (file.isFile && file.length() == expectedSize) {
+                doneBytes += expectedSize
+                Log.d(TAG, "уже есть: $name")
             }
         }
         Log.d(TAG, "старт: скачано $doneBytes / $TOTAL_BYTES байт")
 
-        for (asset in ASSETS) {
-            val dest = File(d, asset.name)
-            if (dest.isFile && dest.length() == asset.size) {
+        for ((name, expectedSize) in ASSETS) {
+            val dest = File(d, name)
+            if (dest.isFile && dest.length() == expectedSize) {
                 // файл уже тут: если sha-sidecar есть — сверяем содержимое; если
                 // CORRUPT — перекачиваем его (размер мог совпасть, байты чужие)
                 if (ModelDownloader.checkIntegrity(dest) == ModelDownloader.ModelIntegrity.CORRUPT) {
-                    Log.w(TAG, "${asset.name}: содержимое не сошлось — перекачка")
+                    Log.w(TAG, "$name: содержимое не сошлось — перекачка")
                     ModelDownloader.deleteModel(dest)
                 } else {
                     continue
                 }
             }
-            val part = File(d, "${asset.name}.part")
-            downloadAsset(context, asset, dest, part) { added ->
+            val part = File(d, "$name.part")
+            downloadAsset(name, expectedSize, dest, part) { added ->
                 doneBytes += added
                 onProgress(doneBytes, TOTAL_BYTES)
             }
@@ -148,87 +167,143 @@ object NcnnModelDownloader {
     }
 
     /** Скачивает ОДИН файл с resume: .part + Range-хвост; при 200 (полный ответ)
-     *  пересоздаёт .part с нуля; строгая сверка done == эталон манифеста. */
+     *  пересоздаёт .part с нуля; строгая сверка размера с манифестом. */
     private suspend fun downloadAsset(
-        context: Context,
-        asset: Asset,
+        assetName: String,
+        expectedSize: Long,
         dest: File,
         tmp: File,
         onAdded: (Long) -> Unit,
     ) {
-        val dir = dest.parentFile ?: error("нет parent у ${dest.name}")
-        var resuming = tmp.isFile && tmp.length() in 1 until asset.size
-        var startAt = if (resuming) tmp.length() else 0L
+        check(dest.parentFile != null) { "нет parent у ${dest.name}" }
+        val existingBytes = tmp.length()
+        val resuming = tmp.isFile && existingBytes in 1 until expectedSize
+        val startAt = if (resuming) existingBytes else 0L
+        val connection = openConnection(assetName, startAt, resuming)
 
-        val conn = (URL("$GITHUB_RELEASES/${asset.name}").openConnection() as HttpURLConnection).apply {
+        try {
+            connection.connect()
+            val responseCode = connection.responseCode
+            validateResponse(connection, assetName, responseCode, resuming, startAt)
+
+            // 200 при наличии Range: сервер отдал полный файл заново (или ревизия
+            // сменилась) — хвост не склеиваем, строим с нуля.
+            val effectiveStartAt = if (responseCode == HttpURLConnection.HTTP_PARTIAL) {
+                startAt
+            } else {
+                tmp.delete()
+                0L
+            }
+            val done = copyResponse(connection, tmp, effectiveStartAt, onAdded)
+            completeDownload(tmp, dest, expectedSize)
+            Log.d(TAG, "скачан: $assetName ($done байт, sha256 ok)")
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun openConnection(
+        assetName: String,
+        startAt: Long,
+        resuming: Boolean,
+    ): HttpURLConnection =
+        (URL("$GITHUB_RELEASES/$assetName").openConnection() as HttpURLConnection).apply {
             instanceFollowRedirects = true
-            connectTimeout = 30_000
-            readTimeout = 60_000
+            connectTimeout = CONNECT_TIMEOUT_MS
+            readTimeout = READ_TIMEOUT_MS
             setRequestProperty("User-Agent", "Mozilla/5.0")
             if (resuming) setRequestProperty("Range", "bytes=$startAt-")
         }
 
-        try {
-            conn.connect()
-            val code = conn.responseCode
-            if ((code != HttpURLConnection.HTTP_PARTIAL && code != HttpURLConnection.HTTP_OK) ||
-                (code == HttpURLConnection.HTTP_PARTIAL && !resuming)
-            ) {
-                throw IllegalStateException("HTTP $code при скачивании ${asset.name} (Range=${if (resuming) startAt else "-"})")
-            }
-            val ct = conn.contentType ?: ""
-            if (ct.contains("text/html", ignoreCase = true) || ct.contains("text/plain", ignoreCase = true)) {
-                throw IllegalStateException("сервер вернул HTML/текст вместо ${asset.name} (content-type=$ct) — проверь сеть/URL")
-            }
-
-            // 200 при наличии Range: сервер отдал полный файл заново (или ревизия
-            // сменилась) — хвост не склеиваем, строим с нуля.
-            val append = code == HttpURLConnection.HTTP_PARTIAL
-            if (!append) {
-                tmp.delete()
-                startAt = 0L
-            }
-
-            var done = startAt
-            val out = FileOutputStream(tmp, append)
-            conn.inputStream.use { input ->
-                out.use { fos ->
-                    val buf = ByteArray(256 * 1024)
-                    while (true) {
-                        coroutineContext.ensureActive()
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        if (done == startAt && looksLikeHtml(buf, n)) {
-                            tmp.delete()
-                            throw IllegalStateException("сервер вернул HTML вместо модели ${asset.name} — проверь сеть/URL")
-                        }
-                        fos.write(buf, 0, n)
-                        done += n
-                        onAdded(n.toLong())
-                    }
-                }
-            }
-
-            // Жёсткая сверка с эталоном манифеста: обрыв на 99% файла сюда не пройдёт.
-            if (done != asset.size) {
-                throw IllegalStateException("${asset.name}: оборван ($done из ${asset.size} байт) — повторный заход докачает")
-            }
-
-            // SHA-256 снапшот (по tmp ДО rename — содержимое то же) через общую
-            // механику ModelDownloader; манифест пишется под финальным именем.
-            val digest = ModelDownloader.sha256Of(tmp)
-            if (digest == null) {
-                throw IllegalStateException("SHA-256 не посчитался для ${tmp.name}")
-            }
-            if (!tmp.renameTo(dest)) {
-                tmp.delete()
-                throw IllegalStateException("не удалось перенести ${tmp.name} в финальное имя")
-            }
-            ModelDownloader.writeManifest(dest, digest)
-            Log.d(TAG, "скачан: ${asset.name} (${asset.size} байт, sha256 ok)")
-        } finally {
-            conn.disconnect()
+    private fun validateResponse(
+        connection: HttpURLConnection,
+        assetName: String,
+        responseCode: Int,
+        resuming: Boolean,
+        startAt: Long,
+    ) {
+        val unsupportedCode =
+            responseCode != HttpURLConnection.HTTP_PARTIAL && responseCode != HttpURLConnection.HTTP_OK
+        check(!unsupportedCode) {
+            val range = if (resuming) startAt.toString() else "-"
+            "HTTP $responseCode при скачивании $assetName (Range=$range)"
         }
+        check(responseCode != HttpURLConnection.HTTP_PARTIAL || resuming) {
+            "HTTP 206 без Range при скачивании $assetName"
+        }
+
+        val contentType = connection.contentType ?: ""
+        val isHtmlResponse = contentType.contains("text/html", ignoreCase = true)
+        val isTextResponse = contentType.contains("text/plain", ignoreCase = true)
+        check(!isHtmlResponse && !isTextResponse) {
+            "сервер вернул HTML/текст вместо $assetName " +
+                "(content-type=$contentType) — проверь сеть/URL"
+        }
+    }
+
+    private class CopyState(
+        val file: File,
+        val startAt: Long,
+        var done: Long = startAt,
+    )
+
+    private suspend fun copyResponse(
+        connection: HttpURLConnection,
+        tmp: File,
+        startAt: Long,
+        onAdded: (Long) -> Unit,
+    ): Long {
+        val append = connection.responseCode == HttpURLConnection.HTTP_PARTIAL
+        val state = CopyState(tmp, startAt)
+        connection.inputStream.use { input ->
+            FileOutputStream(tmp, append).use { output ->
+                copyInput(input, output, state, onAdded)
+            }
+        }
+        return state.done
+    }
+
+    private suspend fun copyInput(
+        input: InputStream,
+        output: OutputStream,
+        state: CopyState,
+        onAdded: (Long) -> Unit,
+    ) {
+        val buffer = ByteArray(DOWNLOAD_BUFFER_BYTES)
+        while (true) {
+            coroutineContext.ensureActive()
+            val bytesRead = input.read(buffer)
+            if (bytesRead < 0) break
+            if (state.done == state.startAt && looksLikeHtml(buffer, bytesRead)) {
+                state.file.delete()
+                error("сервер вернул HTML вместо модели ${state.file.name} — проверь сеть/URL")
+            }
+            output.write(buffer, 0, bytesRead)
+            state.done += bytesRead
+            onAdded(bytesRead.toLong())
+        }
+    }
+
+    private fun completeDownload(
+        tmp: File,
+        dest: File,
+        expectedSize: Long,
+    ) {
+        // Жёсткая сверка с эталоном манифеста: обрыв на 99% файла сюда не пройдёт.
+        check(tmp.length() == expectedSize) {
+            "${tmp.name}: оборван (${tmp.length()} из $expectedSize байт) — повторный заход докачает"
+        }
+
+        // SHA-256 считается по tmp ДО rename: содержимое то же, sidecar пишется
+        // уже под финальным именем.
+        val digest = checkNotNull(ModelDownloader.sha256Of(tmp)) {
+            "SHA-256 не посчитался для ${tmp.name}"
+        }
+        if (!tmp.renameTo(dest)) {
+            tmp.delete()
+            error("не удалось перенести ${tmp.name} в финальное имя")
+        }
+        ModelDownloader.writeManifest(dest, digest)
     }
 
     /** HTML вместо бинарного файла: первые 512 байт содержат маркеры страницы
@@ -238,7 +313,7 @@ object NcnnModelDownloader {
         buf: ByteArray,
         len: Int,
     ): Boolean {
-        val head = String(buf, 0, minOf(len, 512), Charsets.UTF_8)
+        val head = String(buf, 0, minOf(len, HTML_SNIFF_BYTES), Charsets.UTF_8)
         return head.contains("<!DOCTYPE", ignoreCase = true) ||
             head.contains("<html", ignoreCase = true)
     }

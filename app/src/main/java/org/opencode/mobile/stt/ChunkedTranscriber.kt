@@ -45,65 +45,88 @@ object ChunkedTranscriber {
         model: String,
         engine: String,
     ): String {
-        if (samples.isEmpty()) return "ОШИБКА WHISPER: пустые сэмплы"
+        if (samples.isEmpty()) {
+            return "ОШИБКА WHISPER: пустые сэмплы"
+        }
 
         // Lazy-путь: короткий клип → один прогон без VAD (энкодер ncnn — константа
         // ~6.5с, сегментирование короткой речи только умножает её). Для whisper.cpp
         // сохраняем прежнее поведение (ему нужен padToMin > 3с и чанкинг привычен).
-        val lazilySinglePass = engine == WhisperTranscribeService.ENGINE_NCNN &&
-            samples.size <= MAX_SINGLE_PASS_SAMPLES
-        if (lazilySinglePass) {
-            Log.d(TAG, "lazy single-pass: ${samples.size / SAMPLE_RATE}с ≤ 28с — без VAD-сегментации")
-            return WhisperTranscribeService.transcribe(
-                context = context,
-                samples = samples,
-                model = model,
-                engine = engine,
-            )
-        }
-
-        val speech = ArrayList<FloatArray>()
-        val metas = ArrayList<String>()
-        val segments = SpeechSegmenter().split(samples)
-        for ((idx, seg) in segments.withIndex()) {
-            val audio = if (engine == WhisperTranscribeService.ENGINE_WHISPER) {
-                padToMin(seg.samples, minSamples = 3 * SAMPLE_RATE)
-            } else {
-                seg.samples
+        return when {
+            shouldUseSinglePass(engine, samples.size) -> {
+                Log.d(TAG, "lazy single-pass: ${samples.size / SAMPLE_RATE}с ≤ 28с — без VAD-сегментации")
+                WhisperTranscribeService.transcribe(
+                    context = context,
+                    samples = samples,
+                    model = model,
+                    engine = engine,
+                )
             }
-            speech.add(audio)
-            metas.add("%.1fс".format(audio.size / SAMPLE_RATE.toFloat()))
+            else -> {
+                val segments = SpeechSegmenter().split(samples)
+                val speech = segments.map { segment -> prepareAudio(segment.samples, engine) }
+                logSegments(speech, samples.size)
+                transcribeSegments(context, segments, speech, model, engine)
+            }
         }
-        if (speech.isEmpty()) {
-            Log.d(TAG, "VAD: речи не обнаружено (${samples.size / SAMPLE_RATE}с) — пустой результат")
+    }
+
+    private fun shouldUseSinglePass(
+        engine: String,
+        sampleCount: Int,
+    ): Boolean = engine == WhisperTranscribeService.ENGINE_NCNN && sampleCount <= MAX_SINGLE_PASS_SAMPLES
+
+    private fun prepareAudio(
+        samples: FloatArray,
+        engine: String,
+    ): FloatArray =
+        if (engine == WhisperTranscribeService.ENGINE_WHISPER) {
+            padToMin(samples, minSamples = 3 * SAMPLE_RATE)
         } else {
-            Log.d(TAG, "сегментов: ${speech.size} из ${samples.size / SAMPLE_RATE}с: ${metas.joinToString()}")
+            samples
         }
 
-        // Прогоняем сегменты по одному: ошибка любого — валит весь запрос.
-        var firstError: String? = null
+    private fun logSegments(
+        speech: List<FloatArray>,
+        totalSamples: Int,
+    ) {
+        if (speech.isEmpty()) {
+            Log.d(TAG, "VAD: речи не обнаружено (${totalSamples / SAMPLE_RATE}с) — пустой результат")
+            return
+        }
+        val metas = speech.map { "%.1fс".format(it.size / SAMPLE_RATE.toFloat()) }
+        Log.d(TAG, "сегментов: ${speech.size} из ${totalSamples / SAMPLE_RATE}с: ${metas.joinToString()}")
+    }
+
+    private suspend fun transcribeSegments(
+        context: Context,
+        segments: List<SpeechSegmenter.Segment>,
+        speech: List<FloatArray>,
+        model: String,
+        engine: String,
+    ): String {
         val parts = ArrayList<String>()
-        for ((idx, audio) in speech.withIndex()) {
+        for ((index, audio) in speech.withIndex()) {
             val text = WhisperTranscribeService.transcribe(
                 context = context,
                 samples = audio,
                 model = model,
                 engine = engine,
             )
-            if (text.startsWith("ОШИБКА")) {
-                firstError = text
-                break
-            }
+            if (text.startsWith("ОШИБКА")) return text
+
             val trimmed = text.trim()
             if (trimmed.isNotEmpty()) parts.add(trimmed)
+            val segment = segments[index]
+            val durationSeconds = audio.size / SAMPLE_RATE
+            val rms = "%.3f".format(segment.rms)
             Log.d(
                 TAG,
-                "сегмент ${idx + 1}/${speech.size} " +
-                    "(${segments[idx].startMs}мс, ${audio.size / SAMPLE_RATE}с, " +
-                    "rms=%.3f): '%s'".format(segments[idx].rms, trimmed),
+                "сегмент ${index + 1}/${speech.size} " +
+                    "(${segment.startMs}мс, ${durationSeconds}с, rms=$rms): '$trimmed'",
             )
         }
-        return firstError ?: parts.joinToString(" ")
+        return parts.joinToString(" ")
     }
 
     /** whisper.cpp (vanilla) врёт на клипах < 3с — добиваем нулями до минимума. */

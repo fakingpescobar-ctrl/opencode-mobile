@@ -74,12 +74,21 @@ import java.util.Locale
 
 /** Сколько последних сбоев показываем в UI и дампе (кольцо хранит до MAX_ERROR_HISTORY). */
 private const val HISTORY_SHOWN = 5
+private const val PERCENT_MAX = 100
+private const val PROGRESS_TRACK_COLOR = 0xFF2A2A2AL
 
 /** Состояние скачивания ncnn-набора (кнопка в секции «Голосовое распознавание»). */
 private sealed interface NcnnDownloadState {
     data object Idle : NcnnDownloadState
-    data class Running(val done: Long, val total: Long) : NcnnDownloadState
-    data class Failed(val message: String) : NcnnDownloadState
+
+    data class Running(
+        val done: Long,
+        val total: Long,
+    ) : NcnnDownloadState
+
+    data class Failed(
+        val message: String,
+    ) : NcnnDownloadState
 }
 
 /** Снапшот моделей и хранилища, собранный один раз на IO при открытии. */
@@ -280,7 +289,7 @@ fun DiagnosticsScreen(
                             val ratio = if (dl.total > 0) (dl.done.toFloat() / dl.total).coerceIn(0f, 1f) else 0f
                             InfoRow(
                                 "Загрузка ncnn-моделей",
-                                "${(ratio * 100).toInt()}% · ${fmtBytes(dl.done)} из ${fmtBytes(dl.total)}",
+                                "${(ratio * PERCENT_MAX).toInt()}% · ${fmtBytes(dl.done)} из ${fmtBytes(dl.total)}",
                                 Color(0xFFFFC107),
                             )
                             Spacer(Modifier.height(3.dp))
@@ -289,7 +298,7 @@ fun DiagnosticsScreen(
                                     .fillMaxWidth()
                                     .height(3.dp)
                                     .clip(RoundedCornerShape(2.dp))
-                                    .background(Color(0xFF2A2A2A)),
+                                    .background(Color(PROGRESS_TRACK_COLOR)),
                             ) {
                                 Box(
                                     Modifier
@@ -302,11 +311,11 @@ fun DiagnosticsScreen(
                         }
                         is NcnnDownloadState.Failed -> {
                             InfoRow("Скачивание не удалось", dl.message, Color(0xFFFF6F5A))
-                            DownButton("Повторить (докачка)") { startNcnnDownload() }
+                            downloadButton("Повторить (докачка)") { startNcnnDownload() }
                         }
                         NcnnDownloadState.Idle -> {
                             if (!s.ncnnTurboReady) {
-                                DownButton("Скачать ncnn-модели (~2.5 ГБ)") { startNcnnDownload() }
+                                downloadButton("Скачать ncnn-модели (~2.5 ГБ)") { startNcnnDownload() }
                             }
                         }
                     }
@@ -429,7 +438,7 @@ private fun InfoRow(
 
 /** Кнопка-плашка скачивания моделей (тёмный экран диагностики, акцент зелёный). */
 @Composable
-private fun DownButton(
+private fun downloadButton(
     label: String,
     onClick: () -> Unit,
 ) {
