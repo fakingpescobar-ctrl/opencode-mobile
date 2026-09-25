@@ -66,9 +66,21 @@ object RuntimeValidation {
      * именно на GET /mcp, так что 2xx — это признак живого MCP-сервера, к которому
      * serve реально может подключиться. Стрим не читаем (SSE бесконечный),
      * рвём соединение сразу после получения заголовков.
+     *
+     * Заголовок Authorization обязателен: memory.js держит bearer-аутентификацию
+     * и без него отвечает 401, из-за чего проверка была красной на живом сервере.
+     * Нет токена (память не поднята/остановлена) — false: проверять нечего, и
+     * «зелёный» результат был бы враньём.
      */
     @Suppress("SwallowedException") // Диагностика: любой отказ = «память не готова», причина не влияет на вердикт.
     fun memoryHttpOk(): Boolean {
+        val authorization = MemoryAuth.bearerHeader() ?: return false
+        return probeMemoryMcp(authorization)
+    }
+
+    /** GET /mcp с bearer — 2xx значит живой MCP (тело SSE не читаем). */
+    @Suppress("SwallowedException") // Любой отказ = «память не готова», причина не влияет на вердикт.
+    private fun probeMemoryMcp(authorization: String): Boolean {
         try {
             val conn =
                 (java.net.URL("http://127.0.0.1:$MEMORY_PORT/mcp").openConnection() as java.net.HttpURLConnection)
@@ -77,6 +89,7 @@ object RuntimeValidation {
                         readTimeout = CONNECT_TIMEOUT_MS
                         setRequestProperty("Accept", "text/event-stream")
                         setRequestProperty("Connection", "close")
+                        setRequestProperty("Authorization", authorization)
                     }
             return try {
                 val code = conn.responseCode

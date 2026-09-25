@@ -185,6 +185,10 @@ class RuntimeManager(
                 android.util.Log.i("OpencodeServer", "workspace=${workspace.absolutePath} external=$ext")
 
                 val memoryToken = UUID.randomUUID().toString()
+                // Тот же токен отдаём проверкам приложения (RuntimeValidation в
+                // диагностике): без него GET /mcp даёт 401 и валидация красная
+                // на живом сервере. Сбрасывается в finally вместе с процессом.
+                MemoryAuth.set(memoryToken)
 
                 // Регистрируем локальную память в конфиге serve как remote MCP
                 // (иначе serve о ней не знает — индикатор «0 MCP», инструменты
@@ -363,6 +367,9 @@ class RuntimeManager(
             running = false
             serve.stop()
             memory.stop()
+            // Токен памяти живёт один виток: погасили процесс — погасили токен,
+            // иначе проверка ходила бы с мёртвым bearer и врала бы в диагностике.
+            MemoryAuth.clear()
             // Публикуем STOPPED при штатном выходе (requestStop) и при отмене корутины
             // (CancellationException из delay). НО: CRASHED/FAILED_PERMANENTLY не затираем
             // НИКОГДА — информация о терминальном отказе важнее (RESTART_LIMIT /
