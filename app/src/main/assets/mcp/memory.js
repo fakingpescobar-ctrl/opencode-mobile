@@ -406,22 +406,24 @@ const MOBILE_MEDIA_TOOLS = [
   {
     name: "mobile_media_ui_click",
     description:
-      "Tap one control inside a media app's own window, by the text or accessibility label it shows. This " +
-      "is the last resort for 'play that exact track in Yandex Music': the media session route is " +
-      "verified not to start an arbitrary catalog id there, and a screen tap is the only public way " +
-      "left. Hard requirements, all checked and reported instead of guessed: the user must have enabled " +
-      "this app's accessibility service in Android Settings (otherwise the answer is " +
+      "Tap one control inside a media app's own window, by the text or accessibility label it shows, or by " +
+      "the screen rectangle it draws. This is the last resort for 'play that exact track in Yandex Music': the " +
+      "media session route is verified not to start an arbitrary catalog id there, and a screen tap is the only " +
+      "public way left. Hard requirements, all checked and reported instead of guessed: the user must have " +
+      "enabled this app's accessibility service in Android Settings (otherwise the answer is " +
       "reason='accessibility service is not enabled for opencode mobile' - ask the user to switch it on, " +
       "never claim the tap happened); the app's window must be on screen, because a hidden window is " +
       "invisible to accessibility; and at most one node is clicked per call. Read the answer honestly: " +
-      "click.outcome='clicked' is the only success, 'not_found' lists the clickable labels that were " +
-      "actually on screen (use them to correct your selector instead of guessing again), " +
-      "'click_rejected' means the node was there but the tap did not stick, and click.window_focused " +
-      "tells you whether that window was the one on top. The service is scoped to ru.yandex.music and " +
-      "reads nothing else. Matching is word based and case/punctuation insensitive, so 'my temper' " +
-      "matches 'My Temper (feat. M. Vegas)'. Call this only in direct response to an explicit user " +
-      "request to act in the player, and pair it with mobile_media_ui_shield when the user asked not to " +
-      "see the app switch.",
+      "ui.outcome='performed' is the only success, 'not_found' lists the controls that were actually on screen " +
+      "as candidates (label, bounds, clickable, editable - use them to aim the next call instead of guessing " +
+      "again), 'rejected' means the node was there but the tap did not stick, and 'failed' means something " +
+      "outside the action went wrong. ui.window_focused tells you whether that window was the one on top, and " +
+      "ui.gesture_used says the tap fell back to a swipe gesture. The service is scoped to ru.yandex.music and " +
+      "reads nothing else. Matching is word based and case/punctuation insensitive, so 'my temper' matches " +
+      "'My Temper (feat. M. Vegas)'. Name labels OR bounds, never both in one call: a rect is how you reach " +
+      "an unnamed control such as the search magnifier, and the tightest control under the point wins. Call " +
+      "this only in direct response to an explicit user request to act in the player, and pair it with " +
+      "mobile_media_ui_shield when the user asked not to see the app switch.",
     inputSchema: {
       type: "object",
       properties: {
@@ -449,15 +451,103 @@ const MOBILE_MEDIA_TOOLS = [
           maxItems: 5,
           description: "Any of these must equal the node's resource id"
         },
+        bounds: {
+          type: "array",
+          items: { type: "integer", minimum: -20000, maximum: 20000 },
+          minItems: 4,
+          maxItems: 4,
+          description:
+            "[left, top, right, bottom] in screen pixels for a control with no label, read off a " +
+            "not_found candidate or a tree dump. Cannot be combined with the label selectors."
+        },
         require_clickable: {
           type: "boolean",
-          description: "Default true; set false only when the control is a container without its own click"
+          description:
+            "Default true; set false only when the control is a container without its own click. Ignored " +
+            "together with bounds, where the tap may fall back to a gesture on a node the app never " +
+            "called clickable."
         },
         timeout_ms: {
           type: "integer",
           minimum: 500,
           maximum: 30000,
           description: "How long to wait for the window and the node; default 8000"
+        }
+      },
+      required: ["package"]
+    }
+  },
+  {
+    name: "mobile_media_ui_text",
+    description:
+      "Type into, clear, or tap one control inside a media app's own window. This is the search half of " +
+      "mobile_media_ui_click: it exists because Yandex Music signs neither its search field nor its search " +
+      "magnifier with any text, content description or resource id, so 'search Busta Rymes and play that " +
+      "track' was impossible through labels alone. action='set_text' (the default) types the given text into " +
+      "the one editable field the window offers and needs no selector at all; action='clear_text' empties it; " +
+      "action='click' behaves exactly like mobile_media_ui_click. If the field refuses the text the service " +
+      "focuses it once and types again, and never types synthetic key events, so the app's own " +
+      "accessibility validation sees a real edit. The same hard requirements apply: the accessibility " +
+      "service must be enabled, the app's window must be on screen, and at most one action happens per call. " +
+      "Read the answer honestly: ui.outcome='performed' is the only success, 'not_found' lists the controls " +
+      "that were on screen as candidates (label, bounds, clickable, editable), 'rejected' means the node was " +
+      "there but the text did not stick, and 'failed' means something outside the action went wrong. Use " +
+      "bounds only for an unnamed control, never together with the label selectors. Call this only in direct " +
+      "response to an explicit user request to act in the player.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        package: {
+          type: "string",
+          maxLength: 255,
+          pattern: "^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+$",
+          description: "Exact app package to look at, normally ru.yandex.music"
+        },
+        action: {
+          type: "string",
+          enum: ["set_text", "clear_text", "click"],
+          description: "What to do; default set_text"
+        },
+        text: {
+          type: "string",
+          minLength: 1,
+          maxLength: 200,
+          description: "The query to type; required for set_text, ignored by the other actions"
+        },
+        text_contains: {
+          type: "array",
+          items: { type: "string", minLength: 1, maxLength: 200 },
+          maxItems: 5,
+          description:
+            "Any of these must appear as whole words in the field's visible text; optional, and normally " +
+            "omitted because a search field starts empty"
+        },
+        content_description: {
+          type: "array",
+          items: { type: "string", minLength: 1, maxLength: 200 },
+          maxItems: 5,
+          description: "Any of these must appear as whole words in the field's accessibility label"
+        },
+        resource_id: {
+          type: "array",
+          items: { type: "string", minLength: 1, maxLength: 200 },
+          maxItems: 5,
+          description: "Any of these must equal the field's resource id"
+        },
+        bounds: {
+          type: "array",
+          items: { type: "integer", minimum: -20000, maximum: 20000 },
+          minItems: 4,
+          maxItems: 4,
+          description:
+            "[left, top, right, bottom] in screen pixels for a field with no label. Cannot be combined " +
+            "with the label selectors."
+        },
+        timeout_ms: {
+          type: "integer",
+          minimum: 500,
+          maximum: 30000,
+          description: "How long to wait for the window and the field; default 8000"
         }
       },
       required: ["package"]
@@ -785,9 +875,31 @@ async function mobileMediaPlay(args) {
 
 const MEDIA_UI_SELECTOR_FAMILIES = ["text_contains", "content_description", "resource_id"];
 
-function mediaUiSelectors(args) {
+// Прямоугольник — селектор безымянного контрола. Лупа и поле поиска в Яндекс.Музыке не подписаны
+// ничем, но нарисованы, и координаты приходят из того же дампа дерева.
+function mediaUiBounds(args) {
+  const raw = args.bounds;
+  if (raw === undefined || raw === null) return null;
+  if (!Array.isArray(raw) || raw.length !== 4) {
+    throw new Error("bounds must be exactly 4 numbers: [left, top, right, bottom]");
+  }
+  const numbers = raw.map((entry) => {
+    const value = Number(entry);
+    if (!Number.isInteger(value)) throw new Error("bounds entries must be whole pixels");
+    if (Math.abs(value) > 20000) throw new Error("bounds entries must stay within 20000 px of the origin");
+    return value;
+  });
+  const [left, top, right, bottom] = numbers;
+  if (right <= left || bottom <= top) {
+    throw new Error("bounds must be [left, top, right, bottom] with right>left and bottom>top");
+  }
+  return numbers;
+}
+
+function mediaUiSelectors(args, options) {
   // Селекторы готовим здесь, а не на мосту: агент должен получить внятную ошибку про свою
   // просьбу, а не 400 из Kotlin с require().
+  const optional = Boolean(options && options.optional);
   const payload = {};
   let named = 0;
   for (const family of MEDIA_UI_SELECTOR_FAMILIES) {
@@ -804,7 +916,17 @@ function mediaUiSelectors(args) {
     payload[family] = values;
     named += 1;
   }
-  if (named === 0) {
+  const bounds = mediaUiBounds(args);
+  if (bounds) {
+    if (named > 0) {
+      // Смешивать нельзя: у прямоугольника и у метки разный смысл, и «попал в один из двух»
+      // звучало бы как «попал куда-то».
+      throw new Error("name either bounds or label selectors, not both in one call");
+    }
+    payload.bounds = bounds;
+    return payload;
+  }
+  if (named === 0 && !optional) {
     throw new Error("give at least one of: " + MEDIA_UI_SELECTOR_FAMILIES.join(", "));
   }
   return payload;
@@ -837,6 +959,37 @@ async function mobileMediaUiClick(args) {
   const timeout = mediaUiInteger(args.timeout_ms, null, 500, 30000, "timeout_ms");
   if (timeout !== null) payload.timeout_ms = timeout;
   return mobileBridge("/v1/media/ui/click", { method: "POST", body: JSON.stringify(payload) });
+}
+
+async function mobileMediaUiText(args) {
+  // set_text — умолчание, потому что ручка называется именно «ввести текст»; пустой action
+  // не должен молча стереть поле.
+  const action = args.action === undefined || args.action === null ? "set_text" : String(args.action);
+  if (!["set_text", "clear_text", "click"].includes(action)) {
+    throw new Error("action must be set_text, clear_text or click");
+  }
+  const payload = {
+    package: requireAndroidPackage(args.package),
+    action,
+    ...mediaUiSelectors(args, { optional: true })
+  };
+  if (action === "set_text") {
+    const text = String(args.text === undefined || args.text === null ? "" : args.text).trim();
+    if (!text) throw new Error("set_text needs a non-empty text; use clear_text to empty a field");
+    if (text.length > 200) throw new Error("text must be at most 200 characters");
+    payload.text = text;
+  } else if (args.text !== undefined && args.text !== null) {
+    throw new Error("text only belongs to set_text");
+  }
+  if (action === "click" && !payload.bounds) {
+    // Клик без метки и без прямоугольника — это тап в темноту, и мост такое отвергает.
+    if (!MEDIA_UI_SELECTOR_FAMILIES.some((family) => payload[family])) {
+      throw new Error("a click needs a label selector or bounds");
+    }
+  }
+  const timeout = mediaUiInteger(args.timeout_ms, null, 500, 30000, "timeout_ms");
+  if (timeout !== null) payload.timeout_ms = timeout;
+  return mobileBridge("/v1/media/ui/text", { method: "POST", body: JSON.stringify(payload) });
 }
 
 async function mobileMediaUiShield(args) {
@@ -969,6 +1122,7 @@ async function callTool(name, args) {
     case "mobile_media_play": return mobileMediaPlay(args || {});
     case "mobile_media_library": return mobileMediaLibrary(args || {});
     case "mobile_media_ui_click": return mobileMediaUiClick(args || {});
+    case "mobile_media_ui_text": return mobileMediaUiText(args || {});
     case "mobile_media_ui_shield": return mobileMediaUiShield(args || {});
     default: throw new Error("Unknown tool: " + name);
   }

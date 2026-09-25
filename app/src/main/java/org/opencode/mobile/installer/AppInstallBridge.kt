@@ -16,10 +16,13 @@ import org.opencode.mobile.media.MediaLikeResult
 import org.opencode.mobile.media.MediaPlaybackSnapshot
 import org.opencode.mobile.media.MediaSearchResult
 import org.opencode.mobile.media.MediaStatusResult
+import org.opencode.mobile.media.MediaUiAction
 import org.opencode.mobile.media.MediaUiAutomation
-import org.opencode.mobile.media.MediaUiClickJob
-import org.opencode.mobile.media.MediaUiClickOutcome
-import org.opencode.mobile.media.MediaUiClickTarget
+import org.opencode.mobile.media.MediaUiBounds
+import org.opencode.mobile.media.MediaUiCandidate
+import org.opencode.mobile.media.MediaUiJob
+import org.opencode.mobile.media.MediaUiOutcome
+import org.opencode.mobile.media.MediaUiTarget
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
@@ -197,6 +200,7 @@ object AppInstallBridge {
             Route("GET", "/v1/media/search", ::searchMedia),
             Route("GET", "/v1/media/library", ::mediaLibrary),
             Route("POST", "/v1/media/ui/click", ::clickMediaUi),
+            Route("POST", "/v1/media/ui/text", ::textMediaUi),
             Route("POST", "/v1/media/ui/shield", ::mediaUiShield),
         )
 
@@ -322,51 +326,74 @@ object AppInstallBridge {
         request: Request,
     ) {
         val body = jsonObject(request)
+        performUiAction(output, body, MediaUiAction.Click)
+    }
+
+    private fun textMediaUi(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val body = jsonObject(request)
+        // По умолчанию именно set_text: агент зовёт ручку, чтобы напечатать запрос, а не чтобы
+        // стереть поле, и пустой action не должен молча стирать.
+        val kind = body.optionalString("action") ?: MediaUiAction.SET_TEXT
+        performUiAction(output, body, MediaUiAction.parse(kind, body.optionalString("text")))
+    }
+
+    private fun performUiAction(
+        output: BufferedOutputStream,
+        body: JSONObject,
+        action: MediaUiAction,
+    ) {
         val target =
-            MediaUiClickTarget(
+            MediaUiTarget(
                 packageName = body.optionalString("package").orEmpty(),
                 textContains = body.optionalStringList("text_contains"),
                 contentDescriptions = body.optionalStringList("content_description"),
                 resourceIds = body.optionalStringList("resource_id"),
+                bounds = body.optionalBounds("bounds"),
                 requireClickable = body.optBoolean("require_clickable", true),
             )
         // Бюджет проверяем здесь, а не внутри задачи: иначе агент получил бы 200 с «ok=false»
         // вместо внятного 400 на плохой аргумент.
         val timeoutMs = body.optionalLong("timeout_ms", DEFAULT_UI_CLICK_TIMEOUT_MS)
-        require(timeoutMs in MediaUiClickJob.MIN_TIMEOUT_MS..MediaUiClickJob.MAX_TIMEOUT_MS) {
-            "timeout_ms must be between ${MediaUiClickJob.MIN_TIMEOUT_MS} and ${MediaUiClickJob.MAX_TIMEOUT_MS}"
+        require(timeoutMs in MediaUiJob.MIN_TIMEOUT_MS..MediaUiJob.MAX_TIMEOUT_MS) {
+            "timeout_ms must be between ${MediaUiJob.MIN_TIMEOUT_MS} and ${MediaUiJob.MAX_TIMEOUT_MS}"
         }
-        val outcome = clickOffRpcPool { MediaUiAutomation.click(target = target, timeoutMs = timeoutMs) }
+        val outcome =
+            clickOffRpcPool {
+                MediaUiAutomation.perform(target = target, action = action, timeoutMs = timeoutMs)
+            }
         writeJson(
             output,
             200,
             JSONObject()
-                .put("ok", outcome is MediaUiClickOutcome.Clicked)
-                .put("click", outcome.toJson()),
+                .put("ok", outcome is MediaUiOutcome.Performed)
+                .put("ui", outcome.toJson()),
         )
     }
 
     /**
-     * Уводим клик с пула RPC: сам он ждёт accessibility-сервис, а тот - чужое окно.
+     * Уводим работу с чужим окном с пула RPC: сам он ждёт accessibility-сервис, а тот - чужое окно.
      *
      * Страховка по времени нужна, чтобы мост не завис, даже если accessibility-сервис вообще
-     * не ответит: поток клика вернёт неотговорённый результат, но RPC-ответ уйдёт вовремя.
+     * не ответит: поток вернёт неотговорённый результат, но RPC-ответ уйдёт вовремя.
      */
-    private fun clickOffRpcPool(click: () -> MediaUiClickOutcome): MediaUiClickOutcome {
-        val settled = CompletableFuture<MediaUiClickOutcome>()
+    private fun clickOffRpcPool(action: () -> MediaUiOutcome): MediaUiOutcome {
+        val settled = CompletableFuture<MediaUiOutcome>()
         uiClickExecutor.execute {
             val outcome =
-                runCatching { click() }.getOrElse { error ->
-                    MediaUiClickOutcome.Failed(error.message ?: "ui click failed")
+                runCatching { action() }.getOrElse { error ->
+                    MediaUiOutcome.Failed(error.message ?: "ui job failed")
                 }
             settled.complete(outcome)
         }
         return runCatching {
             settled.get(
-                MediaUiClickJob.MAX_TIMEOUT_MS + UI_CLICK_HARD_TIMEOUT_GRACE_MS,
+                MediaUiJob.MAX_TIMEOUT_MS + UI_CLICK_HARD_TIMEOUT_GRACE_MS,
                 TimeUnit.MILLISECONDS,
             )
-        }.getOrElse { MediaUiClickOutcome.Failed("ui click did not answer inside its budget") }
+        }.getOrElse { MediaUiOutcome.Failed("ui job did not answer inside its budget") }
     }
 
     private fun mediaUiShield(
@@ -601,27 +628,55 @@ object AppInstallBridge {
         }
     }
 
-    private fun MediaUiClickOutcome.toJson(): JSONObject =
+    /** Прямоугольник приходит массивом [left,top,right,bottom] - ровно так, как его отдаёт not_found. */
+    private fun JSONObject.optionalBounds(name: String): MediaUiBounds? {
+        if (!has(name) || isNull(name)) return null
+        val array = optJSONArray(name) ?: throw IllegalArgumentException("$name must be an array of 4 numbers")
+        require(array.length() == 4) { "$name must have 4 numbers, got ${array.length()}" }
+        val numbers = (0 until 4).map { index ->
+            array.optDouble(index, Double.NaN).takeIf { it.isFinite() }?.toInt()
+                ?: throw IllegalArgumentException("$name[$index] must be a number")
+        }
+        require(numbers.all { kotlin.math.abs(it) <= MediaUiBounds.LIMIT }) { "$name is off screen" }
+        return MediaUiBounds(numbers[0], numbers[1], numbers[2], numbers[3])
+    }
+
+    private fun MediaUiBounds.toJson(): JSONArray =
+        JSONArray()
+            .put(left)
+            .put(top)
+            .put(right)
+            .put(bottom)
+
+    private fun MediaUiCandidate.toJson(): JSONObject =
+        JSONObject()
+            .put("label", label ?: JSONObject.NULL)
+            .put("bounds", bounds?.toJson() ?: JSONObject.NULL)
+            .put("clickable", clickable)
+            .put("editable", editable)
+
+    private fun MediaUiOutcome.toJson(): JSONObject =
         when (this) {
-            is MediaUiClickOutcome.Clicked ->
+            is MediaUiOutcome.Performed ->
                 JSONObject()
-                    .put("state", "clicked")
+                    .put("state", "performed")
+                    .put("action", action.kind)
                     .put("label", label)
                     .put("window_focused", windowFocused)
                     .put("gesture", gestureUsed)
 
-            is MediaUiClickOutcome.ClickRejected ->
+            is MediaUiOutcome.Rejected ->
                 JSONObject()
-                    .put("state", "click_rejected")
+                    .put("state", "rejected")
                     .put("label", label)
                     .put("reason", reason)
 
-            is MediaUiClickOutcome.NotFound ->
+            is MediaUiOutcome.NotFound ->
                 JSONObject()
                     .put("state", "not_found")
-                    .put("seen", JSONArray(seenClickableLabels))
+                    .put("candidates", JSONArray().apply { candidates.forEach { put(it.toJson()) } })
 
-            is MediaUiClickOutcome.Failed ->
+            is MediaUiOutcome.Failed ->
                 JSONObject()
                     .put("state", "failed")
                     .put("reason", reason)

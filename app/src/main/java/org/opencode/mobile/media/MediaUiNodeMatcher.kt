@@ -10,26 +10,66 @@ data class MediaUiNodeView(
     val contentDescription: String,
     val resourceId: String,
     val clickable: Boolean,
+    val editable: Boolean,
+    val bounds: MediaUiBounds?,
 )
 
 /**
- * Matches a node against a [MediaUiClickTarget].
+ * Matches a node against a [MediaUiTarget] for a given [MediaUiAction].
  *
- * A node matches when it satisfies every selector family the target actually names, and at least one
- * family at all - an unconstrained "match anything" is never a legal target. Families are checked
- * against text, then content description, then resource id, so a target that only knows the text
- * keeps working when a build also happens to expose a resource id.
+ * A node matches when it points at the right control and can take that action: only a field takes
+ * text, and a tap wants a control rather than a field. Families are checked against text, then
+ * content description, then resource id, so a target that only knows the text keeps working when a
+ * build also happens to expose a resource id.
  */
 object MediaUiNodeMatcher {
     fun matches(
         node: MediaUiNodeView,
-        target: MediaUiClickTarget,
+        target: MediaUiTarget,
+        action: MediaUiAction,
+    ): Boolean = aimsAtNode(node, target) && suitsTheAction(node, target, action)
+
+    /**
+     * A rect target means "the control under this point"; a label target means "the control that
+     * calls itself this". One target uses exactly one of the two, so there is no precedence to
+     * reason about.
+     */
+    private fun aimsAtNode(
+        node: MediaUiNodeView,
+        target: MediaUiTarget,
     ): Boolean {
-        val clickableOk = !target.requireClickable || node.clickable
+        val aim = target.bounds
+        return if (aim == null) {
+            matchesLabels(node, target)
+        } else {
+            node.bounds?.contains(aim.centerX, aim.centerY) == true
+        }
+    }
+
+    private fun suitsTheAction(
+        node: MediaUiNodeView,
+        target: MediaUiTarget,
+        action: MediaUiAction,
+    ): Boolean =
+        when {
+            // Text only ever goes into a field, and a field is found without help from a clickable flag.
+            action.writesText -> node.editable
+            // A rect names its control by the place it occupies, so the tightest node there will do.
+            target.bounds != null -> true
+            // A label tap wants a control and never a field: right after set_text the search field
+            // holds exactly the words the caller is looking for, so it would always win the match
+            // and the tap would land in the search box instead of the row it named.
+            else -> !node.editable && (!target.requireClickable || node.clickable)
+        }
+
+    private fun matchesLabels(
+        node: MediaUiNodeView,
+        target: MediaUiTarget,
+    ): Boolean {
         val textOk = matchesAny(node.text, target.textContains)
         val descOk = matchesAny(node.contentDescription, target.contentDescriptions)
         val idOk = matchesAny(node.resourceId, target.resourceIds)
-        return clickableOk && textOk && descOk && idOk
+        return textOk && descOk && idOk
     }
 
     private fun matchesAny(
