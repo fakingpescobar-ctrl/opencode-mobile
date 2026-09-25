@@ -2,6 +2,7 @@ package org.opencode.mobile
 
 import android.app.Application
 import android.content.Context
+import org.opencode.mobile.installer.AppInstallBridge
 import org.opencode.mobile.server.Workspace
 import java.io.File
 
@@ -16,16 +17,17 @@ import java.io.File
  * каталога, хотя bash-pwd процесса serve уже был внешним (pb.directory).
  */
 class OpencodeApp : Application() {
-
     override fun onCreate() {
         super.onCreate()
         ServerConfig.init(applicationContext)
+        AppInstallBridge.start(applicationContext)
     }
 
     /** Точка входа для сервиса и UI: сконфигурированный layout каталогов. */
     object ServerConfig {
         lateinit var appFiles: File
             private set
+
         /** База, под которой лежат home/config/data/cache. */
         lateinit var opencodeBase: File
             private set

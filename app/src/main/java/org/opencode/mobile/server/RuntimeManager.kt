@@ -5,7 +5,9 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import org.opencode.mobile.OpencodeApp
+import org.opencode.mobile.installer.AppInstallBridge
 import java.io.File
+import java.util.UUID
 
 /**
  * Оркестратор жизненного цикла opencode runtime (Этап 2).
@@ -182,12 +184,14 @@ class RuntimeManager(
                 val (workspace, ext) = wsResult.getOrThrow()
                 android.util.Log.i("OpencodeServer", "workspace=${workspace.absolutePath} external=$ext")
 
+                val memoryToken = UUID.randomUUID().toString()
+
                 // Регистрируем локальную память в конфиге serve как remote MCP
                 // (иначе serve о ней не знает — индикатор «0 MCP», инструменты
                 // памяти недоступны модели). До старта serve: он читает конфиг
                 // при инициализации MCP. Не фатал — память продолжит работать
                 // как TCP-сервер, просто без регистрации.
-                OpencodeRuntime.ensureMcpConfig()
+                OpencodeRuntime.ensureMcpConfig(memoryToken)
 
                 // Локальная память MCP как HTTP/TCP-сервер (MEMORY_PORT) — ДО serve.
                 // Не стартовала/умерла — НЕ фатал: serve продолжит, статус DEGRADED.
@@ -195,7 +199,16 @@ class RuntimeManager(
                 // который может мгновенно упасть или не открыть сокет — верифицируем
                 // isAlive + TCP-коннект на MEMORY_PORT (окно ~5s).
                 emit { copy(stage = RuntimeStage.STARTING_MEMORY, workspaceExternal = ext) }
-                val memProc = OpencodeRuntime.startMemoryServer(context, logFile = logFile, workDir = workspace)
+                val memProc =
+                    OpencodeRuntime.startMemoryServer(
+                        context,
+                        logFile = logFile,
+                        workDir = workspace,
+                        extraEnv =
+                            mapOf(
+                                "MCP_MEMORY_TOKEN" to memoryToken,
+                            ) + AppInstallBridge.environment(),
+                    )
                 // Регистрируем процесс СРАЗУ после запуска: даже если TCP-порт не
                 // поднимется (timeout/быстрая смерть), ProcessSupervisor обязан знать
                 // о процессе — иначе memory.stop() в finally не погасит orphan, и порт
@@ -217,7 +230,13 @@ class RuntimeManager(
                 }
 
                 emit { copy(stage = RuntimeStage.STARTING_SERVER) }
-                val proc = OpencodeRuntime.startServe(context, logFile = logFile, workDir = workspace)
+                val proc =
+                    OpencodeRuntime.startServe(
+                        context,
+                        logFile = logFile,
+                        workDir = workspace,
+                        extraEnv = mapOf("MCP_MEMORY_TOKEN" to memoryToken),
+                    )
                 if (proc == null) {
                     consecutiveFailures++
                     emitFailure(

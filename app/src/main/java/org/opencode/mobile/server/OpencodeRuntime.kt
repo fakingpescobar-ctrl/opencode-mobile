@@ -21,12 +21,12 @@ import java.io.FileOutputStream
  *    LD_LIBRARY_PATH указывает туда. dlopen из filesDir разрешён (noexec касается
  *    только execve бинаря, не загрузки .so в существующий процесс).
  */
+@Suppress("TooManyFunctions")
 object OpencodeRuntime {
-
-    private const val BIN_NAME = "libopencode.so"        // в nativeLibraryDir
-    private const val LOADER_NAME = "libldmusl.so"       // в nativeLibraryDir
-    private const val BUN_NAME = "libbun-musl.so"        // встроенный musl-Bun в nativeLibraryDir
-    const val MEMORY_PORT = 4199                          // TCP/Streamable-порт локальной памяти
+    private const val BIN_NAME = "libopencode.so" // в nativeLibraryDir
+    private const val LOADER_NAME = "libldmusl.so" // в nativeLibraryDir
+    private const val BUN_NAME = "libbun-musl.so" // встроенный musl-Bun в nativeLibraryDir
+    const val MEMORY_PORT = 4199 // TCP/Streamable-порт локальной памяти
 
     // Зависимые musl-libs. Источник — nativeLibraryDir (там они лежат под lib*-именами,
     // так их извлекает PackageManager). При старте копируются в filesDir/musl
@@ -94,11 +94,13 @@ object OpencodeRuntime {
      * Собирает и запускает процесс opencode serve.
      * @return запущенный процесс (или null, если не собрался)
      */
+    @Suppress("LongMethod", "ReturnCount")
     fun startServe(
         context: Context,
         additionalArgs: List<String> = emptyList(),
         logFile: File,
         workDir: File? = null,
+        extraEnv: Map<String, String> = emptyMap(),
     ): Process? {
         if (!isAssembled(context)) {
             android.util.Log.e("OpencodeRuntime", "runtime not assembled (bin/loader missing)")
@@ -116,7 +118,7 @@ object OpencodeRuntime {
         }
 
         val cmd = ArrayList<String>()
-        cmd.add(loader)                 // interpreter-first: ld-musl ./opencode ...
+        cmd.add(loader) // interpreter-first: ld-musl ./opencode ...
         cmd.add(bin)
         cmd.add("serve")
         cmd.add("--port")
@@ -174,6 +176,7 @@ object OpencodeRuntime {
         pb.environment()["MCP_NATIVE_DIR"] = nativeDir
         // Где локальная память MCP хранит SQLite (векторы+граф). По умолчанию HOME/.memory.
         pb.environment()["MCP_MEMORY_DIR"] = File(cfg.opencodeHome, ".memory").absolutePath
+        pb.environment().putAll(extraEnv)
 
         // КРИТИЧНО для локальных MCP (stdio transport): НЕЛЬЗЯ редиректить stdout serve
         // в файл. opencode запускает дочерние MCP процессы (например встроенный bun через
@@ -204,16 +207,17 @@ object OpencodeRuntime {
                 } finally {
                     runCatching { out.close() }
                 }
-            }.apply { isDaemon = true; name = "opencode-log" }.start()
+            }.apply {
+                isDaemon = true
+                name = "opencode-log"
+            }.start()
             proc
         }.onFailure { e ->
             android.util.Log.e("OpencodeRuntime", "failed to start opencode: ${e.message}")
         }.getOrNull()
     }
 
-    private fun nativeLibraryDir(context: Context): String {
-        return context.applicationInfo.nativeLibraryDir
-    }
+    private fun nativeLibraryDir(context: Context): String = context.applicationInfo.nativeLibraryDir
 
     /**
      * Копирует memory.js (Streamable HTTP MCP-сервер локальной памяти) из встроенных
@@ -230,8 +234,8 @@ object OpencodeRuntime {
                 input.readBytes()
             }
             val changed = !dest.exists() ||
-                    dest.length() != source.size.toLong() ||
-                    !dest.readBytes().contentEquals(source)
+                dest.length() != source.size.toLong() ||
+                !dest.readBytes().contentEquals(source)
             if (changed) {
                 // Атомарная замена: tmp + rename. Обрезанный writeBytes (kill посреди
                 // записи) оставил бы битый memory.js по целевому имени навсегда —
@@ -262,7 +266,13 @@ object OpencodeRuntime {
      * стабильно работает. HTTPS_PROXY не нужен (localhost вынесен в NO_PROXY).
      * @return запущенный процесс (или null)
      */
-    fun startMemoryServer(context: Context, logFile: File, workDir: File? = null): Process? {
+    @Suppress("ReturnCount")
+    fun startMemoryServer(
+        context: Context,
+        logFile: File,
+        workDir: File? = null,
+        extraEnv: Map<String, String> = emptyMap(),
+    ): Process? {
         if (!isAssembled(context)) return null
         val script = ensureMemoryScript(context) ?: return null
         val nativeDir = nativeLibraryDir(context)
@@ -270,9 +280,9 @@ object OpencodeRuntime {
         val bun = File(nativeDir, BUN_NAME).absolutePath
 
         val cmd = ArrayList<String>()
-        cmd.add(loader)                 // ld-musl загрузчик первым
-        cmd.add(bun)                    // сам runtime
-        cmd.add(script.absolutePath)    // наш MCP-скрипт
+        cmd.add(loader) // ld-musl загрузчик первым
+        cmd.add(bun) // сам runtime
+        cmd.add(script.absolutePath) // наш MCP-скрипт
 
         android.util.Log.i("OpencodeRuntime", "starting memory http server: $cmd (port $MEMORY_PORT)")
 
@@ -298,6 +308,7 @@ object OpencodeRuntime {
         pb.environment()["MCP_NATIVE_DIR"] = nativeDir
         pb.environment()["MCP_MEMORY_DIR"] = File(cfg.opencodeHome, ".memory").absolutePath
         pb.environment()["MCP_TCP_PORT"] = MEMORY_PORT.toString()
+        pb.environment().putAll(extraEnv)
         pb.environment()["NO_PROXY"] = "127.0.0.1,localhost"
 
         // stdout/stderr memory -> отдельный лог (stdio не нужен: транспорт TCP).
@@ -313,43 +324,75 @@ object OpencodeRuntime {
 
     /**
      * Гарантирует, что opencode serve знает про локальную память MCP как
-     * remote-сервер (http://127.0.0.1:MEMORY_PORT/mcp). Без регистрации в
-     * конфиге serve память слушает порт, но индикатор чата показывает «0 MCP»,
-     * а модель не получает её инструменты.
+     * remote-сервер (http://127.0.0.1:MEMORY_PORT/mcp) и передаёт bearer-token
+     * через {env:MCP_MEMORY_TOKEN}. Без регистрации в конфиге serve память
+     * слушает порт, но модель не получает её инструменты; без auth локальный
+     * endpoint не должен принимать MCP-запросы.
      *
      * Конфиг serve: $XDG_CONFIG_HOME/opencode/opencode.jsonc (opencode читает
      * Global.Path.config = XDG_CONFIG_HOME + "/opencode", см. opencode-src
      * packages/opencode/src/config/config.ts:379-381). Формат MCP-секции:
-     * "mcp": { "<имя>": { "type": "remote", "url": "..." } }.
+     * "mcp": { "<имя>": { "type": "remote", "url": "...", "headers": {...} } }.
      *
-     * Идемпотентно: если в конфиге уже есть секция "memory" — не трогаем
-     * (сохраняем ручные правки юзера). Пишем атомарно (tmp + rename), чтобы
-     * обрыв записи не оставил битый jsonc (serve бы упал на парсинге).
-     * @return true когда конфиг гарантированно содержит memory-MCP.
+     * Старую сгенерированную секцию без заголовка обновляем атомарно; незнакомую
+     * ручную секцию не перезаписываем и возвращаем false, чтобы не включить
+     * неаутентифицированный доступ. Пишем tmp + rename, чтобы обрыв записи не
+     * оставил битый jsonc.
+     * @return true когда конфиг гарантированно содержит защищённый memory-MCP.
      */
-    fun ensureMcpConfig(): Boolean =
-        try {
+    fun ensureMcpConfig(memoryToken: String): Boolean =
+        runCatching {
+            require(memoryToken.isNotBlank()) { "MCP memory token is empty" }
             val cfg = OpencodeApp.ServerConfig
-            val dir = File(cfg.opencodeConfig, "opencode")
-            val file = File(dir, "opencode.jsonc")
-            val mcpBlock =
-                "\"mcp\": {\n" +
-                    "    \"memory\": {\n" +
-                    "      \"type\": \"remote\",\n" +
-                    "      \"url\": \"http://127.0.0.1:$MEMORY_PORT/mcp\"\n" +
-                    "    }\n" +
-                    "  }"
-            // Идемпотентность: уже есть секция memory (в т.ч. с другим портом —
-            // не переписываем поверх осознанной ручной настройки).
-            if (file.exists() && file.readText().contains("\"memory\"")) {
-                true
-            } else {
-                writeMemoryMcpConfig(file, mcpBlock)
+            val file = File(File(cfg.opencodeConfig, "opencode"), "opencode.jsonc")
+            ensureMcpConfigFile(file)
+        }.onFailure { error ->
+            android.util.Log.e("OpencodeRuntime", "ensureMcpConfig failed: ${error.message}")
+        }.getOrDefault(false)
+
+    private fun ensureMcpConfigFile(file: File): Boolean {
+        val text = if (file.exists()) file.readText() else null
+        return when {
+            text == null -> writeMemoryMcpConfig(file, mcpBlock())
+            !text.contains("\"memory\"") && !text.contains("\"mcp\"") ->
+                writeMemoryMcpConfig(file, mcpBlock())
+            !text.contains("\"memory\"") -> {
+                android.util.Log.w(
+                    "OpencodeRuntime",
+                    "Existing mcp config is not managed; refusing to append a duplicate mcp object",
+                )
+                false
             }
-        } catch (e: Exception) {
-            android.util.Log.e("OpencodeRuntime", "ensureMcpConfig failed: ${e.message}")
-            false
+            text.contains(legacyMemoryBlock()) ->
+                writeMemoryConfigText(
+                    file,
+                    text.replace(legacyMemoryBlock(), mcpMemoryBlock()),
+                )
+            text.contains("\"Authorization\": \"Bearer {env:MCP_MEMORY_TOKEN}\"") &&
+                text.contains("127.0.0.1:$MEMORY_PORT/mcp") -> true
+            else -> {
+                android.util.Log.w("OpencodeRuntime", "Existing memory MCP config has no managed auth header")
+                false
+            }
         }
+    }
+
+    private fun mcpMemoryBlock(): String =
+        "\"memory\": {\n" +
+            "      \"type\": \"remote\",\n" +
+            "      \"url\": \"http://127.0.0.1:$MEMORY_PORT/mcp\",\n" +
+            "      \"headers\": {\n" +
+            "        \"Authorization\": \"Bearer {env:MCP_MEMORY_TOKEN}\"\n" +
+            "      }\n" +
+            "    }"
+
+    private fun legacyMemoryBlock(): String =
+        "\"memory\": {\n" +
+            "      \"type\": \"remote\",\n" +
+            "      \"url\": \"http://127.0.0.1:$MEMORY_PORT/mcp\"\n" +
+            "    }"
+
+    private fun mcpBlock(): String = "\"mcp\": {\n    ${mcpMemoryBlock()}\n  }"
 
     /**
      * Дописывает секцию mcp.memory в opencode.jsonc (атомарно tmp+rename).
@@ -378,14 +421,24 @@ object OpencodeRuntime {
                 if (idx <= 0) null else text.substring(0, idx) + ",\n  " + mcpBlock + "\n" + text.substring(idx)
             }
         if (updated == null) return false
+        return writeMemoryConfigText(file, updated)
+    }
+
+    /** Атомарно записывает подготовленный конфиг памяти. */
+    private fun writeMemoryConfigText(
+        file: File,
+        text: String,
+    ): Boolean {
         file.parentFile?.mkdirs()
         val tmp = File(file.parentFile, "opencode.jsonc.tmp")
-        tmp.writeText(updated)
-        if (!tmp.renameTo(file)) {
-            android.util.Log.e("OpencodeRuntime", "ensureMcpConfig: tmp->rename failed, retry direct")
-            file.writeText(updated)
-        }
-        android.util.Log.i("OpencodeRuntime", "ensureMcpConfig: memory MCP registered in ${file.absolutePath}")
-        return true
+        return runCatching {
+            tmp.writeText(text)
+            check(tmp.renameTo(file)) { "tmp->rename failed" }
+            android.util.Log.i("OpencodeRuntime", "ensureMcpConfig: memory MCP config updated in ${file.absolutePath}")
+            true
+        }.onFailure { error ->
+            tmp.delete()
+            android.util.Log.e("OpencodeRuntime", "ensureMcpConfig: atomic config update failed: ${error.message}")
+        }.getOrDefault(false)
     }
 }

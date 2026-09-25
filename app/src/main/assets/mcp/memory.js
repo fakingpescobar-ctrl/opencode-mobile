@@ -97,7 +97,7 @@ function cosine(a, b) {
 }
 
 // ---- MCP tools ---------------------------------------------------------------
-const tools = [
+const memoryTools = [
   { name: "local_memory_store", description: "Save a memory (content, optional id/type/tags/project). " +
     "Indexes it for vector search and adds graph node.",
     inputSchema: { type: "object", properties: {
@@ -120,6 +120,197 @@ const tools = [
   { name: "local_memory_graph_connect", description: "Connect a memory id to a file path (File nodes appear in graph).",
     inputSchema: { type: "object", properties: { memory_id: { type: "string" }, file_path: { type: "string" }, relation: { type: "string" } }, required: ["memory_id", "file_path"] } },
 ];
+
+const MOBILE_INSTALL_TOOLS = [
+  {
+    name: "mobile_app_install",
+    description:
+      "Install an app on this Android phone without root. First look for the app on Google Play; " +
+      "use action=play with the package id when known, otherwise a Play search query. If the " +
+      "requested app is not in Play, " +
+      "use the available web search/fetch tools to look only on trusted sources: the official app " +
+      "site when its APK is on an allowlisted host, f-droid.org, GitHub Releases, or GitLab Releases; " +
+      "never download an arbitrary search " +
+      "result. For action=apk provide the HTTPS URL, exact SHA-256, trusted source, and (when the " +
+      "source publishes it) signing_certificate_sha256. The Android bridge re-checks the host, " +
+      "package name, hash, and signing certificate. It downloads in the background, then shows the " +
+      "system confirmation; the user must tap Install. The call returns when that confirmation is " +
+      "visible; use mobile_app_install_status afterwards. Never claim success until the returned job " +
+      "state is installed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["play", "apk"] },
+        package: { type: "string", description: "Android package id for Play or optional APK verification" },
+        query: { type: "string", description: "Play Store search terms when package is unknown" },
+        url: { type: "string", description: "Direct HTTPS APK URL for action=apk" },
+        sha256: { type: "string", description: "Required 64-character APK SHA-256 for action=apk" },
+        source: { type: "string", enum: ["f_droid", "github", "gitlab"], description: "Trusted APK source; it must match the URL host" },
+        signing_certificate_sha256: { type: "string", description: "Optional expected APK signer certificate SHA-256 from trusted metadata" },
+        size_bytes: { type: "integer", description: "Optional exact APK size in bytes" }
+      },
+      required: ["action"]
+    }
+  },
+  {
+    name: "mobile_app_install_status",
+    description: "Read or resume polling for a mobile_app_install job; awaiting_user means the system confirmation is visible.",
+    inputSchema: {
+      type: "object",
+      properties: { job_id: { type: "string" } },
+      required: ["job_id"]
+    }
+  }
+];
+
+const tools = [...memoryTools, ...MOBILE_INSTALL_TOOLS];
+
+const MOBILE_BRIDGE_TOKEN = process.env.MOBILE_INSTALL_TOKEN || "";
+const MOBILE_BRIDGE_PORT = Number(process.env.MOBILE_INSTALL_PORT) || 4202;
+const APK_POLL_MS = 1500;
+const APK_POLL_TIMEOUT_MS = 15 * 60 * 1000;
+const MAX_APK_BYTES = 2 * 1024 * 1024 * 1024;
+const ANDROID_PACKAGE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
+const SHA256 = /^[A-Fa-f0-9]{64}$/;
+
+function normalizeTrustedSource(value) {
+  const source = String(value || "").trim().toLowerCase();
+  if (["f_droid", "f-droid", "fdroid"].includes(source)) return "f_droid";
+  if (source === "github") return "github";
+  if (source === "gitlab") return "gitlab";
+  return null;
+}
+
+function trustedSourceForUrl(url) {
+  const host = url.hostname.toLowerCase();
+  if (host === "f-droid.org" || host.endsWith(".f-droid.org")) return "f_droid";
+  if (host === "github.com" || host.endsWith(".github.com")) return "github";
+  if (host === "githubusercontent.com" || host.endsWith(".githubusercontent.com")) return "github";
+  if (host === "gitlab.com" || host.endsWith(".gitlab.com")) return "gitlab";
+  if (host === "gitlabusercontent.com" || host.endsWith(".gitlabusercontent.com")) return "gitlab";
+  throw new Error("APK URL host is not in the trusted source allowlist");
+}
+
+async function mobileBridge(path, init = {}) {
+  if (!MOBILE_BRIDGE_TOKEN) throw new Error("Android installer bridge token is not configured");
+  const response = await fetch(`http://127.0.0.1:${MOBILE_BRIDGE_PORT}${path}`, {
+    ...init,
+    headers: {
+      "Authorization": `Bearer ${MOBILE_BRIDGE_TOKEN}`,
+      "Content-Type": "application/json",
+      ...(init.headers || {})
+    }
+  });
+  const body = await response.json().catch(() => ({ ok: false, error: `HTTP ${response.status}` }));
+  if (!response.ok || !body.ok) throw new Error(body.error || `Android bridge HTTP ${response.status}`);
+  return body;
+}
+
+function requireAndroidPackage(value) {
+  const packageName = String(value || "").trim();
+  if (!ANDROID_PACKAGE.test(packageName) || packageName.length > 255) {
+    throw new Error("Invalid Android package name");
+  }
+  return packageName;
+}
+
+function requireApkUrl(value, expectedSource) {
+  const raw = String(value || "").trim();
+  if (!raw || raw.length > 2048) throw new Error("Invalid APK URL");
+  const url = new URL(raw);
+  if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.hash) {
+    throw new Error("APK URL must be HTTPS without credentials or fragment");
+  }
+  const detectedSource = trustedSourceForUrl(url);
+  const requestedSource = normalizeTrustedSource(expectedSource);
+  if (expectedSource && !requestedSource) throw new Error("Unknown trusted APK source");
+  if (requestedSource && requestedSource !== detectedSource) {
+    throw new Error("APK source does not match the trusted URL host");
+  }
+  return { url: url.toString(), source: detectedSource };
+}
+
+function isTerminalInstallState(state) {
+  return ["store_opened", "installed", "failed", "cancelled"].includes(state);
+}
+
+function isInstallCompleted(state) {
+  return ["installed", "failed", "cancelled"].includes(state);
+}
+
+async function mobileAppInstall(args) {
+  const action = String(args.action || "").trim().toLowerCase();
+  if (action === "play") {
+    const hasPackage = Boolean(String(args.package || "").trim());
+    const query = String(args.query || "").trim();
+    if (!hasPackage && !query) throw new Error("Play install needs package or query");
+    const payload = {
+      action,
+      ...(hasPackage ? { package: requireAndroidPackage(args.package) } : {}),
+      ...(!hasPackage && query ? { query } : {})
+    };
+    const result = await mobileBridge("/v1/apps/install", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+    return { ...result.job, completed: false, requires_user_tap: true };
+  }
+
+  if (action !== "apk") throw new Error("action must be play or apk");
+  const apkTarget = requireApkUrl(args.url, args.source);
+  const payload = {
+    action,
+    url: apkTarget.url,
+    source: apkTarget.source,
+    sha256: String(args.sha256 || "").trim().toLowerCase()
+  };
+  if (!SHA256.test(payload.sha256)) throw new Error("APK sha256 must contain 64 hexadecimal characters");
+  if (args.signing_certificate_sha256) {
+    const signer = String(args.signing_certificate_sha256).trim().toLowerCase();
+    if (!SHA256.test(signer)) {
+      throw new Error("signing_certificate_sha256 must contain 64 hexadecimal characters");
+    }
+    payload.signing_certificate_sha256 = signer;
+  }
+  if (args.package) payload.package = requireAndroidPackage(args.package);
+  if (args.size_bytes !== undefined && args.size_bytes !== null) {
+    if (!Number.isSafeInteger(args.size_bytes) || args.size_bytes < 1 || args.size_bytes > MAX_APK_BYTES) {
+      throw new Error("size_bytes is outside the safe APK range");
+    }
+    payload.size_bytes = args.size_bytes;
+  }
+
+  const accepted = await mobileBridge("/v1/apps/install", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+  let job = accepted.job;
+  const deadline = Date.now() + APK_POLL_TIMEOUT_MS;
+  while (
+    !isTerminalInstallState(job.state) &&
+    job.state !== "awaiting_user" &&
+    Date.now() < deadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, APK_POLL_MS));
+    job = await mobileAppInstallStatus({ job_id: job.id });
+  }
+  return {
+    ...job,
+    completed: isInstallCompleted(job.state),
+    requires_user_tap: job.state === "awaiting_user"
+  };
+}
+
+async function mobileAppInstallStatus(args) {
+  const jobId = String(args.job_id || "").trim();
+  if (!/^[A-Fa-f0-9-]{36}$/i.test(jobId)) throw new Error("Invalid install job id");
+  const result = await mobileBridge(`/v1/apps/status?id=${encodeURIComponent(jobId)}`);
+  return {
+    ...result.job,
+    completed: isInstallCompleted(result.job.state),
+    requires_user_tap: result.job.state === "awaiting_user"
+  };
+}
 
 function store(args) {
   const id = args.id || ("mem:" + Math.random().toString(36).slice(2) + Date.now().toString(36));
@@ -146,7 +337,7 @@ function recall(args) {
   const scores = [];
   const rows = DB.prepare(
     `SELECT id,content,type,tags,project,created FROM memories
-     WHERE (project=?1 OR '${project}'='') AND (type=?2 OR '${type}'='')`
+     WHERE (?1 = '' OR project = ?1) AND (?2 = '' OR type = ?2)`
   ).all(project, type);
   if (!Object.keys(qv).length) {
     return { results: rows.slice(0, limit).map(r => ({ ...r, score: 1 })) };
@@ -166,7 +357,7 @@ function list(args) {
   const type = args.type || "";
   const rows = DB.prepare(
     `SELECT id,content,type,tags,project,created FROM memories
-     WHERE (project=?1 OR '${project}'='') AND (type=?2 OR '${type}'='')
+     WHERE (?1 = '' OR project = ?1) AND (?2 = '' OR type = ?2)
      ORDER BY created DESC LIMIT ?3`
   ).all(project, type, limit);
   return { memories: rows };
@@ -221,7 +412,7 @@ function graphConnect(args) {
 }
 
 // ---- JSON-RPC / MCP stdio loop ----------------------------------------------
-function callTool(name, args) {
+async function callTool(name, args) {
   switch (name) {
     case "local_memory_store": return store(args || {});
     case "local_memory_recall": return recall(args || {});
@@ -231,6 +422,8 @@ function callTool(name, args) {
     case "local_memory_graph_query": return graphQuery(args || {});
     case "local_memory_graph_add_edge": return graphAddEdge(args || {});
     case "local_memory_graph_connect": return graphConnect(args || {});
+    case "mobile_app_install": return mobileAppInstall(args || {});
+    case "mobile_app_install_status": return mobileAppInstallStatus(args || {});
     default: throw new Error("Unknown tool: " + name);
   }
 }
@@ -239,7 +432,7 @@ function send(obj) { process.stdout.write(JSON.stringify(obj) + "\n"); }
 
 // Общий обработчик одного JSON-RPC сообщения. Возвращает ответ (объект) или null
 // (для notifications/без id). Вызывается как из stdio-транспорта, так и из HTTP.
-function handleMessage(msg) {
+async function handleMessage(msg) {
   const id = msg.id;
   if (msg.method === "initialize") {
     return { id, result: {
@@ -252,7 +445,7 @@ function handleMessage(msg) {
   if (msg.method === "tools/call") {
     const p = msg.params || {};
     try {
-      const result = callTool(p.name, p.arguments);
+      const result = await callTool(p.name, p.arguments);
       if (msg.id === undefined) return null; // notification, no reply
       return { id, result: { content: [{ type: "text", text: JSON.stringify(result) }], isError: false } };
     } catch (e) {
@@ -267,6 +460,22 @@ function handleMessage(msg) {
 
 // ---- Транспорт выбор: stdio (default) или HTTP/Streamable (env MCP_TCP_PORT) --
 const TCP_PORT = Number(process.env.MCP_TCP_PORT) || 0;
+const MEMORY_TOKEN = process.env.MCP_MEMORY_TOKEN || "";
+
+function constantTimeEqual(left, right) {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let i = 0; i < left.length; i++) difference |= left.charCodeAt(i) ^ right.charCodeAt(i);
+  return difference === 0;
+}
+
+function isMemoryRequestAuthorized(req, url) {
+  if (!MEMORY_TOKEN) return false;
+  const authorization = req.headers.get("authorization") || "";
+  const bearer = authorization.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : "";
+  const queryToken = url.searchParams.get("token") || "";
+  return constantTimeEqual(bearer, MEMORY_TOKEN) || constantTimeEqual(queryToken, MEMORY_TOKEN);
+}
 
 if (TCP_PORT > 0) {
   // Streamable HTTP MCP server: GET /mcp = SSE stream, POST /mcp = JSON-RPC (object|array).
@@ -277,41 +486,51 @@ if (TCP_PORT > 0) {
     fetch(req, srv) {
       const url = new URL(req.url);
       if (url.pathname !== "/mcp") return new Response("not found", { status: 404 });
+      if (!isMemoryRequestAuthorized(req, url)) {
+        return new Response("unauthorized", {
+          status: 401,
+          headers: { "WWW-Authenticate": "Bearer" },
+        });
+      }
 
       if (req.method === "GET") {
+        // Bun closes inactive responses after 10 seconds by default; SSE is intentionally quiet.
+        srv.timeout(req, 0);
+        let closeStream = () => {};
         const stream = new ReadableStream({
           start(controller) {
             sseClients.add(controller);
             controller.enqueue("event: endpoint\ndata: /mcp\n\n");
             const iv = setInterval(() => {
-              try { controller.enqueue(": keepalive\n\n"); } catch (_) { clearInterval(iv); }
+              try { controller.enqueue(": keepalive\n\n"); } catch (_) { closeStream(); }
             }, 15000);
-            const onClose = () => { clearInterval(iv); sseClients.delete(controller); };
-            req.signal.addEventListener("abort", onClose);
-          }
+            closeStream = () => { clearInterval(iv); sseClients.delete(controller); };
+            req.signal.addEventListener("abort", closeStream, { once: true });
+          },
+          cancel() { closeStream(); }
         });
         return new Response(stream, { status: 200, headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          "Connection": "keep-alive",
-          "Access-Control-Allow-Origin": "*" } });
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive" } });
+
       }
 
       if (req.method === "POST") {
-        return req.json().then((body) => {
+        return req.json().then(async (body) => {
           const batch = Array.isArray(body) ? body : [body];
           const responses = [];
           let notify = true; // has any non-notification message
           for (const m of batch) {
             if (m === null || m === undefined || typeof m !== "object") continue;
-            const r = handleMessage(m);
+            const r = await handleMessage(m);
             if (r !== null) { responses.push({ jsonrpc: "2.0", ...r }); notify = false; }
           }
           if (responses.length === 0) return new Response(null, { status: 202 });
           const json = responses.length === 1 ? responses[0] : responses;
           return new Response(JSON.stringify(json), { status: 200, headers: {
             "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*" } });
+            "Cache-Control": "no-store" } });
         }).catch((e) => new Response(JSON.stringify({ jsonrpc: "2.0", error: { code: -32700, message: String(e) } }), {
           status: 400, headers: { "Content-Type": "application/json" } }));
       }
@@ -328,10 +547,16 @@ if (TCP_PORT > 0) {
   // stdio (default, для ручных тестов)
   const { createInterface } = require("node:readline");
   const rl = createInterface({ input: process.stdin });
-  rl.on("line", (line) => {
+  rl.on("line", async (line) => {
     let msg;
     try { msg = JSON.parse(line); } catch { return; }
-    const response = handleMessage(msg);
-    if (response !== null) send(response);
+    try {
+      const response = await handleMessage(msg);
+      if (response !== null) send(response);
+    } catch (error) {
+      if (msg.id !== undefined) {
+        send({ id: msg.id, result: { content: [{ type: "text", text: String(error) }], isError: true } });
+      }
+    }
   });
 }
