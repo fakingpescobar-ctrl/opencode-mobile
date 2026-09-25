@@ -31,7 +31,10 @@ import java.io.FileOutputStream
  * ПОСЛЕДОВАТЕЛЬНО (release() обязателен между int8 и fp32).
  *
  * Запуск: устройство по adb + `./gradlew :app:connectedDebugAndroidTest`.
- * Результат: logcat STTBENCH-строки + CSV в /sdcard/Android/data/<pkg>/files/.
+ * Результат: logcat STTBENCH-строки + CSV в внутреннем filesDir
+ * (`run-as org.opencode.mobile.debug cat files/bench/stt-bench.csv`).
+ * Колонки: fbank_ms/enc_ms/dec_ms/steps — пофазный профиль из C++
+ * (nativeLatencyProfile) последнего прогона каждого wav.
  */
 @RunWith(AndroidJUnit4::class)
 class BenchSttTest {
@@ -46,7 +49,7 @@ class BenchSttTest {
         val wavs = loadWavs(benchAssets)
         assertTrue("assets/bench пуст — сначала tools/gen_bench_wavs.py", wavs.isNotEmpty())
 
-        val csv = StringBuilder().append("config,wav,ms1,ms2,ms3,median,text\n")
+        val csv = StringBuilder().append("config,wav,ms1,ms2,ms3,median,fbank_ms,enc_ms,dec_ms,steps,text\n")
         runConfig("int8", int8Dir, wavs, csv)
         val fp32Dir = File(ModelDownloader.modelsDir(target), "ncnn-bench-fp32")
         if (NcnnModelValidator.checkModelDir(fp32Dir, "whisper_turbo").ok) {
@@ -94,6 +97,61 @@ class BenchSttTest {
         )
     }
 
+    /**
+     * Lazy-чанкинг (R5, 25.09.2026): клип ≤28с на ncnn должен идти ОДНИМ
+     * прогоном (один encoder, ~6.5с) вместо N сегментов (N×encoder).
+     * Клип: jfk(11с) + silence(1.5с) + tone(3с) ≈ 15.5с — при старом VAD-пути
+     * было бы ≥2 сегмента (≈15с), lazy даёт ≤10с. Порог жёсткий: 12с.
+     */
+    @Test
+    fun benchLazyShort() {
+        val target = InstrumentationRegistry.getInstrumentation().targetContext
+        val benchAssets = InstrumentationRegistry.getInstrumentation().context.assets
+        val int8Dir = File(ModelDownloader.modelsDir(target), "ncnn-turbo")
+        val int8Check = NcnnModelValidator.checkModelDir(int8Dir, "whisper_turbo")
+        assumeTrue("ncnn-turbo не доставлена на устройство: ${int8Check.missing}", int8Check.ok)
+
+        val jfk = readWav("jfk.wav", benchAssets)
+        val silence = readWav("silence.wav", benchAssets)
+        val tone = readWav("tone.wav", benchAssets)
+        assertTrue("нужны jfk/silence/tone в assets/bench", jfk != null && silence != null && tone != null)
+
+        val audio = FloatArray(jfk!!.samples.size + silence!!.samples.size + tone!!.samples.size)
+        System.arraycopy(jfk.samples, 0, audio, 0, jfk.samples.size)
+        System.arraycopy(silence.samples, 0, audio, jfk.samples.size, silence.samples.size)
+        System.arraycopy(tone.samples, 0, audio, jfk.samples.size + silence.samples.size, tone.samples.size)
+        Log.i(TAG, "LAZY: клип ${audio.size / 16_000.0}s (jfk+silence+tone), ожидается ОДИН прогон")
+
+        // Прогрев: контекст создаётся лениво при первом transcribe (load моделей ~3-4с).
+        // Холодный init к «скорости одного прогона» отношения не имеет — в проде
+        // контекст живёт между распознаваниями. Прогрев сам идёт lazy-путём (1.5с ≤ 28с).
+        runBlocking {
+            ChunkedTranscriber.transcribe(
+                target,
+                silence.samples,
+                "turbo",
+                WhisperTranscribeService.ENGINE_NCNN,
+            )
+        }
+
+        val t0 = System.nanoTime()
+        val text = runBlocking {
+            ChunkedTranscriber.transcribe(
+                target,
+                audio,
+                "turbo",
+                WhisperTranscribeService.ENGINE_NCNN,
+            )
+        }
+        val ms = (System.nanoTime() - t0) / 1_000_000
+        Log.i(TAG, "BENCH_ROW lazy,short,$ms,---,---,$ms,${text.trim().take(60)}")
+        assertTrue("lazy-прогон должен вернуть текст: '$text'", text.isNotBlank())
+        assertTrue(
+            "ожидался 1 encoder (~7-9с), получено $ms мс — возможно VAD-мультипрогон",
+            ms < 12_000,
+        )
+    }
+
     /** Один конфиг модели: warmup (init+прогрев), затем 3 замера каждого wav. */
     private fun runConfig(
         config: String,
@@ -121,8 +179,10 @@ class BenchSttTest {
                     runs[r] = ((System.nanoTime() - t0) / 1_000_000).toInt()
                 }
                 val median = runs.sorted()[RUNS / 2]
+                val prof = ctx.latencyProfile()
+                val profStr = prof?.let { "${it[0]},${it[1]},${it[2]},${it[3]}" } ?: "0,0,0,0"
                 val sanitized = text.trim().replace('\n', ' ').take(60)
-                val row = "$config,${wav.name},${runs[0]},${runs[1]},${runs[2]},$median,$sanitized"
+                val row = "$config,${wav.name},${runs[0]},${runs[1]},${runs[2]},$median,$profStr,$sanitized"
                 csv.append(row).append('\n')
                 Log.i(TAG, "BENCH_ROW $row")
             }
@@ -151,7 +211,9 @@ class BenchSttTest {
         target: android.content.Context,
         content: String,
     ) {
-        val outDir = target.getExternalFilesDir(null) ?: return
+        // internal filesDir — гарантированно доступен инструментальному контексту,
+        // читается через `run-as org.opencode.mobile.debug cat files/stt-bench.csv`.
+        val outDir = File(target.filesDir, "bench")
         outDir.mkdirs()
         val f = File(outDir, "stt-bench.csv")
         FileOutputStream(f).use { it.write(content.toByteArray()) }

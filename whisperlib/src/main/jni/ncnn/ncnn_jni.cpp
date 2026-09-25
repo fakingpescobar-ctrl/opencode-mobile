@@ -16,6 +16,14 @@
 // Пофазовые тайминги (INFO) в logcat, тег NcnnWhisper.
 #define NCNN_PHASE(...) __android_log_print(ANDROID_LOG_INFO, "NcnnWhisper", __VA_ARGS__)
 
+// Пофазные тайминги последнего transcribe (мс + шаги декодера).
+// Заполняются в transcribe(), читаются JNI nativeLatencyProfile() — для STT-бенча (R5).
+// Должны быть объявлены ДО transcribe (перенос наверх; в JNI-секции ниже не дублировать).
+static double g_last_fbank_ms = 0;
+static double g_last_encoder_ms = 0;
+static double g_last_decoder_ms = 0;
+static int g_last_decoder_steps = 0;
+
 // Пер-шаговый трейс декодера (kv_in/kv_out/out0 shapes на КАЖДОМ авторегрессивном
 // шаге) — в проде спамил бы INFO в лог-буфер. Включается env NCNN_VERBOSE=1
 // (считается ОДИН раз при статической инициализации). Per-итерация decoder iter
@@ -418,7 +426,9 @@ int Whisper::transcribe(const std::vector<short>& samples, const char* lang, std
     {
         auto t0 = std::chrono::steady_clock::now();
         extract_fbank_feature(samples, input_features);
-        NCNN_PHASE("ncnn phase fbank=%.0fms", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        double f_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        NCNN_PHASE("ncnn phase fbank=%.0fms", f_ms);
+        g_last_fbank_ms = f_ms;
     }
 
     ncnn::Mat encoder_states;
@@ -429,7 +439,9 @@ int Whisper::transcribe(const std::vector<short>& samples, const char* lang, std
             NCNN_PHASE("ncnn error: encoder failed");
             return -1;
         }
-        NCNN_PHASE("ncnn phase encoder=%.0fms", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        double e_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        NCNN_PHASE("ncnn phase encoder=%.0fms", e_ms);
+        g_last_encoder_ms = e_ms;
     }
 
     // greedy decoding with a hard step cap (no eot -> bounded loop)
@@ -465,6 +477,8 @@ int Whisper::transcribe(const std::vector<short>& samples, const char* lang, std
         step++;
     }
     NCNN_PHASE("ncnn phase decoder=%d steps=%.0fms avg=%.1fms/step", step, decoder_ms, step > 0 ? decoder_ms / step : 0);
+    g_last_decoder_ms = decoder_ms;
+    g_last_decoder_steps = step;
 
     text = tokenizer.decode(decoded);
     return 0;
@@ -797,6 +811,21 @@ Java_com_whispercpp_whisper_NcnnWhisperLib_nativeTranscribe(JNIEnv* env, jobject
         return env->NewStringUTF("");
     }
     return js;
+}
+
+extern "C" JNIEXPORT jlongArray JNICALL
+Java_com_whispercpp_whisper_NcnnWhisperLib_nativeLatencyProfile(JNIEnv* env, jobject /*thiz*/)
+{
+    // [fbank_ms, encoder_ms, decoder_ms, decoder_steps] последнего transcribe.
+    jlong out[4];
+    out[0] = (jlong)g_last_fbank_ms;
+    out[1] = (jlong)g_last_encoder_ms;
+    out[2] = (jlong)g_last_decoder_ms;
+    out[3] = (jlong)g_last_decoder_steps;
+    jlongArray arr = env->NewLongArray(4);
+    if (!arr) return NULL;
+    env->SetLongArrayRegion(arr, 0, 4, out);
+    return arr;
 }
 
 extern "C" JNIEXPORT void JNICALL

@@ -86,6 +86,13 @@ class NcnnWhisperContext private constructor(
         return NcnnWhisperLib.nativeSetThreads(n)
     }
 
+    /**
+     * Пофазные тайминги последнего transcribe: [fbank_ms, encoder_ms, decoder_ms, decoder_steps].
+     * Только для STT-бенча (R5); в проде не вызывается.
+     */
+    fun latencyProfile(): LongArray? =
+        if (initialized) NcnnWhisperLib.nativeLatencyProfile() else null
+
     protected fun finalize() {
         runBlocking { release() }
     }
@@ -113,5 +120,6 @@ private object NcnnWhisperLib {
     external fun nativeInit(modelDir: String, base: String): Boolean
     external fun nativeSetThreads(n: Int): Boolean
     external fun nativeTranscribe(samples: FloatArray, lang: String): String
+    external fun nativeLatencyProfile(): LongArray
     external fun nativeFree()
 }

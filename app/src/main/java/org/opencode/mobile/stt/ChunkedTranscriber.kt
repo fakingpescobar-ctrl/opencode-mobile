@@ -12,8 +12,9 @@ import android.util.Log
  * - клип > 30 с у ncnn-encoder обрезает хвост — сегменты ≤ 28 с;
  * - тишина/шум не попадают в движок — галлюцинации («Продолжение следует…»)
  *   отсекаются до распознавания;
- * - короткие фразы распознаются независимо — первая частичка приходит, пока
- *   пользователь говорит дальше (перцептивная «живость»), а не в конце записи.
+ * - клипы ≤ 28 с (ncnn) выполняются ОДНИМ прогоном без VAD — encoder ncnn берёт
+ *   фиксированные ~6.5с на любой вход, делить короткую речь на сегменты дороже
+ *   (R5-бенч, 25.09.2026); «живость» первых частичек приносится в жертву скорости.
  *
  * Склейка — простая конкатенация с пробелом: ncnn-адаптация не умеет
  * initial_prompt (декодер запускается с фиксированного [sot, lang, transcribe,
@@ -23,6 +24,15 @@ import android.util.Log
 object ChunkedTranscriber {
     private const val TAG = "CHUNKED"
     private const val SAMPLE_RATE = 16_000
+
+    /**
+     * Клипы не длиннее этого — НЕ сегментируются: вся запись гонится в движок
+     * одним прогоном. Причина (R5-бенч, 25.09.2026): ncnn-encoder платит
+     * фиксированные ~6.5с на ЛЮБОЙ вход; VAD-разбиение короткой фразы с
+     * микропаузами на 2+ сегмента умножает эту стоимость (8с фраза → 2×encoder
+     * ≈ 15с). До 28с (запас под 30с-лимит ncnn) выгоднее один прогон.
+     */
+    private const val MAX_SINGLE_PASS_SAMPLES = 28 * SAMPLE_RATE
 
     /**
      * Сегментирует клип и транскрибирует каждый сегмент через сервис.
@@ -36,6 +46,22 @@ object ChunkedTranscriber {
         engine: String,
     ): String {
         if (samples.isEmpty()) return "ОШИБКА WHISPER: пустые сэмплы"
+
+        // Lazy-путь: короткий клип → один прогон без VAD (энкодер ncnn — константа
+        // ~6.5с, сегментирование короткой речи только умножает её). Для whisper.cpp
+        // сохраняем прежнее поведение (ему нужен padToMin > 3с и чанкинг привычен).
+        val lazilySinglePass = engine == WhisperTranscribeService.ENGINE_NCNN &&
+            samples.size <= MAX_SINGLE_PASS_SAMPLES
+        if (lazilySinglePass) {
+            Log.d(TAG, "lazy single-pass: ${samples.size / SAMPLE_RATE}с ≤ 28с — без VAD-сегментации")
+            return WhisperTranscribeService.transcribe(
+                context = context,
+                samples = samples,
+                model = model,
+                engine = engine,
+            )
+        }
+
         val speech = ArrayList<FloatArray>()
         val metas = ArrayList<String>()
         val segments = SpeechSegmenter().split(samples)
