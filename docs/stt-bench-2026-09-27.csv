@@ -35,8 +35,17 @@ fp32,tone,13323,12967,12857,12967,503,11857,494,5,-,Поехалка
 # Detected correctly. The Russian text in the matrix rows above is the
 # hardcoded lang="ru" argument of the direct call, not a detection failure.
 #
-# chunked,long: 60070ms for the 37s clip (was 145616ms before segmentation was
-# fixed), 9 segments.
+# chunked,long: 52458ms for the 37s clip (was 145616ms before segmentation was
+# fixed, then 60070ms), 8 passes over 9 VAD segments. The drop from 60070 to
+# 52458ms is the leading-short-segment merge: the first two VAD segments
+# (0.7s + 2.1s) were below MIN_LANG_DETECT_SECONDS, so they went to the
+# decoder with the "ru" token and came back as "И так, мои дорогие
+# американцы" and "«Аск not!»" on English audio. ChunkedTranscriber.planParts()
+# now merges leading segments up to the detection threshold, so the language
+# is decided once on enough audio ("склеиваю первые 2 сегмента до порога
+# детекции языка (4с)" -> "язык сессии: en (79680 сэмплов)") and the whole
+# recording reads in English from the first segment. One pass fewer, hence
+# ~12s faster as well.
 #
 # lazy,short: 10274ms, English text. This is the regression check: before the
 # ensureAlive()/nativeIsAlive fix this cell returned "ОШИБКА WHISPER: ncnn
