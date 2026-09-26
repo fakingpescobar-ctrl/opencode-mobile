@@ -54,8 +54,6 @@ IPv4-first через `InetAddress`/Netd) + `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY
 
 Остатки (опционально):
 - Прогнать явный `webfetch`/`git` из чата на реальном телефоне как регресс-тест.
-- `tools/connect_proxy.py` — legacy-помощник (автономный), можно удалить,
-  приложение прокси встроено.
 
 **Готово:** внешние вызовы opencode ходят в сеть без ручного прокси-конфига.
 
@@ -109,6 +107,6 @@ IPv4-first через `InetAddress`/Netd) + `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY
 | Трек | Статус |
 |------|--------|
 | 1. Release-контур | **В процессе** — R8 + shrinkResources включены (374 → 274 → **147 MB**), base вынесена в lazy, пакет чистый `org.opencode.mobile`, smoke OK. Осталось: upload-key подпись |
-| 2. Сеть без прокси | **Выполнен** — встроенный `Ipv4Proxy` (CONNECT, IPv4-first); туннели к context7/grep/npm открываются автоматически. Остаётся удалить legacy `connect_proxy.py` |
+| 2. Сеть без прокси | **Выполнен** — встроенный `Ipv4Proxy` (CONNECT, IPv4-first); туннели к context7/grep/npm открываются автоматически. Legacy `connect_proxy.py` удалён (26.09) |
 | 3. STT turbo на CPU | **Почти готов** — int8-encoder ~2× fp32, **VAD-чанкинг внедрён (первые слова 1–2 s)**, бенч на устройстве прогнан (24.09). Осталось: WER-бенч |
 | 4. Безопасность и память | **Выполнен** — Basic Auth (401 без пароля), локальная память MCP (`ensureMcpConfig`, фикс «0 MCP»), протокольная диагностика, e2e чистой установки пройден |

@@ -280,7 +280,6 @@ docs/
   EXPERIMENTS-STT-LATENCY.md     # замеры ncnn: int8/Vulkan/KV, ЭКСП-5 (чанкинг)
   stt-bench-2026-09-24.csv       # бенч int8 vs fp32 (24.09.2026)
 tools/
-  connect_proxy.py               # legacy-помощник по исходящей сети (можно удалить)
   ncnn-whisper-plan.md           # план интеграции ncnn-whisper
   ncnn-int8-plan.md              # int8-квантование (внедрено) + тулзы квантования
   ncnn-int8/                     # quantize_block.py, compare_encoder.cpp (хост-бенч)
