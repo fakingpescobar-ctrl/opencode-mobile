@@ -14,6 +14,7 @@ import org.opencode.mobile.stt.ChunkedTranscriber
 import org.opencode.mobile.stt.ModelDownloader
 import org.opencode.mobile.stt.NcnnModelValidator
 import org.opencode.mobile.stt.SpeechSegmenter
+import org.opencode.mobile.stt.Wer
 import org.opencode.mobile.stt.WhisperTranscribeService
 import java.io.File
 import java.io.FileOutputStream
@@ -49,11 +50,11 @@ class BenchSttTest {
         val wavs = loadWavs(benchAssets)
         assertTrue("assets/bench пуст — сначала tools/gen_bench_wavs.py", wavs.isNotEmpty())
 
-        val csv = StringBuilder().append("config,wav,ms1,ms2,ms3,median,fbank_ms,enc_ms,dec_ms,steps,text\n")
-        runConfig("int8", int8Dir, wavs, csv)
+        val csv = StringBuilder().append("config,wav,ms1,ms2,ms3,median,fbank_ms,enc_ms,dec_ms,steps,wer,text\n")
+        runConfig("int8", int8Dir, wavs, csv, benchAssets)
         val fp32Dir = File(ModelDownloader.modelsDir(target), "ncnn-bench-fp32")
         if (NcnnModelValidator.checkModelDir(fp32Dir, "whisper_turbo").ok) {
-            runConfig("fp32", fp32Dir, wavs, csv)
+            runConfig("fp32", fp32Dir, wavs, csv, benchAssets)
         } else {
             Log.w(TAG, "ncnn-bench-fp32 не доставлена — матрица без fp32")
         }
@@ -152,12 +153,19 @@ class BenchSttTest {
         )
     }
 
-    /** Один конфиг модели: warmup (init+прогрев), затем 3 замера каждого wav. */
+    /**
+     * Один конфиг модели: warmup (init+прогрев), затем 3 замера каждого wav.
+     *
+     * WER считается только если рядом с wav лежит эталон `bench/reference/<имя>.txt`.
+     * Эталонов в репозитории намеренно нет: выдуманный «эталон», написанный по
+     * модельному же выводу, даёт WER около нуля и выглядит как отличный результат.
+     */
     private fun runConfig(
         config: String,
         dir: File,
         wavs: List<WavSample>,
         csv: StringBuilder,
+        assets: AssetManager,
     ) {
         val ctx = NcnnWhisperContext.createFromFilesDir(dir, "whisper_turbo")
         try {
@@ -169,6 +177,15 @@ class BenchSttTest {
             )
             ctx.setThreads(8)
             Log.i(TAG, "$config: warmup ${warmup.samples.size} сэмплов, потоки=8")
+            val refs = loadReferences(assets, wavs)
+            if (refs.isEmpty()) {
+                Log.w(
+                    TAG,
+                    "WER пропущен: нет ни одного эталона в bench/reference/. " +
+                        "Положить точные тексты с исправлениями (файл на wav) - иначе число WER " +
+                        "не с чем сравнивать.",
+                )
+            }
 
             for (wav in wavs) {
                 val runs = IntArray(RUNS)
@@ -181,14 +198,54 @@ class BenchSttTest {
                 val median = runs.sorted()[RUNS / 2]
                 val prof = ctx.latencyProfile()
                 val profStr = prof?.let { "${it[0]},${it[1]},${it[2]},${it[3]}" } ?: "0,0,0,0"
-                val sanitized = text.trim().replace('\n', ' ').take(60)
-                val row = "$config,${wav.name},${runs[0]},${runs[1]},${runs[2]},$median,$profStr,$sanitized"
+                val wer = refs[wav.name]?.let { Wer.of(it, text) }
+                // Запятые в распознанном тексте ломали бы CSV: text идёт последней
+                // колонкой, но модель пунктуацию ставит где попало.
+                val sanitized = text
+                    .trim()
+                    .replace('\n', ' ')
+                    .replace(",", ";")
+                    .take(60)
+                val row = "$config,${wav.name},${runs[0]},${runs[1]},${runs[2]},$median,$profStr,${Wer.format(wer)},$sanitized"
                 csv.append(row).append('\n')
                 Log.i(TAG, "BENCH_ROW $row")
             }
         } finally {
             runBlocking { ctx.release() }
         }
+    }
+
+    /**
+     * Читает эталоны из `assets/bench/reference/<имя wav без расширения>.txt`.
+     * Возвращает карту `имя wav -> эталонный текст`; отсутствие каталога - это пустая
+     * карта, а не ошибка: без эталонов WER просто не считается, а всё остальное
+     * (латентности, профиль) остаётся полезным.
+     */
+    private fun loadReferences(
+        assets: AssetManager,
+        wavs: List<WavSample>,
+    ): Map<String, String> {
+        val out = mutableMapOf<String, String>()
+        val names = assets.list("bench/reference").orEmpty().filter { it.endsWith(".txt") }
+        for (name in names) {
+            val wavName = name.removeSuffix(".txt") + ".wav"
+            val text = assets
+                .open("bench/reference/$name")
+                .bufferedReader()
+                .use { it.readText() }
+                .trim()
+            if (text.isEmpty()) {
+                Log.w(TAG, "эталон $name пуст - пропускаю, иначе WER врёт")
+                continue
+            }
+            out[wavName] = text
+        }
+        // Эталон без wav - почти наверняка опечатка в имени, и он молча потерялся бы.
+        val orphans = out.keys - wavs.map { it.name }.toSet()
+        if (orphans.isNotEmpty()) {
+            Log.w(TAG, "эталоны без соответствующего wav, имена игнорируются: $orphans")
+        }
+        return out.filterKeys { it in wavs.map { w -> w.name }.toSet() }
     }
 
     /** Читает все .wav из assets/bench — молча пропускает битые/чужие форматы. */
