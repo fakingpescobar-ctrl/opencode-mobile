@@ -22,7 +22,31 @@
 **Инференс на устройстве (STT)**
 - `whisper.cpp` + `ncnn` (CPU/NEON fp16 + KV-cache).
 - Модели: `base` и `large-v3-turbo` — lazy-скачивание по требованию (в APK моделей нет).
+- Отдельный NCNN-набор turbo: **15 файлов, ~2.33 ГБ** (`whisper_turbo_*.ncnn.bin/param`),
+  качается с GitHub Releases по требованию, `MIN_FREE_BYTES = 3 ГБ` на старте.
 - Ассеты шрифтов: `JetBrainsMono-Regular.ttf` (моно для ответов модели).
+
+**Размер debug APK (287.8 МБ) — это НЕ модели**
+
+Модельных файлов (`.bin` / `.param` / ggml) в APK нет вообще. Весь объём — native-библиотеки:
+
+| Файл | Размер |
+|------|--------|
+| `lib/arm64-v8a/libopencode.so` (движок) | 184.7 МБ |
+| `lib/arm64-v8a/libbun-musl.so` (рантайм) | 70.2 МБ |
+| `lib/arm64-v8a/libggml-vulkan.so` | 68.5 МБ |
+| `lib/arm64-v8a/libncnnwhisper.so` | 47.2 МБ |
+| `lib/arm64-v8a/libglslang.so` | 32.3 МБ |
+| `classes.dex` + 9.9k dex | ~65 МБ |
+
+Отсюда практический вывод: `connectedAndroidTest` на debug **не запускаем** — на установку
+и прогон уходит столько, что быстрее проверить на живой установленной копии.
+
+**Release-подпись — известный долг**
+`app/build.gradle.kts`: `release` собирается с `isMinifyEnabled`/`isShrinkResources`, но
+подписывается `signingConfigs.getByName("debug")` — своего release-keystore в проекте нет.
+Сборка и smoke работают, но публиковать так нельзя: сменив ключ, обновить уже установленное
+приложение невозможно.
 
 **Сборка / инфраструктура**
 - Gradle: `gradlew.bat :app:packageDebug --offline -x lint`
@@ -31,6 +55,62 @@
 - Профилирование: `dumpsys gfxinfo`, `top -H`, `/proc/<pid>/stat`.
   `simpleperf` **не работает** на OPPO/OnePlus — кернел блокирует
   `cpu-cycles/instructions` (perf locked, нужен root).
+
+---
+
+## Сентябрь 2026 — аккаунт Яндекс Музыки: логин и плейлист
+
+### Вход по OAuth (PKCE) + «Моё»
+- `mobile_yandex_login` — PKCE без client secret, код живёт 10 минут
+  (`CODE_LIFETIME_MILLIS`), refresh хранится в зашифрованных prefs.
+- `mobile_yandex_profile`, `mobile_yandex_liked` — профиль и библиотека «Мой плейлист».
+- Токены переживают перезапуск; при `401` refresh обновляется, повтор — один раз.
+- Commit `04322b0`, CI `36203590417` — success.
+
+### Плейлист целиком (`479178b`)
+- Три инструмента: `mobile_yandex_playlists`, `mobile_yandex_playlist`,
+  `mobile_yandex_play_playlist` + три маршрута моста
+  (`GET /v1/account/yandex/playlists`, `GET .../playlist`, `POST .../playlist/play`).
+- `PLAYLIST_HEAD = 5` — запускаем **первый** трек, а не жмём «Слушать» у плейлиста:
+  кнопка продолжает сохранённую очередь (для `D.N.B` — с трека #10).
+- Инвариант `started=true`: в MediaSession играет один из первых пяти API-треков.
+- `YandexPlaylistLaunchActivity` — прозрачный relay для deep link: у моста нет видимого
+  окна, и Android иначе создаёт цель, но не выводит её задачу наверх.
+- UI-матчинг, доведённый на живом устройстве:
+  - `TopmostMatch` вместо `preferLargest` — строка списка (1272×266) и мини-плеер
+    (1272×277) содержат один трек, и мини-плеер всегда шире, то есть «самый большой»
+    узел — не тот, который нужно тапать;
+  - `MatchSearch` — точный clickable-узел приоритетнее кликабельного предка;
+  - `tappableAncestor` с `ANCESTOR_HOPS = 24` (строка трека требует ~14 подъёмов);
+  - `MediaUiNodeMatcher` больше не отбрасывает label с `clickable = false`.
+- Live E2E (kind=1001): `ok=true`, `started=true`, `now_playing="YOUR LOVE" / Bullet Tooth`,
+  позиция растёт, остаётся `PlaylistScreenActivity`. CI `36228758621` — success.
+
+### Три правки про честность состояния (`a984dba`)
+
+| Что | Симптом | Причина |
+|-----|---------|---------|
+| `offRpcPool` | «ui job did not answer inside its budget» после ~60 с ожидания, реальная ошибка терялась | Исключение бросалось в поток, `future` не завершался никогда; executor — `newSingleThreadExecutor`, поэтому один сбой намертво вешал весь ui-click до перезапуска |
+| `readPlaylistLibrary` | Плейлист стартовал с середины, потом сам обвинялся в «ранние треки недоступны» | Порядок оставался delivery-порядком, хотя head брался первыми пятью `trackIds`, а позиция подписывалась из `originalIndexes` |
+| `failure()` | `now_playing` всегда `null` — агент думал, что музыка не играет вообще | Наблюдённая сессия не доходила до payload |
+
+Попутно: тест `the playlist order comes from original index` **врал своим именем** —
+проверял `[2, 0, 1]`, то есть delivery-порядок.
+
+### Ошибки и их решения — сентябрь
+
+**7. Deep link «открыл приложение, но плейлист не открылся»**
+**Симптом:** `yandexmusic://` доставлен, `ok=true`, а `PlaylistScreenActivity` так и не появилась.
+**Причина:** у моста нет видимого окна; Android создаёт целевую Activity, но не выводит её
+задачу наверх — ссылка выглядит доставленной, а эффекта нет.
+**Решение:** прозрачная `YandexPlaylistLaunchActivity` с `FLAG_ACTIVITY_NEW_TASK` как relay.
+**Файлы:** `YandexPlaylistLaunchActivity.kt`, `AndroidManifest.xml`, `themes.xml`.
+
+**8. Тап уходил в мини-плеер, а не в строку списка**
+**Симптом:** `NotFound` при верном плейлисте на экране.
+**Причина:** строка трека и мини-плеер содержат один и тот же заголовок; `preferLargest`
+выбирал мини-плеер (1272×277 > 1272×266).
+**Решение:** `TopmostMatch` + `MediaUiTarget.preferTopmost`.
 
 ---
 
