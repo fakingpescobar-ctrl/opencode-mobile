@@ -298,6 +298,40 @@ Vulkan-эксперимент 6.45 s — стабилен, но в проде в
   $ANDROID_HOME/build-tools/36.0.0/apksigner.bat verify --print-certs app/build/outputs/apk/release/app-release.apk
   ```
 
+### minVerify: проверить release-пайплайн на устройстве
+
+Обычные device-тесты гоняют `debug`, где R8 выключен. Поэтому есть отдельный
+build type `minVerify`: release с R8 и `shrinkResources`, но `debuggable` и с
+суффиксом пакета — встаёт рядом с debug, ничего не ломая.
+
+```bash
+# обычный цикл разработки (быстро, без R8)
+gradlew.bat connectedAndroidTest
+
+# проверка того, что R8 не сломал STT
+gradlew.bat -PsttTestBuildType=minVerify connectedMinVerifyAndroidTest
+```
+
+`testBuildType` переключается через `-P`, поэтому androidTest-вариант
+существует только для одного build type за раз, и оба пути остаются
+доступными.
+
+Keep-правила — в `app/proguard-minverify-rules.pro`, на release они не
+влияют. **Без них инструментация не запустится:** R8 оптимизирует по графу
+вызовов приложения и не видит тестовый APK, поэтому выкидывает members,
+которые вызывает только тест. Отсюда `-keep,allowoptimization` — имена нужны
+для линковки теста, но оптимизация остаётся включённой, её мы и проверяем.
+
+Перед выкладкой стоит убедиться, что JNI-класс уцелел при обфускации:
+```bash
+# Lcom/whispercpp/whisper/NcnnWhisperLib; должен ПРИСУТСТВОВАТЬ в classes.dex
+# Lcom/whispercpp/whisper/NcnnWhisperContext; будет обфусцирован - это нормально
+```
+Его спасает правило из дефолтного `proguard-android-optimize.txt`:
+`-keepclasseswithmembernames,includedescriptorclasses class * { native <methods>; }`
+
+Подробности — CHANGELOG, п. 18.
+
 Логи смотреть:
 ```bash
 adb logcat -s OpencodeRuntime OpencodeServerService OpencodeWebView VOICE RuntimeValidation ChatOverlay
