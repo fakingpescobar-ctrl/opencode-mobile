@@ -58,3 +58,7 @@ local.properties
 # Release signing secrets (keystore itself lives outside the repo).
 # *.keystore / *.jks above cover the container; this covers the passwords.
 keystore.properties
+
+# Release bundles / R8 mapping artifacts (huge binaries, archived per release,
+# and mirrored into Play Console). Not source.
+.release-artifacts/
