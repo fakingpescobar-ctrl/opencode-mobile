@@ -17,13 +17,13 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -48,6 +48,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import org.opencode.mobile.account.YandexAccountController
+import org.opencode.mobile.account.YandexOAuth
 import org.opencode.mobile.server.OpencodeServerService
 import org.opencode.mobile.server.ServerAuth
 import org.opencode.mobile.ui.ChatOverlay
@@ -56,8 +58,8 @@ import org.opencode.mobile.ui.theme.OpencodeMobileTheme
 private const val TAG = "OpencodeWebView"
 
 class MainActivity : ComponentActivity() {
-
-    private val notificationPermissionLauncher =        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     // «Доступ ко всем файлам» (MANAGE_EXTERNAL_STORAGE, API 30+): открывает
     // системные Настройки — приложения — доступ к файлам, где юзер вручную
@@ -99,6 +101,56 @@ class MainActivity : ComponentActivity() {
                 TerminalScreen()
             }
         }
+        // Редирект разбирается и здесь, а не только в onNewIntent. Если процесс убили,
+        // пока юзер согласовывал доступ в браузере, система создаст Activity заново и
+        // onNewIntent не вызовется вовсе - код просто исчезнет, и юзер увидит, что вход
+        // «не сработал», хотя он всё разрешил.
+        handleOauthRedirect(intent)
+    }
+
+    /**
+     * Сюда приходит код согласия Яндекса: приложение `singleTask`, поэтому браузер не
+     * создаёт второй экземпляр, а отдаёт intent уже живущей Activity. `setIntent` обязателен —
+     * иначе `getIntent()` продолжит отдавать старый MAIN, и перезапуск приложения потеряет код.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleOauthRedirect(intent)
+    }
+
+    private fun handleOauthRedirect(intent: Intent) {
+        val data = intent.data ?: return
+        if (data.scheme != YandexOAuth.SCHEME || data.host != YandexOAuth.HOST) return
+        // Инициализация здесь, а не только в мосту: Activity может пережить перезапуск
+        // сервиса, и тогда контроллер останется без контекста ровно в момент возврата.
+        YandexAccountController.initialize(this)
+        // Обмен кода на токен ходит в сеть, а onNewIntent — главный поток, где сеть запрещена.
+        // Поэтому весь разбор уходит в отдельный поток, а результат возвращается в UI.
+        Thread(
+            {
+                val outcome =
+                    runCatching { YandexAccountController.handleCallback(data.toString()) }
+                        .getOrElse { error ->
+                            YandexAccountController.Outcome.Rejected(
+                                error.message ?: "authorization failed",
+                            )
+                        }
+                reportOauthOutcome(outcome)
+            },
+            "yandex-oauth-callback",
+        ).start()
+    }
+
+    private fun reportOauthOutcome(outcome: YandexAccountController.Outcome) {
+        val message =
+            when (outcome) {
+                is YandexAccountController.Outcome.Connected ->
+                    "Yandex Music connected as ${outcome.identity.login}"
+                is YandexAccountController.Outcome.Rejected ->
+                    "Yandex Music: ${outcome.reason}"
+            }
+        runOnUiThread { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
     }
 
     private fun requestNotificationPermission() {
@@ -172,7 +224,10 @@ fun TerminalScreen() {
     }
 }
 
-private enum class ModelOption(val id: String, val label: String) {
+private enum class ModelOption(
+    val id: String,
+    val label: String,
+) {
     BIG_PICKLE("opencode/big-pickle", "big-pickle"),
     DEFAULT("auto", "Auto / Default"),
 }
@@ -216,7 +271,11 @@ private fun StatusDot(status: OpencodeServerService.ServerStatus) {
 }
 
 @Composable
-private fun DropdownButton(label: String, options: List<String>, onPick: (String) -> Unit) {
+private fun DropdownButton(
+    label: String,
+    options: List<String>,
+    onPick: (String) -> Unit,
+) {
     var expanded by remember { mutableStateOf(false) }
     Box {
         Button(onClick = { expanded = true }) {
@@ -270,7 +329,10 @@ fun OpencodeWebView(paused: Boolean = false) {
                     WebView.setWebContentsDebuggingEnabled(true)
                 }
                 webViewClient = object : WebViewClient() {
-                    override fun onPageFinished(view: WebView?, url: String?) {
+                    override fun onPageFinished(
+                        view: WebView?,
+                        url: String?,
+                    ) {
                         super.onPageFinished(view, url)
                         Log.i(TAG, "onPageFinished: $url")
                         // Глушим звук SPA. Инжектим JS, который переопределяет Web Audio
@@ -304,14 +366,14 @@ fun OpencodeWebView(paused: Boolean = false) {
                               }catch(e){}
                             })();
                             """.trimIndent(),
-                            null
+                            null,
                         )
                     }
 
                     override fun onReceivedError(
                         view: WebView?,
                         request: WebResourceRequest?,
-                        error: WebResourceError?
+                        error: WebResourceError?,
                     ) {
                         super.onReceivedError(view, request, error)
                         Log.e(TAG, "onReceivedError code=${error?.errorCode} desc=${error?.description} url=${request?.url}")
@@ -323,7 +385,7 @@ fun OpencodeWebView(paused: Boolean = false) {
                         view: WebView?,
                         handler: android.webkit.HttpAuthHandler?,
                         host: String?,
-                        realm: String?
+                        realm: String?,
                     ) {
                         // Рассчитываем на ServerAuth (заполнен в onCreate), но подстраховываемся
                         // повторным вызовом — serve мог стартовать уже после нашего onCreate.

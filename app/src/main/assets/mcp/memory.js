@@ -614,7 +614,98 @@ const MOBILE_MEDIA_TOOLS = [
 // пользователю имя сервера из конфига, и сервер с именем "memory", внутри которого
 // лежат ещё и инструменты управления телефоном, вводит в заблуждение.
 const memoryToolSet = [...memoryTools];
-const mobileToolSet = [...MOBILE_INSTALL_TOOLS, ...MOBILE_APP_CONTROL_TOOLS, ...MOBILE_MEDIA_TOOLS];
+// Чтение библиотеки Яндекс Музыки по REST. В отличие от mobile_media_* здесь нужен
+// вход пользователя: лайки живут в аккаунте, а не в сессии плеера, поэтому и доступ
+// другой - свой OAuth с PKCE, где юзер один раз соглашается в браузере.
+const MOBILE_YANDEX_ACCOUNT_TOOLS = [
+  {
+    name: "mobile_yandex_connect",
+    description:
+      "Connect this app to the user's Yandex Music account so their library can be read. Opens a " +
+      "browser on Yandex's consent page; the user signs in and approves there, and the app gets " +
+      "the code back on its own. This is not instant and it is not done for you: the call returns " +
+      "with a next_step, and nothing is connected until the user has actually approved. After they " +
+      "confirm, call mobile_yandex_status - only connected=true means it worked. Only " +
+      "login:info is requested, and no client secret is stored on the device. Calling this again " +
+      "while already connected is safe: a failed attempt never drops a working token. The token " +
+      "lasts a year and is refreshed on its own, so do not ask the user to reconnect for a " +
+      "simple expiry. Verified on a real device: the whole flow works with this app's own OAuth " +
+      "and no Yandex Music app session is involved.",
+    inputSchema: {
+      type: "object",
+      properties: {}
+    }
+  },
+  {
+    name: "mobile_yandex_status",
+    description:
+      "Report whether the Yandex Music account is connected: connected, login, uid, expires_at, " +
+      "can_refresh and awaiting_code. Read this before any library call, and after " +
+      "mobile_yandex_connect once the user has approved. connected=false means there is no token " +
+      "at all, so run mobile_yandex_connect. awaiting_code=true with connected=false means a " +
+      "login was started and the user has not come back from the browser yet - that is normal, not " +
+      "an error. can_refresh=false on an expired token means nothing can be renewed and the user " +
+      "must re-authorise. The token is stored in the app's private storage and is never exposed " +
+      "here.",
+    inputSchema: {
+      type: "object",
+      properties: {}
+    }
+  },
+  {
+    name: "mobile_yandex_likes",
+    description:
+      "Read the user's own Yandex Music library as catalog tracks, with the same id, title, artist, " +
+      "album, duration_ms, available and uri per track that mobile_media_search returns - so a " +
+      "track id from here can be compared with a search result and handed to mobile_media_play. " +
+      "Needs the account connected, so check mobile_yandex_status first and connect if not. " +
+      "Pagination is yours: the API has no page parameters and ignores them, so the app downloads " +
+      "the whole id list and slices it. Use offset and limit, then keep asking while has_more is " +
+      "true, and remember total. Each page costs one id-list download plus one catalog lookup per " +
+      "track, so prefer a small limit over pulling everything. Tracks that are gone or " +
+      "region-blocked come back without metadata and are dropped, so the returned list can be " +
+      "shorter than the ids you asked for - that is not an error. revision changes when the " +
+      "library changes. Verified on a real account: batch lookups do not work (/tracks/a,b answers " +
+      "'validate', /tracks/a.b is HTTP 400), which is why this path is one request per track.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        offset: {
+          type: "integer",
+          minimum: 0,
+          description: "Zero-based position in the library; default 0"
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 50,
+          description: "How many tracks to return; default 20"
+        }
+      }
+    }
+  },
+  {
+    name: "mobile_yandex_disconnect",
+    description:
+      "Forget the Yandex Music token on this device: the account stops being connected, the " +
+      "library becomes unreadable until the user authorises again, and the stored login and uid go " +
+      "too. Nothing is deleted in the Yandex Music account itself - the likes stay exactly where " +
+      "they are - so this only revokes this app's access, not the user's data. Use it when the " +
+      "user asks to sign out, or to switch accounts. Confirm afterwards with mobile_yandex_status: " +
+      "it must report connected=false.",
+    inputSchema: {
+      type: "object",
+      properties: {}
+    }
+  }
+];
+
+const mobileToolSet = [
+  ...MOBILE_INSTALL_TOOLS,
+  ...MOBILE_APP_CONTROL_TOOLS,
+  ...MOBILE_MEDIA_TOOLS,
+  ...MOBILE_YANDEX_ACCOUNT_TOOLS
+];
 
 // stdio-клиент (дочерний MCP, который поднимает сам opencode) получает полный набор:
 // за ним не стоит UI-список серверов, и резать его поведение незачем.
@@ -976,6 +1067,29 @@ async function mobileMediaLibrary(args) {
   return mobileBridge(`/v1/media/library?${parameters.toString()}`);
 }
 
+async function mobileYandexConnect(args) {
+  return mobileBridge("/v1/account/yandex/connect", { method: "POST" });
+}
+
+async function mobileYandexStatus(args) {
+  return mobileBridge("/v1/account/yandex/status");
+}
+
+async function mobileYandexLikes(args) {
+  const parameters = new URLSearchParams();
+  const offset = mediaUiInteger(args.offset, 0, 0, Number.MAX_SAFE_INTEGER, "offset");
+  parameters.set("offset", String(offset));
+  if (args.limit !== undefined && args.limit !== null) {
+    const limit = mediaUiInteger(args.limit, null, 1, 50, "limit");
+    if (limit !== null) parameters.set("limit", String(limit));
+  }
+  return mobileBridge(`/v1/account/yandex/likes?${parameters.toString()}`);
+}
+
+async function mobileYandexDisconnect(args) {
+  return mobileBridge("/v1/account/yandex/disconnect", { method: "POST" });
+}
+
 async function mobileMediaUiClick(args) {
   const payload = {
     package: requireAndroidPackage(args.package),
@@ -1150,6 +1264,10 @@ async function callTool(name, args) {
     case "mobile_media_ui_click": return mobileMediaUiClick(args || {});
     case "mobile_media_ui_text": return mobileMediaUiText(args || {});
     case "mobile_media_ui_shield": return mobileMediaUiShield(args || {});
+    case "mobile_yandex_connect": return mobileYandexConnect(args || {});
+    case "mobile_yandex_status": return mobileYandexStatus(args || {});
+    case "mobile_yandex_likes": return mobileYandexLikes(args || {});
+    case "mobile_yandex_disconnect": return mobileYandexDisconnect(args || {});
     default: throw new Error("Unknown tool: " + name);
   }
 }

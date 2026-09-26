@@ -62,6 +62,18 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- OAuth-возврат Яндекса: одноActivity-приложение ловит код на своей схеме.
+                 android:exported обязателен (с Android 12 иначе intent-filter не работает),
+                 а launchMode="singleTask" выше гарантирует доставку в onNewIntent, а не
+                 во второй экземпляр: активный заход авторизации живёт в процессе. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="org.opencode.mobile"
+                    android:host="oauth" />
+            </intent-filter>
         </activity>
 
         <service

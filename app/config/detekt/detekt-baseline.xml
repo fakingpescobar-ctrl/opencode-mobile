@@ -28,7 +28,7 @@
     <ID>FunctionNaming:MainActivity.kt$@Composable fun TerminalScreen()</ID>
     <ID>FunctionNaming:MainActivity.kt$@Composable private fun CenteredStatus(text: String)</ID>
     <ID>FunctionNaming:MainActivity.kt$@Composable private fun ControlBar(status: OpencodeServerService.ServerStatus)</ID>
-    <ID>FunctionNaming:MainActivity.kt$@Composable private fun DropdownButton(label: String, options: List&lt;String&gt;, onPick: (String) -&gt; Unit)</ID>
+    <ID>FunctionNaming:MainActivity.kt$@Composable private fun DropdownButton( label: String, options: List&lt;String&gt;, onPick: (String) -&gt; Unit, )</ID>
     <ID>FunctionNaming:MainActivity.kt$@Composable private fun StatusDot(status: OpencodeServerService.ServerStatus)</ID>
     <ID>FunctionNaming:Theme.kt$@Composable fun OpencodeMobileTheme( darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -&gt; Unit )</ID>
     <ID>ImplicitDefaultLocale:ChatOverlay.kt$String.format("%.3f ", kotlin.math.sqrt(sum / (end - i)))</ID>
@@ -216,7 +216,6 @@
     <ID>MaxLineLength:DiagnosticsScreen.kt$Text("Пусто — opencode.log ещё не создан (сервер не запускался).", color = Color(0xFF8A8A8A), fontSize = 12.sp)</ID>
     <ID>MaxLineLength:MainActivity.kt$&lt;no name provided&gt;$Log.e(TAG, "onReceivedError code=${error?.errorCode} desc=${error?.description} url=${request?.url}")</ID>
     <ID>MaxLineLength:MainActivity.kt$DropdownButton</ID>
-    <ID>MaxLineLength:MainActivity.kt$MainActivity$private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }</ID>
     <ID>MaxLineLength:ModelDownloader.kt$ModelDownloader$"206 без etag/Content-Range гарантии (start=$crStart, ждали $startAt, etag=${etagFile.exists()}) — перекачка с нуля"</ID>
     <ID>MaxLineLength:ModelDownloader.kt$ModelDownloader$Log.w(TAG, "${dest.name}: rename не дался — копирую целиком (может занять время на ${done / 1024 / 1024}MB)")</ID>
     <ID>MaxLineLength:ModelDownloader.kt$ModelDownloader$throw IllegalStateException("${dest.name}: SHA-256 не сошёлся после fallback-переноса — файл не тот")</ID>

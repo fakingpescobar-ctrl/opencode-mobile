@@ -146,6 +146,14 @@ class YandexCatalogTest {
         assertNull(result.exactTrackId)
     }
 
+    @Test
+    fun `library resolution drops anything that is not a catalog id before calling out`() {
+        // Ни одного сетевого вызова здесь быть не должно: мусор отсекается по форме,
+        // иначе id из библиотеки ездил бы в сеть пачкой заведомо бесполезных запросов.
+        assertTrue(YandexCatalog.resolveTracks(listOf("not-an-id", "42;drop", "", "  ")).isEmpty())
+        assertTrue(YandexCatalog.resolveTracks(emptyList()).isEmpty())
+    }
+
     private fun track(
         id: String,
         title: String,

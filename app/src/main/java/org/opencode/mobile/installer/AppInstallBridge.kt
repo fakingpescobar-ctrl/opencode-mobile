@@ -4,6 +4,9 @@ import android.content.Context
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import org.opencode.mobile.account.LikedPage
+import org.opencode.mobile.account.YandexAccountController
+import org.opencode.mobile.account.YandexAccountRequestValidator
 import org.opencode.mobile.media.MediaAppSnapshot
 import org.opencode.mobile.media.MediaAutomationShield
 import org.opencode.mobile.media.MediaCapabilities
@@ -102,6 +105,7 @@ object AppInstallBridge {
             InstalledAppController.initialize(context)
             MediaControlController.initialize(context)
             MediaAutomationShield.initialize(context)
+            YandexAccountController.initialize(context)
             val nextToken = token.ifBlank { UUID.randomUUID().toString() }
             val socket =
                 runCatching {
@@ -202,6 +206,10 @@ object AppInstallBridge {
             Route("POST", "/v1/media/ui/click", ::clickMediaUi),
             Route("POST", "/v1/media/ui/text", ::textMediaUi),
             Route("POST", "/v1/media/ui/shield", ::mediaUiShield),
+            Route("POST", "/v1/account/yandex/connect", ::connectYandex),
+            Route("GET", "/v1/account/yandex/status", ::yandexStatus),
+            Route("POST", "/v1/account/yandex/disconnect", ::disconnectYandex),
+            Route("GET", "/v1/account/yandex/likes", ::yandexLikes),
         )
 
     private fun writeHealth(output: BufferedOutputStream) {
@@ -421,6 +429,56 @@ object AppInstallBridge {
                         .put("reason", MediaAutomationShield.lastReason() ?: JSONObject.NULL),
                 ),
         )
+    }
+
+    private fun connectYandex(
+        output: BufferedOutputStream,
+        @Suppress("UNUSED_PARAMETER") request: Request,
+    ) {
+        val status = YandexAccountController.startConnect()
+        writeJson(
+            output,
+            200,
+            JSONObject()
+                .put("ok", true)
+                .put("account", status.toJson())
+                // Отдельным полем, а не внутри status: именно это должен сделать агент —
+                // отдать ссылку юзеру и дождаться согласия, а не считать задачу выполненной.
+                .put(
+                    "next_step",
+                    "a browser was opened; ask the user to sign in and approve, then re-check status",
+                ),
+        )
+    }
+
+    private fun yandexStatus(
+        output: BufferedOutputStream,
+        @Suppress("UNUSED_PARAMETER") request: Request,
+    ) {
+        val status = YandexAccountController.status()
+        writeJson(output, 200, JSONObject().put("ok", true).put("account", status.toJson()))
+    }
+
+    private fun disconnectYandex(
+        output: BufferedOutputStream,
+        @Suppress("UNUSED_PARAMETER") request: Request,
+    ) {
+        YandexAccountController.disconnect()
+        val status = YandexAccountController.status()
+        writeJson(output, 200, JSONObject().put("ok", true).put("account", status.toJson()))
+    }
+
+    private fun yandexLikes(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val (offset, limit) =
+            YandexAccountRequestValidator.page(
+                offset = parameter(request.query, "offset"),
+                limit = parameter(request.query, "limit"),
+            )
+        val page = YandexAccountController.readLikes(offset, limit)
+        writeJson(output, 200, JSONObject().put("ok", true).put("likes", page.toJson()))
     }
 
     private fun likeMedia(
@@ -813,6 +871,44 @@ object AppInstallBridge {
             .put("message", message)
             .put("updated_at", updatedAt)
             .put("signing_certificate_sha256", signingCertificateSha256 ?: JSONObject.NULL)
+
+    private fun YandexAccountController.Status.toJson(): JSONObject =
+        JSONObject()
+            .put("connected", connected)
+            .put("login", identity?.login ?: JSONObject.NULL)
+            .put("uid", identity?.uid ?: JSONObject.NULL)
+            .put("expires_at", expiresAtMillis)
+            .put("can_refresh", canRefresh)
+            // Отдельно от connected: «токен есть, а код согласия ещё не пришёл» — это не
+            // подключение, но и не поломка, и агенту надо различать эти два состояния.
+            .put("awaiting_code", awaitingCode)
+
+    private fun LikedPage.toJson(): JSONObject =
+        JSONObject()
+            .put("login", login)
+            .put("uid", uid)
+            .put("revision", revision)
+            .put("offset", offset)
+            .put("total", total)
+            .put("has_more", hasMore)
+            .put("track_ids", JSONArray(trackIds))
+            .put(
+                "tracks",
+                JSONArray().apply {
+                    tracks.forEach { track ->
+                        put(
+                            JSONObject()
+                                .put("id", track.id)
+                                .put("title", track.title)
+                                .put("artist", track.artist)
+                                .put("album", track.album)
+                                .put("duration_ms", track.durationMs)
+                                .put("available", track.available)
+                                .put("uri", track.deepLink),
+                        )
+                    }
+                },
+            )
 
     private fun error(message: String): JSONObject = JSONObject().put("ok", false).put("error", message)
 

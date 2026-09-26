@@ -8,6 +8,7 @@ import java.net.URI
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.Locale
+import java.util.concurrent.Executors
 
 /** Трек каталога Яндекс Музыки в том виде, в котором его можно отдать сессии. */
 data class CatalogTrack(
@@ -57,6 +58,10 @@ object YandexCatalog {
     private const val USER_AGENT = "opencode-mobile/1.0"
     private const val TRACK_LIMIT = 20
     private const val MAX_SEARCH_LIMIT = 20
+
+    // Сколько треков одной страницы тянем одновременно. 6 - компромисс: 50 треков успевают
+    // за 10-секундный бюджет моста, а Яндекс не успевает срезать нас по лимиту запросов.
+    private const val RESOLVE_CONCURRENCY = 6
     private const val MAX_ID_LENGTH = 32
     private const val HTTP_OK = 200
     private const val HTTP_MAX = 299
@@ -97,6 +102,46 @@ object YandexCatalog {
             return Result(text, null, found?.let(::listOf) ?: emptyList(), found?.id, RESOLVED_BY_ID)
         }
         return searchText(text, limit)
+    }
+
+    /**
+     * Каталожные id → треки, для библиотеки Яндекса.
+     *
+     * Отдельный публичный вход нужен избранному: там приходят id пачкой, и держи второе
+     * место, где знают про форму каталога, нельзя. Батчем Яндекс не берёт — `/tracks/a,b`
+     * отвечает `validate`, `/tracks/a.b` отдаёт 400, — поэтому id запрашиваются по одному.
+     * Порядок входа сохраняется, недоступные (удалённые/региональные) пропускаются: лучше
+     * короткий список, чем запись с пустым названием, по которой потом нельзя ничего играть.
+     */
+    fun resolveTracks(ids: List<String>): List<CatalogTrack> {
+        val wanted = ids.map { it.trim() }.filter(::isTrackId).distinct()
+        if (wanted.isEmpty()) return emptyList()
+        val pool = resolveInParallel(wanted)
+        return wanted.mapNotNull(pool::get)
+    }
+
+    /**
+     * Разбор пачки треков ограниченным числом потоков.
+     *
+     * Запросы независимы, а бюджет жёсткий: мост отдаёт ответ клиенту за 10 секунд, и
+     * по одному запросу на трек 50 треков в него не укладываются - страница падала бы по
+     * таймауту. Ширина фиксированная, потому что неконтролируемая пачка запросов к
+     * Яндексу заканчивается либо 429, либо баном аккаунта.
+     *
+     * Пул закрывается вручную, а не через `use`: `ExecutorService` стал `AutoCloseable`
+     * только в Java 19, и на старых Android `use` здесь не собрался бы.
+     */
+    private fun resolveInParallel(ids: List<String>): Map<String, CatalogTrack?> {
+        val executor = Executors.newFixedThreadPool(RESOLVE_CONCURRENCY)
+        try {
+            val futures =
+                ids.map { id ->
+                    id to executor.submit<CatalogTrack?> { runCatching { track(id) }.getOrNull()?.firstOrNull() }
+                }
+            return futures.associate { (id, future) -> id to future.get() }
+        } finally {
+            executor.shutdown()
+        }
     }
 
     /** Поиск по названию: единственный путь, где нужен разбор выдачи. */
