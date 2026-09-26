@@ -89,11 +89,33 @@ class SpeechSegmenterTest {
     }
 
     @Test
-    fun `речь после паузы старта - сегмент с pre-roll`() {
+    fun `старт не длиннее 28с + pre-roll`() {
         val rng = Random(13)
         val clip = concat(noise(rng, 1.0), speech(rng, 1.5))
         val segs = seg.split(clip)
         assertEquals(1, segs.size)
-        assertTrue("pre-roll не больше 150мс + кадра", segs[0].startMs < 1_000 + 200)
+        assertTrue("pre-roll не длиннее 150мс + кадр", segs[0].startMs < 1_000 + 200)
+    }
+
+    /**
+     * Частота вне диапазона должна падать на конструкторе, а не делением на ноль в `split()`.
+     *
+     * Проверяется и то, что обычные частоты проходят: guard не должен отвергать 8 и 48 кГц,
+     * иначе это уже не страховка, а запрет.
+     */
+    @Test
+    fun `частота вне диапазона отвергается на конструкторе`() {
+        for (bad in listOf(0, 1, 4_000, 96_000, -16_000)) {
+            val thrown =
+                runCatching { SpeechSegmenter(bad) }.exceptionOrNull()
+            assertTrue("sampleRate=$bad должен быть отвергнут", thrown is IllegalArgumentException)
+        }
+    }
+
+    @Test
+    fun `обычные частоты проходят`() {
+        for (good in listOf(8_000, 16_000, 22_050, 44_100, 48_000)) {
+            assertTrue("sampleRate=$good должен приниматься", runCatching { SpeechSegmenter(good) }.isSuccess)
+        }
     }
 }

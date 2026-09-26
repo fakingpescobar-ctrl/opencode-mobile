@@ -26,6 +26,19 @@ import kotlin.math.sqrt
 class SpeechSegmenter(
     private val sampleRate: Int = 16_000,
 ) {
+    /**
+     * Единственный продакшн-вызов берёт дефолт 16 000, так что неверная частота сегодня
+     * недостижима. Но [sampleRate] - публичный параметр конструктора, а из него считается
+     * [frameSize], и `frameSize = 0` означает деление на ноль в `split()` - то есть
+     * ArithmeticException с нумерацией строки вместо внятного объяснения. Ловим на
+     * входе, где ещё можно сказать, что именно не так.
+     */
+    init {
+        require(sampleRate in MIN_SAMPLE_RATE..MAX_SAMPLE_RATE) {
+            "sampleRate $sampleRate вне диапазона $MIN_SAMPLE_RATE..$MAX_SAMPLE_RATE"
+        }
+    }
+
     data class Segment(
         val startMs: Int,
         val samples: FloatArray,
@@ -221,6 +234,10 @@ class SpeechSegmenter(
 
         /** Абсолютный минимум RMS (16-бит тишина ~0.002–0.02; ниже — уже шум/усиление). */
         const val MIN_RMS = 0.015f
+
+        /** Частоты, из которых имеет смысл считать кадры: 8–48 кГц, как у любых PCM-источников. */
+        const val MIN_SAMPLE_RATE = 8_000
+        const val MAX_SAMPLE_RATE = 48_000
 
         /** Длина кадра анализа, мс. */
         private const val FRAME_MS = 30L
