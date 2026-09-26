@@ -185,7 +185,10 @@ class BenchSttTest {
                     .take(60)
             // Секунды форматируем отдельно: String.format на склеенной строке
             // упал бы, если бы в распознанном тексте встретился символ '%'.
-            val secs = "%.1f".format(wav.samples.size / 16_000.0)
+            // Locale.US обязателен: в локали с запятой "%.1f" даёт "11,0", и
+            // в CSV это значение разрывается на два поля - сдвигает разбор
+            // языка на позицию, где оказывается "0" вместо "en".
+            val secs = String.format(java.util.Locale.US, "%.1f", wav.samples.size / 16_000.0)
             val row = "${wav.name},${wav.samples.size},$secs,$lang,$script,$clean"
             csv.append(row).append('\n')
             Log.i(TAG, "LANG_ROW $row  (${ms}мс)")

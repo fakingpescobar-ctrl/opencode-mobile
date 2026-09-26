@@ -50,8 +50,10 @@ object ChunkedTranscriber {
         }
 
         // Новая запись = новая сессия языка. Защёлка живёт ровно один клип:
-        // первый сегмент определяет язык, остальные берут токен. Без сброса
-        // язык первой записи утекал бы во все следующие до перезапуска процесса.
+        // первый ПРОХОД движка определяет язык, остальные берут токен. Проход -
+        // не обязательно сегмент: ведущие короткие сегменты склеиваются до
+        // порога детекции (см. [planParts]). Без сброса язык первой записи
+        // утекал бы во все следующие до перезапуска процесса.
         WhisperTranscribeService.resetLanguageLatch()
 
         // Lazy-путь: короткий клип → один прогон без VAD (энкодер ncnn — константа
@@ -111,10 +113,11 @@ object ChunkedTranscriber {
         engine: String,
     ): String {
         val parts = ArrayList<String>()
-        for ((index, audio) in speech.withIndex()) {
+        val plan = planParts(segments, speech)
+        for ((index, part) in plan.withIndex()) {
             val text = WhisperTranscribeService.transcribe(
                 context = context,
-                samples = audio,
+                samples = part.audio,
                 model = model,
                 engine = engine,
             )
@@ -122,16 +125,84 @@ object ChunkedTranscriber {
 
             val trimmed = text.trim()
             if (trimmed.isNotEmpty()) parts.add(trimmed)
-            val segment = segments[index]
-            val durationSeconds = audio.size / SAMPLE_RATE
-            val rms = "%.3f".format(segment.rms)
+            val durationSeconds = part.audio.size / SAMPLE_RATE
+            val label = if (part.merged == 1) "сегмент" else "сегменты x${part.merged}"
             Log.d(
                 TAG,
-                "сегмент ${index + 1}/${speech.size} " +
-                    "(${segment.startMs}мс, ${durationSeconds}с, rms=$rms): '$trimmed'",
+                "$label ${index + 1}/${plan.size} " +
+                    "(${part.startMs}мс, ${durationSeconds}с, rms=${"%.3f".format(rms(part.audio))}): '$trimmed'",
             )
         }
         return parts.joinToString(" ")
+    }
+
+    /** Один проход движка: кусок аудио + откуда он начался + сколько VAD-сегментов склеено. */
+    private data class Part(
+        val audio: FloatArray,
+        val startMs: Int,
+        val merged: Int,
+    )
+
+    /**
+     * Раскладка сессии на проходы. Язык решается ОДИН раз, поэтому ведущие
+     * короткие сегменты склеиваются до порога детекции.
+     *
+     * Детектор языка отказывается работать на клипах короче
+     * [WhisperTranscribeService.MIN_LANG_DETECT_SECONDS]. Раньше такой сегмент
+     * не просто молчал, а уходил в декодер с токеном "ru" - и весь текст
+     * записи начинался с русской расшифровки иностранной речи: на long.wav
+     * первые два сегмента из девяти дали "И так, мои дорогие американцы" и
+     * "«Аск not!»" вместо английского, и только с третьего сегмента защёлка
+     * ловила en. Склейка это чинит бесплатно: VAD разрезал один непрерывный
+     * кусок записи, и объединённый кусок ничем не отличается от целого.
+     */
+    private fun planParts(
+        segments: List<SpeechSegmenter.Segment>,
+        speech: List<FloatArray>,
+    ): List<Part> {
+        if (speech.size <= 1 || WhisperTranscribeService.languageDecided()) {
+            return speech.mapIndexed { index, audio -> Part(audio, segments[index].startMs, 1) }
+        }
+        val minSamples = (WhisperTranscribeService.MIN_LANG_DETECT_SECONDS * SAMPLE_RATE).toInt()
+        var taken = 0
+        var total = 0
+        while (taken < speech.size && total < minSamples) {
+            total += speech[taken].size
+            taken++
+        }
+        val head =
+            if (taken > 1) {
+                Log.i(TAG, "склеиваю первые $taken сегмента до порога детекции языка (${total / SAMPLE_RATE}с)")
+                merge(speech.subList(0, taken))
+            } else {
+                speech[0]
+            }
+        return buildList {
+            add(Part(head, segments.first().startMs, taken))
+            for (index in taken until speech.size) {
+                add(Part(speech[index], segments[index].startMs, 1))
+            }
+        }
+    }
+
+    private fun merge(parts: List<FloatArray>): FloatArray {
+        val joined = FloatArray(parts.sumOf { it.size })
+        var offset = 0
+        for (part in parts) {
+            System.arraycopy(part, 0, joined, offset, part.size)
+            offset += part.size
+        }
+        return joined
+    }
+
+    /** RMS для лога сегмента; считаем по фактическому куску, а не по исходному. */
+    private fun rms(audio: FloatArray): Float {
+        if (audio.isEmpty()) return 0f
+        var sum = 0.0
+        for (sample in audio) {
+            sum += sample * sample
+        }
+        return Math.sqrt(sum / audio.size).toFloat()
     }
 
     /** whisper.cpp (vanilla) врёт на клипах < 3с — добиваем нулями до минимума. */

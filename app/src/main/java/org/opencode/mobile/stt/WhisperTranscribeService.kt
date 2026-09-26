@@ -136,14 +136,27 @@ class WhisperTranscribeService : Service() {
          * Ниже этой длины (в секундах) язык не определяем. На коротких клипах
          * whisper выбирает язык по шуму, и решение оказывается случайным —
          * известный DEFAULT_LANG полезнее, чем угадывание.
+         *
+         * Порог публичный: [ChunkedTranscriber] по нему склеивает ведущие
+         * короткие сегменты записи, чтобы решение о языке принималось один раз
+         * на достаточном куске. Без этого короткий первый сегмент уходил в
+         * декодер с токеном "ru" и давал русскую расшифровку иностранной речи.
          */
-        private const val MIN_LANG_DETECT_SECONDS = 3.0
+        const val MIN_LANG_DETECT_SECONDS = 3.0
         private const val SAMPLE_RATE_HZ = 16_000
 
         /** Сброс защёлки в начале новой сессии диктовки. */
         fun resetLanguageLatch() {
             latchedLang = null
         }
+
+        /**
+         * Язык для этой сессии уже решён (пользователем или защёлкой)?
+         * Нужен вызывающему, чтобы не склеивать сегменты под детекцию заново.
+         * Сравнивать currentLang() с DEFAULT_LANG нельзя: защёлка может
+         * законно стоять в "ru", и это не то же самое, что "язык не решали".
+         */
+        fun languageDecided(): Boolean = languageOverride != null || latchedLang != null
 
         /** Текущий язык: явный override, иначе защёлка, иначе дефолт. */
         fun currentLang(): String = languageOverride ?: latchedLang ?: DEFAULT_LANG
