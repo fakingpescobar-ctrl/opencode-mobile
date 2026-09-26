@@ -19,10 +19,18 @@ import java.io.IOException
  * Ни один метод не бросает наружу «сырое» исключение: мост отдаёт их в JSON агенту, и там
  * текст ошибки важнее класса исключения. Всё, что может упасть, превращается в [Outcome].
  */
+// Фасад над аккаунтом: подключение, статус, выход и всё чтение библиотеки. Методов много
+// намеренно - каждый отвечает за один вызов агента, и разносить их по классам ради числа
+// значит прятать от моста то, как аккаунт устроен.
+@Suppress("TooManyFunctions")
 object YandexAccountController {
     /** Код Яндекса живёт 10 минут; столько же ждём его в хранилище. */
     const val DEFAULT_LIMIT = 20
     const val MAX_LIMIT = 50
+
+    /** Сколько треков от начала плейлиста сверяем при запуске. */
+    const val PLAYLIST_HEAD = 5
+
     private const val CODE_LIFETIME_MILLIS = 600_000L
     private const val NO_TOKEN_EXPIRY_AT = 0L
     private const val NOT_CONNECTED = "yandex account is not connected: run the connect tool first"
@@ -161,18 +169,14 @@ object YandexAccountController {
         offset: Int = 0,
         limit: Int = DEFAULT_LIMIT,
     ): LikedPage {
-        val store = store()
-        val token = freshToken(store)
-        val identity =
-            store.identity()
-                ?: YandexAccountClient.identity(token.accessToken).also(store::saveIdentity)
-        val library = YandexAccountClient.likedTrackIds(token.accessToken, identity.login)
+        val session = session()
+        val library = YandexAccountClient.likedTrackIds(session.token.accessToken, session.identity.login)
         val from = offset.coerceAtLeast(0).coerceAtMost(library.size)
         val size = limit.coerceIn(1, MAX_LIMIT)
         val to = (from + size).coerceAtMost(library.size)
         val ids = library.trackIds.subList(from, to)
         return LikedPage(
-            login = identity.login,
+            login = session.identity.login,
             uid = library.uid,
             revision = library.revision,
             offset = from,
@@ -180,6 +184,107 @@ object YandexAccountController {
             trackIds = ids,
             tracks = YandexCatalog.resolveTracks(ids),
         )
+    }
+
+    /**
+     * Список плейлистов аккаунта.
+     *
+     * Отдельного кэша и `revision` здесь нет намеренно: в ответе есть `kind` у каждой строки,
+     * и он же служит адресом для [readPlaylist], так что агенту достаточно одного захода,
+     * чтобы показать список и тут же прочитать выбранный. Лайки отделены от этого вызова,
+     * потому что у них kind = 0, а не свой плейлист.
+     */
+    fun readPlaylists(): List<PlaylistSummary> {
+        val session = session()
+        return YandexAccountClient.playlists(session.token.accessToken, session.identity.uid)
+    }
+
+    /**
+     * Содержимое одного плейлиста, постранично на стороне приложения.
+     *
+     * Страница выглядит как у лайков не случайно: тот же список id приезжает одним ответом,
+     * и метаданные дотягиваются только на запрошенный кусок. Разница в одном — треки
+     * возвращаются в порядке `originalIndex`, а не в порядке выдачи Яндекса: в плейлисте
+     * порядок и есть содержание, и терять его нельзя.
+     */
+    fun readPlaylist(
+        kind: Int,
+        offset: Int = 0,
+        limit: Int = DEFAULT_LIMIT,
+    ): PlaylistPage {
+        val session = session()
+        val library =
+            YandexAccountClient.playlist(session.token.accessToken, session.identity.uid, kind)
+        val from = offset.coerceAtLeast(0).coerceAtMost(library.size)
+        val size = limit.coerceIn(1, MAX_LIMIT)
+        val to = (from + size).coerceAtMost(library.size)
+        val window = from until to
+        val ids = window.map { library.trackIds[it] }
+        val positions = window.map { library.originalIndexes[it] }
+        return PlaylistPage(
+            login = session.identity.login,
+            kind = library.kind,
+            uuid = library.uuid,
+            title = library.title,
+            revision = library.revision,
+            offset = from,
+            total = library.size,
+            trackIds = ids,
+            originalIndexes = positions,
+            tracks = YandexCatalog.resolveTracks(ids),
+        )
+    }
+
+    /**
+     * Включает плейлист целиком.
+     *
+     * Первый трек читается здесь же, тем же запросом, что и страница, и уходит в плеер как
+     * ожидание: без него воспроизведение нечем подтвердить, а «мы нажали кнопку» — не
+     * подтверждение. Заодно это даёт агенту ответ на вопрос «что зазвучит», не дожидаясь
+     * первого бара.
+     */
+    fun playPlaylist(kind: Int): PlaylistPlayback {
+        val session = session()
+        val library = YandexAccountClient.playlist(session.token.accessToken, session.identity.uid, kind)
+        // Берём начало плейлиста, а не только первый трек: недоступные треки Яндекс выкидывает
+        // молча, и запуск начинается со следующего играбельного. Сверка по всей голове
+        // отличает «плейлист пошёл» от «тапнули и продолжился чужой трек».
+        val window = library.trackIds.take(PLAYLIST_HEAD).indices
+        val head =
+            window
+                .map { index ->
+                    val track = YandexCatalog.resolveTracks(listOf(library.trackIds[index])).firstOrNull()
+                    track?.let { HeadTrack(it.title, library.originalIndexes[index] + 1) }
+                }.filterNotNull()
+        return YandexPlaylistPlayer.play(
+            login = session.identity.login,
+            kind = kind,
+            title = library.title.ifEmpty { "kind $kind" },
+            headTracks = head,
+        )
+    }
+
+    /** Токен, готовый к запросу, и аккаунт, к которому он относится. */
+    private data class Session(
+        val token: YandexToken,
+        val identity: YandexIdentity,
+    )
+
+    /**
+     * Всё, что нужно любому чтению: непротухший токен и кто перед нами.
+     *
+     * Собрано в одно место не для красоты: логика «взять токен, при необходимости обновить,
+     * а identity добрать и запомнить» была продублирована в каждом читателе, и любая правка
+     * в ней разъезжалась бы по копиям. Идентичность заодно кэшируется в хранилище, поэтому
+     * платный запрос `/users/me` случается один раз, а не на каждый чих.
+     */
+    private fun session(): Session {
+        val store = store()
+        val token = freshToken(store)
+        val identity =
+            store.identity()
+                ?: YandexAccountClient.identity(token.accessToken).also(store::saveIdentity)
+        return Session(token, identity)
     }
 
     /**

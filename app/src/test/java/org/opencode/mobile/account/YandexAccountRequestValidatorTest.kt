@@ -70,4 +70,49 @@ class YandexAccountRequestValidatorTest {
 
         assertEquals(YandexAccountController.MAX_LIMIT, limit)
     }
+
+    /**
+     * Ноль — не опечатка, а плейлист с лайками, поэтому он проходит. А вот отсутствие или
+     * мусор обязаны падать: без этой проверки пропавший `kind` уехал бы в URL нулём и вернул
+     * бы агенту лайки вместо плейлиста — тихая, но очень неприятная подмена.
+     */
+    @Test
+    fun `the likes kind zero is a valid playlist kind`() {
+        assertEquals(0, YandexAccountRequestValidator.playlistKind("0"))
+    }
+
+    @Test
+    fun `an own playlist kind is read from the query`() {
+        assertEquals(1001, YandexAccountRequestValidator.playlistKind("1001"))
+    }
+
+    @Test
+    fun `a kind with surrounding whitespace is tolerated`() {
+        assertEquals(1012, YandexAccountRequestValidator.playlistKind(" 1012 "))
+    }
+
+    @Test
+    fun `a missing kind is refused`() {
+        assertTrue(runCatching { YandexAccountRequestValidator.playlistKind(null) }.isFailure)
+    }
+
+    @Test
+    fun `a blank kind is refused`() {
+        assertTrue(runCatching { YandexAccountRequestValidator.playlistKind("  ") }.isFailure)
+    }
+
+    @Test
+    fun `a non-numeric kind is refused`() {
+        assertTrue(runCatching { YandexAccountRequestValidator.playlistKind("latest") }.isFailure)
+    }
+
+    @Test
+    fun `a negative kind is refused`() {
+        assertTrue(runCatching { YandexAccountRequestValidator.playlistKind("-1") }.isFailure)
+    }
+
+    @Test
+    fun `a fractional kind is refused instead of being truncated to an existing playlist`() {
+        assertTrue(runCatching { YandexAccountRequestValidator.playlistKind("1001.9") }.isFailure)
+    }
 }

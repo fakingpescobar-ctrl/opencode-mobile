@@ -59,7 +59,13 @@ object MediaUiNodeMatcher {
             // A label tap wants a control and never a field: right after set_text the search field
             // holds exactly the words the caller is looking for, so it would always win the match
             // and the tap would land in the search box instead of the row it named.
-            else -> !node.editable && (!target.requireClickable || node.clickable)
+            //
+            // Clickability is deliberately not judged here. The label of a Yandex playlist button
+            // or track row sits on a node with clickable=false, and the service answers such a
+            // node with its clickable ancestor. Refusing it at this level would make that walk
+            // unreachable, and the caller still ends up rejecting a label that has no clickable
+            // ancestor to climb to.
+            else -> !node.editable
         }
 
     private fun matchesLabels(
@@ -96,7 +102,7 @@ object MediaUiNodeMatcher {
      * tokens. That is what keeps "my temper" from matching "my temperature" while still matching
      * "11,My Temper (feat. M. Vegas),Не подходит для детей".
      */
-    private fun containsTerm(
+    internal fun containsTerm(
         haystack: String,
         needle: String,
     ): Boolean {

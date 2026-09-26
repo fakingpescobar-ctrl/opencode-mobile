@@ -99,11 +99,13 @@ class MediaUiAutomationService : AccessibilityService() {
         window: AccessibilityWindowInfo,
     ) {
         val action = job.action
-        if (action is MediaUiAction.Click) {
-            clickNode(job, node, window, describeNode(node))
-            return
+        when (action) {
+            is MediaUiAction.Click -> clickNode(job, node, window, describeNode(node))
+            // Нашли и отпустили: узел не трогаем, но сам факт наличия - уже ответ на вопрос.
+            is MediaUiAction.ReadText ->
+                finish(job, MediaUiOutcome.Performed(action, describeNode(node), window.isFocused, gestureUsed = false))
+            else -> finish(job, writeText(node, window, action))
         }
-        finish(job, writeText(node, window, action))
     }
 
     private fun clickNode(
@@ -217,11 +219,13 @@ class MediaUiAutomationService : AccessibilityService() {
 }
 
 /**
- * Breadth first, and the two kinds of target want different winners.
+ * Breadth first, and the three kinds of target want different winners.
  *
- * A label target takes the shallowest - visually topmost - match. A rect target instead takes the
- * smallest node under the point that the app calls clickable, because a point lands on the innermost
- * control and its container would swallow the tap; only when nothing under the point is clickable do
+ * A label target takes the shallowest - visually topmost - match, unless it asked for the
+ * largest one: on a playlist screen "Play" names both the mini player and the playlist's own
+ * button, and the tap has to land on the big one. A rect target instead takes the smallest node
+ * under the point that the app calls clickable, because a point lands on the innermost control
+ * and its container would swallow the tap; only when nothing under the point is clickable do
  * we settle for the smallest node of any kind.
  */
 private fun findMatch(
@@ -229,22 +233,185 @@ private fun findMatch(
     job: MediaUiJob,
     seen: MutableList<MediaUiCandidate>,
 ): AccessibilityNodeInfo? {
+    val search = MatchSearch(job.target)
     val queue = ArrayDeque<AccessibilityNodeInfo>()
     queue.addLast(root)
-    val underThePoint = SmallestUnderThePoint()
     var budget = NODE_BUDGET
     while (queue.isNotEmpty() && budget-- > 0) {
         val node = queue.removeFirst()
         if ((node.isClickable || node.isEditable) && seen.size < CANDIDATE_LIMIT) seen.add(candidateOf(node))
-        val matched = MediaUiNodeMatcher.matches(node.toView(), job.target, job.action)
-        if (matched && job.target.bounds == null) return node
-        if (matched) node.boundsOrNull()?.let { underThePoint.offer(node, it) }
-        for (index in 0 until node.childCount) {
-            val child = node.getChild(index) ?: continue
-            queue.addLast(child)
+        if (MediaUiNodeMatcher.matches(node.toView(), job.target, job.action) && search.offer(node)) {
+            return node
+        }
+        enqueueChildren(node, queue)
+    }
+    return search.best()
+}
+
+/**
+ * Два ответа на одну подпись: узел, который кликается сам, и его кликабельный предок.
+ *
+ * Разделены потому, что точный ответ всегда лучше унаследованного: подпись «Нравится» есть и
+ * на самой кнопке, и на подписи внутри строки списка, и тап по строке нажал бы не то. Поэтому
+ * унаследованный ответ не завершает обход - им пользуются, только если точного не нашлось вовсе.
+ */
+private class MatchSearch(
+    private val target: MediaUiTarget,
+) {
+    private val exact = MatchRounds(target)
+    private val inherited = MatchRounds(target)
+
+    /** `true` — узел и есть ответ, обход можно закончить. */
+    fun offer(node: AccessibilityNodeInfo): Boolean =
+        if (!target.requireClickable || node.isClickable) {
+            exact.accept(node)
+        } else {
+            // Подпись кнопки у Яндекса лежит на дочернем узле, а кликается родитель: такую
+            // кнопку не видно, если требовать кликабельность от самого совпадения.
+            node.tappableAncestor()?.let { inherited.accept(it) }
+            false
+        }
+
+    fun best(): AccessibilityNodeInfo? = exact.best() ?: inherited.best()
+}
+
+/**
+ * Сколько вверх можно подняться в поисках кликабельного предка.
+ *
+ * Потолок нужен, чтобы цепочка не ушла в корень окна и не «нажала» на весь экран, но слишком
+ * низкий порог хуже отсутствия порога: у строки трека в плейлисте Яндекса кликабельный
+ * родитель лежит на четырнадцатом узле вверх, а у кнопки в шапке - на первом. Двадцать четыре
+ * с запасом покрывают оба и всё ещё ограничивают обход.
+ */
+private const val ANCESTOR_HOPS = 24
+
+/**
+ * Ближайший кликабельный предок узла с найденной подписью.
+ *
+ * У play-кнопки плейлиста подпись `Слушать` живёт на узле с `clickable=false` внутри
+ * кликабельного View. Без подъёма поиск её не находит вовсе, и единственная подпись «Слушать»
+ * остаётся у пункта «Слушать Мою волну» в нижнем меню - он запускает постороннюю волну, и
+ * инструмент сообщает о запуске чужого трека. Поднимаемся до родителя, кликаем по нему, и
+ * «самая большая» кнопка считается по его рамке, а не по подписи.
+ */
+private fun AccessibilityNodeInfo.tappableAncestor(): AccessibilityNodeInfo? {
+    var candidate = parent
+    var hops = 0
+    while (candidate != null && hops++ < ANCESTOR_HOPS) {
+        if (candidate.isClickable) return candidate
+        candidate = candidate.parent
+    }
+    return null
+}
+
+private fun enqueueChildren(
+    node: AccessibilityNodeInfo,
+    queue: ArrayDeque<AccessibilityNodeInfo>,
+) {
+    for (index in 0 until node.childCount) {
+        node.getChild(index)?.let { queue.addLast(it) }
+    }
+}
+
+/**
+ * Кто побеждает среди уже просмотренных узлов и когда поиск можно остановить.
+ *
+ * Разведено с обходом, потому что у трёх видов таргета правило разное, и в теле цикла оно
+ * размазывалось на четыре условия. Здесь оно читается прямо: у метки без `preferLargest`
+ * первый же матч и есть ответ, у метки с ним - ждём самый крупный, у rect - самый тугой.
+ */
+private class MatchRounds(
+    private val target: MediaUiTarget,
+) {
+    private val underThePoint = SmallestUnderThePoint()
+    private val widest = WidestMatch<AccessibilityNodeInfo>()
+    private val topmost = TopmostMatch<AccessibilityNodeInfo>()
+    private var first: AccessibilityNodeInfo? = null
+
+    /** `true` — узел и есть ответ, дальше идти незачем. */
+    fun accept(node: AccessibilityNodeInfo): Boolean {
+        first = first ?: node
+        node.boundsOrNull()?.let { bounds ->
+            when {
+                target.bounds != null -> underThePoint.offer(node, bounds)
+                target.preferTopmost -> topmost.offer(node, bounds)
+                else -> widest.offer(node, bounds)
+            }
+        }
+        return target.bounds == null && !target.preferLargest && !target.preferTopmost
+    }
+
+    /**
+     * Ответ без раннего выхода из обхода: первый замеченный узел, а если правило таргета
+     * требует лучший, то победитель этого правила.
+     *
+     * Нужен вторым проходом в [findMatch], где отвечать раньше времени нельзя: там решение
+     * принимает не этот класс, а сравнение точного и унаследованного совпадения.
+     */
+    fun best(): AccessibilityNodeInfo? =
+        first
+            ?: when {
+                target.bounds == null && target.preferTopmost -> topmost.winner()
+                target.bounds == null && target.preferLargest -> widest.winner()
+                else -> underThePoint.winner()
+            }
+}
+
+/**
+ * Keeps the roomiest control among equally named ones, so "Play" means the playlist's own button.
+ *
+ * Generic over the payload purely so the rule can be tested: [node] in production is an
+ * AccessibilityNodeInfo, which cannot be built off a device, and an untested "bigger wins" is
+ * exactly the kind of rule that quietly keeps picking the wrong control.
+ */
+internal class WidestMatch<T> {
+    private var node: T? = null
+    private var area = -1L
+
+    fun offer(
+        candidate: T,
+        bounds: MediaUiBounds,
+    ) {
+        if (bounds.area > area) {
+            area = bounds.area
+            node = candidate
         }
     }
-    return underThePoint.winner()
+
+    fun winner(): T? = node
+}
+
+/**
+ * Keeps the control nearest the top of the screen, so a repeated track name means the first
+ * track of a list and not the mini-player that happens to be playing it.
+ *
+ * On the Yandex playlist screen the first head track appears twice: once as the row of the
+ * playlist list and once in the mini-player pinned to the bottom, and when playback is paused
+ * the mini-player is the roomier of the two - a "largest wins" rule reliably taps it and
+ * resumes whatever was playing before instead of starting the list. The row is always the
+ * upper one, so "topmost wins" separates them. Ties go to the larger control, which only
+ * happens when both are on the same line.
+ *
+ * Generic over the payload for the same reason as [WidestMatch]: the rule is worth a unit test
+ * and an AccessibilityNodeInfo cannot be built off the device.
+ */
+internal class TopmostMatch<T> {
+    private var node: T? = null
+    private var top = Int.MAX_VALUE
+    private var area = -1L
+
+    fun offer(
+        candidate: T,
+        bounds: MediaUiBounds,
+    ) {
+        if (bounds.top < top || (bounds.top == top && bounds.area > area)) {
+            top = bounds.top
+            area = bounds.area
+            node = candidate
+        }
+    }
+
+    fun winner(): T? = node
 }
 
 /** Keeps the tightest control under a point, so a tap lands on the button and not on its container. */

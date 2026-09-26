@@ -1,5 +1,6 @@
 package org.opencode.mobile.account
 
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -7,11 +8,88 @@ import java.net.URI
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
+/**
+ * Разбор `result` из `/playlists/list`.
+ *
+ * Отдельная функция без сети, чтобы правила проверялись тестом: главное из них - строки без
+ * названия выбрасываются. Название здесь не украшение, а единственное, по чему агент вообще
+ * может показать плейлист человеку, и пустая строка в списке бесполезна вдвойне.
+ *
+ * `kind` берётся как есть, без проверки диапазона: Яндекс отдаёт и 0 (лайки), и собственные
+ * 1000-1999, и чужие подборки, и отбраковка не наша задача - мы показываем то, что есть.
+ */
+internal fun readPlaylistSummaries(result: JSONArray): List<PlaylistSummary> =
+    (0 until result.length())
+        .mapNotNull { index -> result.optJSONObject(index) }
+        .filter { it.optString("title").isNotBlank() }
+        .map { item ->
+            PlaylistSummary(
+                kind = item.optInt("kind", -1),
+                uuid = item.optString("playlistUuid").trim(),
+                title = item.optString("title").trim(),
+                trackCount = item.optInt("trackCount", 0),
+                durationMs = item.optLong("durationMs", 0L),
+            )
+        }
+
+/**
+ * Разбор `result` из `/playlists/{kind}`.
+ *
+ * Треки лежат в `tracks[]`, а метаданные - в `tracks[].track`, и единственное, что приходится
+ * восстанавливать руками, - это порядок: у каждой записи он свой, в [originalIndexes].
+ * Пропуск записи с пустым `track.id` согласован по обеим спискам, иначе [originalIndexes]
+ * разъехался бы с [trackIds] и позиция «третьим» указала бы не на тот трек.
+ *
+ * Отсутствие `originalIndex` подставляется позицией выдачи: лучше правдоподобный порядок,
+ * чем дыры в нумерации, из-за которых сортировка агента поехала бы.
+ */
+internal fun readPlaylistLibrary(
+    requestedKind: Int,
+    result: JSONObject,
+): PlaylistLibrary {
+    val entries = result.optJSONArray("tracks")
+    // id и позиция собираются одной записью и потом берутся из одного списка - так они
+    // не могут разъехаться, а после фильтрации это ровно тот случай, где разъезжаются.
+    val numbered =
+        (0 until (entries?.length() ?: 0)).map { index ->
+            val entry = entries?.optJSONObject(index)
+            (entry?.playlistTrackId().orEmpty()) to (entry?.optInt("originalIndex", index) ?: index)
+        }
+    val kept = numbered.filter { (id, _) -> id.isNotEmpty() }
+    return PlaylistLibrary(
+        kind = result.optInt("kind", requestedKind),
+        uuid = result.optString("playlistUuid").trim(),
+        title = result.optString("title").trim(),
+        revision = result.optLong("revision", 0L),
+        trackIds = kept.map { (id, _) -> id },
+        originalIndexes = kept.map { (_, position) -> position },
+    )
+}
+
+private fun JSONObject.playlistTrackId(): String? = optJSONObject("track")?.optString("id")?.trim()?.ifEmpty { null }
+
 /** Библиотека «Моего плейлиста»: id треков в порядке Яндекса плюс ревизия для снятия кэша. */
 data class LikedLibrary(
     val uid: String,
     val revision: Long,
     val trackIds: List<String>,
+) {
+    val size: Int get() = trackIds.size
+}
+
+/**
+ * Один плейлист целиком: что это, какой у него id для адресации и в каком порядке идут треки.
+ *
+ * [originalIndexes] хранится рядом с [trackIds] и всегда той же длины: позиция в плейлисте —
+ * это независимая от порядка выдачи величина, и потерять её можно только вместе с ней.
+ */
+data class PlaylistLibrary(
+    val kind: Int,
+    val uuid: String,
+    val title: String,
+    val revision: Long,
+    val trackIds: List<String>,
+    val originalIndexes: List<Int>,
 ) {
     val size: Int get() = trackIds.size
 }
@@ -40,6 +118,8 @@ object YandexAccountClient {
     private const val TOKEN_BODY = "token"
     private const val INFO_BODY = "info"
     private const val LIKES_BODY = "likes"
+    private const val PLAYLISTS_BODY = "playlists"
+    private const val PLAYLIST_BODY = "playlist"
     private const val REFRESH_BODY = "refresh"
     private const val EXPIRY_SLACK_MILLIS = 60_000L
 
@@ -92,6 +172,44 @@ object YandexAccountClient {
             revision = library.optLong("revision", 0L),
             trackIds = ids,
         )
+    }
+
+    /**
+     * Все плейлисты аккаунта одним запросом, без пагинации: сервер отдаёт их списком и
+     * `kinds`-фильтр здесь не нужен, потому что фильтровать будем по [PlaylistSummary.kind]
+     * уже у нас — так агент получает в ответе ровно те строки, которые может адресовать.
+     */
+    fun playlists(
+        accessToken: String,
+        uid: String,
+    ): List<PlaylistSummary> {
+        val json = get("$MUSIC_API/users/$uid/playlists/list", accessToken, PLAYLISTS_BODY)
+        val result = json.optJSONArray("result")
+            ?: throw IOException("Yandex playlists response has no result array")
+        return readPlaylistSummaries(result)
+    }
+
+    /**
+     * Содержимое плейлиста.
+     *
+     * Адресуется [kind], а не [PlaylistSummary.uuid]: путь по uuid у Яндекса не существует
+     * и отвечает 404, хотя uuid в списке и выглядит как главный идентификатор. Проверено на
+     * живом аккаунте — именно поэтому в [PlaylistSummary] оба поля и помечены, чем является
+     * каждое.
+     *
+     * Треки приходят уже с метаданными, но [trackIds] всё равно собирается отдельно: страницу
+     * режет вызывающий код, и метаданные он дозапрашивает через [YandexCatalog] только для
+     * нужного куска — большой ответ целиком в память не берём.
+     */
+    fun playlist(
+        accessToken: String,
+        uid: String,
+        kind: Int,
+    ): PlaylistLibrary {
+        val json = get("$MUSIC_API/users/$uid/playlists/$kind", accessToken, PLAYLIST_BODY)
+        val result = json.optJSONObject("result")
+            ?: throw IOException("Yandex playlist $kind response has no result object")
+        return readPlaylistLibrary(kind, result)
     }
 
     private fun YandexOAuth.TokenResponse.toToken(nowMillis: Long): YandexToken =

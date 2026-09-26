@@ -22,6 +22,44 @@ data class LikedPage(
 }
 
 /**
+ * Плейлист в списке: ровно то, чем он называется у юзера и по чему его потом можно открыть.
+ *
+ * [kind] — не украшение, а рабочий ключ: и содержимое, и запуск воспроизведения адресуются
+ * именно им, а не [uuid]. [uuid] оставлен рядом потому, что это единственный идентификатор,
+ * который не сдвинется при пересоздании плейлиста, — но ни один наш запрос его не ест.
+ */
+data class PlaylistSummary(
+    val kind: Int,
+    val uuid: String,
+    val title: String,
+    val trackCount: Int,
+    val durationMs: Long,
+)
+
+/**
+ * Страница содержимого плейлиста.
+ *
+ * Устроено как [LikedPage], и не по привычке: обе страницы режут один ответ сервера, у обеих
+ * есть [total] и [hasMore], и агент в обоих случаях должен уметь сказать «дальше есть ещё».
+ * [originalIndexes] держит позицию трека в плейлисте — по ней видно, что плейлист
+ * переупорядочен, и именно она, а не позиция выдачи, отвечает на вопрос «что идёт третьим».
+ */
+data class PlaylistPage(
+    val login: String,
+    val kind: Int,
+    val uuid: String,
+    val title: String,
+    val revision: Long,
+    val offset: Int,
+    val total: Int,
+    val trackIds: List<String>,
+    val originalIndexes: List<Int>,
+    val tracks: List<CatalogTrack>,
+) {
+    val hasMore: Boolean get() = offset + trackIds.size < total
+}
+
+/**
  * Валидация входа инструментов.
  *
  * `offset`/`limit` приходят из агента и потому недоверенные: без проверки `offset` минус
@@ -41,6 +79,22 @@ object YandexAccountRequestValidator {
         require(start >= 0) { "offset must be >= 0" }
         require(size in 1..MAX_LIMIT) { "limit must be between 1 and $MAX_LIMIT" }
         return start to size
+    }
+
+    /**
+     * `kind` плейлиста — неотрицательное целое, и это проверяется отдельно от [page].
+     *
+     * Яндекс различает виды плейлистов одним числом: 0 — «Мой плейлист» с лайками,
+     * 1000-1999 — собственные, остальное — чужие подборки. Ноль поэтому пропускаем:
+     * агент вправе попросить kind=0 и получить лайки. А вот мусор вроде `kind=latest`
+     * обязан упасть здесь, а не уехать в URL и вернуться 404-ом без внятного текста.
+     */
+    fun playlistKind(raw: String?): Int {
+        val text = raw?.trim().orEmpty()
+        require(text.isNotEmpty()) { "kind is required" }
+        val kind = requireNotNull(text.toIntOrNull()) { "kind must be an integer" }
+        require(kind >= 0) { "kind must be >= 0" }
+        return kind
     }
 
     /**

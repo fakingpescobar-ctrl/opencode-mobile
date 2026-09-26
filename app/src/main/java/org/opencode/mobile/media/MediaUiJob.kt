@@ -57,12 +57,26 @@ data class MediaUiTarget(
     val resourceIds: List<String> = emptyList(),
     val bounds: MediaUiBounds? = null,
     val requireClickable: Boolean = true,
+    val preferLargest: Boolean = false,
+    val preferTopmost: Boolean = false,
 ) {
     init {
         require(packageName.isNotBlank()) { "packageName is required" }
         require(packageName.length <= MAX_TARGET_PACKAGE_LENGTH) { "packageName is too long" }
         require(!hasLabelSelector || bounds == null) {
             "a bounds target already says where to touch; do not mix it with label selectors"
+        }
+        // «Самая большая» — это способ выбрать между несколькими одноимёнными кнопками, то
+        // есть между узлами одной метки. С rect-таргетом выбирать не из чего: там узел и так
+        // единственный, самый тугой под точкой.
+        require(!preferLargest || hasLabelSelector) {
+            "preferLargest only means something together with a label selector"
+        }
+        require(!preferTopmost || hasLabelSelector) {
+            "preferTopmost only means something together with a label selector"
+        }
+        require(!(preferLargest && preferTopmost)) {
+            "preferLargest and preferTopmost pick opposite ends of the screen; pick one"
         }
         textContains.forEach {
             require(it.isNotBlank() && it.length <= MAX_SELECTOR_LENGTH) { "text selector is empty or too long" }
@@ -100,19 +114,30 @@ sealed interface MediaUiAction {
         get() = this is Click
 
     val writesText: Boolean
-        get() = this !is Click
+        get() = this is SetText || this is ClearText
 
-    /** The string a text action types into the field, or null when the action is a tap. */
+    /** The string a text action types into the field, or null when nothing is typed. */
     val textToType: String?
         get() =
             when (this) {
                 is SetText -> text
                 ClearText -> ""
-                Click -> null
+                Click, ReadText -> null
             }
 
     data object Click : MediaUiAction {
         override val kind: String = CLICK
+    }
+
+    /**
+     * Найти узел и ничего с ним не сделать.
+     *
+     * Нужно, чтобы спросить «а тот ли это экран?» до того, как нажимать. Без этого действия
+     * единственный способ убедиться - нажать и посмотреть на последствия, а последствия здесь
+     * это чужой трек в чужом плейлисте.
+     */
+    data object ReadText : MediaUiAction {
+        override val kind: String = READ_TEXT
     }
 
     data class SetText(
@@ -135,6 +160,7 @@ sealed interface MediaUiAction {
         const val CLICK = "click"
         const val SET_TEXT = "set_text"
         const val CLEAR_TEXT = "clear_text"
+        const val READ_TEXT = "read_text"
 
         fun parse(
             kind: String,
@@ -144,7 +170,11 @@ sealed interface MediaUiAction {
                 CLICK -> Click
                 SET_TEXT -> SetText(text ?: throw IllegalArgumentException("set_text needs \"text\""))
                 CLEAR_TEXT -> ClearText
-                else -> throw IllegalArgumentException("unknown action \"$kind\"; use $CLICK, $SET_TEXT or $CLEAR_TEXT")
+                READ_TEXT -> ReadText
+                else ->
+                    throw IllegalArgumentException(
+                        "unknown action \"$kind\"; use $CLICK, $SET_TEXT, $CLEAR_TEXT or $READ_TEXT",
+                    )
             }
     }
 }

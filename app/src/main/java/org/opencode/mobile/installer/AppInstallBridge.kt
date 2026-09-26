@@ -5,8 +5,13 @@ import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import org.opencode.mobile.account.LikedPage
+import org.opencode.mobile.account.PlaylistPage
+import org.opencode.mobile.account.PlaylistPlayback
+import org.opencode.mobile.account.PlaylistSummary
 import org.opencode.mobile.account.YandexAccountController
 import org.opencode.mobile.account.YandexAccountRequestValidator
+import org.opencode.mobile.account.YandexPlaylistPlayer
+import org.opencode.mobile.media.CatalogTrack
 import org.opencode.mobile.media.MediaAppSnapshot
 import org.opencode.mobile.media.MediaAutomationShield
 import org.opencode.mobile.media.MediaCapabilities
@@ -42,6 +47,7 @@ import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlin.concurrent.thread
 
 /**
@@ -106,6 +112,7 @@ object AppInstallBridge {
             MediaControlController.initialize(context)
             MediaAutomationShield.initialize(context)
             YandexAccountController.initialize(context)
+            YandexPlaylistPlayer.initialize(context)
             val nextToken = token.ifBlank { UUID.randomUUID().toString() }
             val socket =
                 runCatching {
@@ -210,6 +217,9 @@ object AppInstallBridge {
             Route("GET", "/v1/account/yandex/status", ::yandexStatus),
             Route("POST", "/v1/account/yandex/disconnect", ::disconnectYandex),
             Route("GET", "/v1/account/yandex/likes", ::yandexLikes),
+            Route("GET", "/v1/account/yandex/playlists", ::yandexPlaylists),
+            Route("GET", "/v1/account/yandex/playlist", ::yandexPlaylist),
+            Route("POST", "/v1/account/yandex/playlist/play", ::yandexPlaylistPlay),
         )
 
     private fun writeHealth(output: BufferedOutputStream) {
@@ -387,21 +397,33 @@ object AppInstallBridge {
      * Страховка по времени нужна, чтобы мост не завис, даже если accessibility-сервис вообще
      * не ответит: поток вернёт неотговорённый результат, но RPC-ответ уйдёт вовремя.
      */
-    private fun clickOffRpcPool(action: () -> MediaUiOutcome): MediaUiOutcome {
-        val settled = CompletableFuture<MediaUiOutcome>()
+    private fun clickOffRpcPool(action: () -> MediaUiOutcome): MediaUiOutcome =
+        offRpcPool(MediaUiJob.MAX_TIMEOUT_MS + UI_CLICK_HARD_TIMEOUT_GRACE_MS, "ui job") { action() }
+            ?: MediaUiOutcome.Failed("ui job did not answer inside its budget")
+
+    /**
+     * То же, но для работы, которая держится минуту: запуск плейлиста ждёт загрузку экрана,
+     * тап, а затем чтение сессии, и на пуле RPC (а он на два потока) это значит «половина моста
+     * лежит». Пул один, но долгие вещи на нём и не живут.
+     */
+    private fun <T> offRpcPool(
+        budgetMs: Long,
+        what: String,
+        action: () -> T,
+    ): T? {
+        val settled = CompletableFuture<T>()
         uiClickExecutor.execute {
             val outcome =
                 runCatching { action() }.getOrElse { error ->
-                    MediaUiOutcome.Failed(error.message ?: "ui job failed")
+                    throw IllegalStateException("$what failed: ${error.message}", error)
                 }
             settled.complete(outcome)
         }
         return runCatching {
-            settled.get(
-                MediaUiJob.MAX_TIMEOUT_MS + UI_CLICK_HARD_TIMEOUT_GRACE_MS,
-                TimeUnit.MILLISECONDS,
-            )
-        }.getOrElse { MediaUiOutcome.Failed("ui job did not answer inside its budget") }
+            settled.get(budgetMs, TimeUnit.MILLISECONDS)
+        }.getOrElse { error ->
+            if (error is TimeoutException) null else throw error
+        }
     }
 
     private fun mediaUiShield(
@@ -479,6 +501,58 @@ object AppInstallBridge {
             )
         val page = YandexAccountController.readLikes(offset, limit)
         writeJson(output, 200, JSONObject().put("ok", true).put("likes", page.toJson()))
+    }
+
+    @Suppress("UNUSED_PARAMETER")
+    private fun yandexPlaylists(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val playlists = YandexAccountController.readPlaylists()
+        val items = JSONArray().apply { playlists.forEach { put(it.toJson()) } }
+        writeJson(
+            output,
+            200,
+            JSONObject().put("ok", true).put("count", playlists.size).put("playlists", items),
+        )
+    }
+
+    private fun yandexPlaylist(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val kind = YandexAccountRequestValidator.playlistKind(parameter(request.query, "kind"))
+        val (offset, limit) =
+            YandexAccountRequestValidator.page(
+                offset = parameter(request.query, "offset"),
+                limit = parameter(request.query, "limit"),
+            )
+        val page = YandexAccountController.readPlaylist(kind, offset, limit)
+        writeJson(output, 200, JSONObject().put("ok", true).put("playlist", page.toJson()))
+    }
+
+    private fun yandexPlaylistPlay(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val kind = YandexAccountRequestValidator.playlistKind(jsonObject(request).optionalString("kind"))
+        val budget = YandexPlaylistPlayer.WORST_CASE_MS + UI_CLICK_HARD_TIMEOUT_GRACE_MS
+        val playback =
+            offRpcPool(budget, "playlist playback") { YandexAccountController.playPlaylist(kind) }
+                ?: return writeJson(
+                    output,
+                    200,
+                    JSONObject()
+                        .put("ok", false)
+                        .put(
+                            "playback",
+                            JSONObject()
+                                .put("kind", kind)
+                                .put("started", false)
+                                .put("message", "playlist playback did not answer inside ${budget / 1000}s"),
+                        ),
+                )
+        writeJson(output, 200, JSONObject().put("ok", playback.started).put("playback", playback.toJson()))
     }
 
     private fun likeMedia(
@@ -892,23 +966,70 @@ object AppInstallBridge {
             .put("total", total)
             .put("has_more", hasMore)
             .put("track_ids", JSONArray(trackIds))
-            .put(
-                "tracks",
-                JSONArray().apply {
-                    tracks.forEach { track ->
-                        put(
-                            JSONObject()
-                                .put("id", track.id)
-                                .put("title", track.title)
-                                .put("artist", track.artist)
-                                .put("album", track.album)
-                                .put("duration_ms", track.durationMs)
-                                .put("available", track.available)
-                                .put("uri", track.deepLink),
-                        )
-                    }
-                },
-            )
+            .put("tracks", trackArray(tracks))
+
+    private fun PlaylistSummary.toJson(): JSONObject =
+        JSONObject()
+            .put("kind", kind)
+            .put("uuid", uuid)
+            .put("title", title)
+            .put("track_count", trackCount)
+            .put("duration_ms", durationMs)
+
+    /**
+     * Плейлист отдаётся агенту с теми же полями трека, что и лайки, плюс `original_index`:
+     * в плейлисте порядок — часть содержания, и потерянный он превращает вопрос «что третьим»
+     * в вопрос «что третьим в нашей выдаче», а это разные вещи.
+     */
+    private fun PlaylistPage.toJson(): JSONObject =
+        JSONObject()
+            .put("kind", kind)
+            .put("uuid", uuid)
+            .put("title", title)
+            .put("revision", revision)
+            .put("offset", offset)
+            .put("total", total)
+            .put("has_more", hasMore)
+            .put("track_ids", JSONArray(trackIds))
+            .put("original_indexes", JSONArray(originalIndexes))
+            .put("tracks", trackArray(tracks, originalIndexes))
+
+    private fun PlaylistPlayback.toJson(): JSONObject =
+        JSONObject()
+            .put("kind", kind)
+            .put("title", title)
+            .put("started", started)
+            .put("now_playing", nowPlaying ?: JSONObject.NULL)
+            .put("now_playing_artist", nowPlayingArtist ?: JSONObject.NULL)
+            .put("message", message)
+
+    /**
+     * Общий вид трека для лайков и плейлистов.
+     *
+     * Два места отдают треки одинаково, и расходиться им незачем: агент, который уже умеет
+     * читать `tracks` из лайков, получит плейлист в том же виде без новой догадки о полях.
+     */
+    private fun trackArray(
+        tracks: List<CatalogTrack>,
+        originalIndexes: List<Int>? = null,
+    ): JSONArray =
+        JSONArray().apply {
+            tracks.forEachIndexed { index, track ->
+                val node =
+                    JSONObject()
+                        .put("id", track.id)
+                        .put("title", track.title)
+                        .put("artist", track.artist)
+                        .put("album", track.album)
+                        .put("duration_ms", track.durationMs)
+                        .put("available", track.available)
+                        .put("uri", track.deepLink)
+                if (originalIndexes != null && index < originalIndexes.size) {
+                    node.put("original_index", originalIndexes[index])
+                }
+                put(node)
+            }
+        }
 
     private fun error(message: String): JSONObject = JSONObject().put("ok", false).put("error", message)
 

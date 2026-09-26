@@ -76,6 +76,22 @@
             </intent-filter>
         </activity>
 
+        <!--
+          Прозрачная Activity-релей для deep link в Яндекс Музыку. Нужна, чтобы отправлять
+          ссылку из процесса с видимым окном: иначе Android создаёт целевую Activity, но задачу
+          наверх не выводит, и плейлист не открывается. Сама ничего не рисует (прозрачная тема,
+          пустой taskAffinity) и закрывается сама, когда плеер закончил (см. release в
+          YandexPlaylistLaunchActivity). noHistory здесь быть не должно: оно убивает Activity,
+          стоит чужой задаче выйти наверх, - то есть ровно тогда, когда она и нужна.
+        -->
+        <activity
+            android:name=".account.YandexPlaylistLaunchActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.OpencodeMobile.Invisible" />
+
         <service
             android:name=".server.OpencodeServerService"
             android:exported="false"

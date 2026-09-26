@@ -685,6 +685,91 @@ const MOBILE_YANDEX_ACCOUNT_TOOLS = [
     }
   },
   {
+    name: "mobile_yandex_playlists",
+    description:
+      "List the user's own Yandex Music playlists, with the kind that both this tool family and " +
+      "the app itself address them by. Start here when the user says things like 'play my DNB " +
+      "playlist' or 'what playlists do I have': it is the only way to learn which playlists exist " +
+      "and what to call them, because the Yandex Music API has no 'my playlists' search. Needs the " +
+      "account connected, so check mobile_yandex_status first and connect if not. Returns one row " +
+      "per playlist with kind, uuid, title, track_count and duration_ms. Pass kind to " +
+      "mobile_yandex_playlist to read it and to mobile_yandex_play_playlist to start it - and only " +
+      "kind: the uuid looks like the real id but the Yandex API 404s on it. kind 0 is the likes " +
+      "playlist, not a real one, so ignore it. Show the user the titles and ask which one to play; " +
+      "do not guess a kind from a name, titles are free text and the mapping is not derivable.",
+    inputSchema: {
+      type: "object",
+      properties: {}
+    }
+  },
+  {
+    name: "mobile_yandex_playlist",
+    description:
+      "Read one Yandex Music playlist by kind, as catalog tracks in the same shape " +
+      "mobile_yandex_likes returns. Use it to answer 'what is in this playlist' or 'how long is it' " +
+      "without starting playback; use mobile_yandex_play_playlist instead when the user wants to " +
+      "hear it. Needs the account connected. Pagination is yours, same as mobile_yandex_likes: one " +
+      "download of the whole track list, sliced locally, so use offset and limit and keep asking " +
+      "while has_more is true. Every track also carries original_index, its position in the " +
+      "playlist, which is the order the user arranged and is not the same as the order the API " +
+      "happens to return - sort by it if you list the contents. Tracks that are gone or " +
+      "region-blocked come back without metadata and are dropped, so the list can be shorter than " +
+      "the track_count shown by mobile_yandex_playlists - that is not an error.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "integer",
+          minimum: 0,
+          description: "Playlist kind from mobile_yandex_playlists"
+        },
+        offset: {
+          type: "integer",
+          minimum: 0,
+          description: "Zero-based position in the playlist; default 0"
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 50,
+          description: "How many tracks to return; default 20"
+        }
+      },
+      required: ["kind"]
+    }
+  },
+  {
+    name: "mobile_yandex_play_playlist",
+    description:
+      "Start a whole Yandex Music playlist in the Yandex Music app: it opens the playlist screen " +
+      "and presses its big Play button, so playback follows the whole playlist from its first " +
+      "playable track, not just that one track. Needs the account connected, the Yandex Music app " +
+      "installed, and the OpenCode accessibility service switched on - without it there is nothing " +
+      "to press with, and the call returns in about a second saying so. kind comes from " +
+      "mobile_yandex_playlists - there is no way to start a playlist by name or uuid. This is the " +
+      "only way to play a playlist: the Yandex API is read-only, and the media play command just " +
+      "resumes whatever was already playing, which is how you end up quietly continuing a " +
+      "different track. A successful call takes about 15-30 seconds because the app has to start " +
+      "and the screen has to load. started=true is the verified answer: the tool reads the media " +
+      "session back and checks the now playing title against the start of the playlist, so it " +
+      "cannot be fooled by some other track that happened to be playing. Some playlists open with " +
+      "tracks that are region-blocked, and Yandex silently skips them - the message then says " +
+      "which track it actually started on and that is not a failure. started=false means it " +
+      "really did not start - read message, and do not claim to the user that it is playing. " +
+      "now_playing tells you what is actually heard.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "integer",
+          minimum: 0,
+          description: "Playlist kind from mobile_yandex_playlists"
+        }
+      },
+      required: ["kind"]
+    }
+  },
+  {
     name: "mobile_yandex_disconnect",
     description:
       "Forget the Yandex Music token on this device: the account stops being connected, the " +
@@ -1058,6 +1143,18 @@ function mediaUiInteger(value, fallback, min, max, name) {
   return number;
 }
 
+/**
+ * Обязательный целый аргумент.
+ *
+ * Отдельная функция, а не mediaUiInteger с fallback: у kind есть осмысленный ноль - это
+ * плейлист с лайками, - и молчаливый default ушёл бы читать его вместо запрошенного
+ * плейлиста. Лучше явная ошибка, чем тихая подмена.
+ */
+function requiredMediaUiInteger(value, min, max, name) {
+  if (value === undefined || value === null) throw new Error(`${name} is required`);
+  return mediaUiInteger(value, 0, min, max, name);
+}
+
 async function mobileMediaLibrary(args) {
   const parameters = new URLSearchParams({ package: requireAndroidPackage(args.package) });
   if (typeof args.node === "string" && args.node.trim()) parameters.set("node", args.node.trim());
@@ -1084,6 +1181,30 @@ async function mobileYandexLikes(args) {
     if (limit !== null) parameters.set("limit", String(limit));
   }
   return mobileBridge(`/v1/account/yandex/likes?${parameters.toString()}`);
+}
+
+async function mobileYandexPlaylists(args) {
+  return mobileBridge("/v1/account/yandex/playlists");
+}
+
+async function mobileYandexPlaylist(args) {
+  const parameters = new URLSearchParams();
+  parameters.set("kind", String(requiredMediaUiInteger(args.kind, 0, Number.MAX_SAFE_INTEGER, "kind")));
+  const offset = mediaUiInteger(args.offset, 0, 0, Number.MAX_SAFE_INTEGER, "offset");
+  parameters.set("offset", String(offset));
+  if (args.limit !== undefined && args.limit !== null) {
+    const limit = mediaUiInteger(args.limit, null, 1, 50, "limit");
+    if (limit !== null) parameters.set("limit", String(limit));
+  }
+  return mobileBridge(`/v1/account/yandex/playlist?${parameters.toString()}`);
+}
+
+async function mobileYandexPlayPlaylist(args) {
+  const kind = requiredMediaUiInteger(args.kind, 0, Number.MAX_SAFE_INTEGER, "kind");
+  return mobileBridge("/v1/account/yandex/playlist/play", {
+    method: "POST",
+    body: JSON.stringify({ kind })
+  });
 }
 
 async function mobileYandexDisconnect(args) {
@@ -1267,6 +1388,9 @@ async function callTool(name, args) {
     case "mobile_yandex_connect": return mobileYandexConnect(args || {});
     case "mobile_yandex_status": return mobileYandexStatus(args || {});
     case "mobile_yandex_likes": return mobileYandexLikes(args || {});
+case "mobile_yandex_playlists": return mobileYandexPlaylists(args || {});
+case "mobile_yandex_playlist": return mobileYandexPlaylist(args || {});
+case "mobile_yandex_play_playlist": return mobileYandexPlayPlaylist(args || {});
     case "mobile_yandex_disconnect": return mobileYandexDisconnect(args || {});
     default: throw new Error("Unknown tool: " + name);
   }

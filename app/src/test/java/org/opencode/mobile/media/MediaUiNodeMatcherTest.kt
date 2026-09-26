@@ -14,13 +14,14 @@ class MediaUiNodeMatcherTest {
         text: String = "",
         contentDescription: String = "",
         clickable: Boolean = true,
+        editable: Boolean = false,
     ) = MediaUiNodeView(
         className = "android.widget.TextView",
         text = text,
         contentDescription = contentDescription,
         resourceId = "",
         clickable = clickable,
-        editable = false,
+        editable = editable,
         bounds = null,
     )
 
@@ -66,17 +67,19 @@ class MediaUiNodeMatcherTest {
     }
 
     @Test
-    fun `a non clickable node is refused when the job needs a real tap`() {
+    fun `a label on a non clickable node is kept for the caller to resolve`() {
         val row = node(text = "My Temper", clickable = false)
-        val strict = MediaUiTarget("ru.yandex.music", textContains = listOf("My Temper"))
-        val loose =
-            MediaUiTarget(
-                "ru.yandex.music",
-                textContains = listOf("My Temper"),
-                requireClickable = false,
-            )
-        assertFalse(matches(row, strict))
-        assertTrue(matches(row, loose))
+        val target = MediaUiTarget("ru.yandex.music", textContains = listOf("My Temper"))
+        // The service walks up to the clickable ancestor, so the label must survive the matcher
+        // even though the node it sits on cannot be tapped on its own.
+        assertTrue(matches(row, target))
+    }
+
+    @Test
+    fun `a field is never a tap target however well it is labelled`() {
+        val search = node(text = "My Temper", clickable = false, editable = true)
+        val target = MediaUiTarget("ru.yandex.music", textContains = listOf("My Temper"))
+        assertFalse(matches(search, target))
     }
 
     @Test

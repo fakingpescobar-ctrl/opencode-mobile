@@ -1,4 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.OpencodeMobile" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <!--
+      Окно, которого не видно: ни фона, ни анимации, ни тени.
+      Нужно, чтобы отправить deep link из процесса с видимым окном - иначе Android создаёт
+      целевую Activity, но не выводит её задачу наверх (см. YandexPlaylistLaunchActivity).
+    -->
+    <style name="Theme.OpencodeMobile.Invisible" parent="@android:style/Theme.Translucent.NoTitleBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
 </resources>

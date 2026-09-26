@@ -82,4 +82,45 @@ class MediaUiJobTest {
         val job = MediaUiJob(labelled, MediaUiAction.Click, timeoutMs = 500)
         assertNull(job.await(timeoutMs = 0))
     }
+
+    /**
+     * `preferLargest` — про выбор между одноимёнными кнопками, поэтому в одиночку он
+     * бессмыслен и обязан падать. Иначе агент отправил бы флаг в никуда и получил бы
+     * первый попавшийся узел, то есть мини-плеер вместо кнопки плейлиста.
+     */
+    @Test
+    fun `preferLargest without a label selector is refused`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            MediaUiTarget("ru.yandex.music", preferLargest = true)
+        }
+    }
+
+    @Test
+    fun `preferLargest cannot be combined with a bounds target`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            MediaUiTarget(
+                packageName = "ru.yandex.music",
+                bounds = MediaUiBounds(0, 0, 10, 10),
+                contentDescriptions = listOf("Play"),
+                preferLargest = true,
+            )
+        }
+    }
+
+    @Test
+    fun `preferLargest with a content desc is allowed`() {
+        val target =
+            MediaUiTarget(
+                packageName = "ru.yandex.music",
+                contentDescriptions = listOf("Play"),
+                preferLargest = true,
+            )
+
+        assertTrue(target.preferLargest)
+    }
+
+    @Test
+    fun `the first match stays the default so existing callers are unaffected`() {
+        assertFalse(labelled.preferLargest)
+    }
 }
