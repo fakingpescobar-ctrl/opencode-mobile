@@ -1,0 +1,49 @@
+# STT device bench - CPH2747 - 16 (arm64-v8a), 27.09.2026
+#
+# Interleaved matrix: wav-outer, config-inner, order alternates per wav
+# (jfk: int8->fp32, long: fp32->int8, noise: int8->fp32, silence: fp32->int8,
+# tone: int8->fp32). The earlier block run ("all int8, then all fp32") was
+# invalid: fp32 drifted 37s -> 69s across the run while int8 stayed flat, i.e.
+# the phone was thermally throttling. It reported a fake 2.0x/2.8x/3.9x
+# speedup. Interleaved, both variants are measured at the same temperature and
+# the real speedup is a flat 1.50x - 1.70x.
+#
+# The old process `libopencode.so serve --port 4096` was force-stopped before
+# this run; it had been holding ~42% CPU and inflating every number.
+#
+# 3 timed runs per cell, median reported. Direct NcnnWhisperContext calls with
+# lang="ru" hardcoded - the matrix measures latency, not language choice.
+# Auto-language is measured separately, through the service (see below).
+config,wav,ms1,ms2,ms3,median,fbank_ms,enc_ms,dec_ms,steps,wer,text
+int8,jfk,6494,6496,6521,6496,379,5223,913,37,-,И так; мои дорогие американцы; не спрашивайте; что ваш стран
+fp32,jfk,11315,10995,11053,11053,391,9691,965,37,-,И так; мои дорогие американцы; не спрашивайте; что ваш стран
+fp32,long,11718,12080,13001,12080,410,11073,1509,60,-,И так; мои дорогие американцы; не скажите; что ваш страна мо
+int8,long,9741,8049,7850,8049,411,5936,1493,63,-,И так; мои дорогие американцы; не скажите; что ваш страна мо
+int8,noise,7197,6548,7129,7129,416,6099,612,12,-,Субтитры сделал DimaTorzok
+fp32,noise,12089,11910,11759,11910,412,10726,617,13,-,Субтитры делал DimaTorzok
+fp32,silence,12286,13222,13186,13186,464,12137,582,7,-,Продолжение следует.
+int8,silence,7462,8321,8237,8237,562,6639,1031,7,-,Продолжение следует...
+int8,tone,7559,8003,7805,7805,558,6700,544,5,-,Поехалка
+fp32,tone,13323,12967,12857,12967,503,11857,494,5,-,Поехалка
+
+# int8 speedup per clip: jfk 1.70x, long 1.50x, noise 1.67x, silence 1.60x,
+# tone 1.66x. No runaway gradient, which is the signature of a fair A/B.
+#
+# Auto-language, through WhisperTranscribeService (lang not supplied):
+#   jfk  11.0s -> en, latin script
+#   long 37.0s -> en, latin script
+# Detected correctly. The Russian text in the matrix rows above is the
+# hardcoded lang="ru" argument of the direct call, not a detection failure.
+#
+# chunked,long: 60070ms for the 37s clip (was 145616ms before segmentation was
+# fixed), 9 segments.
+#
+# lazy,short: 10274ms, English text. This is the regression check: before the
+# ensureAlive()/nativeIsAlive fix this cell returned "ОШИБКА WHISPER: ncnn
+# whisper not initialized" in 10ms, because the service's static context cache
+# handed back a context whose Kotlin `initialized` flag was stale after a
+# foreign release() had zeroed the native refcount.
+#
+# WER: still "-". No hand-written reference texts in
+# app/src/androidTest/assets/bench/reference/, and a reference typed from the
+# model's own output would report a meaningless ~0.
