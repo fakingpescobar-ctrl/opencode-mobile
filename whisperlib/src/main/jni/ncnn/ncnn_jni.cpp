@@ -1075,6 +1075,34 @@ Java_com_whispercpp_whisper_NcnnWhisperLib_nativeLatencyProfile(JNIEnv* env, job
     return arr;
 }
 
+// Жив ли глобальный g_whisper ДЛЯ КОНКРЕТНОЙ МОДЕЛИ (dir+base совпадают с теми,
+// что грузил nativeInit)?
+//
+// Зачем: Kotlin-флаг `initialized` и нативный refcount — два независимых
+// источника истины. Любой, кто зовёт nativeFree() (например бенч со своим
+// собственным контекстом), обнуляет g_whisper У ВСЕХ, оставив чужие
+// контексты с флагом "готов". Дальше такой контекст навсегда возвращает
+// «ncnn whisper not initialized»: фабрика getOrPut на попадании в кэш не
+// перезапускается, и повторный nativeInit никто не делает. Проверка по
+// dir+base, а не просто «g_whisper != nullptr»: если глобал заняла ДРУГАЯ
+// модель, наш контекст тоже нерабочий — своп обратно честнее, чем падать.
+//
+// Возвращает JNI_TRUE, только если текущий синглтон именно наш.
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_whispercpp_whisper_NcnnWhisperLib_nativeIsAlive(JNIEnv* env, jobject /*thiz*/, jstring modelDir, jstring base)
+{
+    if (!g_whisper) return JNI_FALSE;
+
+    const char* d = env->GetStringUTFChars(modelDir, 0);
+    const char* b = env->GetStringUTFChars(base, 0);
+    std::string dirStr = d ? d : "";
+    std::string baseStr = b ? b : "";
+    if (d) env->ReleaseStringUTFChars(modelDir, d);
+    if (b) env->ReleaseStringUTFChars(base, b);
+
+    return (g_loaded_dir == dirStr && g_loaded_base == baseStr) ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_whispercpp_whisper_NcnnWhisperLib_nativeFree(JNIEnv* /*env*/, jobject /*thiz*/)
 {

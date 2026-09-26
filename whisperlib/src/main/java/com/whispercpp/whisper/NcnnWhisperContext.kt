@@ -42,12 +42,40 @@ class NcnnWhisperContext private constructor(
     }
 
     /**
+     * Готов ли контекст К ПРОВЕДЕНИЮ РАСПОЗНАВАНИЯ, а не «грузили ли мы когда-то».
+     *
+     * [initialized] и нативный refcount — два независимых источника истины, и
+     * они расходятся: любой, кто зовёт `nativeFree()` (например бенч со своим
+     * контекстом на время замера fp32), обнуляет общий `g_whisper` у всех, кто
+     * уже загрузился, оставив наши флаги в состоянии «готов». Такой контекст
+     * навсегда отдаёт «ncnn whisper not initialized»: кэш контекстов сервиса
+     * отдаст его по попаданию, а `getOrPut`-фабрика на попадании не
+     * перезапускается, и `nativeInit` никто не повторит.
+     *
+     * Поэтому перед каждой работой спрашиваем нативную сторону, жив ли синглтон
+     * именно на нашей модели, и переинициализируемся, если нет. Проверка идёт
+     * по dir+base, а не «не nullptr»: если глобал заняла другая модель, наш
+     * контекст тоже нерабочий, и молчать об этом нельзя.
+     */
+    @Synchronized
+    private fun ensureAlive(): Boolean {
+        if (!initialized) return ensureInit()
+        if (NcnnWhisperLib.nativeIsAlive(modelDir, base)) return true
+        Log.w(
+            NCNN_LOG_TAG,
+            "нативная модель выгружена или вытеснена другой - переинициализирую (dir=$modelDir, base=$base)"
+        )
+        initialized = false
+        return ensureInit()
+    }
+
+    /**
      * Блокирующий (suspend) прогон распознавания. Возвращает текст либо строку ошибки.
      * Логирует тайминг в формате `ncnn: NNмс` для сравнения с whisper.cpp на устройстве.
      */
     suspend fun transcribeData(data: FloatArray, lang: String = "ru"): String =
         withContext(scope.coroutineContext) {
-            if (!ensureInit()) {
+            if (!ensureAlive()) {
                 Log.e(NCNN_LOG_TAG, "nativeInit вернул false (dir=$modelDir, base=$base)")
                 return@withContext "ОШИБКА NCNN: не удалось загрузить ncnn-модель"
             }
@@ -84,7 +112,7 @@ class NcnnWhisperContext private constructor(
      */
     suspend fun transcribeAuto(data: FloatArray): AutoResult =
         withContext(scope.coroutineContext) {
-            if (!ensureInit()) {
+            if (!ensureAlive()) {
                 Log.e(NCNN_LOG_TAG, "nativeInit вернул false (dir=$modelDir, base=$base)")
                 val err = "ОШИБКА NCNN: не удалось загрузить ncnn-модель"
                 return@withContext AutoResult(FAILED_LANG, err)
@@ -135,7 +163,7 @@ class NcnnWhisperContext private constructor(
      * Используется бенч-стендом (PR5); в проде не вызывается.
      */
     fun setThreads(n: Int): Boolean {
-        if (!initialized) return false
+        if (!ensureAlive()) return false
         return NcnnWhisperLib.nativeSetThreads(n)
     }
 
@@ -166,8 +194,10 @@ private object NcnnWhisperLib {
     }
 
     // JNI (ncnn_jni.cpp): Java_com_whispercpp_whisper_NcnnWhisperLib_*
-    external fun nativeInit(modelDir: String, base: String): Boolean
-    external fun nativeSetThreads(n: Int): Boolean
+      external fun nativeInit(modelDir: String, base: String): Boolean
+      external fun nativeSetThreads(n: Int): Boolean
+      /** Жив ли нативный синглтон именно на ЭТОЙ модели (dir+base). См. [ensureAlive]. */
+      external fun nativeIsAlive(modelDir: String, base: String): Boolean
     external fun nativeTranscribe(samples: FloatArray, lang: String): String
     /** Возвращает String[2] = { language, text }; language пустой при неудаче. */
     external fun nativeTranscribeAuto(samples: FloatArray): Array<String>

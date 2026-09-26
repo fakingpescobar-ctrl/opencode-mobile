@@ -23,20 +23,31 @@ import java.io.FileOutputStream
 /**
  * Бенч-стенд STT (PR5): замер латентности ncnn-движка на фикс-наборе wav.
  *
- * Покрывает матрицу:
- *   - модели: int8 (models/ncnn-turbo/) и, если доставлен, fp32
- *     (models/ncnn-bench-fp32/ — копия turbo БЕЗ *_encoder_int8.* файлов);
- *   - входы: assets/bench/{silence,noise,tone,jfk [,ru]}.wav (16k mono PCM16);
- *   - 3 прогона на каждый вход, медиана.
+ * Покрывает:
+ *   - [benchInt8AndFp32] матрица int8 (models/ncnn-turbo/) vs fp32
+ *     (models/ncnn-bench-fp32/ — копия turbo БЕЗ *_encoder_int8.* файлов),
+ *     3 прогона на вход, медиана. Конфиги ЧЕРЕДУЮТСЯ по wav'ам: телефон
+ *     троттлится за 20 минут непрерывной нагрузки, и блочный порядок измерял
+ *     не модель, а её место в прогоне (fp32 «деградировал» 37с -> 69с);
+ *   - [benchAutoLanguage] реальное автоопределение языка через сервис —
+ *     матрица латентностей его не касается, там lang зашит в аргумент;
+ *   - [benchChunkedLong] сегментный пайплайн на 37с речи;
+ *   - [benchLazyShort] single-pass на клипе <=28с (ожидается ОДИН encoder).
  *
- * Ограничение архитектуры: C++-синглтон g_whisper — конфиги гоняются
- * ПОСЛЕДОВАТЕЛЬНО (release() обязателен между int8 и fp32).
+ * Ограничение архитектуры: C++-синглтон g_whisper общий на процесс, поэтому
+ * конфиги физически гоняются последовательно — на каждый (wav, config) свой
+ * контекст с release() в finally.
+ *
+ * Любой ответ движка с префиксом «ОШИБКА …» = падение теста. Раньше ошибка
+ * могла уехать в колонку text, и сборка оставалась зелёной (27.09 так и вышло
+ * с «ncnn whisper not initialized»).
  *
  * Запуск: устройство по adb + `./gradlew :app:connectedDebugAndroidTest`.
- * Результат: logcat STTBENCH-строки + CSV в внутреннем filesDir
+ * Результат: logcat STTBENCH-строки + CSV в filesDir
  * (`run-as org.opencode.mobile.debug cat files/bench/stt-bench.csv`).
- * Колонки: fbank_ms/enc_ms/dec_ms/steps — пофазный профиль из C++
- * (nativeLatencyProfile) последнего прогона каждого wav.
+ * Латентности смотри в CSV, а не в logcat: кольцевой буфер logcat на OPPO
+ * перематывает OEM-спамом за 20 минут прогона. Колонки fbank_ms/enc_ms/dec_ms/
+ * steps — пофазный профиль из C++ (nativeLatencyProfile) последнего прогона.
  */
 @RunWith(AndroidJUnit4::class)
 class BenchSttTest {
@@ -49,10 +60,7 @@ class BenchSttTest {
         assumeTrue("ncnn-turbo не доставлена на устройство: ${int8Check.missing}", int8Check.ok)
 
         val wavs = loadWavs(benchAssets)
-        assertTrue("assets/bench пуст — сначала tools/gen_bench_wavs.py", wavs.isNotEmpty())
-
-        val csv = StringBuilder().append("config,wav,ms1,ms2,ms3,median,fbank_ms,enc_ms,dec_ms,steps,wer,text\n")
-        runConfig("int8", int8Dir, wavs, csv, benchAssets)
+        assertTrue("assets/bench пуст — сначало tools/gen_bench_wavs.py", wavs.isNotEmpty())
 
         // fp32 - ОБЯЗАТЕЛЬНАЯ часть матрицы. Раньше её отсутствие логалось
         // warning'ом и тест рапортовался зелёным: «3/3 passed» при двух
@@ -75,9 +83,124 @@ class BenchSttTest {
             NcnnModelValidator.EncoderVariant.INT8,
             NcnnModelValidator.encoderVariant(int8Dir, "whisper_turbo"),
         )
-        runConfig("fp32", fp32Dir, wavs, csv, benchAssets)
+
+        val refs = loadReferences(benchAssets, wavs)
+        if (refs.isEmpty()) {
+            Log.w(
+                TAG,
+                "WER пропущен: нет ни одного эталона в bench/reference/. " +
+                    "Положить точные тексты с исправлениями (файл на wav) - иначе число WER " +
+                    "не с чем сравнивать.",
+            )
+        }
+
+        val csv = StringBuilder().append("config,wav,ms1,ms2,ms3,median,fbank_ms,enc_ms,dec_ms,steps,wer,text\n")
+
+        // Конфиги ЧЕРЕДУЮТСЯ, а не идут блоками. На прогоне 27.09 fp32-колонка
+        // деградировала от 37с (jfk, первый) до 69с (tone, последний), хотя
+        // аудио становилось короче, а int8-колонка держалась ровно 17-21с: телефон
+        // троттлится за 20 минут нагрузки. Блочный порядок «всё int8, потом всё
+        // fp32» измерял не модель, а её место в прогоне - и рисовал 2.0x, 2.8x,
+        // 3.3x, 3.9x вместо честных ~2x. Здесь wav-снаружи, конфиг-внутри, так
+        // что обе модели меряются при одной и той же температуре; порядок
+        // конфигов ещё и меняется от wav к wavу, чтобы «второй всегда
+        // медленнее» тоже взаимно сократилось.
+        wavs.forEachIndexed { i, wav ->
+            val order =
+                if (i % 2 == 0) {
+                    listOf(INT8 to int8Dir, FP32 to fp32Dir)
+                } else {
+                    listOf(FP32 to fp32Dir, INT8 to int8Dir)
+                }
+            for ((config, dir) in order) {
+                val row = measure(config, dir, wav, refs)
+                csv.append(row).append('\n')
+                Log.i(TAG, "BENCH_ROW $row")
+            }
+        }
         writeCsv(target, csv.toString())
         Log.i(TAG, "BENCH_DONE\n$csv")
+    }
+
+    /**
+     * ЭКСП-8: автоопределение языка через НАСТОЯЩИЙ путь сервиса.
+     *
+     * Почему отдельный тест, а не проверка внутри матрицы: матрица меряет
+     * латентность и зовёт контекст напрямую с зашитым lang="ru" — так сравнение
+     * int8/fp32 вообще не касается выбора языка. На прогоне 27.09 русский текст
+     * на английском аудио в колонках int8 и fp32 поэтому ничего не доказывал:
+     * это был аргумент теста, а не поведение движка. Здесь идём через
+     * [WhisperTranscribeService.transcribe], который зовёт transcribeNcnn ->
+     * detectLangAndTranscribe -> transcribeAuto, и проверяем РЕАЛЬНОЕ
+     * определение: защёлки сброшены, override пуст, язык читается через
+     * currentLang() после прогона.
+     *
+     * Клипы - английские (jfk, 11с) и long (37с). Русского клипа в ассетах нет,
+     * поэтому определение ru не проверяется: для этого нужен русский wav.
+     */
+    @Test
+    fun benchAutoLanguage() {
+        val target = InstrumentationRegistry.getInstrumentation().targetContext
+        val benchAssets = InstrumentationRegistry.getInstrumentation().context.assets
+        val int8Dir = File(ModelDownloader.modelsDir(target), "ncnn-turbo")
+        val int8Check = NcnnModelValidator.checkModelDir(int8Dir, "whisper_turbo")
+        assumeTrue("ncnn-turbo не доставлена на устройство: ${int8Check.missing}", int8Check.ok)
+
+        val jfk = readWav("jfk.wav", benchAssets)
+        assertTrue("нужен jfk.wav в assets/bench", jfk != null)
+        // >= 3с (MIN_LANG_DETECT_SECONDS): на коротких клипах язык намеренно не
+        // определяется, и проверять тут нечего.
+        assertTrue("jfk.wav должен быть >= 3с для проверки языка", jfk!!.samples.size >= 3 * 16_000)
+
+        val csv = StringBuilder().append("wav,samples,seconds,detected_lang,script,text\n")
+
+        for (wav in listOf(jfk, readWav("long.wav", benchAssets)).filterNotNull()) {
+            // Чистая сессия: без сброса защёлка предыдущего прогона сделала бы
+            // тест зависимым от порядка.
+            WhisperTranscribeService.resetLanguageLatch()
+            WhisperTranscribeService.languageOverride = null
+
+            val t0 = System.nanoTime()
+            val text = runBlocking {
+                WhisperTranscribeService.transcribe(
+                    target,
+                    wav.samples,
+                    WhisperTranscribeService.MODEL_TURBO,
+                    WhisperTranscribeService.ENGINE_NCNN,
+                )
+            }
+            val ms = (System.nanoTime() - t0) / 1_000_000
+            val lang = WhisperTranscribeService.currentLang()
+            val script =
+                when {
+                    text.any { it in 'а'..'я' || it in 'А'..'Я' } -> "cyrillic"
+                    text.any { it in 'a'..'z' || it in 'A'..'Z' } -> "latin"
+                    else -> "none"
+                }
+            val clean =
+                text
+                    .trim()
+                    .replace('\n', ' ')
+                    .replace(",", ";")
+                    .take(60)
+            // Секунды форматируем отдельно: String.format на склеенной строке
+            // упал бы, если бы в распознанном тексте встретился символ '%'.
+            val secs = "%.1f".format(wav.samples.size / 16_000.0)
+            val row = "${wav.name},${wav.samples.size},$secs,$lang,$script,$clean"
+            csv.append(row).append('\n')
+            Log.i(TAG, "LANG_ROW $row  (${ms}мс)")
+
+            assertTrue("автоязык вернул ошибку: '$text'", !isError(text))
+            assertTrue(
+                "для английского клипа ${wav.name} определён '$lang' - ожидался не-ru",
+                lang != WhisperTranscribeService.DEFAULT_LANG,
+            )
+            assertTrue(
+                "на английском аудию распознан кириллицей (script=$script): '$text'",
+                script != "cyrillic",
+            )
+        }
+        Log.i(TAG, "LANG_DONE\n$csv")
     }
 
     /**
@@ -109,6 +232,7 @@ class BenchSttTest {
         }
         val ms = (System.nanoTime() - t0) / 1_000_000
         Log.i(TAG, "BENCH_ROW chunked,long,$ms,---,---,$ms,$text")
+        assertTrue("чанкинг вернул ошибку движка: '$text'", !isError(text))
         assertTrue("чанкинг должен распознать текст (а не вернуть пусто): '$text'", text.isNotBlank())
         assertTrue(
             "в сегментах не должно быть галлюцинаций на тишине (а есть: '$text')",
@@ -164,6 +288,11 @@ class BenchSttTest {
         }
         val ms = (System.nanoTime() - t0) / 1_000_000
         Log.i(TAG, "BENCH_ROW lazy,short,$ms,---,---,$ms,${text.trim().take(60)}")
+        // Регрессия от 27.09 жила именно тут: кэш контекстов сервиса отдавал
+        // контекст с протухшим флагом initialized после чужого release(), и lazy
+        // отдавал «ОШИБКА WHISPER: ncnn whisper not initialized» за 10мс. Проверки
+        // на ошибку не было - сборка оставалась зелёной. Теперь есть.
+        assertTrue("lazy-прогон вернул ошибку движка: '$text'", !isError(text))
         assertTrue("lazy-прогон должен вернуть текст: '$text'", text.isNotBlank())
         assertTrue(
             "ожидался 1 encoder (~7-9с), получено $ms мс — возможно VAD-мультипрогон",
@@ -172,66 +301,74 @@ class BenchSttTest {
     }
 
     /**
-     * Один конфиг модели: warmup (init+прогрев), затем 3 замера каждого wav.
+     * Один замер: один wav на одном конфиге. Контекст создаётся и отпускается
+     * на каждый (wav, config) - иначе не сменить модель: C++-синглтон
+     * g_whisper общий, и nativeInit с другим каталогом вытесняет предыдущий.
      *
      * WER считается только если рядом с wav лежит эталон `bench/reference/<имя>.txt`.
      * Эталонов в репозитории намеренно нет: выдуманный «эталон», написанный по
      * модельному же выводу, даёт WER около нуля и выглядит как отличный результат.
      */
-    private fun runConfig(
+    private fun measure(
         config: String,
         dir: File,
-        wavs: List<WavSample>,
-        csv: StringBuilder,
-        assets: AssetManager,
-    ) {
+        wav: WavSample,
+        refs: Map<String, String>,
+    ): String {
         val ctx = NcnnWhisperContext.createFromFilesDir(dir, "whisper_turbo")
         try {
-            val warmup = wavs.first { it.name == "silence" }
-            val first = runBlocking { ctx.transcribeData(warmup.samples, "ru") }
+            // Прогрев коротким куском, а не целым wav: цель — загрузить модель и
+            // прогреть кэш, а не прогнать полное распознавание. Полный прогрев
+            // стоил бы ещё ~15с на каждое из 10 переключений модели.
+            val warm = wav.samples.copyOf(minOf(wav.samples.size, WARMUP_SAMPLES))
+            val w = runBlocking { ctx.transcribeData(warm, "ru") }
             assertTrue(
-                "$config: nativeInit/transcribe упал: $first",
-                !first.startsWith("ОШИБКА NCNN"),
+                "$config/${wav.name}: прогрев упал: $w",
+                !isError(w),
             )
-            ctx.setThreads(8)
-            Log.i(TAG, "$config: warmup ${warmup.samples.size} сэмплов, потоки=8")
-            val refs = loadReferences(assets, wavs)
-            if (refs.isEmpty()) {
-                Log.w(
-                    TAG,
-                    "WER пропущен: нет ни одного эталона в bench/reference/. " +
-                        "Положить точные тексты с исправлениями (файл на wav) - иначе число WER " +
-                        "не с чем сравнивать.",
-                )
-            }
+            assertTrue(
+                "$config/${wav.name}: setThreads не сработал",
+                ctx.setThreads(8),
+            )
+            Log.i(TAG, "$config/${wav.name}: прогрев ${warm.size} сэмплов, потоки=8")
 
-            for (wav in wavs) {
-                val runs = IntArray(RUNS)
-                var text = ""
-                for (r in 0 until RUNS) {
-                    val t0 = System.nanoTime()
-                    text = runBlocking { ctx.transcribeData(wav.samples, "ru") }
-                    runs[r] = ((System.nanoTime() - t0) / 1_000_000).toInt()
-                }
-                val median = runs.sorted()[RUNS / 2]
-                val prof = ctx.latencyProfile()
-                val profStr = prof?.let { "${it[0]},${it[1]},${it[2]},${it[3]}" } ?: "0,0,0,0"
-                val wer = refs[wav.name]?.let { Wer.of(it, text) }
-                // Запятые в распознанном тексте ломали бы CSV: text идёт последней
-                // колонкой, но модель пунктуацию ставит где попало.
-                val sanitized = text
-                    .trim()
-                    .replace('\n', ' ')
-                    .replace(",", ";")
-                    .take(60)
-                val row = "$config,${wav.name},${runs[0]},${runs[1]},${runs[2]},$median,$profStr,${Wer.format(wer)},$sanitized"
-                csv.append(row).append('\n')
-                Log.i(TAG, "BENCH_ROW $row")
+            val runs = IntArray(RUNS)
+            var text = ""
+            for (r in 0 until RUNS) {
+                val t0 = System.nanoTime()
+                text = runBlocking { ctx.transcribeData(wav.samples, "ru") }
+                runs[r] = ((System.nanoTime() - t0) / 1_000_000).toInt()
             }
+            val median = runs.sorted()[RUNS / 2]
+            val prof = ctx.latencyProfile()
+            val profStr = prof?.let { "${it[0]},${it[1]},${it[2]},${it[3]}" } ?: "0,0,0,0"
+            val wer = refs[wav.name]?.let { Wer.of(it, text) }
+            // Запятые в распознанном тексте ломали бы CSV: text идёт последней
+            // колонкой, но модель пунктуацию ставит где попало.
+            val sanitized = text
+                .trim()
+                .replace('\n', ' ')
+                .replace(",", ";")
+                .take(60)
+            // Ошибка движка не должна молча попадать в колонку text: на прогоне
+            // 27.09 так в CSV уехало «ОШИБКА WHISPER: ncnn whisper not
+            // initialized», а сборка была зелёной. Теперь это падение.
+            assertTrue(
+                "$config/${wav.name}: распознавание вернуло ошибку: '$text'",
+                !isError(text),
+            )
+            return "$config,${wav.name},${runs[0]},${runs[1]},${runs[2]},$median,$profStr,${Wer.format(wer)},$sanitized"
         } finally {
             runBlocking { ctx.release() }
         }
     }
+
+    /**
+     * Ошибка движка приходит ТЕКСТОМ с префиксом «ОШИБКА» — и в ncnn-контексте
+     * («ОШИБКА NCNN: …»), и в сервисе («ОШИБКА WHISPER: …»). Раньше бенч проверял
+     * только «ОШИБКА NCNN», поэтому провал lazy-пути проезжал как обычный текст.
+     */
+    private fun isError(text: String): Boolean = text.trimStart().startsWith("ОШИБКА")
 
     /**
      * Читает эталоны из `assets/bench/reference/<имя wav без расширения>.txt`.
@@ -355,5 +492,10 @@ class BenchSttTest {
     private companion object {
         const val TAG = "STTBENCH"
         const val RUNS = 3
+        const val INT8 = "int8"
+        const val FP32 = "fp32"
+
+        /** Прогрев: 1с клипа хватает на загрузку модели, полный wav не нужен. */
+        const val WARMUP_SAMPLES = 16_000
     }
 }
