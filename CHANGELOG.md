@@ -42,11 +42,18 @@
 Отсюда практический вывод: `connectedAndroidTest` на debug **не запускаем** — на установку
 и прогон уходит столько, что быстрее проверить на живой установленной копии.
 
-**Release-подпись — известный долг**
-`app/build.gradle.kts`: `release` собирается с `isMinifyEnabled`/`isShrinkResources`, но
-подписывается `signingConfigs.getByName("debug")` — своего release-keystore в проекте нет.
-Сборка и smoke работают, но публиковать так нельзя: сменив ключ, обновить уже установленное
-приложение невозможно.
+**Release-подпись — долг закрыт**
+Раньше `release` собирался с `signingConfigs.getByName("debug")`, и своего keystore в проекте
+не было: публиковать было нельзя. Теперь `app/build.gradle.kts` читает `keystore.properties`
+из корня и при наличии ключа подписывает release им. Ключ (RSA 4096, PKCS12, alias
+`opencode-release`, 10000 дней) лежит **вне репозитория**; `keystore.properties`, `*.jks` и
+`*.keystore` — в `.gitignore`, в репозиторий попадает только `keystore.properties.example`.
+Проверено `apksigner verify --print-certs`: release-APK подписан новым ключом
+(SHA-256 `4fda00b2…5e56`), а не debug.
+
+Если `keystore.properties` нет — например, на CI — сборка не падает, а продолжает
+использовать debug-подпись и печатает предупреждение `release-key НЕ НАЙДЕН …
+публиковать её НЕЛЬЗЯ`. Такой APK совместим только с ранее установленным debug-вариантом.
 
 **Сборка / инфраструктура**
 - Gradle: `gradlew.bat :app:packageDebug --offline -x lint`

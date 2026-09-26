@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,6 +7,23 @@ plugins {
     id("org.jlleitschuh.gradle.ktlint")
     id("io.gitlab.arturbosch.detekt")
 }
+
+/**
+ * Релизная подпись. Ключ и пароли лежат в `keystore.properties` в корне репозитория
+ * (файл в `.gitignore`), сам `.jks` - вообще вне репозитория. Шаблон - `keystore.properties.example`.
+ *
+ * Если файла нет, release собирается с debug-подписью, чтобы `./gradlew assembleRelease` и
+ * локальный smoke не падали у людей без ключа. Такая сборка публиковать нельзя, поэтому
+ * здесь она помечается, а не проходит молча.
+ */
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) {
+        keystorePropsFile.inputStream().use { load(it) }
+    }
+}
+val releaseStoreFile = keystoreProps.getProperty("storeFile")
+val hasReleaseKey = releaseStoreFile != null && file(releaseStoreFile).exists()
 
 android {
     namespace = "org.opencode.mobile"
@@ -19,11 +38,31 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (hasReleaseKey) {
+            create("release") {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         getByName("release") {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName("debug") // тестовая подпись для локального smoke; заменить на release-key
+            signingConfig = if (hasReleaseKey) {
+                signingConfigs.getByName("release")
+            } else {
+                logger.warn(
+                    "release-key НЕ НАЙДЕН (нет keystore.properties или файла ключа) - " +
+                        "сборка подписывается debug-ключом и публиковать её НЕЛЬЗЯ. " +
+                        "См. keystore.properties.example.",
+                )
+                signingConfigs.getByName("debug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

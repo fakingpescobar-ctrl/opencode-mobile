@@ -218,11 +218,28 @@ fp32 14.5–15.2 s (~2.1×). Подробности: `docs/EXPERIMENTS-STT-LATEN
   adb install -r app/build/outputs/apk/debug/app-debug.apk
   adb shell monkey -p org.opencode.mobile.debug -c android.intent.category.LAUNCHER 1
   ```
-- **Release** («OpenCode Mobile», R8-минифицирован, подписан debug-ключом для локального теста):
+- **Release** («OpenCode Mobile», R8-минифицирован, подписан release-ключом):
   ```bash
+  # Один раз: создать ключ и заполнить шаблон (сам файл — секрет, в .gitignore).
+  keytool -genkeypair -v -keystore ~/keys/opencode-release.jks -storetype PKCS12 \
+          -keyalg RSA -keysize 4096 -validity 10000 -alias opencode-release
+  cp keystore.properties.example keystore.properties   # вписать путь и пароли
+
   gradlew.bat :app:assembleRelease -x lint
   adb install -r app/build/outputs/apk/release/app-release.apk
   adb shell monkey -p org.opencode.mobile -c android.intent.category.LAUNCHER 1
+  ```
+
+  **Ключ и пароли никогда не коммитятся.** `keystore.properties` и `*.jks`/`*.keystore`
+  в `.gitignore`. Потерянный ключ = невозможность выпустить обновление: Play потребует
+  нового приложения с другим `applicationId`. Держи бэкап ключа отдельно от репозитория.
+
+  Если `keystore.properties` нет (например, на CI), release собирается с debug-подписью
+  и печатает предупреждение `release-key НЕ НАЙДЕН ... публиковать её НЕЛЬЗЯ`. Такую
+  сборку публиковать нельзя — она совместима только с уже установленным debug.
+  Проверить, чем подписан APK:
+  ```bash
+  $ANDROID_HOME/build-tools/36.0.0/apksigner.bat verify --print-certs app/build/outputs/apk/release/app-release.apk
   ```
 
 Логи смотреть:
@@ -300,7 +317,7 @@ build.ps1                        # сборка на Windows: debug/release (And
 | 4 | Пауза поллинга и анимаций, когда Activity в фоне | Фоновый CPU ~0% |
 | 5 | Эффективное мигание MCP (дискретный пульс вместо 60fps) | Мигание возвращено, CPU ~8% (фон 0%) |
 | 6 | Все UI-кнопки на готовых Material-иконках (extended) | Микрофон, отправка, stop, шестерёнка, шрифт, цвет — векторные, читаемые |
-| 7 | R8-минификация + shrinkResources в release | APK 374 → 274 MB (R8), затем lazy-вынос base → **147 MB** (debug подпись для локального smoke; пакет чистый `org.opencode.mobile`) |
+| 7 | R8-минификация + shrinkResources в release | APK 374 → 274 MB (R8), затем lazy-вынос base → **147 MB** (release-подпись; пакет чистый `org.opencode.mobile`) |
 | 8 | base-модель вынесена из assets в lazy-скачивание | base/turbo качаются по требованию; APK больше не тащит 141MB whisper |
 
 **Итог:** UI CPU ~38% → ~1.5-8% (×5–25), рендер 99-перц. 9 мс, janky 0.33%,

@@ -54,3 +54,7 @@ local.properties
 # Local build/device artifacts
 /build-inst.err
 /opencode.jsonc.device
+
+# Release signing secrets (keystore itself lives outside the repo).
+# *.keystore / *.jks above cover the container; this covers the passwords.
+keystore.properties
