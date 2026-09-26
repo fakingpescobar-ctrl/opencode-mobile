@@ -55,6 +55,14 @@ jobs:
         run: |
           ./gradlew :app:assembleDebug -PskipNativeBuild=true --no-daemon --console=plain
 
+      # minVerify (CI-19): собираем и его. Устройства в CI нет, поэтому
+      # device-тесты тут не гоняются, но СБОРКА ловит сломанное keep-правило
+      # или переименованный тестовый член - ровно то, из-за чего release-пайплайн
+      # раньше проверялся только вручную на телефоне.
+      - name: "Assemble minVerify APK (R8 + shrink, test-facing config)"
+        run: |
+          ./gradlew :app:assembleMinVerify -PskipNativeBuild=true --no-daemon --console=plain
+
       # Нативные prebuilt (libopencode.so/libbun-musl.so, ~270 MB) НЕ в git —
       # app/src/main/jniLibs/ в .gitignore (бинарники >100 MB), генерируются
       # локально (build-release.ps1). Поэтому ubuntu-APK — Kotlin/ресурсный

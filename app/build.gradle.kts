@@ -92,27 +92,35 @@ android {
         // R8 выключен. Значит release можно было собрать, подписать и выкатить
         // в Play, ни разу не запустив на телефоне.
         //
-        // От release отличается ровно двумя вещами, и обе необходимы:
+        // От release отличается тремя вещами, и все три осознанные:
         //   isDebuggable = true   - работает run-as, можно залить модели
         //   applicationIdSuffix   - ставится отдельным пакетом рядом с debug
         //                             и release, ничего не ломая
+        //   signingConfig = debug  - initWith копирует и ключ release'а, а
+        //                             подписывать отладочный артефакт боевым
+        //                             ключом незачем: он ставится на телефон и
+        //                             может утечь вместе с телефоном
         // R8, shrinkResources и правила из proguard-rules.pro - как в release.
         //
-        // Проверено 27.09.2026: R8 (13 dex -> 1 dex, 1292 -> 550 классов),
-        // STT отдаёт английский с первого сегмента, JNI-биндинг жив.
+        // Проверено 27.09.2026: R8 (13 dex -> 2), STT отдаёт английский с первого
+        // сегмента, JNI-биндинг жив, полный device-прогон 5/5 за 606 с.
         create("minVerify") {
             initWith(getByName("release"))
             applicationIdSuffix = ".minverify"
             isDebuggable = true
+            signingConfig = signingConfigs.getByName("debug")
             resValue("string", "app_name", "OpenCode Mobile · MinVerify")
             // whisperlib не имеет build type minVerify - без этого падает
             // variant matching (просит minVerifyApiElements, а библиотека
             // публикует только debug* и release*).
             matchingFallbacks.add("release")
-            // Перечислены явно все три, а не только дополнение: proguardFiles
-            // в этом DSL ведёт себя неоднозначно, а потерять дефолтный
-            // proguard-android-optimize.txt нельзя - именно он сохраняет имена
-            // классов с native-методами, и без него JNI не найдёт символы.
+            // Файлы перечислены явно, а не только дополнение. proguardFiles
+            // дописывает в список, но полагаться на это не хочется: если
+            // proguard-android-optimize.txt исчезнет из списка, сборка
+            // останется зелёной, а сломается только в момент запуска - JNI
+            // ищет символы по имени, и обфусцированный NcnnWhisperLib просто
+            // не найдётся. Проверено по dex: Lcom/whispercpp/whisper/NcnnWhisperLib;
+            // присутствует.
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
