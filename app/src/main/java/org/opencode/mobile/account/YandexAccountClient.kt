@@ -48,21 +48,28 @@ internal fun readPlaylistLibrary(
     result: JSONObject,
 ): PlaylistLibrary {
     val entries = result.optJSONArray("tracks")
-    // id и позиция собираются одной записью и потом берутся из одного списка - так они
-    // не могут разъехаться, а после фильтрации это ровно тот случай, где разъезжаются.
+    // id и позиция собираются одной записью и сортируются вместе - так они не могут разъехаться,
+    // и после сортировки это ровно тот случай, где разъезжаются.
+    //
+    // Порядок берётся из `originalIndex`, а не из порядка выдачи, и это не косметика: head
+    // плейлиста - это первые пять `trackIds`, подписанные позициями из `originalIndexes`.
+    // При выдаче вперемешку мы бы поставили плейлист с середины, а потом обвинили его в
+    // «ранние треки недоступны».
     val numbered =
-        (0 until (entries?.length() ?: 0)).map { index ->
-            val entry = entries?.optJSONObject(index)
-            (entry?.playlistTrackId().orEmpty()) to (entry?.optInt("originalIndex", index) ?: index)
-        }
-    val kept = numbered.filter { (id, _) -> id.isNotEmpty() }
+        (0 until (entries?.length() ?: 0))
+            .map { index ->
+                val entry = entries?.optJSONObject(index)
+                (entry?.playlistTrackId().orEmpty()) to (entry?.optInt("originalIndex", index) ?: index)
+            }.filter { (id, _) -> id.isNotEmpty() }
+            // sortedBy стабилен: треки с одинаковой позицией сохраняют порядок выдачи.
+            .sortedBy { (_, position) -> position }
     return PlaylistLibrary(
         kind = result.optInt("kind", requestedKind),
         uuid = result.optString("playlistUuid").trim(),
         title = result.optString("title").trim(),
         revision = result.optLong("revision", 0L),
-        trackIds = kept.map { (id, _) -> id },
-        originalIndexes = kept.map { (_, position) -> position },
+        trackIds = numbered.map { (id, _) -> id },
+        originalIndexes = numbered.map { (_, position) -> position },
     )
 }
 

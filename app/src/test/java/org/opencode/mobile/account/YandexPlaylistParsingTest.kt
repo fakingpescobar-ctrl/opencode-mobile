@@ -81,8 +81,11 @@ class YandexPlaylistParsingTest {
     }
 
     /**
-     * Главный случай: выдача переставлена, а порядок плейлиста — нет. Если бы мы отдали
-     * позиции выдачи, агент показал бы пользователю его же плейлист в чужом порядке.
+     * Главный случай: выдача переставлена, а порядок плейлиста — нет.
+     *
+     * Проверяется не только параллельный список позиций, но и сам порядок id: head плейлиста
+     * берётся первыми пятью `trackIds`, поэтому в выдаче вперемешку мы бы поставили его с
+     * середины, а позиции из `originalIndexes` подписали бы чужой трек его настоящим номером.
      */
     @Test
     fun `the playlist order comes from original index, not from delivery order`() {
@@ -96,7 +99,8 @@ class YandexPlaylistParsingTest {
                 ),
             )
 
-        assertEquals(listOf(2, 0, 1), library.originalIndexes)
+        assertEquals(listOf("first", "second", "third"), library.trackIds)
+        assertEquals(listOf(0, 1, 2), library.originalIndexes)
     }
 
     @Test

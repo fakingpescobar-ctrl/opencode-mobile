@@ -150,8 +150,8 @@ object YandexPlaylistPlayer {
             }
         return when (outcome) {
             is Watch.Playing -> started(kind, title, outcome.snapshot, outcome.track)
-            is Watch.Retry -> failure(kind, title, outcome.reason)
-            is Watch.Failed -> failure(kind, title, outcome.reason)
+            is Watch.Retry -> failure(kind, title, outcome.reason, outcome.observed)
+            is Watch.Failed -> failure(kind, title, outcome.reason, outcome.observed)
         }
     }
 
@@ -241,9 +241,13 @@ object YandexPlaylistPlayer {
         sleep(AFTER_TAP_MS)
         val playing = listen(headTracks)
         if (playing != null) return Watch.Playing(playing.snapshot, playing.track)
-        val heard = MediaControlController.status(PACKAGE).playback.title ?: "nothing"
-        Log.w(TAG, "attempt $attempt of $ATTEMPTS: session still shows $heard")
-        return Watch.Retry("tapped Play but the session shows $heard, which is not in this playlist")
+        val heard = MediaControlController.status(PACKAGE).playback
+        Log.w(TAG, "attempt $attempt of $ATTEMPTS: session still shows ${heard.title ?: "nothing"}")
+        return Watch.Retry(
+            "tapped Play but the session shows ${heard.title ?: "nothing"}, " +
+                "which is not in this playlist",
+            heard,
+        )
     }
 
     /**
@@ -288,10 +292,12 @@ object YandexPlaylistPlayer {
 
         data class Retry(
             val reason: String,
+            val observed: MediaPlaybackSnapshot? = null,
         ) : Watch
 
         data class Failed(
             val reason: String,
+            val observed: MediaPlaybackSnapshot? = null,
         ) : Watch
     }
 
@@ -316,17 +322,25 @@ object YandexPlaylistPlayer {
                 },
         )
 
+    /**
+     * Неудача, которой всё же полезно сказать, что играет.
+     *
+     * `started=false` и «сейчас в сессии X» не противоречат друг другу: первое - про наш запуск,
+     * второе - про Яндекс Музыку. Молчащий `now_playing` при неудачном запуске вводил в
+     * заблуждение сильнее, чем помогал: агент видел пустоту и думал, что музыка вообще не играет.
+     */
     private fun failure(
         kind: Int,
         title: String,
         reason: String,
+        observed: MediaPlaybackSnapshot? = null,
     ): PlaylistPlayback =
         PlaylistPlayback(
             kind = kind,
             title = title,
             started = false,
-            nowPlaying = null,
-            nowPlayingArtist = null,
+            nowPlaying = observed?.title,
+            nowPlayingArtist = observed?.artist,
             message = reason,
         )
 

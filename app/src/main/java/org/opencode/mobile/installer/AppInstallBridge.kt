@@ -45,6 +45,7 @@ import java.security.MessageDigest
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
@@ -405,7 +406,11 @@ object AppInstallBridge {
      * То же, но для работы, которая держится минуту: запуск плейлиста ждёт загрузку экрана,
      * тап, а затем чтение сессии, и на пуле RPC (а он на два потока) это значит «половина моста
      * лежит». Пул один, но долгие вещи на нём и не живут.
+     *
+     * `SwallowedException` подавлен намеренно: обёртка `ExecutionException` выбрасывается,
+     * а наружу уходит её причина - именно её должен видеть вызывающий, а не «ui job failed».
      */
+    @Suppress("SwallowedException")
     private fun <T> offRpcPool(
         budgetMs: Long,
         what: String,
@@ -413,16 +418,23 @@ object AppInstallBridge {
     ): T? {
         val settled = CompletableFuture<T>()
         uiClickExecutor.execute {
-            val outcome =
-                runCatching { action() }.getOrElse { error ->
-                    throw IllegalStateException("$what failed: ${error.message}", error)
+            // Ошибку отдаём в future, а не бросаем в поток: иначе она уходит в uncaught handler,
+            // future не завершается никогда, и вызовер честно ждёт весь бюджет, чтобы потом
+            // соврать про таймаут вместо реальной причины.
+            runCatching { action() }
+                .onSuccess { settled.complete(it) }
+                .onFailure { error ->
+                    settled.completeExceptionally(
+                        IllegalStateException("$what failed: ${error.message}", error),
+                    )
                 }
-            settled.complete(outcome)
         }
-        return runCatching {
+        return try {
             settled.get(budgetMs, TimeUnit.MILLISECONDS)
-        }.getOrElse { error ->
-            if (error is TimeoutException) null else throw error
+        } catch (timeout: TimeoutException) {
+            null
+        } catch (failure: ExecutionException) {
+            throw failure.cause ?: failure
         }
     }
 
