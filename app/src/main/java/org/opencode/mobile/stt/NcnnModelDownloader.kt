@@ -87,6 +87,9 @@ object NcnnModelDownloader {
     private const val DOWNLOAD_BUFFER_BYTES = 256 * 1024
     private const val HTML_SNIFF_BYTES = 512
 
+    /** Как часто во время скачивания переспрашивать свободное место. Чаще - только stat(). */
+    private const val SPACE_CHECK_INTERVAL_MS = 5_000L
+
     /** Каталог набора: <filesDir>/models/ncnn-turbo/. */
     fun dir(context: Context): File = File(ModelDownloader.modelsDir(context), "ncnn-turbo").apply { mkdirs() }
 
@@ -145,6 +148,11 @@ object NcnnModelDownloader {
         }
         Log.d(TAG, "старт: скачано $doneBytes / $TOTAL_BYTES байт")
 
+        // Страховка видит и будущие файлы, а не только текущий, - за счёт этого стоит
+        // один require() на весь набор, а не пересчёт остатка в цикле.
+        val spaceGuard = FreeSpaceGuard(d)
+        spaceGuard.require()
+
         for ((name, expectedSize) in ASSETS) {
             val dest = File(d, name)
             if (dest.isFile && dest.length() == expectedSize) {
@@ -157,13 +165,65 @@ object NcnnModelDownloader {
                     continue
                 }
             }
-            val part = File(d, "$name.part")
-            downloadAsset(name, expectedSize, dest, part) { added ->
+            downloadAsset(name, expectedSize, dest, spaceGuard::require) { added ->
                 doneBytes += added
                 onProgress(doneBytes, TOTAL_BYTES)
             }
         }
         return d
+    }
+
+    /**
+     * Сторож свободного места на время скачивания.
+     *
+     * Проверка [MIN_FREE_BYTES] в начале набора честная ровно до первого чужого процесса:
+     * за два с половиной гигабайта место успевает забрать и кэш, и «USB-подключение», и
+     * простое фото. Тогда набор падал на 1.8 ГБ, а следующий заход упирался в остаток и
+     * не мог даже начать. Сторож спрашивает `usableSpace` раз в [SPACE_CHECK_INTERVAL_MS] и
+     * сравнивает с тем, что реально осталось докачать, а не с полным размером набора.
+     *
+     * Бросает, а не предупреждает: доиспользовать диск до состояния, при котором система
+     * сама начинает отдавать еде, заметно хуже, чем честная ошибка с понятным текстом.
+     * `.part` при этом остаётся, и повторный заход докачивает с места обрыва.
+     */
+    private class FreeSpaceGuard(
+        private val dir: File,
+        private val clock: () -> Long = System::currentTimeMillis,
+    ) {
+        private var nextCheckAt = 0L
+
+        /** Бросает, если места меньше, чем нужно докачать СУММАРНО по всему набору. */
+        fun require() {
+            val now = clock()
+            if (now < nextCheckAt) return
+            nextCheckAt = now + SPACE_CHECK_INTERVAL_MS
+            val free = dir.usableSpace
+            val needed = remainingToDownload()
+            if (!spaceIsShort(free, needed)) return
+            error(
+                "Место закончилось: осталось докачать ~" +
+                    "${needed / BYTES_PER_MIB / BYTES_PER_MIB} МБ, свободно " +
+                    "${free / BYTES_PER_MIB / BYTES_PER_MIB} МБ. Частично скачанное " +
+                    "сохранено - освободи место и повтори, докачает с места обрыва.",
+            )
+        }
+
+        /**
+         * Сколько байт ещё нужно докачать. Полный файл не считается дважды: `.part` и
+         * будущий `.bin` на его месте — это одни и те же байты, поэтому берётся меньшее
+         * из двух. Считается по ВСЕМУ набору, а не по текущему файлу: страховка, которая
+         * видит только текущий файл, последние мегабайты проверяет в вакууме.
+         */
+        private fun remainingToDownload(): Long =
+            ASSETS.entries.sumOf { (assetName, size) ->
+                val dest = File(dir, assetName)
+                val have =
+                    when {
+                        dest.isFile && dest.length() == size -> size
+                        else -> minOf(File(dir, "$assetName.part").length(), size)
+                    }
+                (size - have).coerceAtLeast(0L)
+            }
     }
 
     /** Скачивает ОДИН файл с resume: .part + Range-хвост; при 200 (полный ответ)
@@ -172,10 +232,13 @@ object NcnnModelDownloader {
         assetName: String,
         expectedSize: Long,
         dest: File,
-        tmp: File,
+        ensureSpace: () -> Unit,
         onAdded: (Long) -> Unit,
     ) {
         check(dest.parentFile != null) { "нет parent у ${dest.name}" }
+        // .part выводится из dest, а не тащится параметром: он всегда "<имя>.part" рядом,
+        // и лишний параметр рано или поздно разошёлся бы с dest при переименовании.
+        val tmp = File(dest.parentFile, "$assetName.part")
         val existingBytes = tmp.length()
         val resuming = tmp.isFile && existingBytes in 1 until expectedSize
         val startAt = if (resuming) existingBytes else 0L
@@ -194,7 +257,7 @@ object NcnnModelDownloader {
                 tmp.delete()
                 0L
             }
-            val done = copyResponse(connection, tmp, effectiveStartAt, onAdded)
+            val done = copyResponse(connection, tmp, effectiveStartAt, ensureSpace, onAdded)
             completeDownload(tmp, dest, expectedSize)
             Log.d(TAG, "скачан: $assetName ($done байт, sha256 ok)")
         } finally {
@@ -251,13 +314,14 @@ object NcnnModelDownloader {
         connection: HttpURLConnection,
         tmp: File,
         startAt: Long,
+        ensureSpace: () -> Unit,
         onAdded: (Long) -> Unit,
     ): Long {
         val append = connection.responseCode == HttpURLConnection.HTTP_PARTIAL
         val state = CopyState(tmp, startAt)
         connection.inputStream.use { input ->
             FileOutputStream(tmp, append).use { output ->
-                copyInput(input, output, state, onAdded)
+                copyInput(input, output, state, ensureSpace, onAdded)
             }
         }
         return state.done
@@ -267,11 +331,15 @@ object NcnnModelDownloader {
         input: InputStream,
         output: OutputStream,
         state: CopyState,
+        ensureSpace: () -> Unit,
         onAdded: (Long) -> Unit,
     ) {
         val buffer = ByteArray(DOWNLOAD_BUFFER_BYTES)
         while (true) {
             coroutineContext.ensureActive()
+            // Дёшево: сторож внутри сам throttle-ится по времени, поэтому звать на каждом
+            // буфере безопасно - между проверками остаётся ровно один System.currentTimeMillis.
+            ensureSpace()
             val bytesRead = input.read(buffer)
             if (bytesRead < 0) break
             if (state.done == state.startAt && looksLikeHtml(buffer, bytesRead)) {
@@ -318,3 +386,27 @@ object NcnnModelDownloader {
             head.contains("<html", ignoreCase = true)
     }
 }
+
+/**
+ * Хватает ли места на остаток набора.
+ *
+ * Живёт вне `NcnnModelDownloader` не по вкусу, а ради честности: объект и так на пределе
+ * detekt по числу функций, и проверка, которую обязаны покрыть тесты, не должна была бы
+ * конкурировать с private-мелочами за место в лимите.
+ *
+ * Два края, где ответ «места хватает», и оба - по делу:
+ *  - `usableSpace == 0` означает «не удалось определить», а не «мест нет»: на части
+ *    окружений stat отдаёт ноль, и трактовка нуля как нехватки заблокировала бы
+ *    скачивание там, где оно нормально работает;
+ *  - когда качать нечего (`neededBytes == 0`), жаловаться не на что: запас в 100 МБ иначе
+ *    превратил бы в ошибку обычный вход в скачивание при уже полном наборе.
+ */
+internal const val NCNN_SPACE_MARGIN_BYTES = 100L * 1024 * 1024
+
+internal fun spaceIsShort(
+    freeBytes: Long,
+    neededBytes: Long,
+): Boolean =
+    neededBytes > 0L &&
+        freeBytes > 0L &&
+        freeBytes < neededBytes + NCNN_SPACE_MARGIN_BYTES
