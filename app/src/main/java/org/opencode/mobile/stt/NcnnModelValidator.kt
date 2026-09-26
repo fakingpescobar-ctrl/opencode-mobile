@@ -24,6 +24,29 @@ object NcnnModelValidator {
         val missing: List<String>,
     )
 
+    /**
+     * Какой энкодер реально загрузит ncnn_jni.cpp: сначала пробуется int8,
+     * при его отсутствии — fp32. Значение нужно бенчу: строка "fp32" в CSV
+     * означает прогон fp32 ТОЛЬКО если вариант действительно FP32, иначе
+     * движок молча взял int8 и сравнение вариантов бессмысленно.
+     */
+    enum class EncoderVariant { INT8, FP32, NONE }
+
+    fun encoderVariant(
+        dir: File,
+        base: String = "whisper_turbo",
+    ): EncoderVariant {
+        val int8 = File(dir, "${base}_encoder_int8.ncnn.param").isFile &&
+            File(dir, "${base}_encoder_int8.ncnn.bin").isFile
+        val fp32 = File(dir, "${base}_encoder.ncnn.param").isFile &&
+            File(dir, "${base}_encoder.ncnn.bin").isFile
+        return when {
+            int8 -> EncoderVariant.INT8
+            fp32 -> EncoderVariant.FP32
+            else -> EncoderVariant.NONE
+        }
+    }
+
     /** Проверка продуктивной модели ncnn-turbo/ (DiagnosticsScreen + WhisperTranscribeService). */
     fun checkTurbo(context: Context): Check = checkModelDir(File(ModelDownloader.modelsDir(context), "ncnn-turbo"))
 
@@ -46,13 +69,7 @@ object NcnnModelValidator {
         }
 
         // Энкодер: полный int8 ИЛИ полный fp32 (как fallback в ncnn_jni.cpp).
-        val int8Complete =
-            File(dir, "${base}_encoder_int8.ncnn.param").isFile &&
-                File(dir, "${base}_encoder_int8.ncnn.bin").isFile
-        val fp32Complete =
-            File(dir, "${base}_encoder.ncnn.param").isFile &&
-                File(dir, "${base}_encoder.ncnn.bin").isFile
-        if (!int8Complete && !fp32Complete) {
+        if (encoderVariant(dir, base) == EncoderVariant.NONE) {
             if (!File(dir, "${base}_encoder_int8.ncnn.param").isFile) missing += "${base}_encoder_int8.ncnn.param"
             if (!File(dir, "${base}_encoder_int8.ncnn.bin").isFile) missing += "${base}_encoder_int8.ncnn.bin"
             if (!File(dir, "${base}_encoder.ncnn.param").isFile) missing += "${base}_encoder.ncnn.param"

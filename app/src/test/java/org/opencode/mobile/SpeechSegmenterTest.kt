@@ -52,7 +52,14 @@ class SpeechSegmenterTest {
         val clip = concat(speech(rng, 1.2), noise(rng, 1.0), speech(rng, 1.0))
         val segs = seg.split(clip)
         assertEquals("ожидалось 2 сегмента", 2, segs.size)
-        assertTrue("первый короче 2с", segs[0].samples.size < 2 * 16_000)
+        // Сегмент впитывает паузу до SPLIT_GAP_MS — это и есть механизм склейки,
+        // поэтому длина первого сегмента = речь 1.2с + пауза 0.9с + кадр запаса.
+        val firstMax =
+            ((1.2 + SpeechSegmenter.SPLIT_GAP_MS / 1000.0 + 0.05) * 16_000).toInt()
+        assertTrue(
+            "первый = речь 1.2с + поглощённая пауза 0.9с",
+            segs[0].samples.size <= firstMax,
+        )
         assertTrue("второй короче 2с", segs[1].samples.size < 2 * 16_000)
         assertTrue("сегменты идут по порядку", segs[0].startMs < segs[1].startMs)
     }
@@ -86,6 +93,48 @@ class SpeechSegmenterTest {
         for (s in segs) {
             assertTrue("сегмент ≤ 28с + 1 кадр", s.samples.size <= 28 * 16_000 + 16_000)
         }
+    }
+
+    @Test
+    fun `длинная речь с частыми паузами - не дробится на десятки сегментов`() {
+        // Реальная структура bench/long.wav: речевые подфразы 2.4/1.6/2.8/3.5 с,
+        // повторённые трижды, разделены паузами ~0.61 с.
+        //
+        // На старом пороге разрыва 450 мс каждая пауза резала поток, и выходило
+        // 12 сегментов на 37 с речи. Энкодер берёт фиксированные ~6.5 с на любой
+        // вход, поэтому 12 сегментов — это 120 с вместо ~16 с: цена не зависит
+        // от длины, и резать надо как можно позже.
+        val rng = Random(21)
+        val pattern = listOf(2.4, 1.6, 2.8, 3.5)
+        val parts = ArrayList<FloatArray>()
+        repeat(3) {
+            for (d in pattern) {
+                parts += speech(rng, d)
+                parts += noise(rng, 0.61)
+            }
+        }
+        val clip = concat(*parts.toTypedArray())
+
+        val segs = seg.split(clip)
+        assertEquals(
+            "37с речи с паузами 0.61с должны дать ровно 2 сегмента (только разрез по 28с)",
+            2,
+            segs.size,
+        )
+        for (s in segs) {
+            assertTrue(
+                "сегмент не должен превышать лимит энкодера 28с",
+                s.samples.size <= 28 * 16_000 + 16_000,
+            )
+        }
+
+        // Регрессия в обе стороны: на старом пороге дробление обязано вернуться,
+        // иначе тест выше проходит из-за сломанной сегментации, а не из-за правки.
+        val old = SpeechSegmenter(16_000, splitGapMs = 450L).split(clip)
+        assertTrue(
+            "старый порог 450мс должен давать много сегментов, получено ${old.size}",
+            old.size >= 8,
+        )
     }
 
     @Test

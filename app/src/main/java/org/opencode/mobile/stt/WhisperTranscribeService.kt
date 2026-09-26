@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import com.whispercpp.whisper.FAILED_LANG
 import com.whispercpp.whisper.NcnnWhisperContext
 import com.whispercpp.whisper.WhisperContext
 import kotlinx.coroutines.CompletableDeferred
@@ -110,6 +111,42 @@ class WhisperTranscribeService : Service() {
         /** Приложение-контекст для работы со статиками (кэши/очередь переживают
          *  смерть инстанса сервиса). Устанавливается каждым вызовом transcribe(). */
         @Volatile private var appContext: Context? = null
+
+        /**
+         * Язык текущей сессии диктовки. null — ещё не определён.
+         *
+         * Защёлка нужна потому, что whisper гоняет encoder на КАЖДЫЙ сегмент
+         * (~6.5 с на телефоне) ради определения языка. В сессии язык не меняется,
+         * поэтому определяем один раз на первом длинном сегменте и дальше
+         * передаём токен напрямую. Без защёлки английский текст посреди русской
+         * реплики распознавался как русский — это хуже, чем каша.
+         */
+        @Volatile private var latchedLang: String? = null
+
+        /**
+         * Язык, заданный пользователем явно (например "en" или "ru").
+         * null — авто. Механизм и дефолт уже на месте, нужен только UI-тумблер.
+         */
+        @Volatile var languageOverride: String? = null
+
+        /** Язык по умолчанию, если определить не удалось или движок вернул пусто. */
+        const val DEFAULT_LANG = "ru"
+
+        /**
+         * Ниже этой длины (в секундах) язык не определяем. На коротких клипах
+         * whisper выбирает язык по шуму, и решение оказывается случайным —
+         * известный DEFAULT_LANG полезнее, чем угадывание.
+         */
+        private const val MIN_LANG_DETECT_SECONDS = 3.0
+        private const val SAMPLE_RATE_HZ = 16_000
+
+        /** Сброс защёлки в начале новой сессии диктовки. */
+        fun resetLanguageLatch() {
+            latchedLang = null
+        }
+
+        /** Текущий язык: явный override, иначе защёлка, иначе дефолт. */
+        fun currentLang(): String = languageOverride ?: latchedLang ?: DEFAULT_LANG
 
         /**
          * Пометить модель удалённой (вызывается из UI после фактического удаления
@@ -242,7 +279,7 @@ class WhisperTranscribeService : Service() {
             return try {
                 if (task.engine == ENGINE_NCNN) {
                     val ctx = obtainNcnnContext(task.model)
-                    ctx.transcribeData(task.samples, lang = "ru").trim()
+                    transcribeNcnn(ctx, task.samples).trim()
                 } else {
                     val ctx = obtainContext(task.model)
                     ctx.transcribeData(task.samples, printTimestamp = false).trim()
@@ -250,6 +287,53 @@ class WhisperTranscribeService : Service() {
             } catch (e: Throwable) {
                 Log.e(TAG, "распознавание упало (в сервисе)", e)
                 "ОШИБКА WHISPER: ${e.message}"
+            }
+        }
+
+        /**
+         * Транскрипция ncnn с учётом языка сессии.
+         *
+         * Язык передаётся токеном в НАЧАЛО декодера, а не меняет препроцессинг:
+         * encoder_states — самый дорогой артефакт (~6.5 с на телефоне) и он от
+         * языка не зависит вообще. Поэтому «язык известен -> один вызов»,
+         * «язык неизвестен -> один вызов с автоопределением», а не два вызова
+         * (определить, потом распознать), которые платили бы за encoder дважды.
+         */
+        private suspend fun transcribeNcnn(
+            ctx: NcnnWhisperContext,
+            samples: FloatArray,
+        ): String {
+            val known = languageOverride ?: latchedLang
+            return if (known != null) {
+                ctx.transcribeData(samples, lang = known)
+            } else {
+                detectLangAndTranscribe(ctx, samples)
+            }
+        }
+
+        /**
+         * Первый сегмент сессии: определяем язык и защёлкиваем его.
+         * Стоит одну авто-транскрипцию; все остальные сегменты идут с токеном.
+         */
+        private suspend fun detectLangAndTranscribe(
+            ctx: NcnnWhisperContext,
+            samples: FloatArray,
+        ): String {
+            val minSamples = (MIN_LANG_DETECT_SECONDS * SAMPLE_RATE_HZ).toInt()
+            if (samples.size < minSamples) {
+                // Короткий клип: язык не решаем, но и не защёлкиваем - если
+                // клип был лишь вступлением, язык определится на следующем.
+                Log.d(TAG, "язык не определяем: ${samples.size} сэмплов < $minSamples")
+                return ctx.transcribeData(samples, lang = DEFAULT_LANG)
+            }
+            val res = ctx.transcribeAuto(samples)
+            return if (res.lang.isBlank() || res.lang == FAILED_LANG) {
+                Log.w(TAG, "определение языка не удалось, беру $DEFAULT_LANG")
+                ctx.transcribeData(samples, lang = DEFAULT_LANG)
+            } else {
+                latchedLang = res.lang
+                Log.i(TAG, "язык сессии: ${res.lang} (${samples.size} сэмплов)")
+                res.text
             }
         }
 

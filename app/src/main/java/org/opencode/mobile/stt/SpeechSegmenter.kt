@@ -17,7 +17,7 @@ import kotlin.math.sqrt
  * Принцип: анализ по кадрам 30 мс (RMS), порог = max(шумовой фон × 3, [MIN_RMS]).
  * Шумовой фон — 10-й перцентиль RMS по всему клипу (устойчив к мусору в начале
  * записи: тихий старт занижает среднее, перцентиль — нет). Сегмент открывается
- * речью, закрывается паузой ≥ [PAD_MS] или жёстким лимитом [MAX_SEGMENT_MS].
+ * речью, закрывается паузой ≥ [SPLIT_GAP_MS] или жёстким лимитом [MAX_SEGMENT_MS].
  * В начало сегмента возвращается [PRE_ROLL_MS] контекста (для транскрипции).
  * Валидный сегмент — не короче [MIN_SPEECH_MS] (щелчки/шлёпки не проходят).
  *
@@ -33,6 +33,12 @@ class SpeechSegmenter(
     private val minRms: Float = MIN_RMS,
     /** Множитель шумового пола. Прод-значение - [NOISE_FRACTION]; см. [minRms]. */
     private val noiseFraction: Float = NOISE_FRACTION,
+    /**
+     * Пауза, закрывающая сегмент. Прод-значение - [SPLIT_GAP_MS]; параметр существует,
+     * чтобы бенч мог прогнать свип порогов на реальных bench-wav, не меняя константу
+     * между прогонами. См. комментарий у [SPLIT_GAP_MS] — почему это не [PAD_MS].
+     */
+    private val splitGapMs: Long = SPLIT_GAP_MS,
 ) {
     /**
      * Единственный продакшн-вызов берёт дефолт 16 000, так что неверная частота сегодня
@@ -104,7 +110,7 @@ class SpeechSegmenter(
         return voiced
     }
 
-    /** Сборка сегментов: открытие речью, закрытие паузой ≥ [PAD_MS] или лимитом. */
+    /** Сборка сегментов: открытие речью, закрытие паузой ≥ [SPLIT_GAP_MS] или лимитом. */
     private fun collectSegments(
         samples: FloatArray,
         rms: FloatArray,
@@ -128,8 +134,12 @@ class SpeechSegmenter(
 
     /**
      * Жадный захват высказывания, начиная с голосового кадра [from]:
-     * поглощаем речь и короткие паузы; выход при паузе ≥ [PAD_MS] либо
+     * поглощаем речь и короткие паузы; выход при паузе ≥ [SPLIT_GAP_MS] либо
      * достижении жёсткого лимита [MAX_SEGMENT_MS]. Возвращает end-exclusive.
+     *
+     * Порог разрыва — [splitGapFrames], а не [padFrames]. Это ключевая правка
+     * скорости: энкодер с постоянной ценой ~6.5 с делает каждый разрыв
+     * самостоятельным вызовом движка, поэтому резать надо как можно позже.
      */
     private fun captureRun(
         voiced: BooleanArray,
@@ -144,7 +154,7 @@ class SpeechSegmenter(
                 last = i
                 done = i - from >= maxFrames
             } else {
-                done = i - last >= padFrames || i - from >= maxFrames
+                done = i - last >= splitGapFrames || i - from >= maxFrames
             }
             if (!done) i++
         }
@@ -223,7 +233,7 @@ class SpeechSegmenter(
 
     private val frameMs = FRAME_MS
     private val frameSize = (sampleRate * FRAME_MS / MS_PER_SEC).toInt()
-    private val padFrames = (PAD_MS / FRAME_MS).toInt().coerceAtLeast(1)
+    private val splitGapFrames = (splitGapMs / FRAME_MS).toInt().coerceAtLeast(1)
     private val preRollFrames = (PRE_ROLL_MS / FRAME_MS).toInt().coerceAtLeast(1)
     private val maxFrames = (MAX_SEGMENT_MS / FRAME_MS).toInt()
 
@@ -231,8 +241,24 @@ class SpeechSegmenter(
         /** ncnn encoder фиксирован на 30s — сегмент короче лимита с запасом. */
         const val MAX_SEGMENT_MS = 28_000L
 
-        /** Тишина этой длины закрывает сегмент (пауза = конец высказывания). */
-        const val PAD_MS = 450L
+        /**
+         * Пауза, которая реально закрывает сегмент. Раньше для этого служил жёсткий
+         * порог 450 мс, зашитый в [captureRun] напрямую, и это давало 12 сегментов
+         * на 37 с речи.
+         *
+         * Причина чинится экономикой, а не точностью: ncnn-энкодер берёт ФИКСИРОВАННЫЕ
+         * ~6.5 с на любой вход (ncnn_jni.cpp extract_fbank_feature), поэтому цена
+         * сегмента не зависит от его длины. Каждый лишний сегмент — это ещё ~6.5 с,
+         * а не «немного дороже». 12 сегментов на 37 с речи дали 120 с вместо ~16 с.
+         *
+         * Верхняя граница выбрана по двум точкам, а не на глаз:
+         * - реальные паузы в bench/long.wav — ~0.61 с (12 сегментов суммарно 30.3 с
+         *   в клипе 37.0 с) → должны поглощаться;
+         * - пауза 1.0 с в тесте `две фразы разделены паузой` → должна оставаться
+         *   границей, иначе тест на два сегмента ломается.
+         * 900 мс лежит между ними с запасом с обеих сторон.
+         */
+        const val SPLIT_GAP_MS = 900L
 
         /** Сегмент короче — щелчок/шлёпок, выбрасываем. */
         const val MIN_SPEECH_MS = 400L

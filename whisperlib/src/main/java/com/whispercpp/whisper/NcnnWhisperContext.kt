@@ -3,12 +3,17 @@ package com.whispercpp.whisper
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.Executors
 
 private const val NCNN_LOG_TAG = "NcnnWhisper"
+
+/** Язык не определён: определение провалилось, вызывающий обязан взять fallback. */
+const val FAILED_LANG = ""
+
+/** Результат [NcnnWhisperContext.transcribeAuto]: язык сессии + распознанный текст. */
+data class AutoResult(val lang: String, val text: String)
 
 /**
  * Контекст распознавания на движке ncnn (Vulkan/Adreno GPU).
@@ -66,6 +71,54 @@ class NcnnWhisperContext private constructor(
             text
         }
 
+    /**
+     * Авто-определение языка + транскрипция одним нативным вызовом.
+     *
+     * Зачем: encoder_states — самый дорогой артефакт (~6.5 с на телефоне) и он
+     * НЕ зависит от языка. Нативная сторона считает encoder один раз, читает
+     * язык с префилла [sot] и декодирует уже с найденным токеном языка. Два
+     * вызова transcribeData (сначала определить язык, потом распознать) платили
+     * бы за encoder дважды; здесь добавка — всего один префилл (~40 мс).
+     *
+     * Возвращает язык и текст. При неудаче определения язык = [FAILED_LANG].
+     */
+    suspend fun transcribeAuto(data: FloatArray): AutoResult =
+        withContext(scope.coroutineContext) {
+            if (!ensureInit()) {
+                Log.e(NCNN_LOG_TAG, "nativeInit вернул false (dir=$modelDir, base=$base)")
+                val err = "ОШИБКА NCNN: не удалось загрузить ncnn-модель"
+                return@withContext AutoResult(FAILED_LANG, err)
+            }
+            val t0 = System.nanoTime()
+            // Тот же приём, что у whisper.cpp: поднимаем nice, иначе ColorOS
+            // душит фоновые compute-потоки до 1-5% CPU.
+            android.os.Process.setThreadPriority(
+                android.os.Process.myTid(),
+                android.os.Process.THREAD_PRIORITY_URGENT_AUDIO
+            )
+            val res = try {
+                NcnnWhisperLib.nativeTranscribeAuto(data)
+            } finally {
+                android.os.Process.setThreadPriority(
+                    android.os.Process.myTid(),
+                    android.os.Process.THREAD_PRIORITY_DEFAULT
+                )
+            }
+            val out = AutoResult(res[0], res[1])
+            val ms = (System.nanoTime() - t0) / 1_000_000
+            Log.d(NCNN_LOG_TAG, "ncnn-auto: ${ms}мс (${data.size} сэмплов, lang=${out.lang})")
+            out
+        }
+
+    /**
+     * Отпускает долю владения нативной моделью.
+     *
+     * ВАЖНО: finalize() здесь НЕ используется. Контексты переиспользуют один
+     * глобальный g_whisper через счётчик ссылок в ncnn_jni.cpp, а сборщик мусора
+     * вызывает finalize() в произвольный момент — в том числе на ещё живой
+     * ссылке. Это выгружало модель из-под активного контекста. Освобождение
+     * теперь только явное, парность гарантирует acquire/release в сервисе.
+     */
     suspend fun release() = withContext(scope.coroutineContext) {
         if (initialized) {
             NcnnWhisperLib.nativeFree()
@@ -93,10 +146,6 @@ class NcnnWhisperContext private constructor(
     fun latencyProfile(): LongArray? =
         if (initialized) NcnnWhisperLib.nativeLatencyProfile() else null
 
-    protected fun finalize() {
-        runBlocking { release() }
-    }
-
     companion object {
         /**
          * Создаёт контекст из каталога, где лежат whisper_<base>_*.ncnn.{param,bin}
@@ -120,6 +169,8 @@ private object NcnnWhisperLib {
     external fun nativeInit(modelDir: String, base: String): Boolean
     external fun nativeSetThreads(n: Int): Boolean
     external fun nativeTranscribe(samples: FloatArray, lang: String): String
+    /** Возвращает String[2] = { language, text }; language пустой при неудаче. */
+    external fun nativeTranscribeAuto(samples: FloatArray): Array<String>
     external fun nativeLatencyProfile(): LongArray
     external fun nativeFree()
 }

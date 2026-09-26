@@ -53,6 +53,34 @@ static const int token_endoftext = 50257;
 static const int token_startoftranscript = 50258;
 static const int token_transcribe = 50360;
 static const int token_notimestamps = 50364;
+
+// Языковые токены whisper: 50259..50357 (99 языков, канонический порядок
+// multilingual-чекпоинта). Нужен целиком, а не только ru/en: авто-определение
+// выбирает argmax по всему диапазону, и без имён вернуть наружу нечего.
+static const int token_lang_first = 50259;
+static const int token_lang_count = 99;
+static const char* token_langs[token_lang_count] = {
+    "en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar",
+    "sv", "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu",
+    "ta", "no", "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa",
+    "lv", "bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is", "hy", "ne", "mn",
+    "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc",
+    "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn",
+    "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw",
+    "su",
+};
+
+// Имя языка -> id токена, либо -1. Раньше здесь было два if на ru/en, из-за чего
+// любой другой язык молча превращался в русский, а английский текст переводился.
+static int token_lang_of(const char* lang)
+{
+    if (!lang) return -1;
+    for (int i = 0; i < token_lang_count; i++)
+    {
+        if (strcmp(token_langs[i], lang) == 0) return token_lang_first + i;
+    }
+    return -1;
+}
 static const int token_timestamp_first = 50365;
 static const int token_timestamp_last = 51864;
 
@@ -170,6 +198,15 @@ public:
     int load(const std::string& dir, const std::string& base);
     int transcribe(const std::vector<short>& samples, const char* lang, std::string& text) const;
 
+    // Определяет язык по аудио и транскрибирует ОДНИМ проходом энкодера.
+    //
+    // Ключевой момент: encoder_states — самый дорогой артефакт, и он НЕ зависит
+    // от языка. Если вызвать определение языка отдельной функцией, а потом
+    // transcribe(), энкодер считается дважды: на телефоне это ~6.5 с, то есть
+    // удвоение фразы. Здесь язык читается из того же prefill, чьи encoder_states
+    // потом уходят в декодер, поэтому добавка — один шаг префилла (десятки мс).
+    int transcribe_auto(const std::vector<short>& samples, std::string& lang, std::string& text) const;
+
     void set_num_threads(int n)
     {
         fbank.opt.num_threads = n;
@@ -204,6 +241,18 @@ protected:
 
     int run_decoder_step(const std::vector<int>& tokens, const ncnn::Mat& encoder_states, ncnn::Mat& last_logits, const std::vector<ncnn::Mat>& kvcache, std::vector<ncnn::Mat>& out_kvcache) const;
     int argmax(const ncnn::Mat& logits, int& id, float& conf) const;
+
+    // Greedy-декодирование по уже посчитанным encoder_states. Вынесено отдельно,
+    // чтобы transcribe() и transcribe_auto() не расходились в двух копиях цикла.
+    int decode(const ncnn::Mat& encoder_states, int token_lang, std::string& text) const;
+    // fbank + encoder с записью фаз в g_last_* — общая часть обоих входов.
+    int encode(const std::vector<short>& samples, ncnn::Mat& encoder_states) const;
+    // id языкового токена с максимальным логитом + его вероятность.
+    int pick_lang(const ncnn::Mat& logits, float& conf) const;
+    // Подавление повторов перед argmax: n-граммы, которые уже встречались,
+    // и мягкий штраф за уже выданные токены. start - конец промпта,
+    // n-граммы и штраф на служебные токены не распространяются.
+    void apply_repetition_penalty(ncnn::Mat& logits, const std::vector<int>& decoded, int start) const;
 
 protected:
     ncnn::Net fbank;
@@ -407,21 +456,8 @@ int Whisper::argmax(const ncnn::Mat& logits, int& id, float& conf) const
     return 0;
 }
 
-int Whisper::transcribe(const std::vector<short>& samples, const char* lang, std::string& text) const
+int Whisper::encode(const std::vector<short>& samples, ncnn::Mat& encoder_states) const
 {
-    // language token: only ru available from caller for now, but resolve generically.
-    // We map a small set of supported langs to their id offset (relative to token_lang_first).
-    // For ru: index 4 -> token_lang_first + 4 = 50263.
-    int token_lang = 50263; // default ru
-    if (lang && strcmp(lang, "ru") == 0) token_lang = 50263;
-    else if (lang && strcmp(lang, "en") == 0) token_lang = 50259;
-
-    std::vector<int> ids(4);
-    ids[0] = token_startoftranscript;
-    ids[1] = token_lang;
-    ids[2] = token_transcribe;
-    ids[3] = token_notimestamps;
-
     ncnn::Mat input_features;
     {
         auto t0 = std::chrono::steady_clock::now();
@@ -431,7 +467,6 @@ int Whisper::transcribe(const std::vector<short>& samples, const char* lang, std
         g_last_fbank_ms = f_ms;
     }
 
-    ncnn::Mat encoder_states;
     {
         auto t0 = std::chrono::steady_clock::now();
         if (run_encoder(input_features, encoder_states) != 0 || encoder_states.empty())
@@ -443,6 +478,132 @@ int Whisper::transcribe(const std::vector<short>& samples, const char* lang, std
         NCNN_PHASE("ncnn phase encoder=%.0fms", e_ms);
         g_last_encoder_ms = e_ms;
     }
+    return 0;
+}
+
+int Whisper::pick_lang(const ncnn::Mat& logits, float& conf) const
+{
+    // argmax по диапазону языков - ровно как в референсном whisper_lang_auto_detect
+    // (third_party/ncnn/examples/whisper.cpp): выбор не подменяем эвристикой.
+    int best_id = token_lang_first;
+    float best = logits[token_lang_first];
+    for (int i = token_lang_first; i < token_lang_first + token_lang_count; i++)
+    {
+        const float v = logits[i];
+        if (v > best)
+        {
+            best = v;
+            best_id = i;
+        }
+    }
+
+    // conf - нормированная вероятность языка внутри набора из 99 языков
+    // (softmax, устойчивый к переполнению за счёт вычитания max). Считается
+    // ТОЛЬКО для лога: порог по нему без замеров на устройстве поставил бы
+    // автоопределение наугад, поэтому гейтинг вынесен в замеры, а не в код.
+    double sum = 0.0;
+    for (int i = token_lang_first; i < token_lang_first + token_lang_count; i++)
+        sum += exp((double)(logits[i] - best));
+    conf = (sum > 0.0) ? (float)(1.0 / sum) : 0.f;
+    return best_id;
+}
+
+// whisper на коротких клипах с микропаузами любит зациклиться и выдать одну
+// фразу трижды подряд. Здесь два слоя защиты, как в whisper.cpp:
+//
+//  1) no-repeat n-грамм (n = 3): токен, который закрыл бы уже встречавшуюся
+//     тройку, получает -inf. Это ломает именно повтор ФРАЗЫ целиком.
+//  2) мягкий штраф за уже выданные токены: logit делится/умножается на
+//     коэффициент, а не обнуляется - слово всё ещё можно выдать, если
+//     модель настаивает. Жёсткий запрет выкашивал бы легитимные повторы
+//     («да, да, именно»).
+void Whisper::apply_repetition_penalty(ncnn::Mat& logits, const std::vector<int>& decoded, int start) const
+{
+    const int total = (int)logits.total();
+    if (total <= 0 || start < 0) return;
+    const int len = (int)decoded.size();
+    if (start >= len) return;
+
+    // 1) no-repeat n-граммы. Ищем только по выданному тексту (j >= start),
+    //    иначе под ban могли бы попасть служебные токены промпта.
+    const int n = 3;
+    if (len - start >= n)
+    {
+        const int* suffix = &decoded[len - (n - 1)];
+        for (int j = start; j + n - 1 <= len; j++)
+        {
+            bool match = true;
+            for (int k = 0; k < n - 1; k++)
+                if (decoded[j + k] != suffix[k]) { match = false; break; }
+            if (!match) continue;
+            const int next = decoded[j + n - 1];
+            if (next >= 0 && next < total) logits[next] = -INFINITY;
+        }
+    }
+
+    // 2) мягкий штраф за повтор языкового токена: не даём декодеру
+    //    перебить текст на другой язык посреди сегмента.
+    const float penalty = 1.15f;
+    for (int i = start; i < len; i++)
+    {
+        const int t = decoded[i];
+        if (t < token_lang_first || t >= token_lang_first + token_lang_count) continue;
+        const float v = logits[t];
+        logits[t] = (v > 0.f) ? v / penalty : v * penalty;
+    }
+}
+
+int Whisper::transcribe(const std::vector<short>& samples, const char* lang, std::string& text) const
+{
+    int token_lang = token_lang_of(lang);
+    if (token_lang == -1)
+    {
+        NCNN_PHASE("ncnn error: language '%s' not supported", lang ? lang : "(null)");
+        return -1;
+    }
+
+    ncnn::Mat encoder_states;
+    if (encode(samples, encoder_states) != 0) return -1;
+    return decode(encoder_states, token_lang, text);
+}
+
+int Whisper::transcribe_auto(
+    const std::vector<short>& samples,
+    std::string& lang,
+    std::string& text) const
+{
+    ncnn::Mat encoder_states;
+    if (encode(samples, encoder_states) != 0) return -1;
+
+    // Один префилл на [sot]: из его логитов берётся язык, и он же открывает
+    // декодирование. Энкодер к этому моменту уже посчитан и переиспользуется —
+    // второго run_encoder здесь нет намеренно.
+    std::vector<int> ids_sot(1);
+    ids_sot[0] = token_startoftranscript;
+
+    ncnn::Mat logits;
+    std::vector<ncnn::Mat> out_kvcache;
+    if (run_decoder_prefill(ids_sot, encoder_states, logits, out_kvcache) != 0 || logits.empty())
+    {
+        NCNN_PHASE("ncnn error: lang prefill failed");
+        return -1;
+    }
+
+    float conf = 0.f;
+    const int token_lang = pick_lang(logits, conf);
+    lang = token_langs[token_lang - token_lang_first];
+    NCNN_PHASE("ncnn detected lang=%s conf=%.3f", lang.c_str(), conf);
+
+    return decode(encoder_states, token_lang, text);
+}
+
+int Whisper::decode(const ncnn::Mat& encoder_states, int token_lang, std::string& text) const
+{
+    std::vector<int> ids(4);
+    ids[0] = token_startoftranscript;
+    ids[1] = token_lang;
+    ids[2] = token_transcribe;
+    ids[3] = token_notimestamps;
 
     // greedy decoding with a hard step cap (no eot -> bounded loop)
     const int max_steps = 448;
@@ -464,6 +625,10 @@ int Whisper::transcribe(const std::vector<short>& samples, const char* lang, std
         }
         decoder_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         kvcache = out_kvcache;
+
+        // Подавляем повторы ДО argmax, иначе штраф не на что подействовать.
+        // Защита не трогает prompt (первые ids.size() токенов).
+        if (step > 0) apply_repetition_penalty(logits, decoded, (int)ids.size());
 
         int id = 0;
         float conf = 0.f;
@@ -735,6 +900,18 @@ int Whisper::run_decoder_step(const std::vector<int>& tokens, const ncnn::Mat& e
 // ---- JNI state ----
 static std::unique_ptr<Whisper> g_whisper;
 
+// Модель, сидящая в g_whisper. Один глобальный инстанс — значит и одна модель;
+// без этого поля второй nativeInit с другим base молча перетирал первый, и
+// держатель первой модели получал чужое состояние.
+
+// Счётчик владельцев. Раньше владельцем считался объект Kotlin, но состояние
+// процессное: finalize() одного контекста вызывал g_whisper.reset() и убивал
+// модель у живого контекста — STT ложился с «ncnn whisper not initialized».
+// Теперь освобождает последний владелец, а не любой.
+static std::string g_loaded_dir;
+static std::string g_loaded_base;
+static int g_refcount = 0;
+
 // ---- JNI: Java_com_whispercpp_whisper_NcnnWhisperLib_* ----
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_whispercpp_whisper_NcnnWhisperLib_nativeInit(JNIEnv* env, jobject /*thiz*/, jstring modelDir, jstring base)
@@ -744,19 +921,44 @@ Java_com_whispercpp_whisper_NcnnWhisperLib_nativeInit(JNIEnv* env, jobject /*thi
     std::string dirStr = dir ? dir : "";
     std::string baseStr = b ? b : "whisper_base";
 
-    g_whisper = std::make_unique<Whisper>();
+    // Тот же base уже сидит в памяти — делим инстанс вместо повторного load()
+    // с диска. Раньше каждый вызов пересоздавал g_whisper, то есть держатели одной
+    // модели вышибали состояние друг у друга.
+    if (g_whisper && g_loaded_dir == dirStr && g_loaded_base == baseStr)
+    {
+        g_refcount++;
+        if (dir) env->ReleaseStringUTFChars(modelDir, dir);
+        if (b) env->ReleaseStringUTFChars(base, b);
+        return JNI_TRUE;
+    }
+
+    // Другая модель: прошлая больше не пригодится, её держит ровно один.
+    g_whisper.reset();
+    g_loaded_dir.clear();
+    g_loaded_base.clear();
+
+    std::unique_ptr<Whisper> w = std::make_unique<Whisper>();
     // Число потоков ДО load: gemm-слой фиксирует значение при первой загрузке модели
     // (иначе предупреждение 'gemm will use load-time value' и медленный single-gemm).
     // encoder — крупные gemm: 8 потоков (у OPPO 8 ядер) для ускорения <8с.
-    // decoder/fbank — серийные мелкие шаги автогрегрессии: оставляем 4.
-    g_whisper->set_num_threads(4);
-    g_whisper->set_encoder_threads(8);
-    int ret = g_whisper->load(dirStr, baseStr);
+    // decoder/fbank — серийные мелкие шаги автогрессии: оставляем 4.
+    w->set_num_threads(4);
+    w->set_encoder_threads(8);
+    int ret = w->load(dirStr, baseStr);
 
     if (dir) env->ReleaseStringUTFChars(modelDir, dir);
     if (b) env->ReleaseStringUTFChars(base, b);
 
-    return ret == 0 ? JNI_TRUE : JNI_FALSE;
+    // При ошибке load не публикуем объект. Раньше он оставался в g_whisper
+    // непустым, guard `if (!g_whisper)` в transcribe проходил, и падение
+    // прилетало уже изнутри движка вместо честного JNI_FALSE.
+    if (ret != 0) return JNI_FALSE;
+
+    g_whisper = std::move(w);
+    g_loaded_dir = dirStr;
+    g_loaded_base = baseStr;
+    g_refcount = 1;
+    return JNI_TRUE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -765,6 +967,51 @@ Java_com_whispercpp_whisper_NcnnWhisperLib_nativeSetThreads(JNIEnv* /*env*/, job
     if (!g_whisper) return JNI_FALSE;
     g_whisper->set_num_threads((int)n);
     return JNI_TRUE;
+}
+
+// Возвращает String[2] = { язык, текст }. Отдельный detect_lang() перед
+// transcribe() стоил бы второго полного энкодера (~6.5 с на телефоне), потому
+// что и detect_lang(), и transcribe() внутри считают fbank + encoder сами.
+// Здесь язык читается из тех же encoder_states, что уходят в декодер, поэтому
+// добавочная цена — один prefill шаг (десятки мс).
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_com_whispercpp_whisper_NcnnWhisperLib_nativeTranscribeAuto(
+    JNIEnv* env, jobject /*thiz*/, jfloatArray samples)
+{
+    if (!g_whisper)
+    {
+        env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), "ncnn whisper not initialized");
+        return NULL;
+    }
+    if (samples == NULL)
+    {
+        env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"), "samples == null");
+        return NULL;
+    }
+    jsize n = env->GetArrayLength(samples);
+    jfloat* src = env->GetFloatArrayElements(samples, 0);
+
+    std::vector<short> s;
+    s.reserve(n);
+    for (jsize i = 0; i < n; i++)
+    {
+        float v = src[i];
+        if (v < -1.f) v = -1.f;
+        if (v > 1.f) v = 1.f;
+        s.push_back((short)(v * 32767.0f));
+    }
+    env->ReleaseFloatArrayElements(samples, src, JNI_ABORT);
+
+    std::string text;
+    std::string detected;
+    g_whisper->transcribe_auto(s, detected, text);
+
+    jclass strClass = env->FindClass("java/lang/String");
+    jobjectArray pair = env->NewObjectArray(2, strClass, NULL);
+    if (!pair) return NULL;
+    env->SetObjectArrayElement(pair, 0, env->NewStringUTF(detected.c_str()));
+    env->SetObjectArrayElement(pair, 1, env->NewStringUTF(text.c_str()));
+    return pair;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -831,5 +1078,12 @@ Java_com_whispercpp_whisper_NcnnWhisperLib_nativeLatencyProfile(JNIEnv* env, job
 extern "C" JNIEXPORT void JNICALL
 Java_com_whispercpp_whisper_NcnnWhisperLib_nativeFree(JNIEnv* /*env*/, jobject /*thiz*/)
 {
+    // Освобождает последний владелец, а не любой: вызов от контекста, который
+    // gc не убирал, больше не обнуляет модель у живого соседа.
+    if (g_refcount > 0) g_refcount--;
+    if (g_refcount > 0) return;
+
     g_whisper.reset();
+    g_loaded_dir.clear();
+    g_loaded_base.clear();
 }

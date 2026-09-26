@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.whispercpp.whisper.NcnnWhisperContext
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -52,12 +53,29 @@ class BenchSttTest {
 
         val csv = StringBuilder().append("config,wav,ms1,ms2,ms3,median,fbank_ms,enc_ms,dec_ms,steps,wer,text\n")
         runConfig("int8", int8Dir, wavs, csv, benchAssets)
+
+        // fp32 - ОБЯЗАТЕЛЬНАЯ часть матрицы. Раньше её отсутствие логалось
+        // warning'ом и тест рапортовался зелёным: «3/3 passed» при двух
+        // фактических конфигах. Теперь отсутствие варианта = падение.
         val fp32Dir = File(ModelDownloader.modelsDir(target), "ncnn-bench-fp32")
-        if (NcnnModelValidator.checkModelDir(fp32Dir, "whisper_turbo").ok) {
-            runConfig("fp32", fp32Dir, wavs, csv, benchAssets)
-        } else {
-            Log.w(TAG, "ncnn-bench-fp32 не доставлена — матрица без fp32")
-        }
+        val fp32Check = NcnnModelValidator.checkModelDir(fp32Dir, "whisper_turbo")
+        assertTrue(
+            "ncnn-bench-fp32 не доставлена на устройство: ${fp32Check.missing}",
+            fp32Check.ok,
+        )
+        // Строка «fp32» обязана означать fp32: если в каталоге есть int8,
+        // ncnn_jni.cpp возьмёт его и сравнение вариантов станет ложью.
+        assertEquals(
+            "в ncnn-bench-fp32 найдены int8-файлы - движок загрузит int8, а не fp32",
+            NcnnModelValidator.EncoderVariant.FP32,
+            NcnnModelValidator.encoderVariant(fp32Dir, "whisper_turbo"),
+        )
+        assertEquals(
+            "в ncnn-turbo ожидался int8-энкодер",
+            NcnnModelValidator.EncoderVariant.INT8,
+            NcnnModelValidator.encoderVariant(int8Dir, "whisper_turbo"),
+        )
+        runConfig("fp32", fp32Dir, wavs, csv, benchAssets)
         writeCsv(target, csv.toString())
         Log.i(TAG, "BENCH_DONE\n$csv")
     }
