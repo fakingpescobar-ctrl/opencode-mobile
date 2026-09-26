@@ -25,6 +25,14 @@ import kotlin.math.sqrt
  */
 class SpeechSegmenter(
     private val sampleRate: Int = 16_000,
+    /**
+     * Абсолютный нижний порог речи. Прод-значение - [MIN_RMS]; параметр существует, чтобы
+     * бенч `SpeechSegmenterBenchTest` мог прогнать свип порогов на реальных bench-wav, не
+     * меняя константу между прогонами.
+     */
+    private val minRms: Float = MIN_RMS,
+    /** Множитель шумового пола. Прод-значение - [NOISE_FRACTION]; см. [minRms]. */
+    private val noiseFraction: Float = NOISE_FRACTION,
 ) {
     /**
      * Единственный продакшн-вызов берёт дефолт 16 000, так что неверная частота сегодня
@@ -74,7 +82,7 @@ class SpeechSegmenter(
         val sorted = rms.clone().apply { sort() }
         val idx = (sorted.size * NOISE_PERCENTILE).toInt()
         val noiseFloor = sorted[idx.coerceAtLeast(0)]
-        return max(noiseFloor * NOISE_FRACTION, MIN_RMS)
+        return max(noiseFloor * noiseFraction, minRms)
     }
 
     /**
@@ -249,6 +257,6 @@ class SpeechSegmenter(
         private const val NOISE_PERCENTILE = 0.1
 
         /** Множитель шумового фона для порога речи. */
-        private const val NOISE_FRACTION = 3f
+        const val NOISE_FRACTION = 3f
     }
 }
