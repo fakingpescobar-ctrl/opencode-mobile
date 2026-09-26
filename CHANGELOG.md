@@ -448,8 +448,22 @@ gradlew.bat connectedAndroidTest                                              # 
 gradlew.bat -PsttTestBuildType=minVerify connectedMinVerifyAndroidTest        # R8
 ```
 Keep-правила лежат в отдельном `app/proguard-minverify-rules.pro` и на release
-не влияют. Проверено: R8 (13 dex → 2, 1292 → 592 класса), STT отдаёт английский
-с первого сегмента, JNI-биндинг жив.
+не влияют.
+
+**Проверено на устройстве (CPH2747), полный прогон 5/5:**
+
+| тест | время | итог |
+|---|---|---|
+| `benchChunkedLong` | 56.0 с | ok |
+| `benchInt8AndFp32` | 494.8 с | ok |
+| `benchLazyShort` | 22.7 с | ok |
+| `benchAutoLanguage` | 23.0 с | ok |
+| `nativeInitAndTranscribe` | 9.4 с | ok |
+
+Итого 606 с, `failures=0 errors=0 skipped=0`. R8 при этом реально отработал:
+13 dex → 2, 1292 → 592 класса. `NcnnWhisperLib` уцелел в `classes.dex`,
+`nativeIsAlive` на месте в `.so`. Теперь проходит и `benchInt8AndFp32` — на
+одноразовой проверке он падал только из-за неcopированной модели fp32.
 
 **Побочный, но важный вывод:** инструментация не может работать против
 минифицированной сборки без keep-правил на тестируемое API. R8 оптимизирует по
