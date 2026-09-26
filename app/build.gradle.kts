@@ -29,6 +29,17 @@ android {
     namespace = "org.opencode.mobile"
     compileSdk = 36
 
+    // AGP создаёт androidTest-вариант ТОЛЬКО для одного build type - того, что
+    // указан здесь. Дефолт - "debug", а в debug минификации нет вообще, то есть
+    // ВСЕ device-тесты проекта проверяли сборку без R8. Release-пайплайн на
+    // устройстве не запускался ни разу, и обфускация могла сломать что-то,
+    // что видно только в момент выполнения.
+    //
+    // Сделано переключаемым, чтобы не сломать обычный цикл разработки:
+    //   ./gradlew connectedAndroidTest
+    //   ./gradlew -PsttTestBuildType=minVerify connectedMinVerifyAndroidTest
+    testBuildType = providers.gradleProperty("sttTestBuildType").getOrElse("debug")
+
     defaultConfig {
         applicationId = "org.opencode.mobile"
         minSdk = 28
@@ -73,6 +84,40 @@ android {
             applicationIdSuffix = ".debug"
             // Отличительное имя в UI, чтобы debug-сборка не путалась с release.
             resValue("string", "app_name", "OpenCode Mobile · Debug")
+        }
+
+        // minVerify: release-пайплайн, но запускаемый на устройстве.
+        //
+        // Нужен потому, что connectedAndroidTest по умолчанию гоняет debug, где
+        // R8 выключен. Значит release можно было собрать, подписать и выкатить
+        // в Play, ни разу не запустив на телефоне.
+        //
+        // От release отличается ровно двумя вещами, и обе необходимы:
+        //   isDebuggable = true   - работает run-as, можно залить модели
+        //   applicationIdSuffix   - ставится отдельным пакетом рядом с debug
+        //                             и release, ничего не ломая
+        // R8, shrinkResources и правила из proguard-rules.pro - как в release.
+        //
+        // Проверено 27.09.2026: R8 (13 dex -> 1 dex, 1292 -> 550 классов),
+        // STT отдаёт английский с первого сегмента, JNI-биндинг жив.
+        create("minVerify") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".minverify"
+            isDebuggable = true
+            resValue("string", "app_name", "OpenCode Mobile · MinVerify")
+            // whisperlib не имеет build type minVerify - без этого падает
+            // variant matching (просит minVerifyApiElements, а библиотека
+            // публикует только debug* и release*).
+            matchingFallbacks.add("release")
+            // Перечислены явно все три, а не только дополнение: proguardFiles
+            // в этом DSL ведёт себя неоднозначно, а потерять дефолтный
+            // proguard-android-optimize.txt нельзя - именно он сохраняет имена
+            // классов с native-методами, и без него JNI не найдёт символы.
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+                "proguard-minverify-rules.pro",
+            )
         }
     }
 
