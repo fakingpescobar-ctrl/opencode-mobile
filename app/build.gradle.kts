@@ -38,6 +38,17 @@ android {
     // Сделано переключаемым, чтобы не сломать обычный цикл разработки:
     //   ./gradlew connectedAndroidTest
     //   ./gradlew -PsttTestBuildType=minVerify connectedMinVerifyAndroidTest
+    //
+    // ВАЖНО, 27.09: под minVerify STT-тесты НЕ работают, хотя Gradle рапортует
+    // их зелёными. У minVerify свой applicationIdSuffix=".minverify" => пакет
+    // org.opencode.mobile.minverify с пустым data-dir, а модели залиты в
+    // org.opencode.mobile.debug. Тесты упираются в assumeTrue и молча дают
+    // skipped=5, а connectedMinVerifyAndroidTest завершается кодом 0.
+    //
+    // Проверялось так: в XML было skipped="5" time="0.469" при реальном
+    // времени теста 517 с. То есть "5/5 за 34 с" - это не результат.
+    // minVerify годен для проверки R8/ProGuard, но device-бенчи на нём
+    // запускать бессмысленно - запускай connectedDebugAndroidTest.
     testBuildType = providers.gradleProperty("sttTestBuildType").getOrElse("debug")
 
     defaultConfig {

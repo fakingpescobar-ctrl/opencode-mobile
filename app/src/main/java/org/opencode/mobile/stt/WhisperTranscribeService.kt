@@ -90,10 +90,19 @@ class WhisperTranscribeService : Service() {
         private val queue = ArrayDeque<SttTask>()
         private val taskIdGen = AtomicLong(0)
 
-        /** Кэши контекстов: модель грузится один раз за процесс. Читаются/пишутся
-         *  ТОЛЬКО из worker-корутины — обращений из параллельных потоков нет. */
+        /** Кэши контекстов: модель грузится один раз за процесс. */
         private val whisperCtxCache = HashMap<String, WhisperContext>()
-        private val ncnnCtxCache = HashMap<String, NcnnWhisperContext>()
+
+        /**
+         * Кэш ncnn-контекстов. Именно он, в отличие от [whisperCtxCache],
+         * пишется не только из worker-корутины: releaseNcnnContext() дёргает
+         * instrumentation-поток (см. BenchSttTest), то есть доступ из двух
+         * потоков реален. Поэтому ConcurrentHashMap, а не HashMap — обычный
+         * HashMap при параллельном put/remove пережигает внутренний массив.
+         * Контракт "не вызывать во время транскрипции" при этом остаётся, но
+         * теперь хотя бы не приводит к битой структуре данных.
+         */
+        private val ncnnCtxCache = ConcurrentHashMap<String, NcnnWhisperContext>()
 
         /**
          * Tombstone удалённых моделей (thread-safe): модели, чей файл удалён с диска
@@ -479,7 +488,11 @@ class WhisperTranscribeService : Service() {
          * битый (декодер петляет, мусор) и из программы удалён, выбирать нечего.
          * Доставка моделей — adb push или ModelDownloader.
          */
-        private fun obtainNcnnContext(model: String): NcnnWhisperContext = ncnnCtxCache.getOrPut("turbo") {
+        // computeIfAbsent, а не getOrPut: у ConcurrentHashMap getOrput остаётся
+        // неатомарным (get, потом put), и два потока создали бы два контекста
+        // на одну модель. computeIfAbsent держит бин-лок, поэтому контекст
+        // создаётся ровно один раз даже при гонке.
+        private fun obtainNcnnContext(model: String): NcnnWhisperContext = ncnnCtxCache.computeIfAbsent("turbo") {
             val app = requireAppContext()
             val dir = File(ModelDownloader.modelsDir(app), "ncnn-turbo")
             val baseName = "whisper_turbo"
@@ -489,6 +502,28 @@ class WhisperTranscribeService : Service() {
             }
             Log.d(TAG, "гружу ncnn-модель из $dir (CPU, $baseName)")
             NcnnWhisperContext.createFromFilesDir(dir, baseName)
+        }
+
+        /**
+         * Отпускает кэшированный ncnn-контекст, если он есть.
+         *
+         * Зачем, если onDestroy намеренно НЕ трогает кэши: без этого метода
+         * контекст живёт весь процесс. В бенче это значило, что первый удержал
+         * turbo, а матрица int8/fp32 уже не могла загрузить свою модель — C++
+         * -синглтон на процесс. Теперь nativeInit отказывает, если модель ещё
+         * кем-то держится (см. ncnn_jni.cpp), и чтобы прогон был честным,
+         * тест должен сам освободить контекст ДО смены модели.
+         *
+         * ВАЖНО (тот же инвариант, что у [obtainNcnnContext]): кэш
+         * потокобезопасен, но вызывать можно ТОЛЬКО когда ни одна транскрипция
+         * не идёт. Иначе release() выгрузит модель из-под работающего
+         * контекста - нативный мьютекс защищает структуры данных, но не
+         * гарантирует, что модель не нужна прямо сейчас.
+         */
+        suspend fun releaseNcnnContext() {
+            val ctx = ncnnCtxCache.remove("turbo") ?: return
+            Log.d(TAG, "отпускаю кэшированный ncnn-контекст (модель освободится нативно)")
+            ctx.release()
         }
     }
 
