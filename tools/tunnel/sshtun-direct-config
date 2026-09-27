@@ -1,0 +1,9 @@
+Host lhr
+    HostName localhost.run
+    User nokey
+    StrictHostKeyChecking no
+    UserKnownHostsFile NUL
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+    ExitOnForwardFailure yes
+    RemoteForward 80 127.0.0.1:4099
