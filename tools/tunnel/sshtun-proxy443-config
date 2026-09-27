@@ -1,0 +1,11 @@
+Host lhr443
+    HostName localhost.run
+    User nokey
+    Port 443
+    ProxyCommand pwsh -NoProfile -File "C:\Projects\ocmobile\tools\ssh-proxyconnect.ps1" %h %p
+    StrictHostKeyChecking no
+    UserKnownHostsFile NUL
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+    ExitOnForwardFailure yes
+    RemoteForward 80 127.0.0.1:4099

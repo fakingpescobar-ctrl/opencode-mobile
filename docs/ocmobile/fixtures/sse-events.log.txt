@@ -1,0 +1,555 @@
+
+SSE|data: {"id":"evt_0475adaa5001KmIAV6Z7i7J24g","type":"server.connected","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475adaaf002BK5vaTrd5mwKiA","type":"session.created","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"ses_fb8a52550ffeehXag3jiCbbT75","slug":"lucky-lagoon","version":"1.18.18","projectID":"global","directory":"C:\\","path":"","title":"ocmobile spike 2","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1787903531695,"updated":1787903531695}}}}
+SSE|
+SSE|data: {"id":"evt_0475ae7f5001J7hF33wC6yru95","type":"session.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"ses_fb8a52550ffeehXag3jiCbbT75","slug":"lucky-lagoon","projectID":"global","directory":"C:\\","path":"","title":"ocmobile spike 2","agent":"build","model":{"id":"big-pickle","providerID":"opencode","variant":"default"},"version":"1.18.18","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1787903531695,"updated":1787903535092}}}}
+SSE|
+SSE|data: {"id":"evt_0475aeb9c0014KP77nv1knJ2eM","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"msg_0475ae7f4001VPl1oaz4QSDt73","role":"user","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","time":{"created":1787903535092},"agent":"build","model":{"providerID":"opencode","modelID":"big-pickle"}}}}
+SSE|
+SSE|data: {"id":"evt_0475aeb9e001SRhTIjAsNQOp0t","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_supermemory-context-1787903536027","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475ae7f4001VPl1oaz4QSDt73","type":"text","text":"[SUPERMEMORY UPDATE]\nSupermemory update available: v2.0.10 -> v2.0.12\nRun: bunx opencode-supermemory@latest install","synthetic":true},"time":1787903536030}}
+SSE|
+SSE|data: {"id":"evt_0475aeba0001F6Tkj5RO2M4J8i","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"type":"text","text":"Ответь ровно одним словом: SPIKE_OK","messageID":"msg_0475ae7f4001VPl1oaz4QSDt73","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","id":"prt_0475ae7f900164d3JdOkaQGmmc"},"time":1787903536032}}
+SSE|
+SSE|data: {"id":"evt_0475aeba1001fU520oE6DVp4t2","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_supermemory-recall-1787903535097","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475ae7f4001VPl1oaz4QSDt73","type":"text","text":"<supermemory-recall>\nBefore responding, silently decide whether recalling saved memory (past sessions, decisions, conventions, the user's preferences) would materially improve your answer to THIS message. Reason first — don't search reflexively, and don't narrate the decision.\n\nRecall — by calling the `supermemory` tool with `mode: \"search\"` — when the message:\n- refers to earlier work or decisions (\"the auth flow\", \"like we did\", \"continue\", \"the bug from before\")\n- touches an area where saved conventions, patterns, or preferences likely exist\n- is ambiguous in a way past context would resolve\n\nSkip recall when the message is self-contained, trivial, a greeting/meta, fully answerable from the current conversation, or you already recalled the relevant context this session and the topic hasn't shifted.\n\nCadence is per-message: it's fine to recall on several turns in a row, and fine to never recall in a session. When you do recall, run it before answering and fold the results into your response.\n</supermemory-recall>","synthetic":true},"time":1787903536033}}
+SSE|
+SSE|data: {"id":"evt_0475aeba3001ToaFlaN6UpZa7b","type":"session.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"ses_fb8a52550ffeehXag3jiCbbT75","slug":"lucky-lagoon","projectID":"global","directory":"C:\\","path":"","title":"ocmobile spike 2","agent":"build","model":{"id":"big-pickle","providerID":"opencode","variant":"default"},"version":"1.18.18","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1787903531695,"updated":1787903536034}}}}
+SSE|
+SSE|data: {"id":"evt_0475aeba6001jTB6vchgWWTaq1","type":"session.status","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","status":{"type":"busy"}}}
+SSE|
+SSE|data: {"id":"evt_0475aeba9001E4jzi83Jt2oDR1","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"msg_0475aeba9001bX0qFIWvCOZ1nA","parentID":"msg_0475ae7f4001VPl1oaz4QSDt73","role":"assistant","mode":"build","agent":"build","path":{"cwd":"C:\\","root":"/"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"modelID":"big-pickle","providerID":"opencode","time":{"created":1787903536041},"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75"}}}
+SSE|
+SSE|data: {"id":"evt_0475af0e3001i26psDNItTBRVO","type":"session.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"ses_fb8a52550ffeehXag3jiCbbT75","slug":"lucky-lagoon","projectID":"global","directory":"C:\\","path":"","title":"ocmobile spike 2","agent":"build","model":{"id":"big-pickle","providerID":"opencode","variant":"default"},"version":"1.18.18","summary":{"additions":0,"deletions":0,"files":0},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1787903531695,"updated":1787903537378}}}}
+SSE|
+SSE|data: {"id":"evt_0475af0e4001BPAqdJC2ve7NPn","type":"session.diff","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","diff":[]}}
+SSE|
+SSE|data: {"id":"evt_0475af0e6001mr4dR8OOz0X8eX","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"role":"user","time":{"created":1787903535092},"agent":"build","model":{"providerID":"opencode","modelID":"big-pickle"},"id":"msg_0475ae7f4001VPl1oaz4QSDt73","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","summary":{"diffs":[]}}}}
+SSE|
+SSE|data: {"id":"evt_0475af104001ZoTD3pJi7Zprsb","type":"plugin.added","properties":{"id":"core/config-reference"}}
+SSE|
+SSE|data: {"id":"evt_0475af105001CTvL3on4aU6J7M","type":"plugin.added","properties":{"id":"agent"}}
+SSE|
+SSE|data: {"id":"evt_0475af1050021NiQLZdihS3gFe","type":"plugin.added","properties":{"id":"command"}}
+SSE|
+SSE|data: {"id":"evt_0475af105003Iclj3TFQN8U1zS","type":"plugin.added","properties":{"id":"skill"}}
+SSE|
+SSE|data: {"id":"evt_0475af106001Nj4fnkTIupirAz","type":"plugin.added","properties":{"id":"models-dev"}}
+SSE|
+SSE|data: {"id":"evt_0475af107001teCIph2sOvGejR","type":"plugin.added","properties":{"id":"config-agent"}}
+SSE|
+SSE|data: {"id":"evt_0475af107002LZN0vu4P55l1mp","type":"plugin.added","properties":{"id":"config-command"}}
+SSE|
+SSE|data: {"id":"evt_0475af108001Orv4nXMzRf2pDH","type":"plugin.added","properties":{"id":"config-skill"}}
+SSE|
+SSE|data: {"id":"evt_0475af108002JNwKWI5lASJHAW","type":"plugin.added","properties":{"id":"alibaba"}}
+SSE|
+SSE|data: {"id":"evt_0475af109001scy0n80jN6dozV","type":"plugin.added","properties":{"id":"amazon-bedrock"}}
+SSE|
+SSE|data: {"id":"evt_0475af109002MtRiFTXqKwVSpX","type":"plugin.added","properties":{"id":"anthropic"}}
+SSE|
+SSE|data: {"id":"evt_0475af109003JB3IvXwQUyqmTM","type":"plugin.added","properties":{"id":"azure-cognitive-services"}}
+SSE|
+SSE|data: {"id":"evt_0475af11a001vR1owSP9Xev2Hu","type":"plugin.added","properties":{"id":"azure"}}
+SSE|
+SSE|data: {"id":"evt_0475af11a002rnM3y1cpdVIDez","type":"plugin.added","properties":{"id":"cerebras"}}
+SSE|
+SSE|data: {"id":"evt_0475af11b0019PVtAojLLQSwHi","type":"plugin.added","properties":{"id":"cloudflare-ai-gateway"}}
+SSE|
+SSE|data: {"id":"evt_0475af11b002myub5ScwlLTnvk","type":"plugin.added","properties":{"id":"cloudflare-workers-ai"}}
+SSE|
+SSE|data: {"id":"evt_0475af11c001tOY3KEM98oYxN1","type":"plugin.added","properties":{"id":"cohere"}}
+SSE|
+SSE|data: {"id":"evt_0475af11c002PvZ1OasuAw8Rj3","type":"plugin.added","properties":{"id":"deepinfra"}}
+SSE|
+SSE|data: {"id":"evt_0475af11d001BrAEcZBfoq5oFJ","type":"plugin.added","properties":{"id":"gateway"}}
+SSE|
+SSE|data: {"id":"evt_0475af11d002TEYX1yqA7N0ohl","type":"plugin.added","properties":{"id":"github-copilot"}}
+SSE|
+SSE|data: {"id":"evt_0475af11d003dCnt3qQedx4x9q","type":"plugin.added","properties":{"id":"gitlab"}}
+SSE|
+SSE|data: {"id":"evt_0475af11e001DepL3C31DmHy7Q","type":"plugin.added","properties":{"id":"google"}}
+SSE|
+SSE|data: {"id":"evt_0475af11e002pa4gFlF1OLdU43","type":"plugin.added","properties":{"id":"google-vertex-anthropic"}}
+SSE|
+SSE|data: {"id":"evt_0475af11f001xIrN8tTORdIl9u","type":"plugin.added","properties":{"id":"google-vertex"}}
+SSE|
+SSE|data: {"id":"evt_0475af129001a0HmUgFls9ftzS","type":"plugin.added","properties":{"id":"groq"}}
+SSE|
+SSE|data: {"id":"evt_0475af12a0019hUHuc6Wb248C3","type":"plugin.added","properties":{"id":"kilo"}}
+SSE|
+SSE|data: {"id":"evt_0475af12a0024HdRCfxPZBH0WD","type":"plugin.added","properties":{"id":"llmgateway"}}
+SSE|
+SSE|data: {"id":"evt_0475af12b001LmBS24Az0osMRl","type":"plugin.added","properties":{"id":"mistral"}}
+SSE|
+SSE|data: {"id":"evt_0475af12b002jHwRBAxvQ3nCgs","type":"plugin.added","properties":{"id":"nvidia"}}
+SSE|
+SSE|data: {"id":"evt_0475af12c001guAaQW4eCVupDx","type":"plugin.added","properties":{"id":"opencode"}}
+SSE|
+SSE|data: {"id":"evt_0475af12d001MY14h41sDK3TFQ","type":"plugin.added","properties":{"id":"snowflake-cortex"}}
+SSE|
+SSE|data: {"id":"evt_0475af12d002lb2vnduvLchImy","type":"plugin.added","properties":{"id":"openai-compatible"}}
+SSE|
+SSE|data: {"id":"evt_0475af12e001hGaMFYA9GqKgNd","type":"plugin.added","properties":{"id":"openai"}}
+SSE|
+SSE|data: {"id":"evt_0475af12e002OQKt4SGr9T8HDQ","type":"plugin.added","properties":{"id":"openrouter"}}
+SSE|
+SSE|data: {"id":"evt_0475af12e0030SOxhEOtcV50BR","type":"plugin.added","properties":{"id":"perplexity"}}
+SSE|
+SSE|data: {"id":"evt_0475af12f0017qBFOHvlfAXFNh","type":"plugin.added","properties":{"id":"sap-ai-core"}}
+SSE|
+SSE|data: {"id":"evt_0475af1a3001OXBWTjFx4IMMKg","type":"catalog.updated","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475af12f002HEibQCoHbU59zn","type":"plugin.added","properties":{"id":"togetherai"}}
+SSE|
+SSE|data: {"id":"evt_0475af1a4001015Rcz1KA9QiFx","type":"plugin.added","properties":{"id":"vercel"}}
+SSE|
+SSE|data: {"id":"evt_0475af1a40028mWlLfs8VlJRSj","type":"plugin.added","properties":{"id":"venice"}}
+SSE|
+SSE|data: {"id":"evt_0475af1a5001i1WbfGcLokYBzN","type":"plugin.added","properties":{"id":"xai"}}
+SSE|
+SSE|data: {"id":"evt_0475af1a5002np2LM47w2paY2h","type":"plugin.added","properties":{"id":"zenmux"}}
+SSE|
+SSE|data: {"id":"evt_0475af1a6001SM6g1kUbvWkXN7","type":"plugin.added","properties":{"id":"dynamic-provider"}}
+SSE|
+SSE|data: {"id":"evt_0475af1a7001F6gS4hg2aCkTlr","type":"plugin.added","properties":{"id":"config-plugin"}}
+SSE|
+SSE|data: {"id":"evt_0475af1a7002RRAHR27KT9XT8W","type":"plugin.added","properties":{"id":"config-provider"}}
+SSE|
+SSE|data: {"id":"evt_0475af1a8001PlX0M50v1zthm6","type":"plugin.added","properties":{"id":"variant"}}
+SSE|
+SSE|data: {"id":"evt_0475af1a8002adRZaz77QYadkE","type":"reference.updated","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475af226001Tkbxjd0royP9zV","type":"session.status","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","status":{"type":"busy"}}}
+SSE|
+SSE|data: {"id":"evt_0475af250001cRK62iXzE6Jt6A","type":"integration.updated","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475af2a8001pili9QHN41nMxr","type":"catalog.updated","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475b01c6001Jx7E6xqun5sv0a","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475b055c0012TnMkM0D5n3JGb","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_0475b055c001RDtlxfSslQcSxU","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"step-start"},"time":1787903542620}}
+SSE|
+SSE|data: {"id":"evt_0475b0586001qeE9btXTxj9rOw","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_0475b0585001bdtMxwnePTPVUN","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"reasoning","text":"","time":{"start":1787903542662}},"time":1787903542662}}
+SSE|
+SSE|data: {"id":"evt_0475b0588001p9ULgZN058hu64","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":"Д"}}
+SSE|
+SSE|data: {"id":"evt_0475b05aa001eHCs4RMnAVpfbJ","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":"а"}}
+SSE|
+SSE|data: {"id":"evt_0475b05d8001n2V5xxoMsnKItM","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":" н"}}
+SSE|
+SSE|data: {"id":"evt_0475b05f8001DSUIuc9OURwQGi","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":"у нахуй"}}
+SSE|
+SSE|data: {"id":"evt_0475b0620001Yd93L6uUksqTlj","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":","}}
+SSE|
+SSE|data: {"id":"evt_0475b0648001a4b0GqgNDDLDsL","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":" это просто у"}}
+SSE|
+SSE|data: {"id":"evt_0475b066a001tyljVLxx0SXa5d","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":"ведомление о"}}
+SSE|
+SSE|data: {"id":"evt_0475b0694001hGWehhsdVOMcgg","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":" обновлении"}}
+SSE|
+SSE|data: {"id":"evt_0475b06c2001beY3t1y1kGMmdP","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":" super"}}
+SSE|
+SSE|data: {"id":"evt_0475b06e5001kc3S5pHx2k7aPL","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":"memory. Пользоват"}}
+SSE|
+SSE|data: {"id":"evt_0475b070a0015pVEgSZmcMhYBY","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":"ель прос"}}
+SSE|
+SSE|data: {"id":"evt_0475b072f001eKW1X3YiPBj0dO","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":"ит ответ"}}
+SSE|
+SSE|data: {"id":"evt_0475b0751001DBUa5iRIEI2Wgj","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":"ить р"}}
+SSE|
+SSE|data: {"id":"evt_0475b0778001w4cs0fxmxuTGyk","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":"овно одним"}}
+SSE|
+SSE|data: {"id":"evt_0475b079b001swIqI56lLIG8zq","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":" словом. Это"}}
+SSE|
+SSE|data: {"id":"evt_0475b07c2001nKSMeg3zM4cU2S","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":" self"}}
+SSE|
+SSE|data: {"id":"evt_0475b07e60014QiB6BRKtOt7HE","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":"-contained сообщ"}}
+SSE|
+SSE|data: {"id":"evt_0475b080c001nHvw5cGbh3xxfh","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":"ение, никак"}}
+SSE|
+SSE|data: {"id":"evt_0475b083a001JafKdOKX6U2JQs","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":"ого"}}
+SSE|
+SSE|data: {"id":"evt_0475b0864001RjZMRssp79ccPE","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":" recall"}}
+SSE|
+SSE|data: {"id":"evt_0475b088e001n7297i8vILhJJP","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":" не нужно"}}
+SSE|
+SSE|data: {"id":"evt_0475b08b4001IRmoAYllJISZuB","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":".\n\n"}}
+SSE|
+SSE|data: {"id":"evt_0475b08d70011fonPE0RhIGvyY","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":"От"}}
+SSE|
+SSE|data: {"id":"evt_0475b092e001Eo50eXrZRSl9be","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":"вет: SPI"}}
+SSE|
+SSE|data: {"id":"evt_0475b092f001OI9hqIT0WZSJNY","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b0585001bdtMxwnePTPVUN","field":"text","delta":"KE_OK"}}
+SSE|
+SSE|data: {"id":"evt_0475b095b001R2UbSYXZtLkcSc","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_0475b0585001bdtMxwnePTPVUN","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"reasoning","text":"Да ну нахуй, это просто уведомление о обновлении supermemory. Пользователь просит ответить ровно одним словом. Это self-contained сообщение, никакого recall не нужно.\n\nОтвет: SPIKE_OK","time":{"start":1787903542662,"end":1787903543642}},"time":1787903543643}}
+SSE|
+SSE|data: {"id":"evt_0475b095d0013PXbAXddxLofaJ","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_0475b095d001LjYo7H1pnvj1gZ","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"text","text":"","time":{"start":1787903543645}},"time":1787903543645}}
+SSE|
+SSE|data: {"id":"evt_0475b095e0016WfmJp3BWXyZ4U","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b095d001LjYo7H1pnvj1gZ","field":"text","delta":"SPI"}}
+SSE|
+SSE|data: {"id":"evt_0475b0988001ALWU71dzvbeFVp","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","partID":"prt_0475b095d001LjYo7H1pnvj1gZ","field":"text","delta":"KE_OK"}}
+SSE|
+SSE|data: {"id":"evt_0475b0994001AC7GLQ0qFjGJqV","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_0475b095d001LjYo7H1pnvj1gZ","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"text","text":"SPIKE_OK","time":{"start":1787903543645,"end":1787903543700}},"time":1787903543700}}
+SSE|
+SSE|data: {"id":"evt_0475b0998001ipqi6cGVoHewpy","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_0475b0998001Ba7FkCULDyvOdo","reason":"stop","messageID":"msg_0475aeba9001bX0qFIWvCOZ1nA","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"step-finish","tokens":{"total":25054,"input":24994,"output":60,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0},"time":1787903543704}}
+SSE|
+SSE|data: {"id":"evt_0475b09990017L6X3qcRF7q0K2","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"msg_0475aeba9001bX0qFIWvCOZ1nA","parentID":"msg_0475ae7f4001VPl1oaz4QSDt73","role":"assistant","mode":"build","agent":"build","path":{"cwd":"C:\\","root":"/"},"cost":0,"tokens":{"total":25054,"input":24994,"output":60,"reasoning":0,"cache":{"write":0,"read":0}},"modelID":"big-pickle","providerID":"opencode","time":{"created":1787903536041,"completed":1787903543708},"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","finish":"stop"}}}
+SSE|
+SSE|data: {"id":"evt_0475b099c001EDmHFGPmjz7225","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"msg_0475aeba9001bX0qFIWvCOZ1nA","parentID":"msg_0475ae7f4001VPl1oaz4QSDt73","role":"assistant","mode":"build","agent":"build","path":{"cwd":"C:\\","root":"/"},"cost":0,"tokens":{"total":25054,"input":24994,"output":60,"reasoning":0,"cache":{"write":0,"read":0}},"modelID":"big-pickle","providerID":"opencode","time":{"created":1787903536041,"completed":1787903543708},"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","finish":"stop"}}}
+SSE|
+SSE|data: {"id":"evt_0475b099e0014WL3Dulx0z8xub","type":"session.status","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","status":{"type":"busy"}}}
+SSE|
+SSE|data: {"id":"evt_0475b09a1001l8pRWo8HJpjJfE","type":"session.status","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","status":{"type":"idle"}}}
+SSE|
+SSE|data: {"id":"evt_0475b09a1002mkuvjB2405pY9t","type":"session.idle","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75"}}
+SSE|
+SSE|data: {"id":"evt_0475b09a3001ai1Uxux2SERmlV","type":"session.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"ses_fb8a52550ffeehXag3jiCbbT75","slug":"lucky-lagoon","projectID":"global","directory":"C:\\","path":"","title":"ocmobile spike 2","agent":"build","model":{"id":"big-pickle","providerID":"opencode","variant":"default"},"version":"1.18.18","summary":{"additions":0,"deletions":0,"files":0},"cost":0,"tokens":{"input":24994,"output":60,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1787903531695,"updated":1787903543714}}}}
+SSE|
+SSE|data: {"id":"evt_0475b09a4001O7RVNhWK8iBl1H","type":"session.diff","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","diff":[]}}
+SSE|
+SSE|data: {"id":"evt_0475b09a5001wY2d9G2mhXRM4U","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"role":"user","time":{"created":1787903535092},"agent":"build","model":{"providerID":"opencode","modelID":"big-pickle"},"summary":{"diffs":[]},"id":"msg_0475ae7f4001VPl1oaz4QSDt73","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75"}}}
+SSE|
+SSE|data: {"id":"evt_0475b28de001YF41sjpnIl1tD7","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475b4ffd001ZCgZ2oI1q0S7rY","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475b7715001Hz1V8jwca7cQu1","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475b9e29001wVUFtdjPjCfMiL","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475bc5610018ZKmSlJ3AqqgDO","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475bec7d001GVceEMvQaI4yK6","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475c139a001LJD0jF6LjcQS0y","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475c3ab2001bLs9asMvp5zeA0","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475c61c3001Rk9d6DNed7MrUe","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475c88da001xluPkFX85ARB5o","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475c9e9f001zP3qCl7Pl6bK1E","type":"plugin.added","properties":{"id":"core/config-reference"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ea0001JChD6Dztdi5qCh","type":"plugin.added","properties":{"id":"agent"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ea1001GQoCefK8aLykye","type":"plugin.added","properties":{"id":"command"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ea1002aijHkxd2FuId4B","type":"plugin.added","properties":{"id":"skill"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ea10038Iwl7fz8FkGKqH","type":"plugin.added","properties":{"id":"models-dev"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ea20015zZduKfhm6F5yA","type":"plugin.added","properties":{"id":"config-agent"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ea20021Ax9N8jBKrQM07","type":"plugin.added","properties":{"id":"config-command"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ea2003ePkfvyDBs0r1Zg","type":"plugin.added","properties":{"id":"config-skill"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ea3001e3BTdoo1nYPIN0","type":"plugin.added","properties":{"id":"alibaba"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ea3002niXXvAiIvwEOQS","type":"plugin.added","properties":{"id":"amazon-bedrock"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ea3003QrzzZs3DTPdxh2","type":"plugin.added","properties":{"id":"anthropic"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ea3004lHwU1QlRbpiy7A","type":"plugin.added","properties":{"id":"azure-cognitive-services"}}
+SSE|
+SSE|data: {"id":"evt_0475c9eaa001ji5X5Sicz1AWSw","type":"plugin.added","properties":{"id":"azure"}}
+SSE|
+SSE|data: {"id":"evt_0475c9eab001sp7GxFcNa4op74","type":"plugin.added","properties":{"id":"cerebras"}}
+SSE|
+SSE|data: {"id":"evt_0475c9eab00260R1UlgGomX1Ry","type":"plugin.added","properties":{"id":"cloudflare-ai-gateway"}}
+SSE|
+SSE|data: {"id":"evt_0475c9eab003YFySCezfqRgCv5","type":"plugin.added","properties":{"id":"cloudflare-workers-ai"}}
+SSE|
+SSE|data: {"id":"evt_0475c9eac0019SwNTh7zxOOcCf","type":"plugin.added","properties":{"id":"cohere"}}
+SSE|
+SSE|data: {"id":"evt_0475c9eac002ELrPm8XQ4P4pht","type":"plugin.added","properties":{"id":"deepinfra"}}
+SSE|
+SSE|data: {"id":"evt_0475c9eac0030M1gXXpfzrMELI","type":"plugin.added","properties":{"id":"gateway"}}
+SSE|
+SSE|data: {"id":"evt_0475c9eac004cfpGerNMfKVEOM","type":"plugin.added","properties":{"id":"github-copilot"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ead001CA034ZMl3plts7","type":"plugin.added","properties":{"id":"gitlab"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ead002IoLLdTwyjaeBcY","type":"plugin.added","properties":{"id":"google"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ead003NRArfANMvESKw3","type":"plugin.added","properties":{"id":"google-vertex-anthropic"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ead004ULrR5m2HgIGpzb","type":"plugin.added","properties":{"id":"google-vertex"}}
+SSE|
+SSE|data: {"id":"evt_0475c9eb9001EGKL3QsBEUlY0L","type":"plugin.added","properties":{"id":"groq"}}
+SSE|
+SSE|data: {"id":"evt_0475c9eb9002O6bw00gJ7T5H2h","type":"plugin.added","properties":{"id":"kilo"}}
+SSE|
+SSE|data: {"id":"evt_0475c9eba001BcmXM4DZ7Yi3lY","type":"plugin.added","properties":{"id":"llmgateway"}}
+SSE|
+SSE|data: {"id":"evt_0475c9eba002GbUBMBDPjqWzo0","type":"plugin.added","properties":{"id":"mistral"}}
+SSE|
+SSE|data: {"id":"evt_0475c9eba0038aV45vSFSTH1b5","type":"plugin.added","properties":{"id":"nvidia"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ebb00109chPFpLySpe0g","type":"plugin.added","properties":{"id":"opencode"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ebb0020khq2VPcXlKsey","type":"plugin.added","properties":{"id":"snowflake-cortex"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ebb0037TiM9Vh35qV54m","type":"plugin.added","properties":{"id":"openai-compatible"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ebc001DCfNN0azVxxrH7","type":"plugin.added","properties":{"id":"openai"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ebc002wQrPl9uCrY7fLj","type":"plugin.added","properties":{"id":"openrouter"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ebc003AzO58rhORjcNUW","type":"plugin.added","properties":{"id":"perplexity"}}
+SSE|
+SSE|data: {"id":"evt_0475c9ebc0047JxIGWw69j3nAP","type":"plugin.added","properties":{"id":"sap-ai-core"}}
+SSE|
+SSE|data: {"id":"evt_0475c9f0a00151VTjLOUX1aFA9","type":"catalog.updated","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475c9ebc0057Fucx2CiF6T5kV","type":"plugin.added","properties":{"id":"togetherai"}}
+SSE|
+SSE|data: {"id":"evt_0475c9f0b0012HVpMShw3fQGnc","type":"plugin.added","properties":{"id":"vercel"}}
+SSE|
+SSE|data: {"id":"evt_0475c9f0b002cN0oUkwSNejeiY","type":"plugin.added","properties":{"id":"venice"}}
+SSE|
+SSE|data: {"id":"evt_0475c9f0c001mQOYbmGHAO0Rm8","type":"plugin.added","properties":{"id":"xai"}}
+SSE|
+SSE|data: {"id":"evt_0475c9f0c0021zgZtgQ5KN5CxS","type":"plugin.added","properties":{"id":"zenmux"}}
+SSE|
+SSE|data: {"id":"evt_0475c9f0c0039fgOB7YMcNClUF","type":"plugin.added","properties":{"id":"dynamic-provider"}}
+SSE|
+SSE|data: {"id":"evt_0475c9f0e001sZpcysK944yD4p","type":"plugin.added","properties":{"id":"config-plugin"}}
+SSE|
+SSE|data: {"id":"evt_0475c9f0e002NQvHRABVotfcKe","type":"plugin.added","properties":{"id":"config-provider"}}
+SSE|
+SSE|data: {"id":"evt_0475c9f0e003F8Nyhu915mfPhY","type":"plugin.added","properties":{"id":"variant"}}
+SSE|
+SSE|data: {"id":"evt_0475c9f0f001DyMr1MWx7jxFBz","type":"reference.updated","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475c9f2d001n4YZthgp6hyzG6","type":"integration.updated","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475c9f76001cjyPeZCLR3jBMN","type":"catalog.updated","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475caff30011PlpgRF5Vyw0vV","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475cd716001fsGGS486GsC1up","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475cfe2b001OtL0G2bS65KYsd","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475d2544001MtDgk7s84fgaMh","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475d4c61001rNZ13qw7VJTot6","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475d737600130kKKWREZAywKu","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475d9a91001TmPcX8xA0817HH","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475dc1ae001C47iGl5zf1YiKE","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475de8c2001VD7FKisiO6Ke9a","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475e0fdc001dyN2aSzeSgkcU5","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475e36fc0018uMtDN6zPJ5jFi","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475e5e19001Z49Vq27WgioEj4","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475e8532001V1jEWAZW13L6DR","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475eac460018A3MTcGwL6gP8T","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475ed364001PNnkiJXa2bxCnb","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475efa81001A5N9xzfCoKEV3M","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475f2192001xz2ElyueX73E7L","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475f48b1001AB9MVHiMzrrwWy","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475f6fc3001sjA7lLKtwqbdTi","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475f96e4001YjTfI89azufs62","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475fac1c001eHxXrwQNEkBJJc","type":"session.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"ses_fb8a52550ffeehXag3jiCbbT75","slug":"lucky-lagoon","projectID":"global","directory":"C:\\","path":"","title":"ocmobile spike 2","agent":"build","model":{"id":"big-pickle","providerID":"opencode","variant":"high"},"version":"1.18.18","summary":{"additions":0,"deletions":0,"files":0},"cost":0,"tokens":{"input":24994,"output":60,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1787903531695,"updated":1787903847451}}}}
+SSE|
+SSE|data: {"id":"evt_0475fac1f001SZQ4lxxCE2r43E","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"msg_0475fac1b001D17iMHdCqF01MW","role":"user","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","time":{"created":1787903847451},"agent":"build","model":{"providerID":"opencode","modelID":"big-pickle","variant":"high"}}}}
+SSE|
+SSE|data: {"id":"evt_0475fac20001kzLOhQNlkM5wNp","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"type":"text","text":"Say VARIANT_TEST","messageID":"msg_0475fac1b001D17iMHdCqF01MW","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","id":"prt_0475fac1e001m5IvsDRPqNGO6A"},"time":1787903847456}}
+SSE|
+SSE|data: {"id":"evt_0475fac21001C3rYNK2fG3upxX","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_supermemory-recall-1787903847455","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475fac1b001D17iMHdCqF01MW","type":"text","text":"<supermemory-recall>\nBefore responding, silently decide whether recalling saved memory (past sessions, decisions, conventions, the user's preferences) would materially improve your answer to THIS message. Reason first — don't search reflexively, and don't narrate the decision.\n\nRecall — by calling the `supermemory` tool with `mode: \"search\"` — when the message:\n- refers to earlier work or decisions (\"the auth flow\", \"like we did\", \"continue\", \"the bug from before\")\n- touches an area where saved conventions, patterns, or preferences likely exist\n- is ambiguous in a way past context would resolve\n\nSkip recall when the message is self-contained, trivial, a greeting/meta, fully answerable from the current conversation, or you already recalled the relevant context this session and the topic hasn't shifted.\n\nCadence is per-message: it's fine to recall on several turns in a row, and fine to never recall in a session. When you do recall, run it before answering and fold the results into your response.\n</supermemory-recall>","synthetic":true},"time":1787903847457}}
+SSE|
+SSE|data: {"id":"evt_0475fac23001fyd6bPcTQ4n406","type":"session.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"ses_fb8a52550ffeehXag3jiCbbT75","slug":"lucky-lagoon","projectID":"global","directory":"C:\\","path":"","title":"ocmobile spike 2","agent":"build","model":{"id":"big-pickle","providerID":"opencode","variant":"high"},"version":"1.18.18","summary":{"additions":0,"deletions":0,"files":0},"cost":0,"tokens":{"input":24994,"output":60,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1787903531695,"updated":1787903847459}}}}
+SSE|
+SSE|data: {"id":"evt_0475fac25001QtHSNconwd85Tb","type":"session.status","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","status":{"type":"busy"}}}
+SSE|
+SSE|data: {"id":"evt_0475fac26001Hcadsg307poX3A","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"msg_0475fac26001nEttj70EZGpRdS","parentID":"msg_0475fac1b001D17iMHdCqF01MW","role":"assistant","mode":"build","agent":"build","variant":"high","path":{"cwd":"C:\\","root":"/"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"modelID":"big-pickle","providerID":"opencode","time":{"created":1787903847462},"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75"}}}
+SSE|
+SSE|data: {"id":"evt_0475fac310016K34pFTjHIKaL2","type":"session.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"ses_fb8a52550ffeehXag3jiCbbT75","slug":"lucky-lagoon","projectID":"global","directory":"C:\\","path":"","title":"ocmobile spike 2","agent":"build","model":{"id":"big-pickle","providerID":"opencode","variant":"high"},"version":"1.18.18","summary":{"additions":0,"deletions":0,"files":0},"cost":0,"tokens":{"input":24994,"output":60,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1787903531695,"updated":1787903847472}}}}
+SSE|
+SSE|data: {"id":"evt_0475fac320017wBccN4RrANkAs","type":"session.diff","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","diff":[]}}
+SSE|
+SSE|data: {"id":"evt_0475fac33001aPqblKfxSAF0vX","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"role":"user","time":{"created":1787903847451},"agent":"build","model":{"providerID":"opencode","modelID":"big-pickle","variant":"high"},"id":"msg_0475fac1b001D17iMHdCqF01MW","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","summary":{"diffs":[]}}}}
+SSE|
+SSE|data: {"id":"evt_0475fac37001y50SyHMHM4G3qX","type":"session.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"ses_fb8a52550ffeehXag3jiCbbT75","slug":"lucky-lagoon","projectID":"global","directory":"C:\\","path":"","title":"ocmobile spike 2","agent":"build","model":{"id":"glm-5.3-flash","providerID":"zai-coding-plan","variant":"low"},"version":"1.18.18","summary":{"additions":0,"deletions":0,"files":0},"cost":0,"tokens":{"input":24994,"output":60,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1787903531695,"updated":1787903847478}}}}
+SSE|
+SSE|data: {"id":"evt_0475fac38001bqEdSFKcD39bcf","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"msg_0475fac36001Zj6RkZofgd2M23","role":"user","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","time":{"created":1787903847478},"agent":"build","model":{"providerID":"zai-coding-plan","modelID":"glm-5.3-flash","variant":"low"}}}}
+SSE|
+SSE|data: {"id":"evt_0475fac39001QGmwTZRpqhMAM9","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"type":"text","text":"Say VARIANT_TEST","messageID":"msg_0475fac36001Zj6RkZofgd2M23","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","id":"prt_0475fac380012WUDI4WzjUBjq1"},"time":1787903847481}}
+SSE|
+SSE|data: {"id":"evt_0475fac3a001cStGJOHWhVrjl0","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_supermemory-recall-1787903847480","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475fac36001Zj6RkZofgd2M23","type":"text","text":"<supermemory-recall>\nBefore responding, silently decide whether recalling saved memory (past sessions, decisions, conventions, the user's preferences) would materially improve your answer to THIS message. Reason first — don't search reflexively, and don't narrate the decision.\n\nRecall — by calling the `supermemory` tool with `mode: \"search\"` — when the message:\n- refers to earlier work or decisions (\"the auth flow\", \"like we did\", \"continue\", \"the bug from before\")\n- touches an area where saved conventions, patterns, or preferences likely exist\n- is ambiguous in a way past context would resolve\n\nSkip recall when the message is self-contained, trivial, a greeting/meta, fully answerable from the current conversation, or you already recalled the relevant context this session and the topic hasn't shifted.\n\nCadence is per-message: it's fine to recall on several turns in a row, and fine to never recall in a session. When you do recall, run it before answering and fold the results into your response.\n</supermemory-recall>","synthetic":true},"time":1787903847482}}
+SSE|
+SSE|data: {"id":"evt_0475fac3b0011FXVsjnQ15ktvw","type":"session.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"ses_fb8a52550ffeehXag3jiCbbT75","slug":"lucky-lagoon","projectID":"global","directory":"C:\\","path":"","title":"ocmobile spike 2","agent":"build","model":{"id":"glm-5.3-flash","providerID":"zai-coding-plan","variant":"low"},"version":"1.18.18","summary":{"additions":0,"deletions":0,"files":0},"cost":0,"tokens":{"input":24994,"output":60,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1787903531695,"updated":1787903847483}}}}
+SSE|
+SSE|data: {"id":"evt_0475fac48001riG5AQAoKGjkmH","type":"session.status","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","status":{"type":"busy"}}}
+SSE|
+SSE|data: {"id":"evt_0475fbe06001z9oQPWap6AXH78","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475fdaa7001gZZtVyKbbDXnJW","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_0475fdaa7001Yh9hk94Vi6C7Pu","messageID":"msg_0475fac26001nEttj70EZGpRdS","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"step-start"},"time":1787903859367}}
+SSE|
+SSE|data: {"id":"evt_0475fdac4001dFFEc3S8FIMExV","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_0475fdac4001pa1rSuYpyKAFRd","messageID":"msg_0475fac26001nEttj70EZGpRdS","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"reasoning","text":"","time":{"start":1787903859396}},"time":1787903859396}}
+SSE|
+SSE|data: {"id":"evt_0475fdac5001578cJVPmbmJ5Zb","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475fac26001nEttj70EZGpRdS","partID":"prt_0475fdac4001pa1rSuYpyKAFRd","field":"text","delta":"This"}}
+SSE|
+SSE|data: {"id":"evt_0475fdb01001iGTZH6yF4czxpM","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475fac26001nEttj70EZGpRdS","partID":"prt_0475fdac4001pa1rSuYpyKAFRd","field":"text","delta":" is a trivial test"}}
+SSE|
+SSE|data: {"id":"evt_0475fdb26001U7rOKVgFPFsh2l","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475fac26001nEttj70EZGpRdS","partID":"prt_0475fdac4001pa1rSuYpyKAFRd","field":"text","delta":" message asking"}}
+SSE|
+SSE|data: {"id":"evt_0475fdb62001dOeesaCc4wEUGT","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475fac26001nEttj70EZGpRdS","partID":"prt_0475fdac4001pa1rSuYpyKAFRd","field":"text","delta":" me to say a"}}
+SSE|
+SSE|data: {"id":"evt_0475fdb88001IKMsR7VpVYvIY0","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475fac26001nEttj70EZGpRdS","partID":"prt_0475fdac4001pa1rSuYpyKAFRd","field":"text","delta":" specific word. No"}}
+SSE|
+SSE|data: {"id":"evt_0475fdbc50011KO8y143dHUZfH","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475fac26001nEttj70EZGpRdS","partID":"prt_0475fdac4001pa1rSuYpyKAFRd","field":"text","delta":" context"}}
+SSE|
+SSE|data: {"id":"evt_0475fdbd1001MF52fKj7v8HtIu","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475fac26001nEttj70EZGpRdS","partID":"prt_0475fdac4001pa1rSuYpyKAFRd","field":"text","delta":" from"}}
+SSE|
+SSE|data: {"id":"evt_0475fdbfc001KCSxRWmXc1XpjD","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475fac26001nEttj70EZGpRdS","partID":"prt_0475fdac4001pa1rSuYpyKAFRd","field":"text","delta":" past"}}
+SSE|
+SSE|data: {"id":"evt_0475fdc28001pV1dHIopsugeJD","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475fac26001nEttj70EZGpRdS","partID":"prt_0475fdac4001pa1rSuYpyKAFRd","field":"text","delta":" sessions needed"}}
+SSE|
+SSE|data: {"id":"evt_0475fdc4f0017Ln1SIBtQZUZsl","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475fac26001nEttj70EZGpRdS","partID":"prt_0475fdac4001pa1rSuYpyKAFRd","field":"text","delta":"."}}
+SSE|
+SSE|data: {"id":"evt_0475fdc930012IW51s5aw6G2NO","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_0475fdac4001pa1rSuYpyKAFRd","messageID":"msg_0475fac26001nEttj70EZGpRdS","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"reasoning","text":"This is a trivial test message asking me to say a specific word. No context from past sessions needed.","time":{"start":1787903859396,"end":1787903859859}},"time":1787903859859}}
+SSE|
+SSE|data: {"id":"evt_0475fdc95001V8A5QCGBTXhH71","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_0475fdc950015FG4hPFVlqo3Wj","messageID":"msg_0475fac26001nEttj70EZGpRdS","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"text","text":"","time":{"start":1787903859861}},"time":1787903859861}}
+SSE|
+SSE|data: {"id":"evt_0475fdc96001n9JyoFaVVP19Xd","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475fac26001nEttj70EZGpRdS","partID":"prt_0475fdc950015FG4hPFVlqo3Wj","field":"text","delta":"VARIANT_TEST"}}
+SSE|
+SSE|data: {"id":"evt_0475fdcaa001HneGpy1Iy21P9j","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_0475fdc950015FG4hPFVlqo3Wj","messageID":"msg_0475fac26001nEttj70EZGpRdS","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"text","text":"VARIANT_TEST","time":{"start":1787903859861,"end":1787903859882}},"time":1787903859882}}
+SSE|
+SSE|data: {"id":"evt_0475fdcac001MGTJ4iCZ20pmSk","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_0475fdcac001WLlMZHCXBOyoNS","reason":"stop","messageID":"msg_0475fac26001nEttj70EZGpRdS","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"step-finish","tokens":{"total":25309,"input":322,"output":27,"reasoning":0,"cache":{"write":0,"read":24960}},"cost":0},"time":1787903859884}}
+SSE|
+SSE|data: {"id":"evt_0475fdcad001CzxPLspzDNBOMG","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"msg_0475fac26001nEttj70EZGpRdS","parentID":"msg_0475fac1b001D17iMHdCqF01MW","role":"assistant","mode":"build","agent":"build","variant":"high","path":{"cwd":"C:\\","root":"/"},"cost":0,"tokens":{"total":25309,"input":322,"output":27,"reasoning":0,"cache":{"write":0,"read":24960}},"modelID":"big-pickle","providerID":"opencode","time":{"created":1787903847462,"completed":1787903859887},"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","finish":"stop"}}}
+SSE|
+SSE|data: {"id":"evt_0475fdcaf001Pew3z00XWdtN3c","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"msg_0475fac26001nEttj70EZGpRdS","parentID":"msg_0475fac1b001D17iMHdCqF01MW","role":"assistant","mode":"build","agent":"build","variant":"high","path":{"cwd":"C:\\","root":"/"},"cost":0,"tokens":{"total":25309,"input":322,"output":27,"reasoning":0,"cache":{"write":0,"read":24960}},"modelID":"big-pickle","providerID":"opencode","time":{"created":1787903847462,"completed":1787903859887},"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","finish":"stop"}}}
+SSE|
+SSE|data: {"id":"evt_0475fdcb0001X277HRzI1Zm4gb","type":"session.status","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","status":{"type":"busy"}}}
+SSE|
+SSE|data: {"id":"evt_0475fdcb1001am2okYQNgfN5wQ","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"msg_0475fdcb1001ijltiOYVkKdQmu","parentID":"msg_0475fac36001Zj6RkZofgd2M23","role":"assistant","mode":"build","agent":"build","variant":"low","path":{"cwd":"C:\\","root":"/"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"modelID":"glm-5.3-flash","providerID":"zai-coding-plan","time":{"created":1787903859889},"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75"}}}
+SSE|
+SSE|data: {"id":"evt_0475fdcb40016X8fitkSHcOn3e","type":"session.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"ses_fb8a52550ffeehXag3jiCbbT75","slug":"lucky-lagoon","projectID":"global","directory":"C:\\","path":"","title":"ocmobile spike 2","agent":"build","model":{"id":"glm-5.3-flash","providerID":"zai-coding-plan","variant":"low"},"version":"1.18.18","summary":{"additions":0,"deletions":0,"files":0},"cost":0,"tokens":{"input":25316,"output":87,"reasoning":0,"cache":{"read":24960,"write":0}},"time":{"created":1787903531695,"updated":1787903859892}}}}
+SSE|
+SSE|data: {"id":"evt_0475fdcb6001Lh50eiqsC71qQr","type":"session.diff","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","diff":[]}}
+SSE|
+SSE|data: {"id":"evt_0475fdcb7001Fzs94pVDZSr1PF","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"role":"user","time":{"created":1787903847451},"agent":"build","model":{"providerID":"opencode","modelID":"big-pickle","variant":"high"},"summary":{"diffs":[]},"id":"msg_0475fac1b001D17iMHdCqF01MW","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75"}}}
+SSE|
+SSE|data: {"id":"evt_0475fdcc0001OiMqdKdUqZv4Gb","type":"session.status","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","status":{"type":"busy"}}}
+SSE|
+SSE|data: {"id":"evt_0475fe5210016HuEuxrgUrE7QY","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0475ff5ad001luuruwbuUX1R5p","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_0475ff5ad001bJ5IGvd1zL6wV6","messageID":"msg_0475fdcb1001ijltiOYVkKdQmu","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"step-start"},"time":1787903866285}}
+SSE|
+SSE|data: {"id":"evt_0475ff5ae0014pEPs3BwM63ETk","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_0475ff5ae00126YOt2dQt2Qakp","messageID":"msg_0475fdcb1001ijltiOYVkKdQmu","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"text","text":"","time":{"start":1787903866286}},"time":1787903866286}}
+SSE|
+SSE|data: {"id":"evt_0475ff5b0001ndS4JmUsAj1Rh3","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0475fdcb1001ijltiOYVkKdQmu","partID":"prt_0475ff5ae00126YOt2dQt2Qakp","field":"text","delta":"VARIANT_TEST"}}
+SSE|
+SSE|data: {"id":"evt_0475ff5b2001IbPqwa2dmZq5mB","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_0475ff5ae00126YOt2dQt2Qakp","messageID":"msg_0475fdcb1001ijltiOYVkKdQmu","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"text","text":"VARIANT_TEST","time":{"start":1787903866286,"end":1787903866290}},"time":1787903866290}}
+SSE|
+SSE|data: {"id":"evt_0475ff5b4001TzZ3vLC8AJgcM6","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_0475ff5b4001U00eT1BIHnanLD","reason":"stop","messageID":"msg_0475fdcb1001ijltiOYVkKdQmu","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"step-finish","tokens":{"total":22268,"input":22263,"output":5,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0},"time":1787903866292}}
+SSE|
+SSE|data: {"id":"evt_0475ff5b50016Zxjz06tL4p0NV","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"msg_0475fdcb1001ijltiOYVkKdQmu","parentID":"msg_0475fac36001Zj6RkZofgd2M23","role":"assistant","mode":"build","agent":"build","variant":"low","path":{"cwd":"C:\\","root":"/"},"cost":0,"tokens":{"total":22268,"input":22263,"output":5,"reasoning":0,"cache":{"write":0,"read":0}},"modelID":"glm-5.3-flash","providerID":"zai-coding-plan","time":{"created":1787903859889,"completed":1787903866295},"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","finish":"stop"}}}
+SSE|
+SSE|data: {"id":"evt_0475ff5b7001dr6t2OEQtGBcas","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"msg_0475fdcb1001ijltiOYVkKdQmu","parentID":"msg_0475fac36001Zj6RkZofgd2M23","role":"assistant","mode":"build","agent":"build","variant":"low","path":{"cwd":"C:\\","root":"/"},"cost":0,"tokens":{"total":22268,"input":22263,"output":5,"reasoning":0,"cache":{"write":0,"read":0}},"modelID":"glm-5.3-flash","providerID":"zai-coding-plan","time":{"created":1787903859889,"completed":1787903866295},"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","finish":"stop"}}}
+SSE|
+SSE|data: {"id":"evt_0475ff5b9001iAoTvNumVmhB70","type":"session.status","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","status":{"type":"busy"}}}
+SSE|
+SSE|data: {"id":"evt_0475ff5ba001HbEPzUbu9d1qiT","type":"session.status","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","status":{"type":"idle"}}}
+SSE|
+SSE|data: {"id":"evt_0475ff5bb0018CIvktxtMXGDLN","type":"session.idle","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75"}}
+SSE|
+SSE|data: {"id":"evt_0475ff5bc001z0jGGn3mnH10eb","type":"session.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"ses_fb8a52550ffeehXag3jiCbbT75","slug":"lucky-lagoon","projectID":"global","directory":"C:\\","path":"","title":"ocmobile spike 2","agent":"build","model":{"id":"glm-5.3-flash","providerID":"zai-coding-plan","variant":"low"},"version":"1.18.18","summary":{"additions":0,"deletions":0,"files":0},"cost":0,"tokens":{"input":47579,"output":92,"reasoning":0,"cache":{"read":24960,"write":0}},"time":{"created":1787903531695,"updated":1787903866299}}}}
+SSE|
+SSE|data: {"id":"evt_0475ff5bd001jP44thlmiQ7FDl","type":"session.diff","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","diff":[]}}
+SSE|
+SSE|data: {"id":"evt_0475ff5be001OHslORb0Igqbu0","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"role":"user","time":{"created":1787903847478},"agent":"build","model":{"providerID":"zai-coding-plan","modelID":"glm-5.3-flash","variant":"low"},"id":"msg_0475fac36001Zj6RkZofgd2M23","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","summary":{"diffs":[]}}}}
+SSE|
+SSE|data: {"id":"evt_047600c34001KgumW39qZmlP3M","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0476033450017uBdTQKjLbBklB","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_047605a61001FSD632t3gATUbr","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_04760817d001aN4XPbUXi8kaq4","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_04760a89a0012diTIYSMbzn6xb","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_04760cfb70012vc21h18uhjqoH","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_04760f6cf001MGx9Ewje8O3g3a","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_047611de5001MXXiTtQ9lfvuIh","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0476130f1001N5Kx9GZND54JaC","type":"session.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"ses_fb8a52550ffeehXag3jiCbbT75","slug":"lucky-lagoon","projectID":"global","directory":"C:\\","path":"","title":"ocmobile spike 2","agent":"build","model":{"id":"big-pickle","providerID":"opencode","variant":"default"},"version":"1.18.18","summary":{"additions":0,"deletions":0,"files":0},"cost":0,"tokens":{"input":47579,"output":92,"reasoning":0,"cache":{"read":24960,"write":0}},"time":{"created":1787903531695,"updated":1787903946992}}}}
+SSE|
+SSE|data: {"id":"evt_0476130f5001Wh0MTOvoVcfT0E","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"msg_0476130f0001ioYFPzaPKaNkut","role":"user","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","time":{"created":1787903946992},"agent":"build","model":{"providerID":"opencode","modelID":"big-pickle"}}}}
+SSE|
+SSE|data: {"id":"evt_0476130f6001nIKbkR4p2clqAd","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"type":"text","text":"Пиши очень длинный ответ на 500 слов о квантовой физике, не останавливайся","messageID":"msg_0476130f0001ioYFPzaPKaNkut","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","id":"prt_0476130f4001SIB7tj67VL5ZKe"},"time":1787903946998}}
+SSE|
+SSE|data: {"id":"evt_0476130f7001X1g5rGVSRuV0zB","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_supermemory-recall-1787903946996","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0476130f0001ioYFPzaPKaNkut","type":"text","text":"<supermemory-recall>\nBefore responding, silently decide whether recalling saved memory (past sessions, decisions, conventions, the user's preferences) would materially improve your answer to THIS message. Reason first — don't search reflexively, and don't narrate the decision.\n\nRecall — by calling the `supermemory` tool with `mode: \"search\"` — when the message:\n- refers to earlier work or decisions (\"the auth flow\", \"like we did\", \"continue\", \"the bug from before\")\n- touches an area where saved conventions, patterns, or preferences likely exist\n- is ambiguous in a way past context would resolve\n\nSkip recall when the message is self-contained, trivial, a greeting/meta, fully answerable from the current conversation, or you already recalled the relevant context this session and the topic hasn't shifted.\n\nCadence is per-message: it's fine to recall on several turns in a row, and fine to never recall in a session. When you do recall, run it before answering and fold the results into your response.\n</supermemory-recall>","synthetic":true},"time":1787903946999}}
+SSE|
+SSE|data: {"id":"evt_0476130f9001tx7tyGehYaPIj8","type":"session.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"ses_fb8a52550ffeehXag3jiCbbT75","slug":"lucky-lagoon","projectID":"global","directory":"C:\\","path":"","title":"ocmobile spike 2","agent":"build","model":{"id":"big-pickle","providerID":"opencode","variant":"default"},"version":"1.18.18","summary":{"additions":0,"deletions":0,"files":0},"cost":0,"tokens":{"input":47579,"output":92,"reasoning":0,"cache":{"read":24960,"write":0}},"time":{"created":1787903531695,"updated":1787903947001}}}}
+SSE|
+SSE|data: {"id":"evt_0476130fb001jac2XaHuf9HL4Q","type":"session.status","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","status":{"type":"busy"}}}
+SSE|
+SSE|data: {"id":"evt_0476130fd001EpMqyxgoec1fgv","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"msg_0476130fd0013p1CBlmOMe70lk","parentID":"msg_0476130f0001ioYFPzaPKaNkut","role":"assistant","mode":"build","agent":"build","path":{"cwd":"C:\\","root":"/"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"modelID":"big-pickle","providerID":"opencode","time":{"created":1787903947005},"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75"}}}
+SSE|
+SSE|data: {"id":"evt_047613108001Y0hYJMCCoiEQGX","type":"session.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"ses_fb8a52550ffeehXag3jiCbbT75","slug":"lucky-lagoon","projectID":"global","directory":"C:\\","path":"","title":"ocmobile spike 2","agent":"build","model":{"id":"big-pickle","providerID":"opencode","variant":"default"},"version":"1.18.18","summary":{"additions":0,"deletions":0,"files":0},"cost":0,"tokens":{"input":47579,"output":92,"reasoning":0,"cache":{"read":24960,"write":0}},"time":{"created":1787903531695,"updated":1787903947016}}}}
+SSE|
+SSE|data: {"id":"evt_047613109001uBCiQrEMTeexx3","type":"session.diff","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","diff":[]}}
+SSE|
+SSE|data: {"id":"evt_04761310a001vhe5b8yA8oGNdT","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"role":"user","time":{"created":1787903946992},"agent":"build","model":{"providerID":"opencode","modelID":"big-pickle"},"id":"msg_0476130f0001ioYFPzaPKaNkut","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","summary":{"diffs":[]}}}}
+SSE|
+SSE|data: {"id":"evt_047613110001WE5Gj34WSDpikD","type":"session.status","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","status":{"type":"busy"}}}
+SSE|
+SSE|data: {"id":"evt_047613c43001i1NV4b9YpNaTO7","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_047613c43001QRwxvPx6OH3o3Q","messageID":"msg_0476130fd0013p1CBlmOMe70lk","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"step-start"},"time":1787903949891}}
+SSE|
+SSE|data: {"id":"evt_047613c80001oul8XsiyPFzi10","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_047613c80001CvQd8qBhyX9Clt","messageID":"msg_0476130fd0013p1CBlmOMe70lk","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"reasoning","text":"","time":{"start":1787903949952}},"time":1787903949952}}
+SSE|
+SSE|data: {"id":"evt_047613c81001K5tTSL3YFSDjyB","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0476130fd0013p1CBlmOMe70lk","partID":"prt_047613c80001CvQd8qBhyX9Clt","field":"text","delta":"The user is asking"}}
+SSE|
+SSE|data: {"id":"evt_047613cb1001syw9cX2RM0isyb","type":"message.part.delta","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","messageID":"msg_0476130fd0013p1CBlmOMe70lk","partID":"prt_047613c80001CvQd8qBhyX9Clt","field":"text","delta":" me to write a"}}
+SSE|
+SSE|data: {"id":"evt_047613cc1001IZQE9J5suX4M7Y","type":"session.error","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","error":{"name":"MessageAbortedError","data":{"message":"Aborted"}}}}
+SSE|
+SSE|data: {"id":"evt_047613cc2001IN5dr1dz64dy6q","type":"session.status","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","status":{"type":"idle"}}}
+SSE|
+SSE|data: {"id":"evt_047613cc2002hsP02Tk4uA4NI6","type":"session.idle","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75"}}
+SSE|
+SSE|data: {"id":"evt_047613cc3001WxGnpIiV55Y2E4","type":"message.part.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","part":{"id":"prt_047613c80001CvQd8qBhyX9Clt","messageID":"msg_0476130fd0013p1CBlmOMe70lk","sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","type":"reasoning","text":"The user is asking me to write a","time":{"start":1787903949952,"end":1787903950019}},"time":1787903950019}}
+SSE|
+SSE|data: {"id":"evt_047613cc4001W22xAIaGFyLOd2","type":"message.updated","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","info":{"id":"msg_0476130fd0013p1CBlmOMe70lk","parentID":"msg_0476130f0001ioYFPzaPKaNkut","role":"assistant","mode":"build","agent":"build","path":{"cwd":"C:\\","root":"/"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"modelID":"big-pickle","providerID":"opencode","time":{"created":1787903947005,"completed":1787903950020},"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","error":{"name":"MessageAbortedError","data":{"message":"Aborted"}}}}}
+SSE|
+SSE|data: {"id":"evt_047613cc60011IvsgXY29y3aFH","type":"session.status","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75","status":{"type":"idle"}}}
+SSE|
+SSE|data: {"id":"evt_047613cc6002uguz5IBDOk4H3Q","type":"session.idle","properties":{"sessionID":"ses_fb8a52550ffeehXag3jiCbbT75"}}
+SSE|
+SSE|data: {"id":"evt_0476144fc001BQ1GrM9WYxlVza","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_047616c16001phk8uCaMutzDB1","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_04761932c001a6WsFLAnXBdhOu","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_04761c8bd001zPG25hZKPHBt6o","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_04761f8b00017MBEl5ynLUrjL0","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_047621fdf001yJtMNXR99hZPw3","type":"server.heartbeat","properties":{}}
+SSE|
+SSE|data: {"id":"evt_0476246f1001M1Ds4J6Z73Iop1","type":"server.heartbeat","properties":{}}
+SSE|
