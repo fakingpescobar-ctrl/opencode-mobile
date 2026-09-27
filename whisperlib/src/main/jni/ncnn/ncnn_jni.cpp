@@ -45,6 +45,7 @@ static const bool g_ncnn_verbose = []() {
 #include <algorithm>
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -912,6 +913,20 @@ static std::string g_loaded_dir;
 static std::string g_loaded_base;
 static int g_refcount = 0;
 
+// Мьютекс на всё процессное состояние модели.
+//
+// Зачем, если "всё равно один worker-поток" (инвариант сервиса): после правки
+// 28.09 g_refcount стал ДОКАЗАТЕЛЬСТВОМ для решения "отказать или грузить".
+// Проверка "занято ли" обязана быть атомарной с самим освобождением, иначе
+// два потока проходят проверку одновременно и оба грузят модель: двойное
+// чтение 1.6-2.3 ГБ с диска и перепутанный счётчик. Раньше это не было
+// заметно, потому что проверки не было - состояние трогалось безусловно.
+//
+// Держится и на время load(), и это правильно: загрузка модели по природе
+// эксклюзивна, и второй поток обязан ждать, а не грузить своё поверх.
+// Взаимной блокировки нет: из под лока не вызывается JNI обратно в Kotlin.
+static std::mutex g_model_mutex;
+
 // ---- JNI: Java_com_whispercpp_whisper_NcnnWhisperLib_* ----
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_whispercpp_whisper_NcnnWhisperLib_nativeInit(JNIEnv* env, jobject /*thiz*/, jstring modelDir, jstring base)
@@ -920,6 +935,10 @@ Java_com_whispercpp_whisper_NcnnWhisperLib_nativeInit(JNIEnv* env, jobject /*thi
     const char* b = env->GetStringUTFChars(base, 0);
     std::string dirStr = dir ? dir : "";
     std::string baseStr = b ? b : "whisper_base";
+
+    // Лок берём ДО чтения g_loaded_dir/g_refcount: проверка "кто владеет" и сама
+    // загрузка должны быть одной атомарной операцией (см. g_model_mutex).
+    std::lock_guard<std::mutex> guard(g_model_mutex);
 
     // Тот же base уже сидит в памяти — делим инстанс вместо повторного load()
     // с диска. Раньше каждый вызов пересоздавал g_whisper, то есть держатели одной
@@ -932,7 +951,39 @@ Java_com_whispercpp_whisper_NcnnWhisperLib_nativeInit(JNIEnv* env, jobject /*thi
         return JNI_TRUE;
     }
 
-    // Другая модель: прошлая больше не пригодится, её держит ровно один.
+    // Другая модель. Вытеснять её молча НЕЛЬЗЯ: ею владеют живые контексты, и
+    // после g_whisper.reset() их Kotlin-флаг initialized остаётся true при уже
+    // мёртвой модели - владелец узнаёт об этом только на следующей транскрипции,
+    // через ensureAlive(), который заново грузит модель и вышибает чужую.
+    //
+    // В бенче это было не «теоретически плохо», а конкретные числа: матрица
+    // int8/fp32 чередуется по wav, и каждый переход перечитывал модель с диска -
+    // 10 загрузок по 1.6-2.3 ГБ за прогон. RSS при этом не падал обратно
+    // (glibc не отдаёт крупные блоки в ОС без trim), и процесс умирал от
+    // lowmemorykiller - с ПУСТЫМ краш-буфером, то есть без Java-стека. Ровно то,
+    // что наблюдалось 27.09 и что вначале обвинили в R8.
+    //
+    // Контракт теперь: один процесс - одна модель. Кто хочет другую - обязан
+    // сначала отпустить свою (release()). В проде это условие выполнимо всегда:
+    // obtainNcncContext кэширует ровно один контекст с ключом "turbo".
+    if (g_whisper && g_refcount > 0)
+    {
+        __android_log_print(
+            ANDROID_LOG_ERROR,
+            "NcnnWhisper",
+            "nativeInit(%s/%s) refused: %s/%s is still owned by %d holder(s). "
+            "Release it first - a process holds one Whisper model at a time.",
+            dirStr.c_str(),
+            baseStr.c_str(),
+            g_loaded_dir.c_str(),
+            g_loaded_base.c_str(),
+            g_refcount);
+        if (dir) env->ReleaseStringUTFChars(modelDir, dir);
+        if (b) env->ReleaseStringUTFChars(base, b);
+        return JNI_FALSE;
+    }
+
+    // Никто не владеет (g_refcount == 0) - можно грузить поверх.
     g_whisper.reset();
     g_loaded_dir.clear();
     g_loaded_base.clear();
@@ -961,6 +1012,22 @@ Java_com_whispercpp_whisper_NcnnWhisperLib_nativeInit(JNIEnv* env, jobject /*thi
     return JNI_TRUE;
 }
 
+// nativeSetThreads / nativeTranscribe / nativeTranscribeAuto читают g_whisper
+// СОЗНАТЕЛЬНО без g_model_mutex. Не "забыли лок", а по причине:
+//
+//   1. Транскрипция идёт 9-40 секунд. Лок на всё это время заблокировал бы
+//      nativeIsAlive (его зовёт ensureAlive() на пути к транскрипции) и
+//      nativeFree, то есть health-check и release встали бы на минуты.
+//   2. Взять лок ТОЛЬКО на время чтения указателя не помогает: между
+//      чтением g_whisper и разыменованием указатель может сбросить
+//      nativeFree. Нужен был бы shared_lock, но тогда nativeFree на
+//      unique_lock ждал бы конца самой длинной транскрипции.
+//
+// Вместо лока действует контракт уровнем выше: модель одна на процесс, а
+// освобождать её (nativeFree) запрещено, пока идёт транскрипция. Это
+// зафиксировано в KDoc WhisperTranscribeService.releaseNcnnContext() и
+// держится тем, что сервис работает через единственный worker-поток.
+// Если это перестанет быть верно, нужен reentrant-протокол, а не лок.
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_whispercpp_whisper_NcnnWhisperLib_nativeSetThreads(JNIEnv* /*env*/, jobject /*thiz*/, jint n)
 {
@@ -1100,6 +1167,12 @@ Java_com_whispercpp_whisper_NcnnWhisperLib_nativeIsAlive(JNIEnv* env, jobject /*
     if (d) env->ReleaseStringUTFChars(modelDir, d);
     if (b) env->ReleaseStringUTFChars(base, b);
 
+    // Лок обязателен даже для чтения: g_loaded_dir - это std::string, и её
+    // чтение параллельно с clear() в nativeFree это data race (UB), а не
+    // «немного устаревшее значение». Побочный эффект правильный: если модель
+    // сейчас грузится, вызов подождёт и получит честный ответ.
+    std::lock_guard<std::mutex> guard(g_model_mutex);
+
     return (g_loaded_dir == dirStr && g_loaded_base == baseStr) ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -1108,6 +1181,11 @@ Java_com_whispercpp_whisper_NcnnWhisperLib_nativeFree(JNIEnv* /*env*/, jobject /
 {
     // Освобождает последний владелец, а не любой: вызов от контекста, который
     // gc не убирал, больше не обнуляет модель у живого соседа.
+    //
+    // Тот же лок, что в nativeInit: иначе release может попасть в середину
+    // загрузки чужой модели и обнулить счётчик у того, кто уже грузит.
+    std::lock_guard<std::mutex> guard(g_model_mutex);
+
     if (g_refcount > 0) g_refcount--;
     if (g_refcount > 0) return;
 

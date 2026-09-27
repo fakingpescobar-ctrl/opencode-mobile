@@ -67,12 +67,12 @@
         <error line="468" column="51" source="standard:function-signature" />
         <error line="468" column="64" source="standard:function-signature" />
         <error line="482" column="76" source="standard:function-signature" />
-        <error line="502" column="33" source="standard:function-signature" />
-        <error line="502" column="50" source="standard:function-signature" />
-        <error line="502" column="62" source="standard:function-signature" />
-        <error line="502" column="74" source="standard:function-signature" />
-        <error line="517" column="19" source="standard:argument-list-wrapping" />
-        <error line="521" column="33" source="standard:chain-method-continuation" />
+        <error line="523" column="33" source="standard:function-signature" />
+        <error line="523" column="50" source="standard:function-signature" />
+        <error line="523" column="62" source="standard:function-signature" />
+        <error line="523" column="74" source="standard:function-signature" />
+        <error line="538" column="19" source="standard:argument-list-wrapping" />
+        <error line="542" column="33" source="standard:chain-method-continuation" />
     </file>
     <file name="src/main/java/org/opencode/mobile/ui/theme/Theme.kt">
         <error line="32" column="36" source="standard:trailing-comma-on-declaration-site" />
