@@ -39,16 +39,25 @@ android {
     //   ./gradlew connectedAndroidTest
     //   ./gradlew -PsttTestBuildType=minVerify connectedMinVerifyAndroidTest
     //
-    // ВАЖНО, 27.09: под minVerify STT-тесты НЕ работают, хотя Gradle рапортует
-    // их зелёными. У minVerify свой applicationIdSuffix=".minverify" => пакет
-    // org.opencode.mobile.minverify с пустым data-dir, а модели залиты в
-    // org.opencode.mobile.debug. Тесты упираются в assumeTrue и молча дают
-    // skipped=5, а connectedMinVerifyAndroidTest завершается кодом 0.
+    // ВАЖНО, 27.09: connectedMinVerifyAndroidTest НЕ подходит для STT, хотя
+    // Gradle рапортует результат зелёным. Две причины сразу:
+    //   1. Gradle переустанавливает APK, а `adb install -r` на ColorOS стирает
+    //      data-директорию пакета вместе с моделями из files/models.
+    //   2. У minVerify свой applicationIdSuffix=".minverify" => свой пустой
+    //      data-dir, а модели залиты в org.opencode.mobile.debug.
+    // Тесты упираются в assumeTrue и дают ЗЕЛЁНЫЙ, но пустой результат.
     //
     // Проверялось так: в XML было skipped="5" time="0.469" при реальном
-    // времени теста 517 с. То есть "5/5 за 34 с" - это не результат.
-    // minVerify годен для проверки R8/ProGuard, но device-бенчи на нём
-    // запускать бессмысленно - запускай connectedDebugAndroidTest.
+    // времени теста 517 с. "5/5 за 0.5 с" - это не результат. Отдельно ловушка:
+    // "OK (5 tests)" am instrument печатает и для ПРОПУЩЕННЫХ тестов, поэтому
+    // зелёный код возврата не доказывает, что хоть что-то исполнялось.
+    //
+    // РЕАЛЬНЫЙ прогон R8-варианта (install APK -> доставить модели -> am instrument):
+    //   pwsh -ExecutionPolicy Bypass -File run_stt_bench_minverify.ps1
+    // Скрипт сам сверяет, что строки бенча реально появились, а не были отброшены.
+    // Проверено 27.09: 10 BENCH_ROW + 2 LANG_ROW на минифицированной сборке.
+    //
+    // Основным путём остаётся connectedDebugAndroidTest.
     testBuildType = providers.gradleProperty("sttTestBuildType").getOrElse("debug")
 
     defaultConfig {
@@ -104,21 +113,42 @@ android {
         // в Play, ни разу не запустив на телефоне.
         //
         // От release отличается тремя вещами, и все три осознанные:
-        //   isDebuggable = true   - работает run-as, можно залить модели
         //   applicationIdSuffix   - ставится отдельным пакетом рядом с debug
         //                             и release, ничего не ломая
         //   signingConfig = debug  - initWith копирует и ключ release'а, а
         //                             подписывать отладочный артефакт боевым
         //                             ключом незачем: он ставится на телефон и
         //                             может утечь вместе с телефоном
+        //   isDebuggable = false  - см. блок предупреждения ниже, это не
+        //                             косметика, а условие работоспособности
         // R8, shrinkResources и правила из proguard-rules.pro - как в release.
         //
-        // Проверено 27.09.2026: R8 (13 dex -> 2), STT отдаёт английский с первого
-        // сегмента, JNI-биндинг жив, полный device-прогон 5/5 за 606 с.
+        // ВАЖНО, 27.09: isDebuggable здесь БЫЛО true, и это молча убивало всю
+        // проверку. AGP отключает optimization и obfuscation для debuggable
+        // сборок, поэтому при isDebuggable=true R8 НЕ ЗАПУСКАЕТСЯ ВООБЩЕ - при
+        // том, что isMinifyEnabled=true унаследован от release. Gradle при этом
+        // лишь пишет warning, а сборка остаётся зелёной.
+        //
+        // Доказано по артефакту, а не по флагу: в APK не оказалось НИ ОДНОГО
+        // однобуквенного обфусцированного пакета, а
+        // Lcom/whispercpp/whisper/NcnnWhisperLib; лежал с полным именем, как и
+        // org/opencode/mobile/stt/WhisperTranscribeService. Прежнее утверждение
+        // в этом комментарии "R8 (13 dex -> 2)" было неверным: два dex не
+        // доказывают минификацию, а полные имена классов её опровергают.
+        //
+        // Последствие было не косметическим: release уходит к пользователям с
+        // теми же правилами и с R8, а правила из
+        // proguard-minverify-rules.pro из-за этого НИ РАЗУ не проверялись ни на
+        // чём. Именно эту дыру и закрывает isDebuggable=false.
+        //
+        // Побочный эффект: run-as при isDebuggable=false не работает, поэтому
+        // модели в пакет заливает сам тест (androidTest/SttModelBootstrap.kt)
+        // из /data/local/tmp, а не скрипт снаружи. На /sdcard run-as и так не
+        // смотрит - FUSE на ColorOS.
         create("minVerify") {
             initWith(getByName("release"))
             applicationIdSuffix = ".minverify"
-            isDebuggable = true
+            isDebuggable = false
             signingConfig = signingConfigs.getByName("debug")
             resValue("string", "app_name", "OpenCode Mobile · MinVerify")
             // whisperlib не имеет build type minVerify - без этого падает
@@ -128,10 +158,14 @@ android {
             // Файлы перечислены явно, а не только дополнение. proguardFiles
             // дописывает в список, но полагаться на это не хочется: если
             // proguard-android-optimize.txt исчезнет из списка, сборка
-            // останется зелёной, а сломается только в момент запуска - JNI
-            // ищет символы по имени, и обфусцированный NcnnWhisperLib просто
-            // не найдётся. Проверено по dex: Lcom/whispercpp/whisper/NcnnWhisperLib;
-            // присутствует.
+            // останется зелёной, а сломается только в момент запуска - JNI ищет
+            // символы по имени, и обфусцированный NcnnWhisperLib не найдётся.
+            //
+            // Прежняя пометка "Проверено по dex: Lcom/...присутствует" как
+            // доказательство работы keep-правила была пустой: при
+            // isDebuggable=true R8 не запускался, поэтому полное имя там
+            // лежало в любом случае, независимо от правил. Теперь, когда
+            // isDebuggable=false, та же проверка становится настоящей.
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

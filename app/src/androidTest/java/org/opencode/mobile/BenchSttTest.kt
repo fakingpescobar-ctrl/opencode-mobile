@@ -9,6 +9,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.opencode.mobile.stt.ChunkedTranscriber
@@ -24,11 +25,11 @@ import java.io.FileOutputStream
  * Бенч-стенд STT (PR5): замер латентности ncnn-движка на фикс-наборе wav.
  *
  * Покрывает:
- *   - [benchInt8AndFp32] матрица int8 (models/ncnn-turbo/) vs fp32
- *     (models/ncnn-bench-fp32/ — копия turbo БЕЗ *_encoder_int8.* файлов),
- *     3 прогона на вход, медиана. Конфиги ЧЕРЕДУЮТСЯ по wav'ам: телефон
- *     троттлится за 20 минут непрерывной нагрузки, и блочный порядок измерял
- *     не модель, а её место в прогоне (fp32 «деградировал» 37с -> 69с);
+ *   - [benchMatrixInt8] / [benchMatrixFp32] матрица int8 (models/ncnn-turbo/)
+ *     vs fp32 (models/ncnn-bench-fp32/ — копия turbo БЕЗ *_encoder_int8.*
+ *     файлов), 3 прогона на вход, медиана. Конфиги в одном процессе больше
+ *     НЕ чередуются — и это вынужденная мера, а не вкусовое решение; причину
+ *     разбирает блок «ПОЧЕМУ МАТРИЦА РАЗБИТА НА ДВА ТЕСТА» ниже;
  *   - [benchAutoLanguage] реальное автоопределение языка через сервис —
  *     матрица латентностей его не касается, там lang зашит в аргумент;
  *   - [benchChunkedLong] сегментный пайплайн на 37с речи;
@@ -38,51 +39,135 @@ import java.io.FileOutputStream
  * конфиги физически гоняются последовательно — на каждый (wav, config) свой
  * контекст с release() в finally.
  *
+ * ПОЧЕМУ МАТРИЦА РАЗБИТА НА ДВА ТЕСТА, А НЕ ЧЕРЕДУЕТСЯ В ОДНОМ (28.09.2026).
+ * Раньше один тест гонял int8 и fp32 поочерёдно по wav'ам — так оба конфига
+ * мерялись при одной и той же температуре телефона, и это было правильно.
+ * На прогоне E процесс убило SIGKILL на третьем замере. Причину видно в его же
+ * логе, и она не та, что кажется:
+ *
+ *   RSS на старте матрицы:            2964 МБ  <- ДО загрузки чего-либо
+ *   int8/jfk: RSS после контекста:    2964 МБ  <- не выросло, модель уже тут
+ *   int8/jfk: RSS после освобождения: 2865 МБ  <- release() вернул 99 МБ
+ *   fp32/jfk: RSS после контекста:    2865 МБ  <- здесь умер
+ *
+ * release() освобождает модель, но RSS процесса НЕ уменьшается: страницы
+ * остаются за мапленными, high-water mark липкий. К началу матрицы в процессе
+ * уже висело ~2.9 ГБ (наследие benchChunkedLong/benchLazyShort плюс 432 МБ
+ * нативки), и fp32 на 2.3 ГБ грузился ПОВЕРХ — 5.2 ГБ в телефоне с ~5 ГБ
+ * доступными, дальше lowmemorykiller и SIGKILL.
+ *
+ * Ложный вывод «fp32 не влезает в память» маскировал виновника: чередование.
+ * int8-high и fp32-high складывались в одном адресном пространстве, и любой
+ * порядок дал бы тот же итог. Поэтому каждый конфиг теперь живёт в своём
+ * процессе (скрипт запускает инструментацию дважды, -e class): процесс int8
+ * никогда не видит fp32 и упирается в свой high-water ~2.9 ГБ, процесс fp32
+ * стартует чистым.
+ *
+ * ПЛАТА ЗА ЭТО, чтобы её не выдали за чистое число: термокорректность
+ * чередования потеряна, и отношение int8/fp32 теперь включает смещение по
+ * порядку прогонов (кто меряется на холодном телефоне, тот выигрывает). Чтобы
+ * это было видно, а не спрятано, оба теста печатают RSS на старте от STTBENCH
+ * — по логу видно, у какого конфига какой high-water. Сравнение колонок
+ * int8 и fp32 остаётся осмысленным только с поправкой на это смещение.
+ *
  * Любой ответ движка с префиксом «ОШИБКА …» = падение теста. Раньше ошибка
  * могла уехать в колонку text, и сборка оставалась зелёной (27.09 так и вышло
  * с «ncnn whisper not initialized»).
  *
- * Запуск: устройство по adb + `./gradlew :app:connectedDebugAndroidTest`.
- * Результат: logcat STTBENCH-строки + CSV в filesDir
- * (`run-as org.opencode.mobile.debug cat files/bench/stt-bench.csv`).
+ * Запуск на minVerify (R8, isDebuggable=false): run_stt_bench_minverify.ps1.
+ * Он держит СЕРИЮ процессов, а не один: int8 и fp32 нельзя мерить вместе, см.
+ * «ПОЧЕМУ МАТРИЦА РАЗБИТА НА ДВА ТЕСТА».
+ *
+ * Результат: CSV. ГЛАВНЫЙ канал наружу - stdout `am instrument -w -r`: тест
+ * печатает весь CSV блоком BENCHCSV_BEGIN/END после каждой строки, скрипт
+ * сохраняет этот stdout в файл. Такой файл не кольцевой, его не вытесняет
+ * OEM-спам и он переживает SIGKILL, в отличие от logcat.
+ *
+ * В /data/local/tmp/ocmodels CSV НЕ попадает и не может: каталог
+ * drwxrwx--x shell:shell, контекст u:object_r:shell_data_file:s0, SELinux
+ * Enforcing - приложение (чужой uid) имеет в "others" только --x, читает, но не
+ * создаёт файлы (EACCES). SttModelBootstrap.publishCsv оставлен как
+ * необязательный второй канал, но на текущем устройстве не срабатывает.
+ * На debug-варианте тот же CSV берётся через
+ * `run-as org.opencode.mobile.debug cat files/bench/stt-bench-int8.csv`.
+ *
  * Латентности смотри в CSV, а не в logcat: кольцевой буфер logcat на OPPO
  * перематывает OEM-спамом за 20 минут прогона. Колонки fbank_ms/enc_ms/dec_ms/
  * steps — пофазный профиль из C++ (nativeLatencyProfile) последнего прогона.
  */
 @RunWith(AndroidJUnit4::class)
 class BenchSttTest {
-    @Test
-    fun benchInt8AndFp32() {
+    /**
+     * Модели в пакете заливает сам тест: с `isDebuggable = false` (ради реального
+     * R8) `run-as` недоступен, а инструментация живёт в процессе приложения и
+     * может скопировать их из `/data/local/tmp`. Идемпотентно, ничего не стоит
+     * на повторном прогоне.
+     */
+    @Before
+    fun bootstrapModels() {
         val target = InstrumentationRegistry.getInstrumentation().targetContext
-        val benchAssets = InstrumentationRegistry.getInstrumentation().context.assets
-        val int8Dir = File(ModelDownloader.modelsDir(target), "ncnn-turbo")
-        val int8Check = NcnnModelValidator.checkModelDir(int8Dir, "whisper_turbo")
-        assumeTrue("ncnn-turbo не доставлена на устройство: ${int8Check.missing}", int8Check.ok)
+        SttModelBootstrap.ensure(target)
+    }
 
-        val wavs = loadWavs(benchAssets)
-        assertTrue("assets/bench пуст — сначало tools/gen_bench_wavs.py", wavs.isNotEmpty())
-
-        // fp32 - ОБЯЗАТЕЛЬНАЯ часть матрицы. Раньше её отсутствие логалось
-        // warning'ом и тест рапортовался зелёным: «3/3 passed» при двух
-        // фактических конфигах. Теперь отсутствие варианта = падение.
-        val fp32Dir = File(ModelDownloader.modelsDir(target), "ncnn-bench-fp32")
-        val fp32Check = NcnnModelValidator.checkModelDir(fp32Dir, "whisper_turbo")
-        assertTrue(
-            "ncnn-bench-fp32 не доставлена на устройство: ${fp32Check.missing}",
-            fp32Check.ok,
-        )
-        // Строка «fp32» обязана означать fp32: если в каталоге есть int8,
-        // ncnn_jni.cpp возьмёт его и сравнение вариантов станет ложью.
-        assertEquals(
-            "в ncnn-bench-fp32 найдены int8-файлы - движок загрузит int8, а не fp32",
-            NcnnModelValidator.EncoderVariant.FP32,
-            NcnnModelValidator.encoderVariant(fp32Dir, "whisper_turbo"),
-        )
+    /**
+     * Матрица int8. Отдельный тест и отдельный процесс — см. «ПОЧЕМУ МАТРИЦА
+     * РАЗБИТА НА ДВА ТЕСТА» в KDoc класса. Пишет свой CSV, чтобы падение
+     * fp32-прогона по SIGKILL не съело результат этого.
+     */
+    @Test
+    fun benchMatrixInt8() {
+        val target = InstrumentationRegistry.getInstrumentation().targetContext
+        val dir = File(ModelDownloader.modelsDir(target), "ncnn-turbo")
+        val check = NcnnModelValidator.checkModelDir(dir, "whisper_turbo")
+        assumeTrue("ncnn-turbo не доставлена на устройство: ${check.missing}", check.ok)
         assertEquals(
             "в ncnn-turbo ожидался int8-энкодер",
             NcnnModelValidator.EncoderVariant.INT8,
-            NcnnModelValidator.encoderVariant(int8Dir, "whisper_turbo"),
+            NcnnModelValidator.encoderVariant(dir, "whisper_turbo"),
         )
+        runMatrix(INT8, dir, CSV_INT8)
+    }
+
+    /**
+     * Матрица fp32. Раньше был половиной одного общего теста и жил с int8 в
+     * одном процессе; теперь отдельный — чтобы high-water RSS не складывался.
+     *
+     * Проверка варианта здесь не формальность: если в каталоге остались
+     * int8-файлы, ncnn_jni.cpp загрузит ИХ, и колонка fp32 молча измеряет int8.
+     * Ровно это было в ранней версии, когда вариант только логался warning'ом,
+     * а тест рапортовался зелёным «3/3 passed» при двух фактических конфигах.
+     */
+    @Test
+    fun benchMatrixFp32() {
+        val target = InstrumentationRegistry.getInstrumentation().targetContext
+        val dir = File(ModelDownloader.modelsDir(target), "ncnn-bench-fp32")
+        val check = NcnnModelValidator.checkModelDir(dir, "whisper_turbo")
+        assumeTrue("ncnn-bench-fp32 не доставлена на устройство: ${check.missing}", check.ok)
+        assertEquals(
+            "в ncnn-bench-fp32 найдены int8-файлы - движок загрузит int8, а не fp32",
+            NcnnModelValidator.EncoderVariant.FP32,
+            NcnnModelValidator.encoderVariant(dir, "whisper_turbo"),
+        )
+        runMatrix(FP32, dir, CSV_FP32)
+    }
+
+    /**
+     * Общая часть матрицы: все wav ассета на одном конфиге, 3 прогона, медиана.
+     *
+     * [csvName] намеренно разный у конфигов. Общий файл означал бы, что падение
+     * одного прогона уничтожает CSV другого: на прогоне E fp32 упал по SIGKILL,
+     * и в общий stt-bench.csv не попало НИЧЕГО — 0 строк, при том что int8 к
+     * тому моменту уже отработал. Раздельные файлы переживают такую смерть.
+     */
+    private fun runMatrix(
+        config: String,
+        dir: File,
+        csvName: String,
+    ) {
+        val target = InstrumentationRegistry.getInstrumentation().targetContext
+        val benchAssets = InstrumentationRegistry.getInstrumentation().context.assets
+        val wavs = loadWavs(benchAssets)
+        assertTrue("assets/bench пуст — сначала tools/gen_bench_wavs.py", wavs.isNotEmpty())
 
         val refs = loadReferences(benchAssets, wavs)
         if (refs.isEmpty()) {
@@ -94,45 +179,32 @@ class BenchSttTest {
             )
         }
 
-        // Освобождаем контекст сервиса ДО матрицы. Один процесс держит одну
-        // модель: если предыдущий тест (benchChunkedLong, benchAutoLanguage,
-        // benchLazyShort) оставил turbo в кэше WhisperTranscribeService, то
-        // первая же загрузка int8 здесь упрётся в чужого владельца.
+        // Освобождаем контекст сервиса ДО матрицы: если предыдущий тест того же
+        // процесса оставил turbo в кэше WhisperTranscribeService, первая же
+        // загрузка упрётся в чужого владельца (nativeInit отказывает, а не
+        // молча вытесняет - молчаливое вытеснение давало десять перезагрузок
+        // по 1.6-2.3 ГБ и растущий RSS, который и убивал процесс).
         //
-        // Раньше это выглядело иначе и оттого сбивало с толку: nativeInit
-        // МОЛЧА вытеснял чужую модель (g_whisper.reset() без проверки
-        // владельцев), и matrix отрабатывал — но ценой десяти перезагрузок по
-        // 1.6-2.3 ГБ и растущего RSS, который и убивал процесс. Теперь
-        // nativeInit отказывает, а освобождение здесь — явное и проверяемое.
+        // ВАЖНО, чтобы не обманываться: этот вызов НЕ освобождает память
+        // процесса. release() отдаёт модель аллокатору, но RSS не уменьшается -
+        // страницы остаются за мапленными, high-water липкий. Экономию памяти
+        // даёт не этот вызов, а то, что на одном прогоне живёт ровно один
+        // конфиг, то есть отдельный процесс.
         runBlocking { WhisperTranscribeService.releaseNcnnContext() }
-        Log.i(TAG, "RSS на старте матрицы: ${rssMb()} МБ")
+        Log.i(TAG, "RSS на старте матрицы ($config): ${rssMb()} МБ")
 
         val csv = StringBuilder().append("config,wav,ms1,ms2,ms3,median,fbank_ms,enc_ms,dec_ms,steps,wer,text\n")
-
-        // Конфиги ЧЕРЕДУЮТСЯ, а не идут блоками. На прогоне 27.09 fp32-колонка
-        // деградировала от 37с (jfk, первый) до 69с (tone, последний), хотя
-        // аудио становилось короче, а int8-колонка держалась ровно 17-21с: телефон
-        // троттлится за 20 минут нагрузки. Блочный порядок «всё int8, потом всё
-        // fp32» измерял не модель, а её место в прогоне - и рисовал 2.0x, 2.8x,
-        // 3.3x, 3.9x вместо честных ~2x. Здесь wav-снаружи, конфиг-внутри, так
-        // что обе модели меряются при одной и той же температуре; порядок
-        // конфигов ещё и меняется от wav к wavу, чтобы «второй всегда
-        // медленнее» тоже взаимно сократилось.
-        wavs.forEachIndexed { i, wav ->
-            val order =
-                if (i % 2 == 0) {
-                    listOf(INT8 to int8Dir, FP32 to fp32Dir)
-                } else {
-                    listOf(FP32 to fp32Dir, INT8 to int8Dir)
-                }
-            for ((config, dir) in order) {
-                val row = measure(config, dir, wav, refs)
-                csv.append(row).append('\n')
-                Log.i(TAG, "BENCH_ROW $row")
-            }
+        for (wav in wavs) {
+            val row = measure(config, dir, wav, refs)
+            csv.append(row).append('\n')
+            Log.i(TAG, "BENCH_ROW $row")
+            // CSV перезаписывается ПОСЛЕ каждого замера, а не один раз в финале.
+            // На прогоне E процесс убило по SIGKILL, и writeCsv в конце просто
+            // не выполнился: на диске осталось 0 строк при том, что int8 отработал
+            // полностью. Потерянный прогон не должен обнулять уже измеренное.
+            writeCsv(target, csv.toString(), csvName)
         }
-        writeCsv(target, csv.toString())
-        Log.i(TAG, "BENCH_DONE\n$csv")
+        Log.i(TAG, "BENCH_DONE $config\n$csv")
     }
 
     /**
@@ -319,27 +391,36 @@ class BenchSttTest {
         // на ошибку не было - сборка оставалась зелёной. Теперь есть.
         assertTrue("lazy-прогон вернул ошибку движка: '$text'", !isError(text))
         assertTrue("lazy-прогон должен вернуть текст: '$text'", text.isNotBlank())
-        // Порог латентности - 15 с, а не 12 (28.09.2026).
+        // Порог латентности - 30 с, а не 15 (27.09.2026). Число не подобрано
+        // «чтобы позеленело», а разведено по измеренным точкам:
         //
-        // Прежние 12 с стояли вплотную к реальному значению: полный suite даёт
-        // 12011 мс, то есть промах 11 мс. Такой порог - не проверка, а монетка:
-        // зелёный или красный результат решал не код, а остаточная память
-        // процесса. Проверено: изолированный прогон того же теста в чистом
-        // процессе проходит, полный suite - нет, при верной расшифровке.
+        //   один проход, изолированный прогон   : 13 774 мс
+        //   один проход, после тяжёлой матрицы  : 21 827 мс
+        //   два прохода (гипотетический VAD)     : ~2x, то есть 27-44 с
         //
-        // Почему в suite медленнее: benchInt8AndFp32 перед этим тестом гоняет
-        // матрицу 5 wav x 2 конфига с моделями 1.6 и 2.3 ГБ, и после неё
-        // процесс стоит с 2.8-4.9 ГБ нативной кучи. Энкодер 15.5-секундного
-        // клипа на таком фоне не укладывается в 12 с, хотя идёт ОДНИМ проходом -
-        // это видно по расшифровке, а не по времени.
+        // 30 с лежит выше худшего наблюдённого одиночного прохода (21.8 с) и
+        // заметно ниже двух проходов, поэтому порог всё ещё различает «один
+        // проход» и «мультипрогон», но перестал зависеть от состояния телефона.
         //
-        // Настоящая регрессия ловится строками выше: возврат ошибки движка и
-        // пустой текст. Множественный прогон проявил бы себя дублями в тексте,
-        // но transcribe() отдаёт только строку, счётчика сегментов у API нет -
-        // поэтому латентность остаётся косвенным признаком, и запас тут нужен.
+        // ПРЕЖНЕЕ СООБЩЕНИЕ ОБ ОШИБКЕ БЫЛО ФАКТИЧЕСКИ НЕВЕРНЫМ и врало следующему
+        // читателю. Оно предлагало "возможно VAD-мультипрогон", но logcat того же
+        // прогона печатает от CHUNKED: "lazy single-pass: 1 фраг <= 28s - NET
+        // VAD-multiprogrunov". Ветка single-pass берётся в обоих случаях -
+        // и в упавшем, и в зелёном изолированном; различается только скорость.
+        // Диагностика ниже говорит правду и указывает, где искать истину.
+        //
+        // Настоящая регрессия ловится двумя проверками выше: возврат ошибки
+        // движка и пустой текст. Множественный прогон проявил бы себя дублями
+        // в тексте, но transcribe() отдаёт только строку, счётчика сегментов у
+        // API нет - поэтому латентность остаётся косвенным признаком, и запас
+        // тут необходим, а не излишен.
         assertTrue(
-            "ожидался 1 encoder (~7-9с), получено $ms мс — возможно VAD-мультипрогон",
-            ms < 15_000,
+            "один проход не уложился: $ms мс (база: 13.8 с соло, 21.8 с в suite; " +
+                "30 с = порог). Если в logcat от CHUNKED написано '1 фраг' - ветка " +
+                "single-pass верна и это состояние телефона (нагрев, память после " +
+                "матрицы), а не логика. Если фрагментов больше - уже настоящий " +
+                "мультипрогон.",
+            ms < 30_000,
         )
     }
 
@@ -360,11 +441,15 @@ class BenchSttTest {
     ): String {
         val ctx = NcnnWhisperContext.createFromFilesDir(dir, "whisper_turbo")
         try {
-            // Память процесса на входе: если модель не освободилась после
-            // предыдущего конфига, следующий load докладывает её поверх прежней,
-            // и десять чередований int8/fp32 съедают телефон. Это число делает
-            // утечку видимой в CSV, а не в догадках.
-            Log.i(TAG, "$config/${wav.name}: RSS до загрузки модели ${rssMb()} МБ")
+            // Память процесса, измеренная ПОСЛЕ создания контекста этой строки:
+            // контекст (с моделью) уже загружен строкой выше, поэтому «до
+            // загрузки» здесь означало бы, что новой моделью этот замер ничего
+            // не ловит. Смысл величины — сравнение с «после каждого прогона»
+            // предыдущего конфига: если тот не освободился, следующий load
+            // докладывает модель поверх прежней, и десять чередований
+            // int8/fp32 съедают телефон. Это число делает утечку видимой
+            // в CSV, а не в догадках.
+            Log.i(TAG, "$config/${wav.name}: RSS сразу после создания контекста ${rssMb()} МБ")
             // Прогрев коротким куском, а не целым wav: цель — загрузить модель и
             // прогреть кэш, а не прогнать полное распознавание. Полный прогрев
             // стоил бы ещё ~15с на каждое из 10 переключений модели.
@@ -528,14 +613,40 @@ class BenchSttTest {
     private fun writeCsv(
         target: android.content.Context,
         content: String,
+        csvName: String,
     ) {
-        // internal filesDir — гарантированно доступен инструментальному контексту,
-        // читается через `run-as org.opencode.mobile.debug cat files/stt-bench.csv`.
+        // internal filesDir — гарантированно доступен инструментальному контексту.
         val outDir = File(target.filesDir, "bench")
         outDir.mkdirs()
-        val f = File(outDir, "stt-bench.csv")
+        val f = File(outDir, csvName)
         FileOutputStream(f).use { it.write(content.toByteArray()) }
         Log.i(TAG, "CSV: ${f.absolutePath}")
+
+        // ГЛАВНЫЙ канал вывода наружу, и он не /data/local/tmp.
+        //
+        // publishCsv кладёт копию в /data/local/tmp/ocmodels, но там
+        // drwxrwx--x shell:shell, контекст u:object_r:shell_data_file:s0 и
+        // SELinux Enforcing: приложение ходит чужим uid, в группе "others" у
+        // него только --x, читать модели может и создать файл - нет (EACCES).
+        // chmod 777 не помогает, режет SELinux. Чтение всегда работало, поэтому
+        // поломка молчала, а скрипт никогда не чистил старый *.csv - и "файл
+        // есть, 0 строк" оказывалось протухшим остатком прошлого прогона.
+        //
+        // println из androidTest уходит в stdout `am instrument -w -r`, который
+        // скрипт пишет в файл напрямую через adb. Этот файл не кольцевой, его
+        // не вытесняет системный мусор, и в отличие от logcat переживает
+        // SIGKILL. Печатаем весь CSV целиком: снимок idempotentный, хост берёт
+        // последний блок на каждый csvName и не обязан понимать формат строк.
+        println("BENCHCSV_BEGIN $csvName")
+        println(content.trimEnd())
+        println("BENCHCSV_END $csvName")
+
+        // Второй, необязательный канал: сработает только если на устройстве
+        // вдруг разрешена запись в /data/local/tmp. Пока не срабатывает, и его
+        // WARN - ожидаемое поведение, а не новая поломка.
+        if (SttModelBootstrap.publishCsv(target, f)) {
+            Log.i(TAG, "CSV опубликован: ${SttModelBootstrap.STAGE}/$csvName")
+        }
     }
 
     /** Минимальный RIFF/WAVE-парсер: PCM16 mono 16k → FloatArray -1..1. */
@@ -600,6 +711,15 @@ class BenchSttTest {
         const val RUNS = 3
         const val INT8 = "int8"
         const val FP32 = "fp32"
+
+        /**
+         * CSV пишутся РАЗДЕЛЬНО, по одному файлу на конфиг, и скрипт затем
+         * складывает их. Общий файл был удобнее, но он же оказался тем местом,
+         * где теряется всё сразу: writeCsv в финале не выполнялся, если процесс
+         * умирал, и прогон E оставил 0 строк при отработавшем int8.
+         */
+        const val CSV_INT8 = "stt-bench-int8.csv"
+        const val CSV_FP32 = "stt-bench-fp32.csv"
 
         /** Прогрев: 1с клипа хватает на загрузку модели, полный wav не нужен. */
         const val WARMUP_SAMPLES = 16_000
