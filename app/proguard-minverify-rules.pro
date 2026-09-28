@@ -19,32 +19,91 @@
 # 2) Член, который приложение ВЫЗЫВАЕТ -> R8 его ПЕРЕИМЕНОВЫВАЕТ. Тест ищет по
 #    исходному имени и не находит. Тот же случай с currentLang().
 #
-# Отсюда правило: держим ИМЕНА нужных тестам классов, но разрешаем оптимизацию.
+# Отсюда правило. ПЕРВЫЙ вариант был: "держим ИМЕНА нужных тестам классов, но
+# разрешаем оптимизацию" -> -keep,allowoptimization вместо голого -keep, потому
+# что голый -keep запретил бы оптимизацию, и проверка не проверяла бы ровно то,
+# ради чего существует. allowoptimization оставлял R8 инлайнить, сливать и
+# девиртуализировать - а это и есть источник риска.
 #
-#   -keep,allowoptimization
+# Этот довод был наполовину верен и потому опасен. Он смешивал две РАЗНЫЕ цели:
+#   - имена классов, по которым тест линкуется,  -> нужно сохранить;
+#   - оптимизации, которые тест хочет испытать,   -> нужно разрешить.
+# И для ОДНОГО И ТОГО ЖЕ члена эти цели несовместимы: метод, который R8 вправе
+# заинлайнить, не может одновременно остаться вызываемым снаружи. Сейчас за это
+# платит NcnnModelValidator$Check.getOk(). Разделение сделано явным: пиннится
+# ровно тот API, которым тест управляет снаружи процесса, а граница честно
+# описана в блоке про org.opencode.mobile.stt.** ниже.
 #
-# а не просто -keep. Разница принципиальна: -keep class { *; } запретил бы
-# оптимизацию, и проверка не проверяла бы ровно то, ради чего существует.
-# allowoptimization оставляет R8 инлайнить, сливать и девиртуализировать -
-# именно эти оптимизации и есть источник риска, - а тест при этом линкуется.
-#
-# Проверено: с этими правилами на minVerify зелёные benchChunkedLong,
-# benchLazyShort, nativeInitAndTranscribe и benchAutoLanguage.
+# СТРОКА ПРО "Проверено" УСТАРЕЛА И КАК ДОКАЗАТЕЛЬСТВО НЕ ГОДИТСЯ. Зелёные
+# benchChunkedLong, benchLazyShort, nativeInitAndTranscribe и benchAutoLanguage
+# были получены на debuggable-сборке, где R8 НЕ ЗАПУСКАЛСЯ. То есть подтверждали
+# они не то, что правила годны против R8, а что они не мешают сборке без него.
+# Первая честная проверка против R8 дала два падения (androidx.tracing.endSection,
+# затем NcnnModelValidator$Check.getOk), и оба были настоящими.
 # ---------------------------------------------------------------------------
 
-# Классы, к которым обращается androidTest (см. импорты BenchSttTest).
--keep,allowoptimization class org.opencode.mobile.stt.ChunkedTranscriber { *; }
--keep,allowoptimization class org.opencode.mobile.stt.ModelDownloader { *; }
--keep,allowoptimization class org.opencode.mobile.stt.NcnnModelValidator { *; }
--keep,allowoptimization class org.opencode.mobile.stt.SpeechSegmenter { *; }
--keep,allowoptimization class org.opencode.mobile.stt.Wer { *; }
--keep,allowoptimization class org.opencode.mobile.stt.WhisperTranscribeService { *; }
+# ---------------------------------------------------------------------------
+# ЧТО ДЕРЖИМ, И ПОЧЕМУ ИМЕННО ТАК
+#
+# Одно правило на весь пакет, а не перечисление классов. Перечисление
+# обходилось дважды, потому что ПРАВИЛО НА ВНЕШНИЙ КЛАСС НЕ ПОКРЫВАЕТ
+# ВЛОЖЕННЫЕ: вложенный класс - отдельный класс с именем
+# Outer$Inner, а не часть Outer. Три инцидента, все с одним корнем:
+#
+#   1) WhisperTranscribeService$Companion  -> NoSuchMethodError setLanguageOverride
+#   2) WhisperTranscribeService$Companion  -> NoSuchMethodError currentLang
+#   3) NcnnModelValidator$Check            -> NoSuchMethodError getOk()Z
+#
+# Третий найден 27.09.2026 первым РЕАЛЬНЫМ прогоном R8 (см. isDebuggable в
+# app/build.gradle.kts). Раньше он был невозможен: при debuggable R8 не
+# запускался, вложенные классы оставались на месте, и правило на внешний класс
+# выглядело достаточным.
+#
+# ШАБЛОН '**' покрывает и вложенные классы тоже, поэтому $Companion, $Check,
+# $EncoderVariant и $SttTask больше не нужно перечислять поштучно: забыть
+# следующий вложенный класс теперь невозможно.
+-keep class org.opencode.mobile.stt.** { *; }
 
-# $Companion - ОТДЕЛЬНЫЙ КЛАСС, и правило на внешний класс его не покрывает.
-# Это стоило двух промахов: setLanguageOverride, потом currentLang().
--keep,allowoptimization class org.opencode.mobile.stt.WhisperTranscribeService$Companion { *; }
-
--keep,allowoptimization class com.whispercpp.whisper.NcnnWhisperContext { *; }
+# NESTED, а не перечисление: $Check/$EncoderVariant/$SttTask - отдельные классы.
+# $ не является разделителем пакета, поэтому '**' матчит Outer$Inner целиком.
+#
+# БЕЗ allowoptimization, и это НЕ откат к старой ошибке, а сознательный размен:
+# allowoptimization разрешает R8 инлайнить и сливать методы, и он именно это и
+# делает. usage.txt после прогона показывает удалённые NcnnModelValidator$Check,
+# NcnnModelValidator$EncoderVariant и WhisperTranscribeService$Companion$SttTask,
+# а getOk() из mapping уезжает в '-> invokeSuspend'. Тест линкуется по исходному
+# имени, поэтому метод, который R8 вправе заинлайнить, одновременно не может
+# остаться вызываемым. Эти две цели mutually exclusive для ОДНОГО и того же
+# члена, и флага, который дал бы и то и другое, не существует.
+#
+# ЧЕСТКО О ГРАНИЦЕ ПОКРЫТИЯ, чтобы не выдавать это за полное R8-покрытие.
+# Пиннится ровно то API, которым тест управляет снаружи процесса; оптимизация
+# внутри org.opencode.mobile.stt при этом выключена. Настоящую работу R8 всё
+# равно проверяют: граница JNI (NcnnWhisperLib удержан именем, символ ищется
+# строкой, dlopen и транскрипция идут через нативный код), сжатие остальных
+# 100% приложения (тысячи переименований в mapping.txt), и связность STT с
+# остальным минифицированным приложением. Спрятать R8-баг в самом stt-пакете
+# такой конфиг не сможет - это осознанная цена, а не упущение.
+# ВТОРОЙ ПИН, того же типа, что и org.opencode.mobile.stt.** выше.
+# createFromFilesDir объявлен ВНУТРИ companion object (NcnnWhisperContext.kt:177),
+# то есть принадлежит классу NcnnWhisperContext$Companion, а не NcnnWhisperContext.
+# Правило на внешний класс его не покрывает, и R8 спокойно инлайнил
+# createFromFilesDir в единственного вызывающего (WhisperTranscribeService:504)
+# и удалил метод:
+#   NoSuchMethodError: No virtual method createFromFilesDir(File,String)
+#     NcnnWhisperContext; in class Ly2/b;
+# Это уже ЧЕТВЁТЫЙ инцидент одного корня, если считать $Companion, $Check и
+# $SttTask из пакета stt. Причина одна и та же четыре раза: правило написано на
+# внешний класс, а вложенный класс - отдельный класс.
+#
+# '**' на хвосте имени покрывает и вложенные, поэтому перечислять $Companion
+# поштучно больше не нужно. Это ровно тот приём, что применён к stt выше, и он
+# там уже проверен: NcnnModelValidator$Check.getOk() перестал падать.
+#
+# Пин точечный, а не com.whispercpp.whisper.** : androidTest импортирует из
+# этого пакета ровно один класс (NcnnWhisperContext), и держать больше нечего.
+# NcnnWhisperLib сюда НЕ входит намеренно - см. блок "ЧЕГО ТУТ НЕТ" внизу.
+-keep class com.whispercpp.whisper.NcnnWhisperContext** { *; }
 
 # Kotlin stdlib. Тестовый APK собран против необфусцированных имён и ищет
 # kotlin/LazyKt по исходному имени; без этого тестовый процесс падает с
@@ -94,15 +153,24 @@
 # подтверждается лишь приблизительно.
 #
 # Вывод, ради которого всё это записано, от абсолютных мегабайт НЕ зависит:
-# allowoptimization не даёт выигрыша, потому что для debuggable-сборки
-# оптимизации и так выключены на уровне AGP (WARNING печатается при каждой
-# сборке, см. выше), и подтверждён попибайтовым A/B. Не переписывайте правило
-# обратно на bare -keep ради "экономии", которой не существует.
+# allowoptimization не давал выигрыша, потому что для debuggable-сборки
+# оптимизации и так выключены на уровне AGP (WARNING печатался при каждой
+# сборке, см. выше), и это было подтверждено попибайтовым A/B.
 #
-# allowoptimization оставлен осознанно: он не вредит сейчас и защищает смысл
-# правила, если minVerify когда-нибудь перестанет быть debuggable. Тогда
-# оптимизации включатся, и -keep без allowoptimization начал бы запрещать их
-# именно там, где тест и должен их проверять.
+# ЧТО ЗДЕСЬ ИЗМЕНЕНО 27.09.2026, и почему прежний вывод больше не действует.
+# Редакция заканчивалась словами: "allowoptimization оставлен осознанно: он не
+# вредит сейчас и защищает смысл правила, если minVerify когда-нибудь перестанет
+# быть debuggable."
+#
+# minVerify перестал быть debuggable. И allowoptimization не просто "начал
+# вредить" - он оказался причиной падения suite первым же честным прогоном:
+# NcnnModelValidator$Check.getOk() уехал в '-> invokeSuspend' и исчез из dex, а
+# сам $Check был слит во внешний класс. Тот абзац был прав в одной половине -
+# оптимизации действительно были выключены, и потому правило было no-op - и неправ
+# в другой: оно предсказало, что с включением оптимизаций allowoptimization
+# станет полезным. Стало разрушительным. Правка, к которой он вёл, применена:
+# bare -keep на org.opencode.mobile.stt.** вместо перечисления классов с
+# allowoptimization. Числа выше устарели по дату, выводы приведены в соответствие.
 #
 # ПАДЕНИЕ suite лечится памятью, а не proguard: процесс перечитывал модель ncnn
 # по 1.6-2.3 ГБ на каждое переключение int8/fp32, RSS не падал обратно, и
@@ -111,6 +179,31 @@
 -keep,allowoptimization class kotlinx.** { *; }
 -dontwarn kotlin.**
 -dontwarn kotlinx.**
+
+# ТЕСТОВЫЙ ФРЕЙМВОРК. Найдено 27.09.2026, и только потому, что R8 наконец
+# стал реально запускаться (см. isDebuggable в app/build.gradle.kts).
+#
+# Симптом: процесс падал ДО первого теста, на самом старте:
+#   java.lang.NoSuchMethodError: No static method endSection()V in class Lo2/a;
+#     at androidx.test.runner.AndroidJUnitRunner.onCreate(AndroidJUnitRunner.java:344)
+#   INSTRUMENTATION_RESULT: shortMsg=Process crashed.
+#
+# Механизм тот же, что у kotlin.** ниже, и по той же причине: инструментация
+# живёт в ОТДЕЛЬНОМ APK, который собран против необфусцированных имён, тогда как
+# в APK приложения R8 эти имена переименовал. Раньше это невозможно было увидеть:
+# при isDebuggable=true R8 не запускался, имена оставались исходными, и правило
+# на kotlin.** выглядело достаточным. Оно и было достаточным - для того, что
+# тогда происходило, то есть почти ничего.
+#
+# endSection() - это androidx.tracing.Tracing, которого касается сам раннер.
+# Поэтому держим не только androidx.test, но и tracing: правило на внешний класс
+# не покрывает то, что раннер вызывает на нём.
+-keep,allowoptimization class androidx.test.** { *; }
+-keep,allowoptimization class androidx.tracing.** { *; }
+-keep,allowoptimization class androidx.annotation.** { *; }
+-keep,allowoptimization class androidx.core.** { *; }
+-dontwarn androidx.test.**
+-dontwarn androidx.tracing.**
 
 # ЧЕГО ТУТ НЕТ, СОЗНАТЕЛЬНО:
 #

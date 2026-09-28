@@ -204,6 +204,52 @@ adb shell am instrument -w -r org.opencode.mobile.debug.test/androidx.test.runne
 adb pull /sdcard/Android/data/org.opencode.mobile.debug/files/stt-bench.csv .
 ```
 
+### 10.4 R8-прогон на minVerify (обязательно читать перед запуском)
+
+Прогон §10.3 идёт по `debug`. Но смысл варианта `minVerify` — именно в том,
+что он минифицирован R8, то есть это единственная проверка, что
+инструментация и ProGuard-правила пережили обфускацию. Пока STT-тесты были
+там мёртвыми, правила из `app/proguard-minverify-rules.pro` фактически не
+проверялись ничем.
+
+Три грабли, из-за которых `connectedMinVerifyAndroidTest` для STT не годится:
+
+| Грабля | Последствие |
+|---|---|
+| Gradle переустанавливает APK | `adb install -r` на ColorOS **стирает data-директории пакета** вместе с `files/models` |
+| `applicationIdSuffix=".minverify"` | пакет `org.opencode.mobile.minverify` с пустым data-dir; модели лежат в `org.opencode.mobile.debug` |
+| `assumeTrue` при отсутствии моделей | тесты пропускаются, а Gradle рапортует `skipped=5` и **код 0** |
+
+Признак, что прогон был пустым: в XML `skipped="5" time="0.469"` при типичном
+реальном времени 5–9 минут. Ещё опаснее `am instrument`: он печатает
+`OK (5 tests)` и для **пропущенных** тестов, так что зелёный код возврата
+сам по себе не доказывает, что хоть что-то исполнялось.
+
+Правильный порядок (автоматизирован в `run_stt_bench_minverify.ps1`):
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File run_stt_bench_minverify.ps1
+# повторный прогон без повторной заливки 2.3 ГБ:
+pwsh -ExecutionPolicy Bypass -File run_stt_bench_minverify.ps1 -SkipPush
+```
+
+1. Собрать и установить `app-minVerify.apk` + `app-minVerify-androidTest.apk`
+   (именно в этом порядке — модели заливать **после** установки).
+2. Залить `tools/ncnn-int8/turbo` в `/data/local/tmp/ocmodels/ncnn-turbo`
+   (16 файлов, 2.31 ГБ, ~40 МБ/с).
+3. На устройстве собрать fp32-конверт: копия turbo **без**
+   `*_encoder_int8.ncnn.*` (1.68 ГБ). Если в «fp32» папке останется int8-энкодер,
+   движок молча загрузит int8 и колонка int8-vs-fp32 станет бессмысленной.
+4. Скопировать в `org.opencode.mobile.minverify` через `run-as` (напрямую с
+   `/sdcard` `run-as` не читает — FUSE на ColorOS).
+5. Прогнать `am instrument` вручную, **без** gradle.
+
+Скрипт дополнительно проверяет, что в logcat реально появились `BENCH_ROW` и
+`LANG_ROW`, а CSV непустой — иначе печатает предупреждение вместо `RESULT: OK`.
+
+Прогон 27.09.2026: `OK (5 tests)` за 522 с, 10 `BENCH_ROW` + 2 `LANG_ROW` +
+`chunked` и `lazy` строки на минифицированной сборке.
+
 ---
 
 ## 11. ЭКСП-5: VAD-сегментация + чанкинг (анти-галлюцинации и потеря хвоста >30 с)

@@ -7,6 +7,7 @@ import com.whispercpp.whisper.NcnnWhisperContext
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertFalse
 import org.junit.Assume.assumeTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.opencode.mobile.stt.ModelDownloader
@@ -29,6 +30,17 @@ import kotlin.math.sin
  */
 @RunWith(AndroidJUnit4::class)
 class SmokeSttTest {
+    /**
+     * Модели в пакете заливает сам тест: с `isDebuggable = false` (ради реального
+     * R8) `run-as` недоступен, а инструментация живёт в процессе приложения и
+     * может скопировать их из `/data/local/tmp`. Идемпотентно.
+     */
+    @Before
+    fun bootstrapModels() {
+        val app = InstrumentationRegistry.getInstrumentation().targetContext
+        SttModelBootstrap.ensure(app)
+    }
+
     @Test
     fun nativeInitAndTranscribe() {
         val app = InstrumentationRegistry.getInstrumentation().targetContext
