@@ -622,30 +622,36 @@ class BenchSttTest {
         FileOutputStream(f).use { it.write(content.toByteArray()) }
         Log.i(TAG, "CSV: ${f.absolutePath}")
 
-        // ГЛАВНЫЙ канал вывода наружу, и он не /data/local/tmp.
+        // ВЫВОД НАРУЖУ, и теперь он не один, потому что многострочная
+        // выгрузка гибнет на КАЖДОМ из прежних каналов. Прогон 28.09 это
+        // показал, и показал одновременно все три отказа:
         //
-        // publishCsv кладёт копию в /data/local/tmp/ocmodels, но там
-        // drwxrwx--x shell:shell, контекст u:object_r:shell_data_file:s0 и
-        // SELinux Enforcing: приложение ходит чужим uid, в группе "others" у
-        // него только --x, читать модели может и создать файл - нет (EACCES).
-        // chmod 777 не помогает, режет SELinux. Чтение всегда работало, поэтому
-        // поломка молчала, а скрипт никогда не чистил старый *.csv - и "файл
-        // есть, 0 строк" оказывалось протухшим остатком прошлого прогона.
+        //   1. println -> `INSTRUMENTATION_RESULT: stream=` ПУСТОЙ. Хост не
+        //      получил ни байта, хотя I/System.out в logcat показывал
+        //      BENCHCSV_BEGIN/END. Комментарий ниже утверждал, что этот канал
+        //      главный и переживает SIGKILL; на деле он не дошёл даже до
+        //      нормального завершения теста.
+        //   2. `Log.i(TAG, "BENCH_DONE $config\n$csv")` - в logcat уцелела
+        //      только первая строка, `^config,wav` в архиве не нашлось ни разу.
+        //      Встроенные переводы строки в одном Log.i logd не переживает.
+        //   3. /data/local/tmp/ocmodels - EACCES, SELinux, предсказанный отказ.
         //
-        // println из androidTest уходит в stdout `am instrument -w -r`, который
-        // скрипт пишет в файл напрямую через adb. Этот файл не кольцевой, его
-        // не вытесняет системный мусор, и в отличие от logcat переживает
-        // SIGKILL. Печатаем весь CSV целиком: снимок idempotentный, хост берёт
-        // последний блок на каждый csvName и не обязан понимать формат строк.
+        // Причина у (1) и (2) одна: канал, который не переносит МНОГОСТРОЧНЫЙ
+        // блок, бесполезен для CSV целиком. Однострочные строки переживают все
+        // три, поэтому и CSV теперь уходит ФАЙЛОМ, а не потоком.
         println("BENCHCSV_BEGIN $csvName")
         println(content.trimEnd())
         println("BENCHCSV_END $csvName")
 
-        // Второй, необязательный канал: сработает только если на устройстве
-        // вдруг разрешена запись в /data/local/tmp. Пока не срабатывает, и его
-        // WARN - ожидаемое поведение, а не новая поломка.
+        // ГЛАВНЫЙ канал: файл в external filesDir, откуда хост берёт его
+        // обычным `adb shell cat`. Многострочное переживает, SELinux не режет.
+        // Подробности и вторая попытка через /data/local/tmp - в
+        // SttModelBootstrap.publishCsv.
         if (SttModelBootstrap.publishCsv(target, f)) {
-            Log.i(TAG, "CSV опубликован: ${SttModelBootstrap.STAGE}/$csvName")
+            val ext = SttModelBootstrap.externalBenchDir(target)
+            Log.i(TAG, "CSV опубликован: ${ext?.absolutePath}/$csvName")
+        } else {
+            Log.w(TAG, "CSV НЕ опубликован ни в один канал - разбор $csvName на хосте не получится")
         }
     }
 
