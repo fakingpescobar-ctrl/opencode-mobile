@@ -44,6 +44,7 @@ static const bool g_ncnn_verbose = []() {
 #include <stdio.h>
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -927,6 +928,68 @@ static int g_refcount = 0;
 // Взаимной блокировки нет: из под лока не вызывается JNI обратно в Kotlin.
 static std::mutex g_model_mutex;
 
+// ---- in-flight guard ----
+//
+// Счётчик выводов, которые уже начались и ещё не закончились. Живёт под
+// g_model_mutex, поэтому проверка "есть ли контекст" и увеличение счётчика
+// неразделимы.
+//
+// Зачем он вообще: g_whisper - unique_ptr, то есть ОБЩЕГО ВЛАДЕНИЯ НЕТ. Ни
+// копии указателя, ни shared_ptr удержать контекст не могут, единственный
+// способ - этот счётчик. Без него nativeFree() делает g_whisper.reset() и
+// ~Whisper() сносит сети и пулы, пока другой поток стоит внутри
+// g_whisper->transcribe() в OpenMP-регионе.
+//
+// Это не теория, это прогон F, 28.09, дословно:
+//
+//   I/CHUNKED  (16766): начало 2-го чанка из 9   <- тест в transcribe
+//   D/VOICE    (16766): worker: задание #1, 79680 <- воркер сервиса грузит модель
+//   F/libc     (16766): Fatal signal 6 (SIGABRT), code -1 (SI_QUEUE)
+//                       in tid 16869 (pool-5-thread-1)
+//   F/DEBUG    (16872): #03 ... libncnnwhisper.so (__kmp_debug_assert+140)
+//
+// __kmp_debug_assert - ассерт рантайма OpenMP, а не OOM: кто-то разрушил
+// состояние параллельной области из-под работающего региона. Мьютекс
+// g_model_mutex этот баг не ловил и не мог поймать: он защищает БУХГАЛТЕРИЮ
+// (g_refcount, g_loaded_dir), а весь вывод идёт без него, иначе любые два
+// параллельных запроса сериализовались бы в очередь.
+static int g_inflight = 0;
+static std::condition_variable g_inflight_cv;
+
+// RAII-обёртка: конструктор атомарно проверяет контекст и занимает слот,
+// деструктор освобождает его на ЛЮБОМ выходе, включая ранний return и
+// исключение. Ручной ++/-- в функции с несколькими return'ами - это ровно тот
+// класс бага, который здесь и чинится, поэтому счётчик не трогаем руками.
+class InFlight {
+public:
+    // false = контекста нет, вызывающий обязан бросить "not initialized".
+    bool acquire()
+    {
+        std::lock_guard<std::mutex> lk(g_model_mutex);
+        if (!g_whisper) return false;
+        ++g_inflight;
+        m_held = true;
+        return true;
+    }
+
+    ~InFlight()
+    {
+        if (!m_held) return;
+        std::lock_guard<std::mutex> lk(g_model_mutex);
+        if (--g_inflight == 0) g_inflight_cv.notify_all();
+    }
+
+    InFlight(const InFlight&) = delete;
+    InFlight& operator=(const InFlight&) = delete;
+    // ОБЯЗАТЕЛЬНО: удалённый копирующий конструктор ПОДАВЛЯЕТ неявный
+    // дефолтный (C++11), а три JNI-входа объявляют `InFlight inFlight;`.
+    // Без этой строки сборка падает "no matching constructor".
+    InFlight() = default;
+
+private:
+    bool m_held = false;
+};
+
 // ---- JNI: Java_com_whispercpp_whisper_NcnnWhisperLib_* ----
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_whispercpp_whisper_NcnnWhisperLib_nativeInit(JNIEnv* env, jobject /*thiz*/, jstring modelDir, jstring base)
@@ -1028,10 +1091,31 @@ Java_com_whispercpp_whisper_NcnnWhisperLib_nativeInit(JNIEnv* env, jobject /*thi
 // зафиксировано в KDoc WhisperTranscribeService.releaseNcnnContext() и
 // держится тем, что сервис работает через единственный worker-поток.
 // Если это перестанет быть верно, нужен reentrant-протокол, а не лок.
+// nativeSetThreads / nativeTranscribe / nativeTranscribeAuto НЕ держат
+// g_model_mutex на протяжении работы - и это по-прежнему верно: держать его
+// 9-40 секунд нельзя, иначе nativeIsAlive (он зовёт ensureAlive() перед каждым
+// nativeFree) и любой health-check встали бы на всё время вывода, а два
+// параллельных запроса сериализовались бы в очередь.
+//
+// НО прежнее обоснование под этой строчкой было ложным, и прогон F это доказал.
+// Оно гласило: "вывод всегда завершается, поэтому освобождение безопасно, оно
+// дождётся". Не дождалось - ждать было НЕЧЕГО. Мьютекс защищал только
+// бухгалтерию (g_refcount, g_loaded_dir); вывод шёл мимо лока, а nativeFree
+// при обнулении счётчика делал g_whisper.reset() и не проверял, что вывод ещё
+// идёт. g_whisper - unique_ptr, удержать его изнутри чужого потока нечем.
+//
+// Теперь вместо мьютекса на всё время вывода стоит счётчик g_inflight: слот
+// берётся на входе, освобождается на любом выходе (RAII), а nativeFree перед
+// reset() ждёт g_inflight == 0. Долгий вывод по-прежнему не держит лок и не
+// блокирует health-check, но уничтожить контекст из-под него больше нельзя.
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_whispercpp_whisper_NcnnWhisperLib_nativeSetThreads(JNIEnv* /*env*/, jobject /*thiz*/, jint n)
 {
-    if (!g_whisper) return JNI_FALSE;
+    // Слот берём и здесь: set_num_threads пишет в тот же объект, что и вывод, и
+    // без слота это тот же use-after-free, только без OpenMP-ассерта - тише и
+    // вреднее, потому что падает не всегда.
+    InFlight inFlight;
+    if (!inFlight.acquire()) return JNI_FALSE;
     g_whisper->set_num_threads((int)n);
     return JNI_TRUE;
 }
@@ -1045,7 +1129,12 @@ extern "C" JNIEXPORT jobjectArray JNICALL
 Java_com_whispercpp_whisper_NcnnWhisperLib_nativeTranscribeAuto(
     JNIEnv* env, jobject /*thiz*/, jfloatArray samples)
 {
-    if (!g_whisper)
+    // Слот берём ДО любой работы с g_whisper и держим до конца функции: пока
+    // жив InFlight, nativeFree() обязан ждать и не может уничтожить контекст
+    // из-под работающего вывода. Прежняя проверка `if (!g_whisper)` читала
+    // unique_ptr без лока и была гонкой сама по себе.
+    InFlight inFlight;
+    if (!inFlight.acquire())
     {
         env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), "ncnn whisper not initialized");
         return NULL;
@@ -1084,7 +1173,12 @@ Java_com_whispercpp_whisper_NcnnWhisperLib_nativeTranscribeAuto(
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_whispercpp_whisper_NcnnWhisperLib_nativeTranscribe(JNIEnv* env, jobject /*thiz*/, jfloatArray samples, jstring lang)
 {
-    if (!g_whisper)
+    // Слот берём ДО любой работы с g_whisper и держим до конца функции: пока
+    // жив InFlight, nativeFree() обязан ждать и не может уничтожить контекст
+    // из-под работающего вывода. Прежняя проверка `if (!g_whisper)` читала
+    // unique_ptr без лока и была гонкой сама по себе.
+    InFlight inFlight;
+    if (!inFlight.acquire())
     {
         env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), "ncnn whisper not initialized");
         return NULL;
@@ -1184,10 +1278,16 @@ Java_com_whispercpp_whisper_NcnnWhisperLib_nativeFree(JNIEnv* /*env*/, jobject /
     //
     // Тот же лок, что в nativeInit: иначе release может попасть в середину
     // загрузки чужой модели и обнулить счётчик у того, кто уже грузит.
-    std::lock_guard<std::mutex> guard(g_model_mutex);
+    std::unique_lock<std::mutex> lk(g_model_mutex);
 
     if (g_refcount > 0) g_refcount--;
     if (g_refcount > 0) return;
+
+    // Последний владелец ушёл, но вывод мог ещё идти: g_whisper - unique_ptr,
+    // пином под ногами у него никто не стоит, и refcount про такой вызов
+    // ничего не знает. Поэтому не уничтожаем, а ЖДЁМ выхода из всех started
+    // вызовов - ровно тот SIGABRT из прогона F, который чинится этой строкой.
+    g_inflight_cv.wait(lk, [] { return g_inflight == 0; });
 
     g_whisper.reset();
     g_loaded_dir.clear();
