@@ -54,6 +54,11 @@ $TestPkg  = "$Pkg.test"
 $Runner   = "$TestPkg/androidx.test.runner.AndroidJUnitRunner"
 $ModelSrc = Join-Path $Repo 'tools\ncnn-int8\turbo'
 $Stage    = '/data/local/tmp/ocmodels'
+# PRIMARY CSV channel since 28.09: the test writes the CSV here and adb shell
+# reads it back. The dir is owned by the app uid (ext_data_rw) and needs no
+# chmod, which is exactly what /data/local/tmp cannot offer - see
+# SttModelBootstrap.publishCsv for why that one was EACCES under SELinux.
+$SdBench  = "/sdcard/Android/data/$Pkg/files/bench"
 $Turbo    = 'ncnn-turbo'
 $Fp32     = 'ncnn-bench-fp32'
 
@@ -252,6 +257,7 @@ Step 'Running the suite via am instrument (no gradle: nothing may reinstall)'
 # и выглядит как результат сегодняшнего. На прогоне E так и вышло: "файл есть,
 # 0 строк" - это был остаток чужого прогона, а не пустой результат. Без этой
 # строки проверка снова поверит в чужой мусор.
+& $Adb shell "rm -f $SdBench/stt-bench-int8.csv $SdBench/stt-bench-fp32.csv $SdBench/stt-bench.csv" 2>&1 | Out-Null
 & $Adb shell "rm -f $Stage/stt-bench-int8.csv $Stage/stt-bench-fp32.csv $Stage/stt-bench.csv" 2>&1 | Out-Null
 & $Adb shell am force-stop $Pkg | Out-Null
 & $Adb logcat -c | Out-Null
@@ -343,6 +349,13 @@ foreach ($g in $groups) {
     $rows = @(Get-InstrumentCsv $instLog[$g.Label] $g.Csv)
     $src = 'instrumentation stdout'
     if ($rows.Count -eq 0) {
+        $raw = @(& $Adb shell "cat $SdBench/$($g.Csv)" 2>$null)
+        if (@($raw | Where-Object { $_ -match 'No such file|not found' }).Count -eq 0) {
+            $rows = @($raw | Where-Object { $_ -match '^(int8|fp32),' })
+            if ($rows.Count -gt 0) { $src = 'adb cat sdcard' }
+        }
+    }
+    if ($rows.Count -eq 0) {
         $raw = @(& $Adb shell "cat $Stage/$($g.Csv)" 2>$null)
         if (@($raw | Where-Object { $_ -match 'No such file|not found' }).Count -eq 0) {
             $rows = @($raw | Where-Object { $_ -match '^(int8|fp32),' })
@@ -350,7 +363,14 @@ foreach ($g in $groups) {
         }
     }
     if ($rows.Count -eq 0 -and (Test-Path $logcatLog)) {
-        $rows = @(Select-String -Path $logcatLog -Pattern "BENCH_ROW $($g.Csv)" -Encoding UTF8 |
+        # THE PATTERN WAS WRONG, and that is why the whole fallback chain ended at
+        # "csv missing" on 28.09. It matched the CSV FILE NAME, but a BENCH_ROW
+        # line carries the CONFIG label, not the file name:
+        #     BENCH_ROW int8,jfk,7645,...      <- in the log
+        #     BENCH_ROW stt-bench-int8.csv     <- what the pattern asked for
+        # No line can contain both, so Select-String found nothing every time and
+        # the run reported 0/5 rows while 8 perfectly good rows sat in the log.
+        $rows = @(Select-String -Path $logcatLog -Pattern "BENCH_ROW\s+$($g.Label)," -Encoding UTF8 |
             ForEach-Object { $_.Line -replace '.*BENCH_ROW\s+', '' } | Where-Object { $_ -match '^(int8|fp32),' })
         if ($rows.Count -gt 0) { $src = 'logcat BENCH_ROW (частично)' }
     }

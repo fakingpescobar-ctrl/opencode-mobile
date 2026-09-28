@@ -90,8 +90,22 @@ object SttModelBootstrap {
 
     /**
      * Копирует CSV-бенч наружу, чтобы хост читал его без `run-as`
-     * (isDebuggable=false его больше не даёт). Каталог /data/local/tmp доступен
-     * для записи всем uid, поэтому хост забирает файл обычным `cat`.
+     * (isDebuggable=false его больше не даёт).
+     *
+     * ГЛАВНЫЙ канал - external filesDir, то есть
+     * `/sdcard/Android/data/<applicationId>/files/bench`. Каталог принадлежит
+     * uid приложения (ext_data_rw), поэтому писать в него может сам тест, а
+     * читать может adb shell. Обе стороны делают одно и то же и ни одна не
+     * упирается в SELinux. Проверено на устройстве 28.09: `adb shell` создаёт
+     * и читает файл в этом каталоге без единого chmod.
+     *
+     * ПОЧЕМУ НЕ /data/local/tmp, который стоял здесь раньше. Там
+     * drwxrwx--x shell:shell, контекст u:object_r:shell_data_file:s0, SELinux
+     * Enforcing. В группе "others" у приложения только --x: читать модели
+     * можно, создать файл - нет (EACCES). chmod 777 не помогает, режет SELinux.
+     * На прогоне 28.09 канал отвалился ровно так, как и предсказывали прежние
+     * комментарии, - и вместе с ним умер весь разбор CSV, потому что второго
+     * канала, переживающего многострочную выгрузку, не было.
      *
      * Имя выходного файла берётся у [csv], а не задаётся здесь константой.
      * Раньше тут стояло `File(STAGE, "stt-bench.csv")`, и это работало ровно до
@@ -99,17 +113,38 @@ object SttModelBootstrap {
      * более поздний перезаписывал бы более ранний. Молчащая потеря половины
      * измерений - худший вид поломки, поэтому имя теперь единственный источник
      * правды о том, чей это результат.
+     *
+     * [STAGE] остаётся вторым каналом: на некоторых прошивках external
+     * storage может быть смонтирован иначе, и лишняя попытка ничего не стоит.
+     * Возвращает true, если ушёл хотя бы один.
      */
-    fun publishCsv(context: Context, csv: File): Boolean = try {
-        val out = File(STAGE, csv.name)
-        out.parentFile?.mkdirs()
-        csv.copyTo(out, overwrite = true)
-        Log.i(TAG, "publishCsv: $csv -> $out")
-        true
-    } catch (t: Throwable) {
-        Log.w(TAG, "publishCsv не удался: ${t.message}")
-        false
+    fun publishCsv(context: Context, csv: File): Boolean {
+        val targets = mutableListOf<File>()
+        externalBenchDir(context)?.let { targets += File(it, csv.name) }
+        targets += File(STAGE, csv.name)
+
+        var ok = false
+        for (out in targets) {
+            try {
+                out.parentFile?.mkdirs()
+                csv.copyTo(out, overwrite = true)
+                Log.i(TAG, "publishCsv: ${csv.absolutePath} -> ${out.absolutePath}")
+                ok = true
+            } catch (t: Throwable) {
+                Log.w(TAG, "publishCsv не удался в ${out.absolutePath}: ${t.message}")
+            }
+        }
+        return ok
     }
+
+    /**
+     * Путь на устройстве, откуда хост забирает CSV. Дублирует решение
+     * [publishCsv] на стороне хоста: если здесь путь разойдётся с тем, куда
+     * реально пишет тест, канал молча вернёт пустой файл - ровно тот класс
+     * поломки, который и чинится. Поэтому оба места обязаны читать одну
+     * константу.
+     */
+    fun externalBenchDir(context: Context): File? = context.getExternalFilesDir("bench")
 
     /** Префикс файлов модели: тот же, что ждёт [NcnnModelValidator]. */
     private const val MODEL_TAG = "whisper_turbo"
