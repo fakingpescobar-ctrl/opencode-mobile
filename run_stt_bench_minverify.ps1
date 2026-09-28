@@ -378,6 +378,22 @@ foreach ($g in $groups) {
     $csvByGroup[$g.Label] = $rows
     $source[$g.Label] = $src
 }
+
+# АРХИВ CSV. До f4fb272+скрипт читал CSV с устройства в память, печатал из него
+# таблицу и НИКУДА его не сохранял. Логcat архивировался, а сам артефакт,
+# ради которого весь канал доставки и строился, после прогона просто исчезал:
+# на диске оставались только stderr-пустышки и logcat, где CSV нет ни строкой.
+# Практический смысл: цифры, попавшие в docs, через месяц нечем перепроверить -
+# а ложная цифра в этом репозитории уже стоила двух полных прогонов (§10.4).
+$csvHeader = 'config,wav,ms1,ms2,ms3,median,fbank_ms,enc_ms,dec_ms,steps,wer,text'
+$csvArchive = @()
+foreach ($g in $groups) {
+    if (@($csvByGroup[$g.Label]).Count -eq 0) { continue }
+    $path = Join-Path $logDir $g.Csv
+    (@($csvHeader) + @($csvByGroup[$g.Label])) | Set-Content -Path $path -Encoding UTF8
+    $csvArchive += $path
+}
+
 $dataRows = @($csvByGroup.Values | ForEach-Object { $_ })
 $csvMissing = $missing.Count -gt 0
 
@@ -406,6 +422,7 @@ Write-Host "  process exits : $(($groups | ForEach-Object { "$($_.Label)=$($inst
 foreach ($r in $rssLines) { Write-Host "    $r" -ForegroundColor DarkGray }
 foreach ($b in ($bootLines | Select-Object -First 4)) { Write-Host "    $b" -ForegroundColor DarkGray }
 Write-Host "  logcat archive: $logcatLog" -ForegroundColor DarkGray
+foreach ($p in $csvArchive) { Write-Host "  csv archive   : $p" -ForegroundColor DarkGray }
 Write-Host '  --------------------------------------------' -ForegroundColor DarkGray
 Write-Host '  config   wav          median_ms   enc_ms' -ForegroundColor White
 foreach ($line in $dataRows) {
@@ -414,17 +431,24 @@ foreach ($line in $dataRows) {
 }
 Write-Host ''
 
-# Вердикт трёхуровневый, потому что fp32 ФИЗИЧЕСКИ не влезает в этот телефон:
-# прогон F показал 4761 МБ RSS в собственном свежем процессе и lowmemorykiller.
-# Это не поломка теста и не повод красить прогон в красный, но и называть его
-# полным нельзя - строк меньше пяти.
+# Вердикт трёхуровневый: 5/5 + 5/5 = полный результат, 5/5 + меньше = усечённый,
+# остальное - прогон не состоялся, и зелёного кода возврата тут недостаточно.
+#
+# ПРЕДЫДУЩАЯ ВЕРСИЯ ЭТОГО КОММЕНТАРИЯ (исправлено 28.09.2026) утверждала, что
+# «fp32 ФИЗИЧЕСКИ не влезает в этот телефон, прогон F показал 4761 МБ и
+# lowmemorykiller». Это ОПРОВЕРГНУТО живьём прогоном того же дня на том же
+# устройстве: fp32 стартовал со 146 МБ, дошёл до 4860 МБ и выдал 5/5 строк.
+# Настоящая причина обрезанных прогонов была не памятью, а чередованием
+# конфигов в одном процессе - его убрали разбиением на два теста. Так что
+# причина ТЕПЕРЬ НЕИЗВЕСТНА, и называть её памятью нельзя: усечение из-за
+# OOM и усечение из-за падения на 3-м тесте выглядят в сводке одинаково.
 $nInt8 = @($csvByGroup['int8']).Count
 $nFp32 = @($csvByGroup['fp32']).Count
 if ($nInt8 -eq 5 -and $nFp32 -eq 5) {
     Write-Host '  RESULT: FULL - int8 5/5, fp32 5/5' -ForegroundColor Green
 } elseif ($nInt8 -eq 5 -and $nFp32 -ge 1) {
     Write-Host "  RESULT: int8 FULL 5/5, fp32 TRUNCATED $nFp32/5" -ForegroundColor Yellow
-    Write-Host '  (fp32 упирается в память телефона, а не в баг теста - строки выше и есть весь доступный результат)' -ForegroundColor Yellow
+    Write-Host '  (причина усечения НЕ установлена: память исключена как объяснение 28.09 - см. комментарий ВЫШЕ. Смотри logcat на предмет падения, а не OOM.)' -ForegroundColor Yellow
 } else {
     Write-Host '  RESULT: FAILED / did not really run - do NOT trust a green here' -ForegroundColor Red
     $why = if ($csvMissing) { "csv missing: $($missing -join ',')" } else { "int8=$nInt8 fp32=$nFp32" }
