@@ -33,7 +33,7 @@ import java.io.FileOutputStream
  *   - [benchAutoLanguage] реальное автоопределение языка через сервис —
  *     матрица латентностей его не касается, там lang зашит в аргумент;
  *   - [benchChunkedLong] сегментный пайплайн на 37с речи;
- *   - [benchLazyShort] single-pass на клипе <=28с (ожидается ОДИН encoder).
+ *   - [benchLazyShort] single-pass на клипе <=18с (ожидается ОДИН encoder).
  *
  * Ограничение архитектуры: C++-синглтон g_whisper общий на процесс, поэтому
  * конфиги физически гоняются последовательно — на каждый (wav, config) свой
@@ -338,7 +338,137 @@ class BenchSttTest {
     }
 
     /**
-     * Lazy-чанкинг (R5, 25.09.2026): клип ≤28с на ncnn должен идти ОДНИМ
+     * ИЗМЕРЕНИЕ обоснования порога single-pass (29.09.2026). Добавлен, потому
+     * что MAX_SINGLE_PASS_SAMPLES = 28с до сих пор держался на УТВЕРЖДЕНИИ из
+     * комментария, а не на замере: «клип > 30с у ncnn-encoder обрезает хвост,
+     * поэтому сегменты ≤ 28с». Проверить это можно было только так — заставить
+     * движок проглотить клип длиннее 30с ОДНИМ проходом и посмотреть, доживёт
+     * ли третье высказывание.
+     *
+     * long.wav = 37с и содержит ТРИ одинаковых высказывания (см. README эталона),
+     * то есть идеальный маркер: «сколько раз доехало» считается словами. Слог
+     * «fellow americans» встречается ровно один раз на высказывание.
+     *
+     * Сравниваются два пути на ОДНИХ и тех же сэмплах, в одном процессе:
+     *   1) ChunkedTranscriber.transcribe - продовый путь, VAD режет на сегменты;
+     *   2) WhisperTranscribeService.transcribe напрямую - сегментатор ОБОЙДЁН,
+     *      всё уходит в движ одним проходом.
+     *
+     * Утверждений о результате обрезания здесь НЕТ намеренно: тест измеряет, а
+     * не проверяет гипотезу. Если гипотеза не подтвердится, тест обязан остаться
+     * зелёным - тогда правкой будет константа, а не тест. Числа в BENCH_ROW.
+     */
+    @Test
+    fun benchLongSinglePassTruncation() {
+        val target = InstrumentationRegistry.getInstrumentation().targetContext
+        val benchAssets = InstrumentationRegistry.getInstrumentation().context.assets
+        val int8Dir = File(ModelDownloader.modelsDir(target), "ncnn-turbo")
+        val int8Check = NcnnModelValidator.checkModelDir(int8Dir, "whisper_turbo")
+        assumeTrue("ncnn-turbo не доставлена на устройство: ${int8Check.missing}", int8Check.ok)
+
+        val wav = readWav("long.wav", benchAssets) ?: run {
+            assertTrue("bench/long.wav не читается как WAV", false)
+            return
+        }
+        val secs = wav.samples.size / 16_000.0
+        Log.i(TAG, "TRUNC: long.wav ${secs} с, маркер 'fellow americans' x1 на высказывание (всего 3)")
+
+        // Прогрев обязателен в обоих замерах: первый вызов поднимает модели
+        // (~3-4с), и без прогрева разница между путями измеряла бы не путь.
+        runBlocking {
+            WhisperTranscribeService.transcribe(target, wav.samples, "turbo", WhisperTranscribeService.ENGINE_NCNN)
+        }
+
+        // (1) продовый путь
+        val tChunked = System.nanoTime()
+        val chunked = runBlocking {
+            ChunkedTranscriber.transcribe(target, wav.samples, "turbo", WhisperTranscribeService.ENGINE_NCNN)
+        }
+        val chunkedMs = (System.nanoTime() - tChunked) / 1_000_000
+        val nChunked = countMarker(chunked)
+        Log.i(TAG, "BENCH_ROW trunc,chunked,$chunkedMs,---,---,$chunkedMs,marker=$nChunked,${chunked.take(80)}")
+
+        // ГДЕ РЕАЛЬНО СТОЯТ ФРАЗЫ. Раньше я выводил ожидание «3 высказывания
+        // по ~11с» из одной только длины файла - это была догадка, и на
+        // ней строился весь вывод. Теперь беру границы прямо у сегментатора,
+        // который использует прод, и печатаю их: без них любой вывод о том,
+        // «сколько фраз должно помещаться в N секунд», остаётся фантазией.
+        val vadSegments = SpeechSegmenter().split(wav.samples)
+        Log.i(
+            TAG,
+            "TRUNC: VAD нашёл ${vadSegments.size} сегм. " +
+                vadSegments.joinToString { "%d-%dмс".format(it.startMs, it.startMs + it.samples.size * 1000 / 16_000) },
+        )
+
+        // (2) принудительный single-pass мимо сегментатора, СВИП ПО ГРАНИЦЕ.
+        //
+        // Один замер на 37с был бы достаточен, чтобы сказать «>30с ломается»,
+        // но НЕ достаточен для константы 28с: её безопасность этим не
+        // доказана. Свип идёт от длины одной фразы вверх, чтобы найти
+        // практический предел, при котором содержимое ещё возвращается целиком.
+        //
+        // ВАЖНОЕ ОГРАНИЧЕНИЕ ЭТОГО ЗАМЕРА. long.wav - это ТРИ ОДИНАКОВЫЕ фразы,
+        // поэтому клиент не повторяет речь, а наоборот делает её хуже для
+        // декодера: в cnn_jni.cpp:633 apply_repetition_penalty штрафует уже
+        // выведенные токены, и тождественный текст подавляется. Значит граница,
+        // которую мы меряем - это НЕ «где кончается окно 30с» (этот факт
+        // установлен чтением кода: extract_fbank_feature держит буфер ровно
+        // 480000 сэмплов = 30с и тихо зануляет хвост), а «где lazy-путь
+        // перестаёт возвращать всё». Это верхняя граница безопасности для
+        // НАИХУДШЕГО случая, а не гарантия для обычной речи.
+        // (2) принудительный single-pass мимо сегментатора.
+        //
+        // Свип делался сначала по 8 точкам (11/15/18/22/25/28/31/37с) — все
+        // значения в таблице §13.3 сняты с них. В коммите оставлены ТРИ,
+        // потому что 10 вызовов движка подряд в одном тесте стабильно роняют
+        // нативный OpenMP: на прогоне 29.09 падало ленивой инициализацией
+        // thread-affinity на негретом потоке пула (`pool-*-thread-1`,
+        // `__kmp_parallel_initialize` → `__kmp_debug_assert`, SIGABRT), и
+        // падало детерминированно, а не случайно. Это не дефект этого теста
+        // и не связан с порогом 18с — просто на 8 точках хватает вызовов,
+        // чтобы процесс дошёл до негретого потока. Лечится в ncnn/рантайме
+        // (см. docs §13.6), не сокращением науки: трёх точек достаточно —
+        // контрольная, первая сломанная, крайняя.
+        for (sec in listOf(18, 22, 37)) {
+            val n = sec * 16_000
+            val clipped = if (wav.samples.size > n) wav.samples.copyOf(n) else wav.samples
+            WhisperTranscribeService.resetLanguageLatch()
+            val tSingle = System.nanoTime()
+            val single = runBlocking {
+                WhisperTranscribeService.transcribe(target, clipped, "turbo", WhisperTranscribeService.ENGINE_NCNN)
+            }
+            val singleMs = (System.nanoTime() - tSingle) / 1_000_000
+            val nSingle = countMarker(single)
+            Log.i(TAG, "BENCH_ROW trunc,single$sec,$singleMs,---,---,$singleMs,marker=$nSingle,${single.take(80)}")
+        }
+
+
+        val verdict = if (nChunked < 3) "БАЗА СЛОМАНА (chunked не выдал 3)" else "ХВОСТ ТЕРЯЕТСЯ ВЫШЕ ОКНА"
+        Log.i(TAG, "TRUNC: chunked=$chunkedMs ms / $nChunked высказ. | single-pass по окну: см. строки trunc,singleNN")
+        Log.i(TAG, "TRUNC: $verdict")
+
+        assertTrue("chunked вернул ошибку движка: '$chunked'", !isError(chunked))
+        assertTrue(
+            "продовый путь обязан выдать все 3 высказывания long.wav, иначе измеряем не то: '$chunked'",
+            nChunked >= 3,
+        )
+    }
+
+    /** Сколько раз в тексте встретился маркер одного высказывания long.wav. */
+    private fun countMarker(text: String): Int {
+        val needle = "fellow americans"
+        val hay = text.lowercase()
+        var n = 0
+        var i = hay.indexOf(needle)
+        while (i >= 0) {
+            n++
+            i = hay.indexOf(needle, i + needle.length)
+        }
+        return n
+    }
+
+    /**
+     * Lazy-чанкинг (R5, 25.09.2026): клип ≤18с на ncnn должен идти ОДНИМ
      * прогоном (один encoder, ~6.5с) вместо N сегментов (N×encoder).
      * Клип: jfk(11с) + silence(1.5с) + tone(3с) ≈ 15.5с — при старом VAD-пути
      * было бы ≥2 сегмента (≈15с), lazy даёт ≤10с. Порог жёсткий: 12с.
@@ -364,7 +494,7 @@ class BenchSttTest {
 
         // Прогрев: контекст создаётся лениво при первом transcribe (load моделей ~3-4с).
         // Холодный init к «скорости одного прогона» отношения не имеет — в проде
-        // контекст живёт между распознаваниями. Прогрев сам идёт lazy-путём (1.5с ≤ 28с).
+        // контекст живёт между распознаваниями. Прогрев сам идёт lazy-путём (1.5с ≤ 18с).
         runBlocking {
             ChunkedTranscriber.transcribe(
                 target,
