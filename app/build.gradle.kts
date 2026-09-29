@@ -183,6 +183,16 @@ android {
         jvmTarget = "17"
     }
 
+    // Без этого android.jar в unit-тестах кидает RuntimeException("Stub!") на любой
+    // реальный вызов Android-API. Нужно для тестов WhisperTranscribeService: там
+    // инициализатор компаньона зовёт Handler(Looper.getMainLooper()) ещё до входа
+    // в тестируемый код. Методы-заглушки начинают возвращать дефолты вместо throw.
+    testOptions {
+        unitTests {
+            isReturnDefaultValues = true
+        }
+    }
+
     buildFeatures {
         compose = true
         // BuildConfig (для BuildConfig.DEBUG: WebView remote debugging только в debug).
@@ -231,6 +241,11 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.6.2")
     // JVM-тесты (ЭКСП-5): чистый Kotlin — SpeechSegmenter без устройства.
     testImplementation("junit:junit:4.13.2")
+    // Моки Android-поверхности для unit-тестов WhisperTranscribeService:
+    // android.jar в JVM-тестах — заглушки, поэтому нужен и mockk, и
+    // returnDefaultValues ниже (иначе Handler/Looper кидают "Stub!").
+    // testImplementation — в APK не попадает.
+    testImplementation("io.mockk:mockk:1.13.13")
     // org.json из android.jar на JVM не имеет рабочей реализации.
     testImplementation("org.json:json:20250517")
 }
