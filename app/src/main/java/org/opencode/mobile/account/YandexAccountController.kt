@@ -540,7 +540,14 @@ object YandexAccountController {
         return refreshed
     }
 
-    private fun openBrowser(url: String) {
+    /**
+     * Открывает страницу подтверждения.
+     *
+     * Публичная, потому что UI должен уметь вернуть юзера на страницу после возврата из
+     * браузера: вход живёт пять минут, и если код не введён с первого раза, кнопка
+     * «открыть ещё раз» обязана вести туда же, а не собирать ссылку в своей копии.
+     */
+    fun openBrowser(url: String) {
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         try {
             contextOrThrow().startActivity(intent)

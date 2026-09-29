@@ -242,7 +242,7 @@ fun DiagnosticsScreen(
                     .verticalScroll(rememberScrollState())
                     .padding(top = 6.dp),
             ) {
-                Section("Сервер opencode")
+                sectionHeader("Сервер opencode")
                 InfoRow("Статус", statusLabel(serverState.status), statusColor(serverState.status))
                 serverState.stage?.let { InfoRow("Стадия runtime", stageLabel(it)) }
                 InfoRow("Порт", serverState.port.toString())
@@ -270,7 +270,7 @@ fun DiagnosticsScreen(
                     InfoRow("Сбои (последние ${serverState.errorHistory.size})", historyText(serverState.errorHistory))
                 }
 
-                Section("Голосовое распознавание")
+                sectionHeader("Голосовое распознавание")
                 InfoRow("Движок", engineLabel(prefs))
                 // ncnn = всегда turbo (base-конверт битый и удалён из программы).
                 InfoRow("Модель", "turbo")
@@ -322,7 +322,12 @@ fun DiagnosticsScreen(
                     }
                 }
 
-                Section("Валидация runtime")
+                // Между STT и валидацией: обе секции — про то, что человек должен один раз
+                // настроить, чтобы функция вообще работала, и обе с кнопкой. Валидация
+                // runtime читает итог, поэтому встаёт после них.
+                yandexAccountSection()
+
+                sectionHeader("Валидация runtime")
                 if (snap == null) {
                     InfoRow("Проверка", "загрузка…")
                 } else {
@@ -357,7 +362,7 @@ fun DiagnosticsScreen(
                     )
                 }
 
-                Section("Система")
+                sectionHeader("Система")
                 // Binder IPC (PackageManager/ActivityManager) — НЕ на каждом рекомпозе
                 // (serverState тикает при работе сервера): статику собираем один раз
                 // на открытие экрана.
@@ -386,7 +391,7 @@ fun DiagnosticsScreen(
                     },
                 )
 
-                Section("Лог сервера (хвост)")
+                sectionHeader("Лог сервера (хвост)")
                 // Без SelectionContainer: он конфликтует с verticalScroll по жестам
                 // (долгое нажатие перехватывается), а копирование всего лога есть
                 // через «Поделиться» — там дамп собирается свежим.
@@ -413,8 +418,15 @@ fun DiagnosticsScreen(
     }
 }
 
+/**
+ * Заголовок секции с разделителем.
+ *
+ * `internal`, а не `private`: секция Яндекс.Музыки живёт в своём файле, но заголовок и
+ * разделитель у всех секций должны быть одинаковыми. Своя копия этого визуала в соседнем
+ * файле — ровно тот способ, которым экраны расходятся между собой по мелочам.
+ */
 @Composable
-private fun Section(title: String) {
+internal fun sectionHeader(title: String) {
     Text(
         title,
         color = Color(0xFFBDBDBD),
