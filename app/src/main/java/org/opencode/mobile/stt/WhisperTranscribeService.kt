@@ -413,11 +413,11 @@ class WhisperTranscribeService : Service() {
             // TOCTOU во время requireNotCorrupt/createContextFromFile (секунды
             // чтения 141-574MB) — его ловит catch ниже (переводим в понятный текст).
             if (deletedModelFiles.contains(model)) {
-                throw IllegalStateException("модель \"$model\" удалена — перекачай её в настройках STT")
+                error("модель \"$model\" удалена — перекачай её в настройках STT")
             }
             return whisperCtxCache.getOrPut(model) {
                 if (deletedModelFiles.contains(model)) {
-                    throw IllegalStateException("модель \"$model\" удалена — перекачай её в настройках STT")
+                    error("модель \"$model\" удалена — перекачай её в настройках STT")
                 }
                 try {
                     loadContextLocked(model)
@@ -431,6 +431,8 @@ class WhisperTranscribeService : Service() {
                     if (e is IllegalStateException && !deletedModelFiles.contains(model)) {
                         throw e // настоящая семантическая ошибка (не скачана/повреждена)
                     }
+                    // error() в stdlib принимает только message, без cause, поэтому
+                    // вариант с причиной остаётся на throw — detekt его не рубит.
                     throw IllegalStateException("модель \"$model\" удалена или повреждена — перекачай её в настройках STT", e)
                 }
             }
@@ -445,7 +447,7 @@ class WhisperTranscribeService : Service() {
                 WhisperTranscribeService.MODEL_BASE -> {
                     val f = ModelDownloader.baseFile(app)
                     if (!ModelDownloader.baseReady(app)) {
-                        throw IllegalStateException(
+                        error(
                             "base-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках STT"
                         )
                     }
@@ -456,7 +458,7 @@ class WhisperTranscribeService : Service() {
                 WhisperTranscribeService.MODEL_TURBO -> {
                     val f = ModelDownloader.turboFile(app)
                     if (!ModelDownloader.turboReady(app)) {
-                        throw IllegalStateException(
+                        error(
                             "turbo-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках"
                         )
                     }
@@ -469,7 +471,7 @@ class WhisperTranscribeService : Service() {
         }
 
         private fun requireAppContext(): Context =
-            appContext ?: throw IllegalStateException("STT: context не инициализирован (transcribe() не вызывался до worker)")
+            appContext ?: error("STT: context не инициализирован (transcribe() не вызывался до worker)")
 
         /**
          * Fail-loud перед загрузкой в whisper: если файл на диске повреждён/подменён
@@ -482,7 +484,7 @@ class WhisperTranscribeService : Service() {
             label: String,
         ) {
             if (ModelDownloader.checkIntegrity(file) == ModelDownloader.ModelIntegrity.CORRUPT) {
-                throw IllegalStateException(
+                error(
                     "$label повреждена (SHA-256 не совпал — файл испорчен или подменён). Удали модель и перекачай заново в настройках STT"
                 )
             }

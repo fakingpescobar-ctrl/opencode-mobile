@@ -207,8 +207,6 @@
     <ID>SwallowedException:ProcessSupervisor.kt$ProcessSupervisor$e: Exception</ID>
     <ID>SwallowedException:RuntimeManager.kt$RuntimeManager$e: Exception</ID>
     <ID>ThrowsCount:OpencodeRuntime.kt$OpencodeRuntime$@Throws(Exception::class) fun ensureMuslLibs(context: Context): File</ID>
-    <ID>ThrowsCount:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$private fun loadContextLocked(model: String): WhisperContext</ID>
-    <ID>ThrowsCount:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$private fun obtainContext(model: String): WhisperContext</ID>
     <ID>TooGenericExceptionCaught:ChatOverlay.kt$&lt;no name provided&gt;$e: Throwable</ID>
     <ID>TooGenericExceptionCaught:ChatOverlay.kt$e: Exception</ID>
     <ID>TooGenericExceptionCaught:ChatOverlay.kt$e: Throwable</ID>
@@ -247,10 +245,5 @@
     <ID>UseCheckOrError:OpencodeRuntime.kt$OpencodeRuntime$throw IllegalStateException("musl lib $neededName not materialized")</ID>
     <ID>UseCheckOrError:OpencodeRuntime.kt$OpencodeRuntime$throw IllegalStateException("musl lib $neededName: tmp rename failed")</ID>
     <ID>UseCheckOrError:OpencodeRuntime.kt$OpencodeRuntime$throw IllegalStateException("musl lib $srcName missing in nativeLibraryDir")</ID>
-    <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException( "$label повреждена (SHA-256 не совпал — файл испорчен или подменён). Удали модель и перекачай заново в настройках STT" )</ID>
-    <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException( "base-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках STT" )</ID>
-    <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException( "turbo-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках" )</ID>
-    <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("STT: context не инициализирован (transcribe() не вызывался до worker)")</ID>
-    <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("модель \"$model\" удалена — перекачай её в настройках STT")</ID>
   </CurrentIssues>
 </SmellBaseline>
