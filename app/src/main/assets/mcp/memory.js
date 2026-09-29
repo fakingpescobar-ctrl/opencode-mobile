@@ -366,24 +366,22 @@ const MOBILE_YANDEX_ACCOUNT_TOOLS = [
     }
   },
   {
-    name: "mobile_yandex_play_playlist",
+    // На месте mobile_yandex_play_playlist. Тот открывал экран плейлиста и жал большую
+    // кнопку Play accessibility-тапом - то есть зависел от чужой вёрстки, и на живом телефоне
+    // падал, не успев начать. Запуск теперь один: у Яндекс.Музыки он делается записью трека
+    // в очередь, и за это отвечает music_play_query, а этот тул занимается тем, что
+    // изменить содержимое плейлиста - раньше такой возможности в сборке просто не было.
+    name: "mobile_yandex_playlist_add_track",
     description:
-      "Start a whole Yandex Music playlist in the Yandex Music app: it opens the playlist screen " +
-      "and presses its big Play button, so playback follows the whole playlist from its first " +
-      "playable track, not just that one track. Needs the account connected, the Yandex Music app " +
-      "installed, and the OpenCode accessibility service switched on - without it there is nothing " +
-      "to press with, and the call returns in about a second saying so. kind comes from " +
-      "mobile_yandex_playlists - there is no way to start a playlist by name or uuid. This is the " +
-      "only way to play a playlist: the Yandex API is read-only, and the media play command just " +
-      "resumes whatever was already playing, which is how you end up quietly continuing a " +
-      "different track. A successful call takes about 15-30 seconds because the app has to start " +
-      "and the screen has to load. started=true is the verified answer: the tool reads the media " +
-      "session back and checks the now playing title against the start of the playlist, so it " +
-      "cannot be fooled by some other track that happened to be playing. Some playlists open with " +
-      "tracks that are region-blocked, and Yandex silently skips them - the message then says " +
-      "which track it actually started on and that is not a failure. started=false means it " +
-      "really did not start - read message, and do not claim to the user that it is playing. " +
-      "now_playing tells you what is actually heard.",
+      "Add one track to a Yandex Music playlist. track_id comes from music_search (the " +
+      "\"id\" field), or from music_status nowPlayingId for the track that is playing right " +
+      "now. kind comes from mobile_yandex_playlists. You do NOT need an album id, a revision or " +
+      "a position: the app resolves all three itself, so a track never fails to save because of " +
+      "a field the model had to invent. The track goes to the top of the playlist by default; " +
+      "pass at to put it at another zero-based position. The answer reports position and " +
+      "track_count, so you can confirm the save without reading the playlist back. To start the " +
+      "playlist afterwards use music_play_query, which starts a specific track; starting a whole " +
+      "playlist is not supported here.",
     inputSchema: {
       type: "object",
       properties: {
@@ -391,9 +389,46 @@ const MOBILE_YANDEX_ACCOUNT_TOOLS = [
           type: "integer",
           minimum: 0,
           description: "Playlist kind from mobile_yandex_playlists"
+        },
+        track_id: {
+          type: "string",
+          maxLength: 32,
+          pattern: "^[0-9]+$",
+          description: "Track id from music_search, or nowPlayingId from music_status"
+        },
+        at: {
+          type: "integer",
+          minimum: 0,
+          description: "Optional zero-based position to insert at. Defaults to the top."
         }
       },
-      required: ["kind"]
+      required: ["kind", "track_id"]
+    }
+  },
+  {
+    name: "mobile_yandex_playlist_remove_track",
+    description:
+      "Remove one track from a Yandex Music playlist, addressed by kind and track_id - the " +
+      "position is looked up by the app, so you never pass an index and never delete the wrong " +
+      "track when the playlist is reordered. kind comes from mobile_yandex_playlists, track_id " +
+      "from mobile_yandex_playlist. Fails with an explicit error when that track is not in that " +
+      "playlist; that is not a silent success. The answer reports the new track_count.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "integer",
+          minimum: 0,
+          description: "Playlist kind from mobile_yandex_playlists"
+        },
+        track_id: {
+          type: "string",
+          maxLength: 32,
+          pattern: "^[0-9]+$",
+          description: "Track id as returned by mobile_yandex_playlist"
+        }
+      },
+      required: ["kind", "track_id"]
     }
   },
   {
@@ -762,58 +797,25 @@ async function mobileYandexPlaylist(args) {
   return mobileBridge(`/v1/account/yandex/playlist?${parameters.toString()}`);
 }
 
-async function mobileYandexPlayPlaylist(args) {
-  const kind = requiredMediaUiInteger(args.kind, 0, Number.MAX_SAFE_INTEGER, "kind");
-  return mobileBridge("/v1/account/yandex/playlist/play", {
+async function mobileYandexPlaylistAddTrack(args) {
+  return mobileBridge("/v1/account/yandex/playlist/track/add", {
     method: "POST",
-    body: JSON.stringify({ kind })
+    body: JSON.stringify({
+      kind: requiredMediaUiInteger(args.kind, 0, Number.MAX_SAFE_INTEGER, "kind"),
+      track_id: String(args.track_id || "").trim(),
+      at: args.at === undefined || args.at === null ? null : args.at
+    })
   });
 }
 
-async function mobileYandexDisconnect(args) {
-  return mobileBridge("/v1/account/yandex/disconnect", { method: "POST" });
-}
-
-async function mobileMediaUiClick(args) {
-  const payload = {
-    package: requireAndroidPackage(args.package),
-    ...mediaUiSelectors(args)
-  };
-  if (typeof args.require_clickable === "boolean") payload.require_clickable = args.require_clickable;
-  const timeout = mediaUiInteger(args.timeout_ms, null, 500, 30000, "timeout_ms");
-  if (timeout !== null) payload.timeout_ms = timeout;
-  return mobileBridge("/v1/media/ui/click", { method: "POST", body: JSON.stringify(payload) });
-}
-
-async function mobileMediaUiText(args) {
-  // set_text — умолчание, потому что ручка называется именно «ввести текст»; пустой action
-  // не должен молча стереть поле.
-  const action = args.action === undefined || args.action === null ? "set_text" : String(args.action);
-  if (!["set_text", "clear_text", "click"].includes(action)) {
-    throw new Error("action must be set_text, clear_text or click");
-  }
-  const payload = {
-    package: requireAndroidPackage(args.package),
-    action,
-    ...mediaUiSelectors(args, { optional: true })
-  };
-  if (action === "set_text") {
-    const text = String(args.text === undefined || args.text === null ? "" : args.text).trim();
-    if (!text) throw new Error("set_text needs a non-empty text; use clear_text to empty a field");
-    if (text.length > 200) throw new Error("text must be at most 200 characters");
-    payload.text = text;
-  } else if (args.text !== undefined && args.text !== null) {
-    throw new Error("text only belongs to set_text");
-  }
-  if (action === "click" && !payload.bounds) {
-    // Клик без метки и без прямоугольника — это тап в темноту, и мост такое отвергает.
-    if (!MEDIA_UI_SELECTOR_FAMILIES.some((family) => payload[family])) {
-      throw new Error("a click needs a label selector or bounds");
-    }
-  }
-  const timeout = mediaUiInteger(args.timeout_ms, null, 500, 30000, "timeout_ms");
-  if (timeout !== null) payload.timeout_ms = timeout;
-  return mobileBridge("/v1/media/ui/text", { method: "POST", body: JSON.stringify(payload) });
+async function mobileYandexPlaylistRemoveTrack(args) {
+  return mobileBridge("/v1/account/yandex/playlist/track/remove", {
+    method: "POST",
+    body: JSON.stringify({
+      kind: requiredMediaUiInteger(args.kind, 0, Number.MAX_SAFE_INTEGER, "kind"),
+      track_id: String(args.track_id || "").trim()
+    })
+  });
 }
 
 async function mobileYandexDisconnect(args) {
@@ -943,7 +945,8 @@ async function callTool(name, args) {
     case "mobile_yandex_likes": return mobileYandexLikes(args || {});
 case "mobile_yandex_playlists": return mobileYandexPlaylists(args || {});
 case "mobile_yandex_playlist": return mobileYandexPlaylist(args || {});
-case "mobile_yandex_play_playlist": return mobileYandexPlayPlaylist(args || {});
+    case "mobile_yandex_playlist_add_track": return mobileYandexPlaylistAddTrack(args || {});
+    case "mobile_yandex_playlist_remove_track": return mobileYandexPlaylistRemoveTrack(args || {});
     case "mobile_yandex_disconnect": return mobileYandexDisconnect(args || {});
     default: throw new Error("Unknown tool: " + name);
   }
