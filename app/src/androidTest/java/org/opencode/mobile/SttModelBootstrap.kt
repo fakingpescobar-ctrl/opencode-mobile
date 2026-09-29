@@ -31,7 +31,6 @@ import java.io.File
  * скрипт ставит APK первым, а модели кладёт в /data/local/tmp после.
  */
 object SttModelBootstrap {
-
     private const val TAG = "STTBOOT"
 
     /** Куда скрипт кладёт модели через adb push. Читается любым uid. */
@@ -118,7 +117,10 @@ object SttModelBootstrap {
      * storage может быть смонтирован иначе, и лишняя попытка ничего не стоит.
      * Возвращает true, если ушёл хотя бы один.
      */
-    fun publishCsv(context: Context, csv: File): Boolean {
+    fun publishCsv(
+        context: Context,
+        csv: File,
+    ): Boolean {
         val targets = mutableListOf<File>()
         externalBenchDir(context)?.let { targets += File(it, csv.name) }
         targets += File(STAGE, csv.name)
@@ -149,7 +151,10 @@ object SttModelBootstrap {
     /** Префикс файлов модели: тот же, что ждёт [NcnnModelValidator]. */
     private const val MODEL_TAG = "whisper_turbo"
 
-    private fun copyTree(src: File, dest: File) {
+    private fun copyTree(
+        src: File,
+        dest: File,
+    ) {
         if (dest.exists()) dest.deleteRecursively()
         dest.mkdirs()
         src.listFiles()?.forEach { child ->

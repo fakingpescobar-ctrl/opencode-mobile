@@ -55,7 +55,7 @@ class SmokeSttTest {
         Log.i(TAG, "smoke OK: init+transcribe -> «${text.take(60)}»")
     }
 
-/** Короткий синус 440 Hz — достаточный smoke-сигнал для Whisper. */
+    /** Короткий синус 440 Hz — достаточный smoke-сигнал для Whisper. */
     private fun sineWave(
         sampleRate: Int,
         seconds: Double,

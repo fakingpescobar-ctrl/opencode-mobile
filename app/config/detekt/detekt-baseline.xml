@@ -9,28 +9,6 @@
     <ID>CyclomaticComplexMethod:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
     <ID>EmptyFunctionBlock:ChatOverlay.kt$&lt;no name provided&gt;${}</ID>
     <ID>ForEachOnRange:RuntimeManager.kt$RuntimeManager$(1..MAX_LOG_FILES) .map { File(parent, "opencode.log.$it") } .filter { it.exists() }</ID>
-    <ID>FunctionNaming:ChatOverlay.kt$@Composable internal fun ChatMirrorSurface(modifier: Modifier = Modifier)</ID>
-    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun ChatMirrorCircle( imageVector: ImageVector, color: Color, )</ID>
-    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun ChatMirrorComposerRow()</ID>
-    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun ColumnScope.ChatMirrorTranscript( snapshot: ChatSnapshot?, modelFont: FontFamily, modelColor: Color, )</ID>
-    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun ContextGauge( filled: Long, limit: Long, modifier: Modifier = Modifier, )</ID>
-    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun LiveToolRow(tool: ChatTool)</ID>
-    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun MCPIndicator( connected: Int, total: Int, modifier: Modifier = Modifier, onClick: () -&gt; Unit = {}, )</ID>
-    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun McpServerList( servers: List&lt;McpInfo&gt;, modifier: Modifier = Modifier, )</ID>
-    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun MessageRow( m: ChatMsg, modelName: String = "Модель", modelFont: FontFamily = FontFamily.Monospace, modelColor: Color = Color(0xFFD97706), )</ID>
-    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun StalledRow()</ID>
-    <ID>FunctionNaming:ChatOverlay.kt$@Composable private fun ThinkingRow()</ID>
-    <ID>FunctionNaming:ChatOverlay.kt$@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class) @Composable fun ChatOverlay( modifier: Modifier = Modifier, serverPort: Int = 4096, )</ID>
-    <ID>FunctionNaming:DiagnosticsScreen.kt$@Composable fun DiagnosticsScreen( onClose: () -&gt; Unit, modifier: Modifier = Modifier, )</ID>
-    <ID>FunctionNaming:DiagnosticsScreen.kt$@Composable private fun InfoRow( label: String, value: String, valueColor: Color = Color(0xFFE6E6E6), )</ID>
-    <ID>FunctionNaming:DiagnosticsScreen.kt$@Composable private fun Section(title: String)</ID>
-    <ID>FunctionNaming:MainActivity.kt$@Composable fun OpencodeWebView(paused: Boolean = false)</ID>
-    <ID>FunctionNaming:MainActivity.kt$@Composable fun TerminalScreen()</ID>
-    <ID>FunctionNaming:MainActivity.kt$@Composable private fun CenteredStatus(text: String)</ID>
-    <ID>FunctionNaming:MainActivity.kt$@Composable private fun ControlBar(status: OpencodeServerService.ServerStatus)</ID>
-    <ID>FunctionNaming:MainActivity.kt$@Composable private fun DropdownButton( label: String, options: List&lt;String&gt;, onPick: (String) -&gt; Unit, )</ID>
-    <ID>FunctionNaming:MainActivity.kt$@Composable private fun StatusDot(status: OpencodeServerService.ServerStatus)</ID>
-    <ID>FunctionNaming:Theme.kt$@Composable fun OpencodeMobileTheme( darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -&gt; Unit )</ID>
     <ID>ImplicitDefaultLocale:ChatOverlay.kt$String.format("%.3f ", kotlin.math.sqrt(sum / (end - i)))</ID>
     <ID>InstanceOfCheckForException:ChatOverlay.kt$e is InterruptedException</ID>
     <ID>InstanceOfCheckForException:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$e is IllegalStateException</ID>
@@ -202,48 +180,13 @@
     <ID>MagicNumber:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$80</ID>
     <ID>MagicNumber:Workspace.kt$Workspace$30</ID>
     <ID>MaxLineLength:ChatOverlay.kt$"Как работает: int8-энкодер (блочная квантование, ~2× быстрее fp32) → fp16/32-декодер с KV-cache (шаг по токену ~64мс)."</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$// Голосовой ввод: системный распознаватель (SpeechRecognizer). Удержание кнопки — запись, отпускание — распознавание и отправка.</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$AudioRecorder$Log.d("VOICE", "48к→16к: rmsL=${"%.3f".format(rmsL)} rmsR=${"%.3f".format(rmsR)} → беру ${if (rmsL &gt;= rmsR) "L" else "R"}")</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$AudioRecorder$Log.d("VOICE", "recorder source=$src (${if (src == MediaRecorder.AudioSource.UNPROCESSED) "UNPROCESSED" else "MIC"})")</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$Text("#$modelColorHex", color = Color(0xFFBDBDBD), fontSize = 12.sp, modifier = Modifier.padding(start = 10.dp))</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$Text("Голосовое распознавание:", color = Color(0xFFBDBDBD), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$drawCircle(Color.Black, radius = 10.dp.toPx(), center = mark, style = Stroke(width = 1.dp.toPx()))</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$drawCircle(Color.White, radius = 10.dp.toPx(), center = mark, style = Stroke(width = 2.dp.toPx()))</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$if (ttsTestRunning) "TTS-тест: синтезирую и распознаю…" else "Диагностика: синтез → распознавание (см. лог VOICE)"</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$private fun fontFor(key: String): FontFamily</ID>
-    <ID>MaxLineLength:ChatOverlay.kt$setModelColor("%06X".format(android.graphics.Color.HSVToColor(floatArrayOf(h, 1f, v)) and 0xFFFFFF))</ID>
-    <ID>MaxLineLength:DiagnosticsScreen.kt$InfoRow("Workspace", if (serverState.workspaceExternal) "Внешний (MANAGE_EXTERNAL_STORAGE)" else "Внутренний")</ID>
-    <ID>MaxLineLength:DiagnosticsScreen.kt$Text("Пусто — opencode.log ещё не создан (сервер не запускался).", color = Color(0xFF8A8A8A), fontSize = 12.sp)</ID>
-    <ID>MaxLineLength:MainActivity.kt$&lt;no name provided&gt;$Log.e(TAG, "onReceivedError code=${error?.errorCode} desc=${error?.description} url=${request?.url}")</ID>
-    <ID>MaxLineLength:MainActivity.kt$DropdownButton</ID>
     <ID>MaxLineLength:ModelDownloader.kt$ModelDownloader$"206 без etag/Content-Range гарантии (start=$crStart, ждали $startAt, etag=${etagFile.exists()}) — перекачка с нуля"</ID>
-    <ID>MaxLineLength:ModelDownloader.kt$ModelDownloader$Log.w(TAG, "${dest.name}: rename не дался — копирую целиком (может занять время на ${done / 1024 / 1024}MB)")</ID>
-    <ID>MaxLineLength:ModelDownloader.kt$ModelDownloader$throw IllegalStateException("${dest.name}: SHA-256 не сошёлся после fallback-переноса — файл не тот")</ID>
-    <ID>MaxLineLength:ModelDownloader.kt$ModelDownloader$throw IllegalStateException("${dest.name}: файл не на месте после переноса (${dest.length()} != $done)")</ID>
-    <ID>MaxLineLength:ModelDownloader.kt$ModelDownloader$throw IllegalStateException("сервер вернул HTML вместо модели $label (error page?) — проверь сеть/URL")</ID>
-    <ID>MaxLineLength:ModelDownloader.kt$ModelDownloader$throw IllegalStateException("сервер вернул HTML/текст вместо модели $label (content-type=$ct) — проверь сеть/URL")</ID>
-    <ID>MaxLineLength:ModelDownloader.kt$ModelDownloader$throw IllegalStateException("сервер не отдал Content-Length для ${dest.name} — не могу гарантировать целостность")</ID>
-    <ID>MaxLineLength:ModelDownloader.kt$ModelDownloader$throw IllegalStateException("сервер отдал не модель (нет GGML-magic) для $label — файл очищен, попробуй ещё раз")</ID>
-    <ID>MaxLineLength:OpencodeRuntime.kt$OpencodeRuntime$android.util.Log.i("OpencodeRuntime", "ensureMemoryScript: wrote ${source.size}B to ${dest.absolutePath}")</ID>
-    <ID>MaxLineLength:OpencodeServerService.kt$OpencodeServerService.Companion$context.startForegroundService(Intent(context, OpencodeServerService::class.java).setAction(ACTION_RESTART))</ID>
-    <ID>MaxLineLength:OpencodeServerService.kt$OpencodeServerService.Companion$context.startForegroundService(Intent(context, OpencodeServerService::class.java).setAction(ACTION_STOP))</ID>
-    <ID>MaxLineLength:RuntimeManager.kt$RuntimeManager$"# OpenCode Terminal\n\nРабочая директория на внешнем хранилище (Documents/OpencodeTerminal).\n"</ID>
-    <ID>MaxLineLength:RuntimeValidation.kt$RuntimeValidation$@Suppress("SwallowedException")</ID>
-    <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$"$label повреждена (SHA-256 не совпал — файл испорчен или подменён). Удали модель и перекачай заново в настройках STT"</ID>
-    <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$"base-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках STT"</ID>
-    <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$Log.d(TAG, "worker: задача #${task.id}, ${task.samples.size} сэмплов, модель=${task.model}, движок=${task.engine}")</ID>
-    <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$appContext ?: throw IllegalStateException("STT: context не инициализирован (transcribe() не вызывался до worker)")</ID>
-    <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("turbo-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках")</ID>
-    <ID>MaxLineLength:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("модель \"$model\" удалена или повреждена — перекачай её в настройках STT", e)</ID>
     <ID>NestedBlockDepth:ChatOverlay.kt$@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class) @Composable fun ChatOverlay( modifier: Modifier = Modifier, serverPort: Int = 4096, )</ID>
     <ID>NestedBlockDepth:ChatOverlay.kt$private fun playNotificationSound(context: Context)</ID>
     <ID>NestedBlockDepth:DiagnosticsScreen.kt$private fun readLogTail( file: File, maxBytes: Int = 4000, ): String</ID>
     <ID>NestedBlockDepth:ModelDownloader.kt$ModelDownloader$fun sha256Of(file: File): String?</ID>
     <ID>NestedBlockDepth:ModelDownloader.kt$ModelDownloader$private fun hasGgmlMagic(file: File): Boolean</ID>
     <ID>NestedBlockDepth:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
-    <ID>NewLineAtEndOfFile:Ipv4Proxy.kt$org.opencode.mobile.server.Ipv4Proxy.kt</ID>
-    <ID>NewLineAtEndOfFile:ProcessSupervisor.kt$org.opencode.mobile.server.ProcessSupervisor.kt</ID>
-    <ID>NewLineAtEndOfFile:Workspace.kt$org.opencode.mobile.server.Workspace.kt</ID>
     <ID>ReturnCount:ChatOverlay.kt$AudioRecorder$fun stop(): FloatArray</ID>
     <ID>ReturnCount:ChatOverlay.kt$private fun prettyModel(id: String?): String</ID>
     <ID>ReturnCount:ChatOverlay.kt$private fun questionOf( port: Int, sessionId: String, ): ChatQuestion?</ID>
@@ -257,7 +200,7 @@
     <ID>ReturnCount:RuntimeManager.kt$RuntimeManager$private fun rotateLogFile(logFile: File)</ID>
     <ID>ReturnCount:RuntimeManager.kt$RuntimeManager$private suspend fun waitForHttp(port: Int): Boolean</ID>
     <ID>ReturnCount:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
-    <ID>ReturnCount:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$suspend fun transcribe( context: Context, samples: FloatArray, model: String = MODEL_BASE, engine: String = ENGINE_WHISPER, timeoutMs: Long = 90_000L ): String</ID>
+    <ID>ReturnCount:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$suspend fun transcribe( context: Context, samples: FloatArray, model: String = MODEL_BASE, engine: String = ENGINE_WHISPER, timeoutMs: Long = 90_000L, ): String</ID>
     <ID>SwallowedException:DiagnosticsScreen.kt$e: Exception</ID>
     <ID>SwallowedException:Ipv4Proxy.kt$Ipv4Proxy$e: IOException</ID>
     <ID>SwallowedException:ModelDownloader.kt$ModelDownloader$e: java.io.FileNotFoundException</ID>
@@ -306,8 +249,8 @@
     <ID>UseCheckOrError:OpencodeRuntime.kt$OpencodeRuntime$throw IllegalStateException("musl lib $srcName missing in nativeLibraryDir")</ID>
     <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException( "$label повреждена (SHA-256 не совпал — файл испорчен или подменён). Удали модель и перекачай заново в настройках STT" )</ID>
     <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException( "base-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках STT" )</ID>
+    <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException( "turbo-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках" )</ID>
     <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("STT: context не инициализирован (transcribe() не вызывался до worker)")</ID>
-    <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("turbo-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках")</ID>
     <ID>UseCheckOrError:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$throw IllegalStateException("модель \"$model\" удалена — перекачай её в настройках STT")</ID>
   </CurrentIssues>
 </SmellBaseline>

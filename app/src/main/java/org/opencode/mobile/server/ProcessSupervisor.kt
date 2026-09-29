@@ -14,7 +14,6 @@ import java.util.concurrent.TimeUnit
 class ProcessSupervisor(
     private val name: String,
 ) {
-
     @Volatile
     var process: Process? = null
         private set
@@ -67,7 +66,11 @@ class ProcessSupervisor(
             android.util.Log.d("ProcessSupervisor", "$name.stop: ${e.message}")
         }
         if (!proc.isAlive) {
-            lastExitCode = try { proc.exitValue() } catch (e: Exception) { null }
+            lastExitCode = try {
+                proc.exitValue()
+            } catch (e: Exception) {
+                null
+            }
             // Зануляем ТОЛЬКО мёртвый процесс: живой (даже после destroyForcibly —
             // упрямый процесс) остаётся в поле, чтобы цикл менеджера увидел
             // isAlive=true и не стартовал новый serve поверх занятого порта.
@@ -81,9 +84,10 @@ class ProcessSupervisor(
     }
 
     /** Для диагностики падения: exit code мёртвого процесса (null — жив или отсутствует). */
-    fun currentExitCode(): Int? = try {
-        process?.takeIf { !it.isAlive }?.exitValue()
-    } catch (e: Exception) {
-        null
-    }
+    fun currentExitCode(): Int? =
+        try {
+            process?.takeIf { !it.isAlive }?.exitValue()
+        } catch (e: Exception) {
+            null
+        }
 }

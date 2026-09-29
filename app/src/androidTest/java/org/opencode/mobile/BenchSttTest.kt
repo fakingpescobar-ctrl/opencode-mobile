@@ -371,7 +371,7 @@ class BenchSttTest {
             return
         }
         val secs = wav.samples.size / 16_000.0
-        Log.i(TAG, "TRUNC: long.wav ${secs} с, маркер 'fellow americans' x1 на высказывание (всего 3)")
+        Log.i(TAG, "TRUNC: long.wav $secs с, маркер 'fellow americans' x1 на высказывание (всего 3)")
 
         // Прогрев обязателен в обоих замерах: первый вызов поднимает модели
         // (~3-4с), и без прогрева разница между путями измеряла бы не путь.
@@ -441,7 +441,6 @@ class BenchSttTest {
             val nSingle = countMarker(single)
             Log.i(TAG, "BENCH_ROW trunc,single$sec,$singleMs,---,---,$singleMs,marker=$nSingle,${single.take(80)}")
         }
-
 
         val verdict = if (nChunked < 3) "БАЗА СЛОМАНА (chunked не выдал 3)" else "ХВОСТ ТЕРЯЕТСЯ ВЫШЕ ОКНА"
         Log.i(TAG, "TRUNC: chunked=$chunkedMs ms / $nChunked высказ. | single-pass по окну: см. строки trunc,singleNN")

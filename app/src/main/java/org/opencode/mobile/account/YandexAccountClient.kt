@@ -58,6 +58,7 @@ internal fun deleteDiff(
         .put(JSONObject().put("op", "delete").put("from", from).put("to", to))
         .toString()
 }
+
 internal fun readPlaylistSummaries(result: JSONArray): List<PlaylistSummary> =
     (0 until result.length())
         .mapNotNull { index -> result.optJSONObject(index) }

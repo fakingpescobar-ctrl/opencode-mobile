@@ -29,7 +29,7 @@ private val LightColors = lightColorScheme(
 @Composable
 fun OpencodeMobileTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    content: @Composable () -> Unit
+    content: @Composable () -> Unit,
 ) {
     MaterialTheme(
         colorScheme = if (darkTheme) DarkColors else LightColors,

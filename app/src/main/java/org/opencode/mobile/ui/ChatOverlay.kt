@@ -39,7 +39,6 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -95,7 +94,6 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -125,10 +123,10 @@ import org.json.JSONObject
 import org.opencode.mobile.R
 import org.opencode.mobile.server.LocalOpenCodeClient
 import org.opencode.mobile.server.MemoryMcp
-import org.opencode.mobile.server.YnisonMcp
 import org.opencode.mobile.server.OpenCodePermissionApi
 import org.opencode.mobile.server.OpenCodePermissionRequest
 import org.opencode.mobile.server.PermissionDecision
+import org.opencode.mobile.server.YnisonMcp
 import org.opencode.mobile.stt.NcnnModelValidator
 import org.opencode.mobile.stt.WhisperTranscribeService
 import java.io.File
