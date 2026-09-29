@@ -200,7 +200,6 @@
     <ID>ReturnCount:RuntimeManager.kt$RuntimeManager$private fun rotateLogFile(logFile: File)</ID>
     <ID>ReturnCount:RuntimeManager.kt$RuntimeManager$private suspend fun waitForHttp(port: Int): Boolean</ID>
     <ID>ReturnCount:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
-    <ID>ReturnCount:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$suspend fun transcribe( context: Context, samples: FloatArray, model: String = MODEL_BASE, engine: String = ENGINE_WHISPER, timeoutMs: Long = 90_000L, ): String</ID>
     <ID>SwallowedException:DiagnosticsScreen.kt$e: Exception</ID>
     <ID>SwallowedException:Ipv4Proxy.kt$Ipv4Proxy$e: IOException</ID>
     <ID>SwallowedException:ModelDownloader.kt$ModelDownloader$e: java.io.FileNotFoundException</ID>
