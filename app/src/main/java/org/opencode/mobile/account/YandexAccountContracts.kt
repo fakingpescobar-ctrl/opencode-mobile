@@ -1,6 +1,7 @@
 package org.opencode.mobile.account
 
 import org.opencode.mobile.media.CatalogTrack
+import org.opencode.mobile.media.YandexCatalog
 
 /**
  * Контракты чтения библиотеки Яндекса: страница «Моего плейлиста» и разбор её параметров.
@@ -60,6 +61,38 @@ data class PlaylistPage(
 }
 
 /**
+ * Что произошло с плейлистом после правки.
+ *
+ * Отчёт, а не простое «ok»: после записи трека в плейлист самое частое продолжение — «а он
+ * вообще добавился?», и [trackCount] вместе с [position] отвечают на это без повторного
+ * чтения плейлиста. [trackTitle] заполняется только для вставки: удалённый трек уже нечего
+ * спрашивать у каталога, а по одному [trackId] пользователю ничего не скажешь.
+ */
+data class PlaylistEdit(
+    val action: String,
+    val kind: Int,
+    val title: String,
+    val trackId: String,
+    val trackTitle: String?,
+    val position: Int,
+    val trackCount: Int,
+)
+
+/**
+ * Адресат правки плейлиста: владелец, сам плейлист и версия, к которой правка применена.
+ *
+ * Три поля лежат вместе не для красоты: `revision` — это оптимистичная блокировка, и он
+ * осмыслен только в паре с `(uid, kind)`, к которому относится. Разнести их по параметрам
+ * метода — значит получить возможность собрать правку по ревизии чужого плейлиста, и такой
+ * вызов компилируется и выглядит безобидно.
+ */
+data class PlaylistTarget(
+    val uid: String,
+    val kind: Int,
+    val revision: Long,
+)
+
+/**
  * Валидация входа инструментов.
  *
  * `offset`/`limit` приходят из агента и потому недоверенные: без проверки `offset` минус
@@ -98,8 +131,35 @@ object YandexAccountRequestValidator {
     }
 
     /**
-     * Число из строки, где «нет параметра» и «параметр есть, но мусор» — разные вещи.
+     * id трека для записи в плейлист.
      *
+     * Проверяется тем же [YandexCatalog.isTrackId], что и поиск: агент склонен прислать
+     * вместо id название трека или ссылку, и без проверки это ушло бы в изменение плейлиста
+     * как «трек не найден» — потеряв запрос и, что хуже, саму ревизию плейлиста.
+     */
+    fun trackId(raw: String?): String {
+        val text = raw?.trim().orEmpty()
+        require(text.isNotEmpty()) { "track_id is required" }
+        require(YandexCatalog.isTrackId(text)) { "track_id must be a Yandex track id, got \"$text\"" }
+        return text
+    }
+
+    /**
+     * Позиция вставки — необязательная, и «не передан» здесь не то же, что «передан ноль»:
+     * ноль означает «в начало», а отсутствие — «в начало же», но выбирается на стороне
+     * плейлиста. Различать их пришлось бы только ради сообщения об ошибке, поэтому [raw]
+     * пустой даёт null, а мусор — исключение.
+     */
+    fun insertPosition(raw: String?): Int? {
+        val text = raw?.trim().orEmpty()
+        if (text.isEmpty()) return null
+        val position = requireNotNull(text.toIntOrNull()) { "at must be an integer" }
+        require(position >= 0) { "at must be >= 0" }
+        return position
+    }
+
+    /**
+     * Число из строки, где «нет параметра» и «параметр есть, но мусор» — разные вещи.     *
      * Именно это различие и не даёт съесть опечатку агента: `toIntOrNull() ?: 0`
      * превратил бы `offset=later` в первую страницу, и агент решил бы, что у юзера
      * ровно 20 треков, хотя он просил не с того места.

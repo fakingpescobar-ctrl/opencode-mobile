@@ -3,11 +3,28 @@ package org.opencode.mobile.account
 import android.content.Context
 import android.content.SharedPreferences
 
+/**
+ * Каким входом выдан токен — а от этого зависит, чем его обновлять.
+ *
+ * Обновление у двух входов несовместимо: PKCE шлёт `client_id` без секрета, device-flow
+ * требует секрет в теле. Токен хранится один, а обновлять его надо тем же способом, каким
+ * он получен, — иначе refresh раз в год падает, и юзер узнаёт об этом на «ничего не
+ * работает». Поэтому способ входа едет вместе с токеном, а не живёт в настройках.
+ */
+enum class YandexGrant {
+    /** PKCE через браузер: токен годится для REST, Ynison его не принимает. */
+    PKCE,
+
+    /** Device Flow: единственный вход, чей токен принимает Ynison. */
+    DEVICE,
+}
+
 /** Токен доступа с моментом, после которого его нужно обновить. */
 data class YandexToken(
     val accessToken: String,
     val refreshToken: String,
     val expiresAtMillis: Long,
+    val grant: YandexGrant = YandexGrant.PKCE,
 ) {
     val canRefresh: Boolean get() = refreshToken.isNotBlank()
 }
@@ -29,6 +46,9 @@ data class YandexIdentity(
  * [PendingAuth] живёт здесь же, а не в памяти процесса: код возвращается в новом процессе
  * (приложение могло быть убито, пока юзер логинился в браузере), и тогда держать verifier
  * в поле класса было бы ровно тем, из-за чего flow ломался бы через раз.
+ *
+ * Состояние device-flow лежит в [YandexDeviceStore]: там то, что живёт минуты, здесь —
+ * то, что живёт год. Файл настроек у них общий, поэтому ключи не пересекаются.
  */
 class YandexTokenStore(
     context: Context,
@@ -49,6 +69,7 @@ class YandexTokenStore(
             .putString(KEY_ACCESS, token.accessToken)
             .putString(KEY_REFRESH, keepRefreshToken(token()?.refreshToken, token.refreshToken))
             .putLong(KEY_EXPIRES_AT, token.expiresAtMillis)
+            .putString(KEY_GRANT, token.grant.name)
             .apply()
     }
 
@@ -66,8 +87,20 @@ class YandexTokenStore(
             accessToken = access,
             refreshToken = prefs.getString(KEY_REFRESH, null)?.trim().orEmpty(),
             expiresAtMillis = prefs.getLong(KEY_EXPIRES_AT, 0L),
+            grant = readGrant(),
         )
     }
+
+    /**
+     * Способ входа, которым выдан сохранённый токен.
+     *
+     * Неизвестное значение и его отсутствие — это PKCE, а не ошибка: так ведут себя токены,
+     * сохранённые до появления device-flow, и ломать их обновление на ровном месте нечестно.
+     * Разница станет видна сама — refresh вернёт отказ, и юзер переподключится.
+     */
+    private fun readGrant(): YandexGrant =
+        runCatching { YandexGrant.valueOf(prefs.getString(KEY_GRANT, null).orEmpty()) }
+            .getOrDefault(YandexGrant.PKCE)
 
     fun saveIdentity(identity: YandexIdentity) {
         prefs
@@ -109,6 +142,7 @@ class YandexTokenStore(
      *
      * Именно только. Здесь мы вызываем это уже после того, как новый токен записан, и
      * обычный [clear] снёс бы вместе с verifier'ом и только что полученный доступ.
+     * Коды device-flow чистит [YandexDeviceStore.clearPending] — вызывающий обязан звать оба.
      */
     fun clearPending() {
         prefs
@@ -121,7 +155,8 @@ class YandexTokenStore(
 
     /**
      * Отключение от аккаунта. Стирает всё, включая висящий [PendingAuth]: код, который
-     * сейчас в браузере, после отключения уже никому не нужен.
+     * сейчас в браузере, после отключения уже никому не нужен. Заодно исчезает и
+     * состояние device-flow — [YandexDeviceStore] пишет в тот же файл.
      */
     fun clear() {
         prefs.edit().clear().apply()
@@ -129,11 +164,13 @@ class YandexTokenStore(
 
     private companion object {
         // Имя приватного файла. Не префиксовать именем пакета — так его не спутать с
-        // настройками самого приложения при разборе дампа.
+        // настройками самого приложения при разборе дампа. Совпадает с именем в
+        // [YandexDeviceStore] намеренно: это один файл, а не два.
         const val PREFS_NAME = "opencode_yandex_auth"
         const val KEY_ACCESS = "access_token"
         const val KEY_REFRESH = "refresh_token"
         const val KEY_EXPIRES_AT = "expires_at"
+        const val KEY_GRANT = "grant"
         const val KEY_LOGIN = "login"
         const val KEY_UID = "uid"
         const val KEY_VERIFIER = "code_verifier"
