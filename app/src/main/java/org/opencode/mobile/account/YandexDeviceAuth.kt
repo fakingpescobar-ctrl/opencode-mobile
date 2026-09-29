@@ -10,21 +10,27 @@ import java.util.Base64
  * OAuth Device Flow Яндекс ID — вход, который выдаёт токен, годный для Ynison.
  *
  * Зачем он вместо PKCE: токен PKCE умеет только REST (`login:info`), а Ynison такой
- * токен отвергает. Проверено вживую — с device-flow токеном Ynison handshake проходит,
+ * токен отвергает. Проверено вживью — с device-flow токеном Ynison handshake проходит,
  * с PKCE нет. Значит управление музыкой возможно только здесь.
  *
- * **Про секрет клиента.** Это публичные креды официального приложения Яндекс Музыки для
- * Android — тем же значением, что лежит в их APK. Мы не присваиваем чужой секрет: без
- * официального `client_id` Яндекс не выдаёт токен со scopes, которые принимает Ynison, а
- * свой собственный OAuth-клиент завести можно только из консоли Яндекса. Скрыть его в
- * приложении бессмысленно: он извлекается из APK за секунды. Хуже того — попытка сделать
- * вид, что его нет, привела бы к отказу на `/token`.
+ * **Кто мы для Яндекса.** Ни здесь, ни где-либо ещё креды не зашиты: идентификатор и
+ * секрет лежат в [YandexOAuth], потому что это наша собственная регистрация из консоли
+ * Яндекса, общая для обоих входов. Раньше здесь стояли публичные креды официального
+ * клиента Яндекс Музыки для Android, и это было неверно: свой `client_id` у приложения
+ * уже был, просто device-flow его не использовал. Формально запросы проходили, и ошибка
+ * была не видна — вход шёл не от того приложения, и Яндекс показывал чужую регистрацию
+ * среди активных.
  *
  * **Что проверено вживую, а не взято из документации:**
  *
  * - `/device/code` секрета не требует: `client_id` в теле формы достаточно, заголовок
  *   `Authorization: Basic` можно не слать. Логи в документации и в сторонних библиотеках
  *   требуют его, и это стоило живого запроса, чтобы не тащить в код лишнее.
+ * - **`/token` секрета требует**, в отличие от `/device/code`. Без него ответ —
+ *   `invalid_client: Wrong client secret`; с ним на заведомо неверном коде приходит
+ *   `invalid_grant`. Разница ошибок и есть доказательство: с верным секретом запрос
+ *   проходит проверку клиента и доходит до проверки гранта. Отсюда и [clientId], и
+ *   [YandexOAuth.CLIENT_SECRET] в теле каждой из форм ниже.
  * - `verification_url` приходит как `https://ya.ru/device` — не `yandex.ru/auth/device`,
  *   как учат примеры, — поэтому ссылку берём из ответа, а не конструируем сами.
  * - `user_code` — 8 символов без дефиса (`jq7ivm4b`), `interval` = 5, `expires_in` = 300.
@@ -35,11 +41,18 @@ import java.util.Base64
  * Сеть живёт в [YandexAccountClient], хранение — в [YandexTokenStore].
  */
 object YandexDeviceAuth {
-    /** Официальный публичный идентификатор приложения Яндекс Музыки для Android. */
-    const val CLIENT_ID = "literal:70e7fc7e75144b2badc68ba8d0293882"
+    /** Наша регистрация, общая с PKCE-входом. См. [YandexOAuth]. */
+    const val clientId: String = YandexOAuth.CLIENT_ID
 
-    /** Публичный секрет того же клиента — см. KDoc объекта. */
-    const val CLIENT_SECRET = "literal:8b8a527bddf14aa8b2b7d1cd90305d2c"
+    /**
+     * Секрет достаётся из [YandexOAuth] на месте, а не хранится своим полем.
+     *
+     * Приватный — в отличие от [clientId], о котором можно сказать наружу, потому что он
+     * публичный по смыслу. Дублировать же его константой здесь значило бы завести ровно
+     * ту расхождение, ради устранения которой секрет и вынесен в одно место.
+     */
+    private const val clientSecret: String = YandexOAuth.CLIENT_SECRET
+
 
     const val DEVICE_CODE_URL = "https://oauth.yandex.ru/device/code"
 
@@ -140,9 +153,9 @@ object YandexDeviceAuth {
             .map { DEVICE_ID_ALPHABET[random.nextInt(DEVICE_ID_ALPHABET.length)] }
             .joinToString("")
 
-    /** Тело `/device/code`. Секрета нет: он этому эндпоинту не нужен. */
+    /** Тело `/device/code`. Секрета нет: этому эндпоинту он не нужен — см. KDoc объекта. */
     fun deviceCodeForm(deviceId: String): String =
-        "client_id=$CLIENT_ID" +
+        "client_id=$clientId" +
             "&device_id=${encode(deviceId)}" +
             "&device_name=${encode(DEVICE_NAME)}"
 
@@ -150,8 +163,8 @@ object YandexDeviceAuth {
     fun deviceTokenForm(deviceCode: String): String =
         "grant_type=$GRANT_DEVICE_CODE" +
             "&code=${encode(deviceCode)}" +
-            "&client_id=$CLIENT_ID" +
-            "&client_secret=$CLIENT_SECRET"
+            "&client_id=$clientId" +
+            "&client_secret=$clientSecret"
 
     /**
      * Тело обновления токена, выданного device-flow.
@@ -163,18 +176,22 @@ object YandexDeviceAuth {
     fun deviceRefreshForm(refreshToken: String): String =
         "grant_type=$GRANT_REFRESH" +
             "&refresh_token=${encode(refreshToken)}" +
-            "&client_id=$CLIENT_ID" +
-            "&client_secret=$CLIENT_SECRET"
+            "&client_id=$clientId" +
+            "&client_secret=$clientSecret"
 
     /**
      * `Authorization: Basic` для `/token`.
      *
-     * Собран из публичных кредов и уходит только в `oauth.yandex.ru`. Значение не
-     * кэшируется в константу: base64 от секрета в дампе кучи выглядел бы как настоящий
-     * пароль, и искать его потом пришлось бы по всему логу.
+     * Секрет уходит и сюда, и в тело формы — намеренно дублируется: `/token` проверяет
+     * клиента по обоим и при несовпадении отвечает `invalid_client`, не называя, какой
+     * именно из них не сошёлся. Одного канала хватает, но диагностировать отказ в
+     * годовой токен дороже, чем отправить два.
+     *
+     * Значение не кэшируется в константу: base64 от секрета в дампе кучи выглядел бы как
+     * настоящий пароль, и искать его потом пришлось бы по всему логу.
      */
     fun basicAuthorization(): String =
-        "Basic " + Base64.getEncoder().encodeToString("$CLIENT_ID:$CLIENT_SECRET".toByteArray(StandardCharsets.UTF_8))
+        "Basic " + Base64.getEncoder().encodeToString("$clientId:$clientSecret".toByteArray(StandardCharsets.UTF_8))
 
     /**
      * Разбор ответа `/device/code`.
