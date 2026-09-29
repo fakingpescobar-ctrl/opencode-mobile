@@ -3,6 +3,7 @@ package org.opencode.mobile.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.util.Log
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -44,6 +45,7 @@ private const val MUTED = 0xFFBDBDBD
 private const val PLATE = 0xFF1E1E1E
 private const val TICK_MILLIS = 1000L
 private const val MILLIS_PER_SECOND = 1000
+private const val TAG = "YandexAccount"
 
 /**
  * Что секция показывает прямо сейчас.
@@ -54,6 +56,13 @@ private const val MILLIS_PER_SECOND = 1000
  * «идёт работа с сетью» и «висит код, который надо ввести».
  */
 private sealed interface YandexConnectUi {
+    /**
+     * Ещё спросили хранилище. Не украшение: первое чтение `SharedPreferences` поднимает
+     * XML с диска, и делать это в composition — значит блокировать главный поток при
+     * открытии экрана. Поэтому состояние появляется после [YandexConnectState.load].
+     */
+    data object Loading : YandexConnectUi
+
     /** Аккаунта нет, кода нет. Начальное состояние. */
     data object Disconnected : YandexConnectUi
 
@@ -104,7 +113,8 @@ fun yandexAccountSection() {
     // экран диагностики как раз и открывают, когда что-то не поднялось. Вызов идемпотентен.
     YandexAccountController.initialize(context)
     val scope = rememberCoroutineScope()
-    val state = remember { YandexConnectState(initialState()) }
+    val state = remember { YandexConnectState() }
+    LaunchedEffect(state) { state.load() }
 
     // Оба эффекта на ключе state.prompt, а не state.ui. Пока идёт опрос, на экране мигает
     // `Working`, и если бы от `ui` зависели циклы, смена этого состояния отменяла бы их
@@ -115,6 +125,7 @@ fun yandexAccountSection() {
 
     sectionHeader("Яндекс Музыка")
     when (val shown = state.ui) {
+        YandexConnectUi.Loading -> accountPlate("Проверяем…", "Читаем сохранённый вход")
         YandexConnectUi.Disconnected -> {
             accountPlate("Не подключён", WITHOUT_ACCOUNT_HINT)
             actionButton("Подключить Яндекс Музыку") { scope.launch { state.beginConnect() } }
@@ -150,20 +161,35 @@ fun yandexAccountSection() {
  * [beginConnect] и [signOut], которые оба обновляют пару целиком.
  */
 @Stable
-private class YandexConnectState(
-    initial: YandexConnectUi,
-) {
+private class YandexConnectState {
     /** Что на экране. */
-    var ui by mutableStateOf(initial)
+    var ui by mutableStateOf<YandexConnectUi>(YandexConnectUi.Loading)
         private set
 
     /** Висящий код, если он есть. Меняется ровно дважды: выдали и сняли. */
-    var prompt by mutableStateOf(initial.pendingPrompt)
+    var prompt by mutableStateOf<YandexAccountController.DevicePrompt?>(null)
         private set
 
     /** Сколько секунд осталось до истечения кода. */
     var secondsLeft by mutableIntStateOf(0)
         private set
+
+    /**
+     * Первое состояние — из хранилища, на IO.
+     *
+     * Спрашиваем хранилище, а не начинаем с чистого листа: если вход уже состоялся раньше,
+     * человек не должен увидеть кнопку «подключить» поверх работающего аккаунта. И если код
+     * висит (юзер ушёл в браузер и вернулся на diagnostics), показываем его, а не «начать
+     * заново» — выданный код ещё жив, и второй вызов сжёг бы его.
+     */
+    suspend fun load() {
+        val status = withContext(Dispatchers.IO) { YandexAccountController.status() }
+        finish(
+            status.identity?.login?.let { YandexConnectUi.Connected(it) }
+                ?: status.devicePrompt?.let { YandexConnectUi.Awaiting(it) }
+                ?: YandexConnectUi.Disconnected,
+        )
+    }
 
     /**
      * Обратный отсчёт. Считается от системных часов каждую секунду, а не накапливается:
@@ -235,17 +261,27 @@ private class YandexConnectState(
      * Зовут две кнопки — «подключить» и «попробовать снова». Второй вызов, кстати,
      * сжигает прежний код на сервере Яндекса, поэтому [startConnect] обязан вызываться
      * только отсюда, а не из двух мест кнопок по отдельности.
+     *
+     * Сеть — на IO, обязательно. `NetworkOnMainThreadException` не имеет message, и без
+     * этого оборачивания человек видел ровно «Яндекс не ответил» на безобидном первом
+     * нажатии: сеть на главном потоке Android роняет не по описанию ошибки, а молча.
      */
     suspend fun beginConnect() {
         ui = YandexConnectUi.Working
         prompt = null
         val next =
-            runCatching { YandexAccountController.startConnect() }
+            runCatching { withContext(Dispatchers.IO) { YandexAccountController.startConnect() } }
                 .fold(
                     onSuccess = { status ->
                         status.devicePrompt?.let { YandexConnectUi.Awaiting(it) } ?: YandexConnectUi.Disconnected
                     },
-                    onFailure = { YandexConnectUi.Failed(it.readable()) },
+                    // Причину пишем в logcat: `readable()` для пустого message подставляет
+                    // вежливую заглушку, и без лога отказ невозможно ни диагностировать,
+                    // ни отличить «нет сети» от «Яндекс отказал».
+                    onFailure = {
+                        Log.w(TAG, "yandex device flow failed", it)
+                        YandexConnectUi.Failed(it.readable())
+                    },
                 )
         finish(next)
     }
@@ -258,7 +294,12 @@ private class YandexConnectState(
 
     /** Код истёк. Яндекс отозвал бы его и сам, но ждать отказа минутами после истёкшего
      *  срока — плохо: человек видит «ожидание», которого уже не будет. */
-    private fun expire() = finish(YandexConnectUi.Failed(EXPIRED_PROMPT))
+    private suspend fun expire() {
+        // Стираем код и с диска. Пока он там лежит, следующий запуск приложения прочитает
+        // его как живой и покажет «ожидание подтверждения», которого уже не будет.
+        withContext(Dispatchers.IO) { YandexAccountController.clearPendingPrompt() }
+        finish(YandexConnectUi.Failed(EXPIRED_PROMPT))
+    }
 
     /** Единственное место, где `ui` и `prompt` меняются вместе: снять код — это всегда
      *  вместе с новым состоянием экрана, а не само по себе. */
@@ -282,21 +323,6 @@ private const val EXPIRED_PROMPT = "код истёк, начните занов
 
 /** Отказ без причины: `IOException` умеет прийти с пустым message. */
 private const val NO_REASON = "Яндекс не ответил, попробуйте ещё раз"
-
-/**
- * Первое состояние при входе на экран.
- *
- * Спрашиваем хранилище, а не начинаем с чистого листа: если вход уже состоялся раньше,
- * человек не должен увидеть кнопку «подключить» поверх работающего аккаунта. И если код
- * висит (юзер ушёл в браузер и вернулся на diagnostics), показываем его, а не «начать
- * заново» — выданный код ещё жив, и второй вызов сжёг бы его.
- */
-private fun initialState(): YandexConnectUi =
-    YandexAccountController.status().let { status ->
-        status.identity?.login?.let { YandexConnectUi.Connected(it) }
-            ?: status.devicePrompt?.let { YandexConnectUi.Awaiting(it) }
-            ?: YandexConnectUi.Disconnected
-    }
 
 /**
  * Крупный моноширинный код — герой этого экрана.
