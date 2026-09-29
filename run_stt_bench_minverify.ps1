@@ -238,10 +238,11 @@ $groups = @(
         Csv    = 'stt-bench-int8.csv'
         Filter = 'org.opencode.mobile.SmokeSttTest#nativeInitAndTranscribe,' +
             'org.opencode.mobile.BenchSttTest#benchChunkedLong,' +
+            'org.opencode.mobile.BenchSttTest#benchLongSinglePassTruncation,' +
             'org.opencode.mobile.BenchSttTest#benchLazyShort,' +
             'org.opencode.mobile.BenchSttTest#benchAutoLanguage,' +
             'org.opencode.mobile.BenchSttTest#benchMatrixInt8'
-        Expect = '~12-16 min (5 tests, всё на turbo/int8)'
+        Expect = '~14-19 min (6 tests, всё на turbo/int8)'
     },
     @{
         Label  = 'fp32'
@@ -423,11 +424,49 @@ foreach ($r in $rssLines) { Write-Host "    $r" -ForegroundColor DarkGray }
 foreach ($b in ($bootLines | Select-Object -First 4)) { Write-Host "    $b" -ForegroundColor DarkGray }
 Write-Host "  logcat archive: $logcatLog" -ForegroundColor DarkGray
 foreach ($p in $csvArchive) { Write-Host "  csv archive   : $p" -ForegroundColor DarkGray }
+
+# АРХИВ ПРОГОНА. Логи и CSV писались в build/stt-bench-logs/ по фиксированным
+# именам, поэтому КАЖДЫЙ следующий прогон затирал предыдущий. Для стенда, чья
+# ценность ровно в воспроизводимости, это неприемлемо: docs §10.2 ссылается на
+# watch-run.log как на источник цифр, и перезапись молча подменяет цитату.
+# Ручной копипаст уже стоил нам зелёного прогона 28.09, поэтому теперь папка
+# с датой создаётся сама.
+$stamp  = Get-Date -Format 'yyyyMMdd-HHmmss'
+$runDir = Join-Path $logDir "run-$stamp"
+if (@($csvArchive).Count -gt 0 -or (Test-Path $logcatLog)) {
+    New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+    $instFiles = @($instLog.Keys | Where-Object { -not $_.EndsWith('.exit') } | ForEach-Object { $instLog[$_] })
+    foreach ($f in @($logcatLog) + @($csvArchive) + $instFiles) {
+        if ($f -and (Test-Path $f)) { Copy-Item $f $runDir -Force -ErrorAction SilentlyContinue }
+    }
+    Write-Host "  run archive   : $runDir" -ForegroundColor DarkGray
+}
 Write-Host '  --------------------------------------------' -ForegroundColor DarkGray
 Write-Host '  config   wav          median_ms   enc_ms' -ForegroundColor White
 foreach ($line in $dataRows) {
     $f = ($line -split ',')
     if ($f.Count -ge 8) { Write-Host ("  {0,-8} {1,-11} {2,9}   {3,8}" -f $f[0], $f[1], $f[5], $f[7]) -ForegroundColor Green }
+}
+Write-Host ''
+
+# НЕ-МАТРИЧНЫЕ строки: chunked / lazy / trunc. Они НЕ попадают в CSV (матрица
+# собирает свой файл), жили только в logcat, и сводка их молча показывала пустоту.
+# Между тем именно в них ответы на два вопроса, которых больше нигде нет:
+# доехал ли хвост при чанкинге и что даёт принудительный single-pass >30с.
+# Урок тот же, что и с CSV: если ответ не печатается в сводку, он не попадает
+# в разбор и живёт только до следующего прогона.
+$auxRows = @()
+if (Test-Path $logcatLog) {
+    $auxRows = @(Select-String -Path $logcatLog -Pattern 'BENCH_ROW\s+(chunked|lazy|trunc),' -Encoding UTF8 |
+        ForEach-Object { ($_.Line -replace '.*BENCH_ROW\s+', '').Trim() })
+}
+if ($auxRows.Count -gt 0) {
+    Write-Host '  config   what         ms        detail' -ForegroundColor White
+    foreach ($line in $auxRows) {
+        $f = ($line -split ',')
+        if ($f.Count -ge 3) { Write-Host ("  {0,-8} {1,-11} {2,7}   {3}" -f $f[0], $f[1], $f[2], (($f[6..($f.Count - 1)] -join ',').Substring(0, [math]::Min(60, ($f[6..($f.Count - 1)] -join ',').Length)))) -ForegroundColor Cyan }
+    }
+    Write-Host '  --------------------------------------------' -ForegroundColor DarkGray
 }
 Write-Host ''
 
