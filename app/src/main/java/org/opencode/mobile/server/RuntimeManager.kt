@@ -5,6 +5,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import org.opencode.mobile.OpencodeApp
+import org.opencode.mobile.account.YandexAccountController
 import org.opencode.mobile.installer.AppInstallBridge
 import java.io.File
 import java.util.UUID
@@ -31,6 +32,14 @@ class RuntimeManager(
         /** Максимум подряд идущих витков без HEALTHY (лимит рестартов). */
         const val MAX_RESTART_ATTEMPTS = 5
 
+        /**
+         * Запасной id для Ynison, если хранилище недоступно.
+         *
+         * Лучше один известный id, чем device-flow без device_id: сервер всё равно примет
+         * сессию, а «новое устройство» останется единственным, предсказуемым.
+         */
+        private const val DEFAULT_YNISON_DEVICE_ID = "opencode-mobile"
+
         /** Предел роста одного opencode.log; по достижении — сдвиг цепочки .N. */
         private const val MAX_LOG_BYTES = 8L * 1024 * 1024
 
@@ -40,9 +49,9 @@ class RuntimeManager(
         /** Общий бюджет всех лог-файлов цепочки; хвосты сверх бюджета удаляются. */
         private const val LOG_TOTAL_BUDGET = 30L * 1024 * 1024
 
-        /** Окно ожидания подъёма локальной памяти (10 попыток × 500 мс). */
-        private const val MEMORY_HEALTH_TIMEOUT_MS = 10_000L
-        private const val MEMORY_HEALTH_POLL_MS = 500L
+        /** Окно ожидания подъёма локального MCP-сервера (память или музыка). */
+        private const val STARTUP_HEALTH_TIMEOUT_MS = 10_000L
+        private const val STARTUP_HEALTH_POLL_MS = 500L
 
         /** Таймаут TCP-коннекта к сокету памяти. */
         private const val MEMORY_TCP_TIMEOUT_MS = 1_000
@@ -51,6 +60,7 @@ class RuntimeManager(
     private val logFile = File(context.filesDir, "opencode.log")
     private val serve = ProcessSupervisor("serve")
     private val memory = ProcessSupervisor("memory")
+    private val ynison = ProcessSupervisor("ynison")
 
     @Volatile
     private var running = false
@@ -135,6 +145,7 @@ class RuntimeManager(
                 // он дописывал бы хвост в .1.
                 serve.stop()
                 memory.stop()
+                ynison.stop()
                 rotateLogFile(logFile)
 
                 // Новый виток: прошлая ошибка (если была активна) помечается
@@ -190,12 +201,21 @@ class RuntimeManager(
                 // на живом сервере. Сбрасывается в finally вместе с процессом.
                 MemoryAuth.set(memoryToken)
 
+                // Музыка — отдельный bearer и отдельный токен Яндекса. Берём ДО регистрации
+                // в конфиге: зарегистрированный, но не поднятый сервер хуже отсутствующего,
+                // потому что модель получает шесть инструментов, которые не отвечают.
+                val ynisonAccessToken = YandexAccountController.runtimeAccessToken()
+                val ynisonToken = ynisonAccessToken?.let { UUID.randomUUID().toString() }
+                if (ynisonToken != null) {
+                    YnisonAuth.set(ynisonToken)
+                }
+
                 // Регистрируем локальную память в конфиге serve как remote MCP
                 // (иначе serve о ней не знает — индикатор «0 MCP», инструменты
                 // памяти недоступны модели). До старта serve: он читает конфиг
                 // при инициализации MCP. Не фатал — память продолжит работать
                 // как TCP-сервер, просто без регистрации.
-                OpencodeRuntime.ensureMcpConfig(memoryToken)
+                OpencodeRuntime.ensureMcpConfig(memoryToken, ynisonToken)
 
                 // Локальная память MCP как HTTP/TCP-сервер (MEMORY_PORT) — ДО serve.
                 // Не стартовала/умерла — НЕ фатал: serve продолжит, статус DEGRADED.
@@ -220,7 +240,7 @@ class RuntimeManager(
                 if (memProc != null) {
                     memory.setProcess(memProc)
                 }
-                val memoryStarted = memProc != null && waitForMemory(memProc)
+                val memoryStarted = memProc != null && waitForPort(memProc, OpencodeRuntime.MEMORY_PORT)
                 if (!memoryStarted) {
                     // Гасим явно: процесс мог стартовать, но не поднять MCP-порт
                     // (битый старт). Без stop() следующий виток создал бы ещё один.
@@ -233,13 +253,59 @@ class RuntimeManager(
                     )
                 }
 
+                // Яндекс.Музыка (YNISON_PORT) — тоже ДО serve, по тем же двум причинам,
+                // что и память: конфиг читается на старте, а мёртвый порт в конфиге врёт.
+                // Без подключённого Яндекса не запускаемся вовсе (это не поломка, см.
+                // startYnisonServer) и запись music из конфига убирается сама.
+                var ynisonStarted = false
+                if (ynisonAccessToken != null && ynisonToken != null) {
+                    val ynProc =
+                        OpencodeRuntime.startYnisonServer(
+                            context = context,
+                            logFile = logFile,
+                            workDir = workspace,
+                            credentials =
+                                YnisonCredentials(
+                                    accessToken = ynisonAccessToken,
+                                    mcpToken = ynisonToken,
+                                    deviceId =
+                                        YandexAccountController.runtimeDeviceId()
+                                            ?: DEFAULT_YNISON_DEVICE_ID,
+                                ),
+                        )
+                    if (ynProc != null) {
+                        ynison.setProcess(ynProc)
+                        // Живой процесс != поднятая музыка: как и с памятью, верифицируем
+                        // isAlive + TCP-коннект на YNISON_PORT, иначе модель видела бы в конфиге
+                        // инструменты, которые не отвечают. Провал — гасим процесс (битый старт)
+                        // и фиксируем recoverable-ошибку: serve продолжит без музыки.
+                        ynisonStarted = waitForPort(ynProc, OpencodeRuntime.YNISON_PORT)
+                        if (!ynisonStarted) {
+                            ynison.stop()
+                            emitFailure(
+                                stage = RuntimeStage.STARTING_MEMORY,
+                                code = RuntimeErrorCode.YNISON_START_FAILED,
+                                message = "Музыка MCP не поднялась - порт или процесс",
+                                recoverable = true,
+                            )
+                        }
+                    }
+                }
+
                 emit { copy(stage = RuntimeStage.STARTING_SERVER) }
                 val proc =
                     OpencodeRuntime.startServe(
                         context,
                         logFile = logFile,
                         workDir = workspace,
-                        extraEnv = mapOf("MCP_MEMORY_TOKEN" to memoryToken),
+                        extraEnv =
+                            mapOf(
+                                "MCP_MEMORY_TOKEN" to memoryToken,
+                                // Ссылка {env:MCP_YNISON_TOKEN} в конфиге разворачивается
+                                // именно в окружении serve, поэтому переменная нужна и ему.
+                                // Само значение — тот же UUID, что у ynison.js.
+                                "MCP_YNISON_TOKEN" to (ynisonToken ?: ""),
+                            ),
                     )
                 if (proc == null) {
                     consecutiveFailures++
@@ -282,16 +348,26 @@ class RuntimeManager(
                     ) { copy(stage = RuntimeStage.CRASHED, restartCount = consecutiveFailures) }
                 } else {
                     consecutiveFailures = 0
-                    if (memoryStarted) {
-                        resolveActiveError(RuntimeStage.HEALTHY)
-                    } else {
-                        // Serve поднялся, память нет — DEGRADED с причиной в lastError.
-                        emitFailure(
-                            stage = RuntimeStage.STARTING_MEMORY,
-                            code = RuntimeErrorCode.MEMORY_START_FAILED,
-                            message = "локальная память MCP не работает - чат работает без неё",
-                            recoverable = true,
-                        ) { copy(stage = RuntimeStage.DEGRADED, restartCount = 0, stopReason = null) }
+                    when {
+                        memoryStarted && ynisonStarted ->
+                            resolveActiveError(RuntimeStage.HEALTHY)
+                        !memoryStarted ->
+                            // Serve поднялся, память нет — DEGRADED с причиной в lastError.
+                            emitFailure(
+                                stage = RuntimeStage.STARTING_MEMORY,
+                                code = RuntimeErrorCode.MEMORY_START_FAILED,
+                                message = "локальная память MCP не работает - чат работает без неё",
+                                recoverable = true,
+                            ) { copy(stage = RuntimeStage.DEGRADED, restartCount = 0, stopReason = null) }
+                        else ->
+                            // Serve поднялся, память жива, но музыка не стартовала/умерла
+                            // в окно ожидания: DEGRADED, чат работает без музыки.
+                            emitFailure(
+                                stage = RuntimeStage.STARTING_MEMORY,
+                                code = RuntimeErrorCode.YNISON_START_FAILED,
+                                message = "музыка MCP не работает - чат работает без неё",
+                                recoverable = true,
+                            ) { copy(stage = RuntimeStage.DEGRADED, restartCount = 0, stopReason = null) }
                     }
 
                     // Живём, пока процесс жив и цикл не остановлен. Респавн поверх живого
@@ -299,23 +375,52 @@ class RuntimeManager(
                     // restartRequested выводит мгновенно (не ждём смерти процесса
                     // от daemon-треда — флаг уже обработан ниже).
                     while (serve.isAlive && running && !restartRequested) {
-                        // Мониторинг памяти: деградация только из HEALTHY (не спамим
-                        // lastError каждые 3s), восстановление DEGRADED→HEALTHY при
-                        // оживлении (процесс жив и TCP-порт отвечает).
-                        if (memoryStarted) {
-                            val memAlive = memory.isAlive && tcpOk(OpencodeRuntime.MEMORY_PORT)
+                        // Мониторинг локальных MCP-серверов: деградация только из HEALTHY
+                        // (не спамим lastError каждые 3s), восстановление DEGRADED→HEALTHY
+                        // при оживлении всех, кто был поднят (процесс жив и TCP-порт отвечает).
+                        // Не поднятая вовсе музыка (нет Яндекса) деградацией не считается.
+                        if (memoryStarted || ynisonStarted) {
+                            // Яндекс отключён, а музыка ещё жива со старым токеном: гасим её
+                            // живьём, иначе инструменты продолжат работать с отозванной сессией
+                            // и врать в чат. Повторное подключение поднимет музыку следующим
+                            // витком (мягкий рестарт) — новый токен возьмётся на старте.
+                            // status() читает префы, без сети; в отличие от runtimeAccessToken(),
+                            // сюда можно ходить каждые 3 секунды.
+                            if (ynisonStarted && !YandexAccountController.status().connected) {
+                                ynisonStarted = false
+                                ynison.stop()
+                                emitFailure(
+                                    stage = RuntimeStage.HEALTHY,
+                                    code = RuntimeErrorCode.YNISON_DIED,
+                                    message = "Яндекс отключён - музыка остановлена",
+                                    recoverable = true,
+                                ) { copy(stage = RuntimeStage.DEGRADED) }
+                            }
+                            val memAlive =
+                                !memoryStarted || (memory.isAlive && tcpOk(OpencodeRuntime.MEMORY_PORT))
+                            val ynAlive =
+                                !ynisonStarted || (ynison.isAlive && tcpOk(OpencodeRuntime.YNISON_PORT))
+                            val allAlive = memAlive && ynAlive
                             when (currentState.stage) {
                                 RuntimeStage.HEALTHY ->
-                                    if (!memAlive) {
+                                    if (!allAlive) {
+                                        val (code, message) =
+                                            if (!memAlive) {
+                                                RuntimeErrorCode.MEMORY_DIED to
+                                                    "Память (MCP-сервер) умерла - отключаем на лету"
+                                            } else {
+                                                RuntimeErrorCode.YNISON_DIED to
+                                                    "Музыка (MCP-сервер) умерла - чат работает без неё"
+                                            }
                                         emitFailure(
                                             stage = RuntimeStage.HEALTHY,
-                                            code = RuntimeErrorCode.MEMORY_DIED,
-                                            message = "Память (MCP-сервер) умерла - отключаем на лету",
+                                            code = code,
+                                            message = message,
                                             recoverable = true,
                                         ) { copy(stage = RuntimeStage.DEGRADED) }
                                     }
                                 RuntimeStage.DEGRADED ->
-                                    if (memAlive) {
+                                    if (allAlive) {
                                         resolveActiveError(RuntimeStage.HEALTHY)
                                     }
                                 else -> Unit
@@ -367,9 +472,14 @@ class RuntimeManager(
             running = false
             serve.stop()
             memory.stop()
+            ynison.stop()
             // Токен памяти живёт один виток: погасили процесс — погасили токен,
             // иначе проверка ходила бы с мёртвым bearer и врала бы в диагностике.
             MemoryAuth.clear()
+            // С музыкой так же. Токен Яндекса при этом НЕ трогаем: он хранится в
+            // YandexTokenStore и переживает рантайм, иначе каждый рестарт serve
+            // требовал бы от юзера новой авторизации.
+            YnisonAuth.clear()
             // Публикуем STOPPED при штатном выходе (requestStop) и при отмене корутины
             // (CancellationException из delay). НО: CRASHED/FAILED_PERMANENTLY не затираем
             // НИКОГДА — информация о терминальном отказе важнее (RESTART_LIMIT /
@@ -427,6 +537,7 @@ class RuntimeManager(
         running = false
         serve.stop()
         memory.stop()
+        ynison.stop()
     }
 
     /**
@@ -461,20 +572,23 @@ class RuntimeManager(
     }
 
     /**
-     * Ждём, пока локальная память реально поднимется: процесс жив И открыл TCP
-     * на MEMORY_PORT (окно ~5s = 10 × 500ms). startMemoryServer возвращает живой
-     * process и в случае, когда тот мгновенно падает или сокет не открыт, —
-     * без этой проверки память ошибочно считалась бы стартовавшей (P0-3).
+     * Ждём, пока локальный MCP-сервер реально поднимется: процесс жив И открыл TCP
+     * на порту (окно ~10s = 20 × 500ms). startMemoryServer/startYnisonServer возвращают
+     * живой process и в случае, когда тот мгновенно падает или сокет не открыт, —
+     * без этой проверки сервер ошибочно считался бы стартовавшим (P0-3).
      */
-    private suspend fun waitForMemory(proc: Process): Boolean {
-        val deadline = System.currentTimeMillis() + MEMORY_HEALTH_TIMEOUT_MS
+    private suspend fun waitForPort(
+        proc: Process,
+        port: Int,
+    ): Boolean {
+        val deadline = System.currentTimeMillis() + STARTUP_HEALTH_TIMEOUT_MS
         var ok = false
         while (!ok && System.currentTimeMillis() < deadline) {
             if (!currentCoroutineContext().isActive || !running || restartRequested) break
-            if (proc.isAlive && tcpOk(OpencodeRuntime.MEMORY_PORT)) {
+            if (proc.isAlive && tcpOk(port)) {
                 ok = true
             } else {
-                delay(MEMORY_HEALTH_POLL_MS)
+                delay(STARTUP_HEALTH_POLL_MS)
             }
         }
         return ok

@@ -2,8 +2,11 @@ package org.opencode.mobile.server
 
 import android.content.Context
 import org.opencode.mobile.OpencodeApp
+import org.opencode.mobile.installer.AppInstallBridge
 import java.io.File
 import java.io.FileOutputStream
+import java.net.Inet4Address
+import java.net.InetAddress
 
 /**
  * Запуск standalone opencode serve на Android без root.
@@ -24,12 +27,16 @@ import java.io.FileOutputStream
 @Suppress("TooManyFunctions")
 object OpencodeRuntime {
     private const val LAUNCH_PERMISSION_KEY = "\"mobile_launch_app\""
-    private const val MEDIA_PERMISSION_KEY = "\"mobile_media_control\""
-    private val LAUNCH_PERMISSION_REGEX = Regex("\"mobile_launch_app\"\\s*:\\s*\"(?:ask|allow|deny)\"")
     private const val BIN_NAME = "libopencode.so" // в nativeLibraryDir
     private const val LOADER_NAME = "libldmusl.so" // в nativeLibraryDir
     private const val BUN_NAME = "libbun-musl.so" // встроенный musl-Bun в nativeLibraryDir
     const val MEMORY_PORT = 4199 // TCP/Streamable-порт локальной памяти
+    const val YNISON_PORT = 4200 // TCP/Streamable-порт локального MCP Яндекс.Музыки
+
+    // Хосты Яндекса, чьи IP резолвит Java и передаёт в ynison.js (см. resolveIpv4):
+    // нативный musl-Bun на Android не умеет DNS, и скрипт ходит по IP + Host-заголовку.
+    internal const val API_HOST = "api.music.yandex.net"
+    internal const val YNISON_HOST = "ynison.music.yandex.ru"
 
     // Зависимые musl-libs. Источник — nativeLibraryDir (там они лежат под lib*-именами,
     // так их извлекает PackageManager). При старте копируются в filesDir/musl
@@ -227,34 +234,55 @@ object OpencodeRuntime {
      * assets в filesDir/mem/memory.js, откуда его может запустить встроенный musl-Bun.
      * Возвращает путь к скрипту (или null при ошибке).
      */
-    fun ensureMemoryScript(context: Context): File? {
-        val dir = File(context.filesDir, "mem").apply { mkdirs() }
-        val dest = File(dir, "memory.js")
+    fun ensureMemoryScript(context: Context): File? = ensureAssetScript(context, MEMORY_ASSET, MEMORY_SCRIPT)
+
+    /**
+     * Копирует ynison.js — MCP-мост к Яндекс.Музыке. Тот же путь в filesDir/mem, потому
+     * что запуск у них общий: тот же musl-Bun, тот же LD_LIBRARY_PATH, тот же приём.
+     */
+    fun ensureYnisonScript(context: Context): File? = ensureAssetScript(context, YNISON_ASSET, YNISON_SCRIPT)
+
+    /**
+     * Общая часть копирования скрипта из assets в filesDir/mem.
+     *
+     * Один хелпер на оба скрипта не из любви к DRY, а потому что атомарность здесь
+     * единственное, что спасает: обрезанный writeBytes (kill посреди записи) оставил бы
+     * битый .js по целевому имени навсегда — dest.size()==source.size() прошёл бы только
+     * при совпадении длины. Скопировать этот хрупкий кусок в третий раз — значит
+     * рано или поздно скопировать его без атомарности.
+     */
+    private fun ensureAssetScript(
+        context: Context,
+        assetName: String,
+        scriptName: String,
+    ): File? {
+        val dir = File(context.filesDir, SCRIPT_DIR).apply { mkdirs() }
+        val dest = File(dir, scriptName)
         return try {
             // assets - источник истины: всегда сверяем, перезаписываем если отличается
-            // (install -r сохраняет app data/firstDir, старая копия оставалась и тормозила фиксы).
-            val source = context.assets.open("mcp/memory.js").use { input ->
+            // (install -r сохраняет app data/filesDir, старая копия оставалась и тормозила фиксы).
+            val source = context.assets.open(assetName).use { input ->
                 input.readBytes()
             }
             val changed = !dest.exists() ||
                 dest.length() != source.size.toLong() ||
                 !dest.readBytes().contentEquals(source)
             if (changed) {
-                // Атомарная замена: tmp + rename. Обрезанный writeBytes (kill посреди
-                // записи) оставил бы битый memory.js по целевому имени навсегда —
-                // dest.size()==source.size() прошёл бы только при совпадении длины.
-                val tmp = File(dir, "memory.js.tmp")
+                val tmp = File(dir, "$scriptName.tmp")
                 tmp.writeBytes(source)
                 if (!tmp.renameTo(dest)) {
-                    android.util.Log.e("OpencodeRuntime", "ensureMemoryScript: tmp->dest rename failed")
+                    android.util.Log.e("OpencodeRuntime", "ensureAssetScript: tmp->dest rename failed for $scriptName")
                     tmp.delete()
                     return null
                 }
-                android.util.Log.i("OpencodeRuntime", "ensureMemoryScript: wrote ${source.size}B to ${dest.absolutePath}")
+                android.util.Log.i(
+                    "OpencodeRuntime",
+                    "ensureAssetScript: wrote ${source.size}B to ${dest.absolutePath}",
+                )
             }
             dest
         } catch (e: Exception) {
-            android.util.Log.e("OpencodeRuntime", "ensureMemoryScript failed: ${e.message}")
+            android.util.Log.e("OpencodeRuntime", "ensureAssetScript($scriptName) failed: ${e.message}")
             null
         }
     }
@@ -275,9 +303,115 @@ object OpencodeRuntime {
         logFile: File,
         workDir: File? = null,
         extraEnv: Map<String, String> = emptyMap(),
+    ): Process? =
+        ensureMemoryScript(context)?.let { script ->
+            startMcpServer(
+                context = context,
+                logFile = logFile,
+                workDir = workDir,
+                launch =
+                    McpLaunch(
+                        script = script,
+                        port = MEMORY_PORT,
+                        label = MEMORY_LABEL,
+                        env =
+                            mapOf(
+                                "MCP_MEMORY_DIR" to
+                                    File(OpencodeApp.ServerConfig.opencodeHome, ".memory").absolutePath,
+                                "MCP_TCP_PORT" to MEMORY_PORT.toString(),
+                            ) + extraEnv,
+                    ),
+            )
+        }
+
+    /**
+     * Поднимает ynison.js как отдельный TCP-сервер на [YNISON_PORT].
+     *
+     * Тот же приём, что и с памятью, по одной причине: local MCP через stdio у этой
+     * сборки opencode не работает (дочерний процесс наследует stdin/stdout serve, и ответ
+     * JSON-RPC уходит не туда). Поэтому — процесс, TCP-порт, регистрация как remote MCP.
+     *
+     * Без токена Яндекса не запускаемся вовсе, а не «запускаемся и падаем»: скрипт без
+     * `YNISON_TOKEN` всё равно не поднимет сокет, а мёртвый процесс в UI выглядит как
+     * поломка приложения. Отсутствие подключения — это нормальное состояние, а не авария.
+     */
+    internal fun startYnisonServer(
+        context: Context,
+        logFile: File,
+        workDir: File? = null,
+        credentials: YnisonCredentials,
+    ): Process? =
+        credentials
+            .takeIf { it.accessToken.isNotBlank() }
+            ?.let { creds ->
+                ensureYnisonScript(context)?.let { script ->
+                    val hosts =
+                        YnisonHosts(
+                            apiIp = resolveIpv4(API_HOST),
+                            ynisonIp = resolveIpv4(YNISON_HOST),
+                        )
+                    startMcpServer(
+                        context = context,
+                        logFile = logFile,
+                        workDir = workDir,
+                        launch =
+                            McpLaunch(
+                                script = script,
+                                port = YNISON_PORT,
+                                label = YNISON_LABEL,
+                                env =
+                                    buildMap {
+                                        put("YNISON_TOKEN", creds.accessToken)
+                                        put("MCP_YNISON_TOKEN", creds.mcpToken)
+                                        put("YNISON_DEVICE_ID", creds.deviceId)
+                                        put("YNISON_TCP_PORT", YNISON_PORT.toString())
+                                        // musl-Bun не умеет DNS на Android; IP резолвится
+                                        // системным стеком здесь, в Java, и уходит в скрипт
+                                        // вместе с реальным hostname (скрипт шлёт его Host-заголовком).
+                                        hosts.apiIp?.let { put("YNISON_API_IP", it) }
+                                        hosts.ynisonIp?.let { put("YNISON_WS_IP", it) }
+                                        // Мост нужен, чтобы поднять Яндекс.Музыку, когда она не в сети:
+                                        // писать в очередь можно только устройству, которое реально играет.
+                                        putAll(AppInstallBridge.environment())
+                                    },
+                            ),
+                    )
+                }
+            }
+
+    /**
+     * Системный (Java) резолв хоста. Единственный способ дать ynison.js адрес:
+     * нативный musl-Bun на Android вообще не резолвит DNS (нет /etc/resolv.conf,
+     * мост к netd отсутствует), а Java ходит в системный резолвер.
+     */
+    private fun resolveIpv4(host: String): String? =
+        runCatching {
+            InetAddress.getAllByName(host)
+                .firstOrNull { it is Inet4Address }
+                ?.hostAddress
+        }.getOrNull()
+
+    /**
+     * Общий запуск встроенного musl-Bun над локальным MCP-скриптом.
+     *
+     * Вынесен, потому что у памяти и музыки совпадает всё, кроме скрипта, порта и пары
+     * env-переменных. Держать копию значит со временем получить две расходящиеся копии
+     * LD_LIBRARY_PATH-обвязки, причём разъезд заметят только на устройстве — в тестах
+     * оба процесса запускаются одинаково успешно.
+     *
+     * Порт, метка и env сложены в [McpLaunch]: семь позиционных параметров выглядели бы
+     * одинаково, а переставить `port` с `logFile` компилятор не поймал бы.
+     */
+    @Suppress("ReturnCount")
+    private fun startMcpServer(
+        context: Context,
+        launch: McpLaunch,
+        logFile: File,
+        workDir: File?,
     ): Process? {
         if (!isAssembled(context)) return null
-        val script = ensureMemoryScript(context) ?: return null
+        val port = launch.port
+        val label = launch.label
         val nativeDir = nativeLibraryDir(context)
         val loader = File(nativeDir, LOADER_NAME).absolutePath
         val bun = File(nativeDir, BUN_NAME).absolutePath
@@ -285,9 +419,9 @@ object OpencodeRuntime {
         val cmd = ArrayList<String>()
         cmd.add(loader) // ld-musl загрузчик первым
         cmd.add(bun) // сам runtime
-        cmd.add(script.absolutePath) // наш MCP-скрипт
+        cmd.add(launch.script.absolutePath) // наш MCP-скрипт
 
-        android.util.Log.i("OpencodeRuntime", "starting memory http server: $cmd (port $MEMORY_PORT)")
+        android.util.Log.i("OpencodeRuntime", "starting $label http server: $cmd (port $port)")
 
         val cfg = OpencodeApp.ServerConfig
         val pb = ProcessBuilder(cmd)
@@ -301,27 +435,25 @@ object OpencodeRuntime {
             ensureMuslLibs(context).absolutePath
         } catch (e: Exception) {
             // Запускать процесс с кривым LD_LIBRARY_PATH незачем: он гарантированно
-            // умрёт на старте (не найдёт libc) и молча оставит память нерабочей.
-            android.util.Log.e("OpencodeRuntime", "memory: ensureMuslLibs failed: ${e.message}")
+            // умрёт на старте (не найдёт libc) и молча оставит сервер нерабочим.
+            android.util.Log.e("OpencodeRuntime", "$label: ensureMuslLibs failed: ${e.message}")
             return null
         }
         pb.environment()["LD_LIBRARY_PATH"] = "$muslDir:$nativeDir"
         pb.environment()["NO_COLOR"] = "1"
         pb.environment()["PATH"] = (pb.environment()["PATH"] ?: "") + ":" + nativeDir
         pb.environment()["MCP_NATIVE_DIR"] = nativeDir
-        pb.environment()["MCP_MEMORY_DIR"] = File(cfg.opencodeHome, ".memory").absolutePath
-        pb.environment()["MCP_TCP_PORT"] = MEMORY_PORT.toString()
-        pb.environment().putAll(extraEnv)
+        pb.environment().putAll(launch.env)
         pb.environment()["NO_PROXY"] = "127.0.0.1,localhost"
 
-        // stdout/stderr memory -> отдельный лог (stdio не нужен: транспорт TCP).
+        // stdout/stderr -> общий лог: stdio не нужен, транспорт TCP.
         pb.redirectErrorStream(true)
         pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
 
         return runCatching {
             pb.start()
         }.onFailure { e ->
-            android.util.Log.e("OpencodeRuntime", "failed to start memory server: ${e.message}")
+            android.util.Log.e("OpencodeRuntime", "failed to start $label server: ${e.message}")
         }.getOrNull()
     }
 
@@ -343,18 +475,39 @@ object OpencodeRuntime {
      * оставил битый jsonc.
      * @return true когда конфиг гарантированно содержит защищённый memory-MCP.
      */
-    fun ensureMcpConfig(memoryToken: String): Boolean =
+    fun ensureMcpConfig(
+        memoryToken: String,
+        ynisonToken: String? = null,
+    ): Boolean =
         runCatching {
             require(memoryToken.isNotBlank()) { "MCP memory token is empty" }
             val cfg = OpencodeApp.ServerConfig
             val file = File(File(cfg.opencodeConfig, "opencode"), "opencode.jsonc")
-            ensureMcpConfigFile(file)
+            ensureMcpConfigFile(file, ynisonToken)
         }.onFailure { error ->
             android.util.Log.e("OpencodeRuntime", "ensureMcpConfig failed: ${error.message}")
         }.getOrDefault(false)
 
-    private fun ensureMcpConfigFile(file: File): Boolean {
-        val text = if (file.exists()) file.readText() else null
+    private fun ensureMcpConfigFile(
+        file: File,
+        ynisonToken: String?,
+    ): Boolean {
+        if (!ensureMemorySection(file)) return false
+        // Читаем заново, а не переиспользуем текст из лестницы: её последний шаг мог
+        // дописать permission-ключи на диск, и в памяти у нас осталась бы старая строка.
+        return syncMusicEntry(file, file.readTextOrEmpty(), ynisonToken)
+    }
+
+    /**
+     * Доводит секцию mcp до управляемой двухсерверной формы (память + телефон).
+     *
+     * Лестница миграций старая и не тронута: каждая ступень — это точное совпадение
+     * ранее сгенерированной нами формы. Непохожий текст означает чужой (ручной) конфиг,
+     * и мы его не переписываем, а отказываемся, чтобы не включить неаутентифицированный
+     * доступ к локальным портам.
+     */
+    private fun ensureMemorySection(file: File): Boolean {
+        val text = file.readTextOrNull()
         val memoryKey = "\"${MemoryMcp.MEMORY_NAME}\""
         return when {
             text == null -> writeManagedConfig(file, managedConfigBlock())
@@ -378,7 +531,8 @@ object OpencodeRuntime {
             // Промежуточная форма: сервер управления телефоном назывался "mobile".
             text.contains(mobileAliasMcpObject()) ->
                 upgradeMcpSection(file, text.replace(mobileAliasMcpObject(), mcpBlock()))
-            // Уже актуальная двухсерверная форма — осталось только проверить auth.
+            // Уже актуальная двухсерверная форма — осталось только проверить auth
+            // и дописать permission-ключи, если их ещё нет.
             text.contains(mcpBlock()) &&
                 text.contains(AUTH_HEADER) &&
                 text.contains(MEMORY_MCP_URL) -> ensureManagedLaunchPermission(file, text)
@@ -389,19 +543,61 @@ object OpencodeRuntime {
         }
     }
 
+    /**
+     * Держит запись «music» в конфиге вровень с тем, подключён ли Яндекс.
+     *
+     * Отдельным шагом, а не третьим сервером в [mcpEntries], по двум причинам.
+     * Первая: запись условная — без токена Яндекса порт не поднят, и модель получила бы
+     * шесть инструментов, которые гарантированно не работают (хуже их не бывает только
+     * в диагностике, где такой сервер горит красным). Вторая: при добавлении music внутрь
+     * [mcpEntries] «актуальная форма» [mcpBlock] стала бы зависеть от наличия токена, и
+     * лестница миграций перестала бы отличать старую форму от новой — любой существующий
+     * конфиг упал бы в ветку «не управляемый» и тихо потерял бы регистрацию.
+     *
+     * Правится только точное совпадение известного блока: чужую секцию mcp по-прежнему
+     * не трогаем.
+     */
+    private fun syncMusicEntry(
+        file: File,
+        text: String,
+        ynisonToken: String?,
+    ): Boolean =
+        when (val plan = OpencodeRuntime.planMusicEntry(text, ynisonToken)) {
+            MusicConfigPlan.Keep -> true
+            is MusicConfigPlan.Write -> writeMemoryConfigText(file, plan.text)
+            MusicConfigPlan.Refuse -> {
+                android.util.Log.w(
+                    "OpencodeRuntime",
+                    "Managed mcp block has unexpected formatting; leaving music MCP unregistered",
+                )
+                false
+            }
+        }
+
     private const val AUTH_HEADER = "\"Authorization\": \"Bearer {env:MCP_MEMORY_TOKEN}\""
     private const val MEMORY_MCP_URL = "http://127.0.0.1:$MEMORY_PORT${MemoryMcp.MEMORY_PATH}"
     private const val MOBILE_MCP_URL = "http://127.0.0.1:$MEMORY_PORT${MemoryMcp.TOOLS_PATH}"
+    private const val YNISON_MCP_URL = "http://127.0.0.1:$YNISON_PORT${YnisonMcp.PATH}"
+    private const val SCRIPT_DIR = "mem"
+    private const val MEMORY_ASSET = "mcp/memory.js"
+    private const val MEMORY_SCRIPT = "memory.js"
+    private const val YNISON_ASSET = "mcp/ynison.js"
+    private const val YNISON_SCRIPT = "ynison.js"
+    private const val MEMORY_LABEL = "memory"
+    private const val YNISON_LABEL = "ynison"
+    internal val MUSIC_NAME_KEY = "\"${YnisonMcp.NAME}\""
+    private const val YNISON_AUTH_HEADER = "\"Authorization\": \"Bearer {env:MCP_YNISON_TOKEN}\""
 
     private fun remoteServerBlock(
         name: String,
         url: String,
+        authHeader: String = AUTH_HEADER,
     ): String =
         "\"$name\": {\n" +
             "      \"type\": \"remote\",\n" +
             "      \"url\": \"$url\",\n" +
             "      \"headers\": {\n" +
-            "        $AUTH_HEADER\n" +
+            "        $authHeader\n" +
             "      }\n" +
             "    }"
 
@@ -410,8 +606,18 @@ object OpencodeRuntime {
     /** Управление телефоном: установка, запуск, медиа. Отдельный сервер ради честного UI. */
     private fun mcpMobileBlock(): String = remoteServerBlock(MemoryMcp.TOOLS_NAME, MOBILE_MCP_URL)
 
-    /** Содержимое объекта "mcp" — обе записи, разделённые запятой. */
+    /**
+     * Яндекс.Музыка. Свой bearer — [YNISON_AUTH_HEADER], а не токен памяти: у music.js
+     * отдельная проверка `Authorization`, и общий токен означал бы, что любой из серверов
+     * открывается заголовком, предназначенным другому.
+     */
+    private fun mcpMusicBlock(): String = remoteServerBlock(YnisonMcp.NAME, YNISON_MCP_URL, YNISON_AUTH_HEADER)
+
+    /** Содержимое объекта "mcp" — записи памяти и телефона, разделённые запятой. */
     private fun mcpEntries(): String = "${mcpMemoryBlock()},\n    ${mcpMobileBlock()}"
+
+    /** То же плюс третья запись: музыка подключена. */
+    private fun mcpEntriesWithMusic(): String = "${mcpEntries()},\n    ${mcpMusicBlock()}"
 
     private fun legacyMemoryBlock(): String =
         "\"${MemoryMcp.MEMORY_NAME}\": {\n" +
@@ -422,6 +628,16 @@ object OpencodeRuntime {
     private fun mcpObject(entries: String): String = "\"mcp\": {\n    $entries\n  }"
 
     private fun mcpBlock(): String = mcpObject(mcpEntries())
+
+    /** Управляемая форма с музыкой. Только для записи, когда Яндекс подключён. */
+    internal fun mcpBlockWithMusic(): String = mcpObject(mcpEntriesWithMusic())
+
+    /**
+     * Управляемая форма без музыки. Внутренняя, но видна тесту: тест сверяет результат
+     * планировщика с той строкой, которую пишет приложение, - иначе проверка была бы
+     * самооценкой, где эталон и результат расходятся незаметно.
+     */
+    internal fun mcpBlockForTest(): String = mcpBlock()
 
     /** Прежняя управляемая форма: один сервер memory. Только для миграции, не для записи. */
     private fun singleServerMcpObject(): String = mcpObject(mcpMemoryBlock())
@@ -436,8 +652,7 @@ object OpencodeRuntime {
             append(mcpBlock())
             append(
                 ",\n  \"permission\": {\n" +
-                    "    \"mobile_launch_app\": \"ask\",\n" +
-                    "    \"mobile_media_control\": \"ask\"\n" +
+                    "    \"mobile_launch_app\": \"ask\"\n" +
                     "  }",
             )
         }
@@ -445,7 +660,7 @@ object OpencodeRuntime {
     /**
      * Секция mcp уже обновлена до двух серверов — осталось её записать.
      *
-     * Ловушка, из-за которой миграция молча терялась: если оба ключа permission
+     * Ловушка, из-за которой миграция молча терялась: если permission-ключ
      * уже есть, [ensureManagedLaunchPermission] выходит с true по первой ветке и
      * НИЧЕГО не пишет, а её аргумент — новый текст — уходит в никуда. Поэтому при
      * полном наборе разрешений пишем файл сами, иначе delegate дозапишет ключи.
@@ -454,7 +669,7 @@ object OpencodeRuntime {
         file: File,
         upgraded: String,
     ): Boolean =
-        if (upgraded.contains(LAUNCH_PERMISSION_KEY) && upgraded.contains(MEDIA_PERMISSION_KEY)) {
+        if (upgraded.contains(LAUNCH_PERMISSION_KEY)) {
             writeMemoryConfigText(file, upgraded)
         } else {
             ensureManagedLaunchPermission(file, upgraded)
@@ -465,8 +680,7 @@ object OpencodeRuntime {
         text: String,
     ): Boolean =
         when {
-            text.contains(LAUNCH_PERMISSION_KEY) && text.contains(MEDIA_PERMISSION_KEY) -> true
-            text.contains(LAUNCH_PERMISSION_KEY) -> appendManagedMediaPermission(file, text)
+            text.contains(LAUNCH_PERMISSION_KEY) -> true
             text.contains("\"permission\"") -> {
                 android.util.Log.w(
                     "OpencodeRuntime",
@@ -483,28 +697,6 @@ object OpencodeRuntime {
             }
             else -> writeMemoryConfigText(file, text.replace(mcpBlock(), managedConfigBlock()))
         }
-
-    /**
-     * Дописывает managed-ключ управления медиа в permission-блок, который мы же создали раньше,
-     * не трогая пользовательское значение mobile_launch_app.
-     */
-    private fun appendManagedMediaPermission(
-        file: File,
-        text: String,
-    ): Boolean {
-        val match = LAUNCH_PERMISSION_REGEX.find(text)
-        if (match == null) {
-            android.util.Log.w(
-                "OpencodeRuntime",
-                "Managed launch permission has unexpected formatting; cannot add media permission",
-            )
-            return false
-        }
-        // Именно ${match.value}: "$match.value" в Kotlin собирает только $match и дописывает
-        // литерал ".value", из-за чего в JSON попадает мусор.
-        val updated = text.replaceRange(match.range, "${match.value},\n    $MEDIA_PERMISSION_KEY: \"ask\"")
-        return writeMemoryConfigText(file, updated)
-    }
 
     /** Записывает managed-секцию mcp.memory и permission в opencode.jsonc атомарно. */
     private fun writeManagedConfig(
@@ -575,6 +767,10 @@ object OpencodeRuntime {
      * Дешёвая проверка перед записью. Ловит ровно тот класс порчи, который уже brick-ил
      * приложение: несработавшая интерполяция Kotlin попадала в JSON как
      * `kotlin.text.MatcherMatchResult@...value`, и opencode отказывался стартовать.
+     *
+     * Запись music проверяется отдельно и только когда она есть: без подключённого
+     * Яндекса её в тексте нет и быть не должно, и требовать её всегда означало бы
+     * запретить запись валидного двухсерверного конфига.
      */
     private fun looksLikeManagedConfig(text: String): Boolean {
         val leakedKotlinObject =
@@ -583,9 +779,100 @@ object OpencodeRuntime {
                 text.contains("\${")
         val keysIntact =
             text.contains(LAUNCH_PERMISSION_KEY) &&
-                text.contains(MEDIA_PERMISSION_KEY) &&
                 text.contains("\"${MemoryMcp.MEMORY_NAME}\"") &&
                 text.contains("\"${MemoryMcp.TOOLS_NAME}\"")
-        return !leakedKotlinObject && keysIntact && text.count { it == '{' } == text.count { it == '}' }
+        val musicIntact = !text.contains(MUSIC_NAME_KEY) || text.contains(YNISON_MCP_URL)
+        return !leakedKotlinObject &&
+            keysIntact &&
+            musicIntact &&
+            text.count { it == '{' } == text.count { it == '}' }
     }
+
+    private fun File.readTextOrNull(): String? = if (exists()) runCatching { readText() }.getOrNull() else null
+
+    private fun File.readTextOrEmpty(): String = readTextOrNull().orEmpty()
 }
+
+/**
+ * Всё, чем один локальный MCP-сервер отличается от другого.
+ *
+ * Обвязка запуска (musl-загрузчик, LD_LIBRARY_PATH, HOME/XDG) одинакова для обоих, и
+ * различаться могут только эти четыре вещи. Собраны в один объект, чтобы сигнатура
+ * [OpencodeRuntime] не росла вместе с числом серверов, а местоимение «launch» читалось
+ * как «запуск», а не как седьмой позиционный параметр.
+ */
+internal data class McpLaunch(
+    val script: File,
+    val port: Int,
+    val label: String,
+    val env: Map<String, String>,
+)
+
+/**
+ * Три секрета, с которыми живёт процесс ynison.js.
+ *
+ * Сложены в один объект намеренно: держать их тремя соседними `String` в сигнатуре -
+ * значит однажды перепутать порядок и годами отлаживать 403 на локальном порту.
+ * [accessToken] - токен Яндекса, [mcpToken] - локальный bearer, [deviceId] - тот же, что
+ * в device-flow.
+ */
+internal data class YnisonCredentials(
+    val accessToken: String,
+    val mcpToken: String,
+    val deviceId: String,
+)
+
+/**
+ * Системно зарезолвленные IP для ynison.js (musl-Bun не умеет DNS на Android).
+ * Оба могут быть null при сбое резолва — скрипт тогда работает по доменам как раньше.
+ */
+internal data class YnisonHosts(
+    val apiIp: String?,
+    val ynisonIp: String?,
+)
+
+/** Что делать с записью «music» в управляемом opencode.jsonc. */
+internal sealed interface MusicConfigPlan {
+    /** Уже в нужном состоянии — файл не трогаем. */
+    data object Keep : MusicConfigPlan
+
+    /** Перезаписать конфиг указанным текстом. */
+    data class Write(
+        val text: String,
+    ) : MusicConfigPlan
+
+    /** Формат не узнан: оставляем как есть, чтобы не портить чужой конфиг. */
+    data object Refuse : MusicConfigPlan
+}
+
+/**
+ * Решает, что делать с записью «music», ничего не записывая.
+ *
+ * Вынесено из [OpencodeRuntime] отдельной функцией по одной причине: это единственное
+ * место в миграции конфига, где легко тихо испортить работающую установку, и проверять
+ * его нужно юнит-тестом, а не на устройстве. Внутри объекта проверка потребовала бы
+ * Context, файловой системы и Robolectric, которого в проекте нет, - то есть не
+ * проверялась бы вообще никогда.
+ *
+ * Логика ровно одна и в четыре строки, но каждая опасна: добавление music внутрь
+ * mcpEntries сделало бы [OpencodeRuntime.mcpBlock] зависимым от наличия токена, и лестница
+ * миграций перестала бы отличать старую форму от новой - любой существующий конфиг упал бы
+ * в ветку «не управляемый» и тихо потерял бы регистрацию памяти. Поэтому music добавляется
+ * и убирается заменой точного блока, а не пересборкой секции.
+ */
+internal fun OpencodeRuntime.planMusicEntry(
+    text: String,
+    ynisonToken: String?,
+): MusicConfigPlan =
+    when {
+        // Bearer в конфиге - ссылка {env:MCP_YNISON_TOKEN}, а не значение, поэтому смена
+        // токена на диске конфиг не затрагивает: «есть токен и есть запись» = не делать
+        // ничего, даже если сам токен сменился.
+        ynisonToken != null && text.contains(MUSIC_NAME_KEY) -> MusicConfigPlan.Keep
+        ynisonToken == null && !text.contains(MUSIC_NAME_KEY) -> MusicConfigPlan.Keep
+        text.contains(mcpBlockWithMusic()) ->
+            MusicConfigPlan.Write(text.replace(mcpBlockWithMusic(), mcpBlockForTest()))
+        text.contains(mcpBlockForTest()) ->
+            MusicConfigPlan.Write(text.replace(mcpBlockForTest(), mcpBlockWithMusic()))
+        else -> MusicConfigPlan.Refuse
+    }

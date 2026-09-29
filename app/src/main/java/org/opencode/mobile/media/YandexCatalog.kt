@@ -18,6 +18,10 @@ data class CatalogTrack(
     val album: String,
     val durationMs: Long,
     val available: Boolean,
+    // Идентификатор альбома, а не его название. Вставка трека в плейлист требует именно его,
+    // и выводить его пришлось не для красоты: без albumId Яндекс отклоняет всю операцию, а
+    // взять его откуда-то ещё, кроме ответа каталога, неоткуда.
+    val albumId: String = "",
 ) {
     val deepLink: String get() = TRACK_DEEP_LINK_PREFIX + id
 }
@@ -233,8 +237,21 @@ object YandexCatalog {
                 album = readAlbum(node),
                 durationMs = durationMs,
                 available = node.optBoolean(JSON_AVAILABLE, true),
+                albumId = readAlbumId(node),
             )
         }
+
+    /**
+     * id альбома идёт из того же массива `albums`, что и его название, поэтому берётся тем же
+     * индексом: у трека несколько альбомов, и для вставки в плейлист важен первый — тот же,
+     * что Яндекс показывает в своей карточке трека.
+     */
+    private fun readAlbumId(node: JSONObject): String =
+        node.optJSONArray("albums")
+            ?.optJSONObject(0)
+            ?.optString("id")
+            ?.trim()
+            .orEmpty()
 
     /** Альбом приходит массивом `albums`, а не строкой: у трека их может быть несколько. */
     private fun readAlbum(node: JSONObject): String {

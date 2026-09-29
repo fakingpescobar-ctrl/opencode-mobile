@@ -149,6 +149,10 @@ class MainActivity : ComponentActivity() {
                     "Yandex Music connected as ${outcome.identity.login}"
                 is YandexAccountController.Outcome.Rejected ->
                     "Yandex Music: ${outcome.reason}"
+                // Недостижимо на этой дорожке: Waiting рождается только в опросе device-flow,
+                // а сюда приходит исключительно PKCE-код из deep link. Ветка названа прямо,
+                // а не спрятана в else, иначе новое состояние молча проходило бы как успех.
+                is YandexAccountController.Outcome.Waiting -> return
             }
         runOnUiThread { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
     }
