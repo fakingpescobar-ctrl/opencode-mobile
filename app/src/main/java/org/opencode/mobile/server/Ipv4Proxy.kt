@@ -25,7 +25,6 @@ import java.util.concurrent.atomic.AtomicBoolean
  * сертификат валиден. Слушаем только 127.0.0.1 — наружу не торчим.
  */
 object Ipv4Proxy {
-
     const val PORT = 3128
 
     // Вариант A: таймаут простоя туннеля. После CONNECT сокеты больше не должны
@@ -36,6 +35,7 @@ object Ipv4Proxy {
     private const val PUMP_IDLE_TIMEOUT_MS = 120_000
 
     private val started = AtomicBoolean(false)
+
     @Volatile
     private var serverSocket: ServerSocket? = null
 
@@ -117,7 +117,10 @@ object Ipv4Proxy {
         } catch (e: Exception) {
             android.util.Log.w("Ipv4Proxy", "conn error: ${e.message}")
         } finally {
-            try { client.close() } catch (_: Exception) {}
+            try {
+                client.close()
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -133,7 +136,10 @@ object Ipv4Proxy {
         return sb.toString()
     }
 
-    private fun connectIpv4(host: String, port: Int): Socket? {
+    private fun connectIpv4(
+        host: String,
+        port: Int,
+    ): Socket? {
         try {
             val candidates = InetAddress.getAllByName(host)
             val ipv4 = candidates.filterIsInstance<Inet4Address>()
@@ -155,7 +161,10 @@ object Ipv4Proxy {
         return null
     }
 
-    private fun pump(src: InputStream, dst: OutputStream) {
+    private fun pump(
+        src: InputStream,
+        dst: OutputStream,
+    ) {
         val buf = ByteArray(65536)
         try {
             while (true) {
@@ -166,7 +175,10 @@ object Ipv4Proxy {
             }
         } catch (_: Exception) {
         } finally {
-            try { dst.close() } catch (_: Exception) {}
+            try {
+                dst.close()
+            } catch (_: Exception) {
+            }
         }
     }
 }

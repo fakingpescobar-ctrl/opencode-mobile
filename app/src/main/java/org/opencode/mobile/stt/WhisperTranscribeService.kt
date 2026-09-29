@@ -16,15 +16,15 @@ import com.whispercpp.whisper.NcnnWhisperContext
 import com.whispercpp.whisper.WhisperContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
-import java.io.File
-import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.coroutineContext
 
 /**
  * Foreground-сервис для локального распознавания речи (whisper.cpp).
@@ -51,7 +51,6 @@ import java.util.concurrent.atomic.AtomicLong
  * (whisper нельзя чисто прервать на середине).
  */
 class WhisperTranscribeService : Service() {
-
     companion object {
         private const val CHANNEL_ID = "whisper_stt"
         private const val TAG = "VOICE"
@@ -82,7 +81,7 @@ class WhisperTranscribeService : Service() {
             val samples: FloatArray,
             val model: String,
             val engine: String,
-            val deferred: CompletableDeferred<String>
+            val deferred: CompletableDeferred<String>,
         )
 
         // FIFO-очередь задач. Доступ — только через synchronized-обёртки ниже,
@@ -215,7 +214,7 @@ class WhisperTranscribeService : Service() {
             samples: FloatArray,
             model: String = MODEL_BASE,
             engine: String = ENGINE_WHISPER,
-            timeoutMs: Long = 90_000L
+            timeoutMs: Long = 90_000L,
         ): String {
             if (samples.isEmpty()) {
                 return "ОШИБКА WHISPER: пустые сэмплы"
@@ -297,8 +296,8 @@ class WhisperTranscribeService : Service() {
         }
 
         /** Распознавание одной задачи. Никогда не бросает: ошибка -> текст-строка. */
-        private suspend fun transcribeTask(task: SttTask): String {
-            return try {
+        private suspend fun transcribeTask(task: SttTask): String =
+            try {
                 if (task.engine == ENGINE_NCNN) {
                     val ctx = obtainNcnnContext(task.model)
                     transcribeNcnn(ctx, task.samples).trim()
@@ -310,7 +309,6 @@ class WhisperTranscribeService : Service() {
                 Log.e(TAG, "распознавание упало (в сервисе)", e)
                 "ОШИБКА WHISPER: ${e.message}"
             }
-        }
 
         /**
          * Транскрипция ncnn с учётом языка сессии.
@@ -359,27 +357,29 @@ class WhisperTranscribeService : Service() {
             }
         }
 
-        private fun enqueue(task: SttTask): Boolean = synchronized(queue) {
-            if (queue.size >= MAX_QUEUE_SIZE) {
-                // reject: очередь полна -> worker гарантированно активен или стартует
-                // (каждое добавление идёт с startForegroundService -> onStartCommand ->
-                // ensureWorker), гашение распланирует хвост worker'а. Наш стоп-чек
-                // не трогаем и не постим повторно — дублей нет.
-                false
-            } else {
-                queue.addLast(task)
-                // Снятие отложенного гашения — под тем же локом, что и добавление:
-                // хвост worker'а синхронизирован этим же локом, поэтому он не успеет
-                // распланировать stop ПОСЛЕ нашего снятия, пока задача уже в очереди
-                // (иначе отложенный стоп слетел бы и сервис завис без гашения).
-                mainHandler.removeCallbacks(stopRunnable)
-                true
+        private fun enqueue(task: SttTask): Boolean =
+            synchronized(queue) {
+                if (queue.size >= MAX_QUEUE_SIZE) {
+                    // reject: очередь полна -> worker гарантированно активен или стартует
+                    // (каждое добавление идёт с startForegroundService -> onStartCommand ->
+                    // ensureWorker), гашение распланирует хвост worker'а. Наш стоп-чек
+                    // не трогаем и не постим повторно — дублей нет.
+                    false
+                } else {
+                    queue.addLast(task)
+                    // Снятие отложенного гашения — под тем же локом, что и добавление:
+                    // хвост worker'а синхронизирован этим же локом, поэтому он не успеет
+                    // распланировать stop ПОСЛЕ нашего снятия, пока задача уже в очереди
+                    // (иначе отложенный стоп слетел бы и сервис завис без гашения).
+                    mainHandler.removeCallbacks(stopRunnable)
+                    true
+                }
             }
-        }
 
-        private fun pollQueue(): SttTask? = synchronized(queue) {
-            queue.removeFirstOrNull()
-        }
+        private fun pollQueue(): SttTask? =
+            synchronized(queue) {
+                queue.removeFirstOrNull()
+            }
 
         private fun removeTask(id: Long) {
             synchronized(queue) {
@@ -393,9 +393,10 @@ class WhisperTranscribeService : Service() {
             }
         }
 
-        private fun isQueueEmpty(): Boolean = synchronized(queue) {
-            queue.isEmpty()
-        }
+        private fun isQueueEmpty(): Boolean =
+            synchronized(queue) {
+                queue.isEmpty()
+            }
 
         /**
          * Возвращает (и кэширует) контекст whisper под выбранную модель.
@@ -455,7 +456,9 @@ class WhisperTranscribeService : Service() {
                 WhisperTranscribeService.MODEL_TURBO -> {
                     val f = ModelDownloader.turboFile(app)
                     if (!ModelDownloader.turboReady(app)) {
-                        throw IllegalStateException("turbo-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках")
+                        throw IllegalStateException(
+                            "turbo-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках"
+                        )
                     }
                     requireNotCorrupt(f, "turbo-модель")
                     Log.d(TAG, "гружу turbo-модель с файла (${f.length() / 1024 / 1024}MB), может занять время")
@@ -474,7 +477,10 @@ class WhisperTranscribeService : Service() {
          * ошибками), а сообщаем понятную причину. NO_MANIFEST — модель скачана до
          * введения манифеста: пропускаем (прежнее доверие ETag+размер).
          */
-        private fun requireNotCorrupt(file: File, label: String) {
+        private fun requireNotCorrupt(
+            file: File,
+            label: String,
+        ) {
             if (ModelDownloader.checkIntegrity(file) == ModelDownloader.ModelIntegrity.CORRUPT) {
                 throw IllegalStateException(
                     "$label повреждена (SHA-256 не совпал — файл испорчен или подменён). Удали модель и перекачай заново в настройках STT"
@@ -492,17 +498,18 @@ class WhisperTranscribeService : Service() {
         // неатомарным (get, потом put), и два потока создали бы два контекста
         // на одну модель. computeIfAbsent держит бин-лок, поэтому контекст
         // создаётся ровно один раз даже при гонке.
-        private fun obtainNcnnContext(model: String): NcnnWhisperContext = ncnnCtxCache.computeIfAbsent("turbo") {
-            val app = requireAppContext()
-            val dir = File(ModelDownloader.modelsDir(app), "ncnn-turbo")
-            val baseName = "whisper_turbo"
-            val check = NcnnModelValidator.checkModelDir(dir, baseName)
-            check(check.ok) {
-                "ncnn-модель неполная в $dir — отсутствуют: ${check.missing.joinToString(", ")}"
+        private fun obtainNcnnContext(model: String): NcnnWhisperContext =
+            ncnnCtxCache.computeIfAbsent("turbo") {
+                val app = requireAppContext()
+                val dir = File(ModelDownloader.modelsDir(app), "ncnn-turbo")
+                val baseName = "whisper_turbo"
+                val check = NcnnModelValidator.checkModelDir(dir, baseName)
+                check(check.ok) {
+                    "ncnn-модель неполная в $dir — отсутствуют: ${check.missing.joinToString(", ")}"
+                }
+                Log.d(TAG, "гружу ncnn-модель из $dir (CPU, $baseName)")
+                NcnnWhisperContext.createFromFilesDir(dir, baseName)
             }
-            Log.d(TAG, "гружу ncnn-модель из $dir (CPU, $baseName)")
-            NcnnWhisperContext.createFromFilesDir(dir, baseName)
-        }
 
         /**
          * Отпускает кэшированный ncnn-контекст, если он есть.
@@ -534,7 +541,11 @@ class WhisperTranscribeService : Service() {
         instance = this
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    override fun onStartCommand(
+        intent: Intent?,
+        flags: Int,
+        startId: Int,
+    ): Int {
         startInForeground()
         // Снимаем отложенную остановку: пришла новая задача.
         mainHandler.removeCallbacks(stopRunnable)
@@ -549,11 +560,13 @@ class WhisperTranscribeService : Service() {
         }
         nm.createNotificationChannel(ch)
         val pi = PendingIntent.getActivity(
-            this, 0,
+            this,
+            0,
             packageManager.getLaunchIntentForPackage(packageName),
             PendingIntent.FLAG_IMMUTABLE
         )
-        val notif = Notification.Builder(this, CHANNEL_ID)
+        val notif = Notification
+            .Builder(this, CHANNEL_ID)
             .setContentTitle("Распознаю голос")
             .setContentText("Локальный Whisper считает на устройстве")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)

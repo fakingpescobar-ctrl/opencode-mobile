@@ -15,6 +15,8 @@ import org.opencode.mobile.account.YandexPlaylistPlayer
 import org.opencode.mobile.media.CatalogTrack
 import org.opencode.mobile.media.MediaControlController
 import org.opencode.mobile.media.MediaControlRequestValidator
+import org.opencode.mobile.media.MediaLikeResult
+import org.opencode.mobile.media.MediaPlaybackSnapshot
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
@@ -34,8 +36,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import kotlin.concurrent.thread
-import org.opencode.mobile.media.MediaPlaybackSnapshot
-import org.opencode.mobile.media.MediaLikeResult
 
 /**
  * Небольшой loopback RPC только для локального opencode MCP.
@@ -629,10 +629,6 @@ object AppInstallBridge {
             .put("component", componentName)
             .put("message", message)
 
-
-
-
-
     private fun MediaLikeResult.toJson(): JSONObject =
         JSONObject()
             .put("package", packageName)
@@ -641,8 +637,6 @@ object AppInstallBridge {
             .put("ok", ok)
             .put("detail", detail ?: JSONObject.NULL)
             .put("playback", playback.toJson())
-
-
 
     private fun MediaPlaybackSnapshot.toJson(): JSONObject =
         JSONObject()
@@ -661,8 +655,6 @@ object AppInstallBridge {
     /** Трёхзначный флаг: true, false и «сессия не ответила» — это три разных значения. */
     private fun Boolean?.asJsonFlag(): Any = this ?: JSONObject.NULL
 
-
-
     private fun InstallJobSnapshot.toJson(): JSONObject =
         JSONObject()
             .put("id", id)
@@ -672,8 +664,6 @@ object AppInstallBridge {
             .put("message", message)
             .put("updated_at", updatedAt)
             .put("signing_certificate_sha256", signingCertificateSha256 ?: JSONObject.NULL)
-
-
 
     /**
      * Итог опроса device-flow. Три исхода остаются тремя: [YandexAccountController.Outcome]
@@ -715,8 +705,6 @@ object AppInstallBridge {
             // подключение, но и не поломка, и агенту надо различать эти два состояния.
             .put("awaiting_code", awaitingCode)
 
-
-
     private fun LikedPage.toJson(): JSONObject =
         JSONObject()
             .put("login", login)
@@ -727,7 +715,6 @@ object AppInstallBridge {
             .put("has_more", hasMore)
             .put("track_ids", JSONArray(trackIds))
             .put("tracks", trackArray(tracks))
-
 
     private fun PlaylistSummary.toJson(): JSONObject =
         JSONObject()

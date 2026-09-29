@@ -21,10 +21,8 @@ import java.io.File
  * с внешними файлами, и подсказать открыть настройки «Доступа ко всем файлам».
  */
 object Workspace {
-
     /** Внутренний fallback (тот же путь, что был раньше). */
-    fun internal(context: Context): File =
-        File(context.filesDir, "workspace").apply { mkdirs() }
+    fun internal(context: Context): File = File(context.filesDir, "workspace").apply { mkdirs() }
 
     /** Настоящий внешний каталог юзера (Documents/OpencodeTerminal). */
     fun externalRoot(): File? {
@@ -33,8 +31,7 @@ object Workspace {
     }
 
     /** Есть ли у процесса право «Доступ ко всем файлам» (API 30+). */
-    fun hasAllFilesAccess(): Boolean =
-        Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()
+    fun hasAllFilesAccess(): Boolean = Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()
 
     /** Итоговая рабочая директория: внешняя при праве, иначе внутренний fallback. */
     fun resolve(context: Context): File {
@@ -47,6 +44,5 @@ object Workspace {
     }
 
     /** true — если workspace указывает на внешнее хранилище (не песочницу). */
-    fun usingExternal(context: Context): Boolean =
-        hasAllFilesAccess() && externalRoot() != null
+    fun usingExternal(context: Context): Boolean = hasAllFilesAccess() && externalRoot() != null
 }

@@ -1,0 +1,26 @@
+# detekt-конфиг opencode-mobile.
+#
+# Его не было: detekt работал на чистых дефолтах, которые противоречили
+# .editorconfig, хотя .editorconfig в проекте объявлен источником правил
+# («Стиль проекта (ktlint 1.5+)»). Расхождений было ровно два, и оба стоили
+# реальных нарушений:
+#
+#   * maxLineLength 120 против 140 в .editorconfig — строки, которые ktlint
+#     считает нормальными, detekt рубил;
+#   * FunctionNaming не знал про @Composable, который .editorconfig явно
+#     разрешает PascalCase через ktlint_function_naming_ignore_when_annotated_with.
+#
+# Правится только этот минимум. Всё остальное — дефолты detekt, их ломать
+# незачем: задача детекта — качество кода, а не аккуратность (это у ktlint).
+
+style:
+  MaxLineLength:
+    active: true
+    # .editorconfig: max_line_length = 140
+    maxLineLength: 140
+
+naming:
+  FunctionNaming:
+    active: true
+    functionPattern: '[a-z][a-zA-Z0-9]*'
+    ignoreAnnotated: ['Composable']
