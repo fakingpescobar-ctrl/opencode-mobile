@@ -24,12 +24,22 @@ class YandexDeviceAuthTest {
     fun `device code form carries no client secret`() {
         val body = YandexDeviceAuth.deviceCodeForm("opencode1")
 
-        assertTrue(body.contains("client_id=${YandexDeviceAuth.CLIENT_ID}"))
+        assertTrue(body.contains("client_id=${YandexOAuth.CLIENT_ID}"))
         assertTrue(body.contains("device_id=opencode1"))
         assertTrue(body.contains("device_name=${YandexDeviceAuth.DEVICE_NAME}"))
         // Живой запросом подтверждено: `/device/code` секрета не требует. Секрет здесь
-        // был бы не защитой, а лишним следом публичных кредов в дампе запроса.
+        // был бы не защитой, а лишним следом в дампе запроса.
         assertFalse(body.contains("client_secret"))
+    }
+
+    /**
+     * Сторож против повторения расхождения: device-flow обязан идти от той же регистрации,
+     * что и PKCE. Раньше у него был свой литерал, и он молча уехал на чужой `client_id` —
+     * тесты были зелёные, формы собирались, а вход шёл не от того приложения.
+     */
+    @Test
+    fun `device flow identifies as the same app as pkce`() {
+        assertEquals(YandexOAuth.CLIENT_ID, YandexDeviceAuth.clientId)
     }
 
     @Test
@@ -55,9 +65,10 @@ class YandexDeviceAuthTest {
 
         assertTrue(body.contains("grant_type=device_code"))
         assertTrue(body.contains("code=dc-32-chars"))
-        assertTrue(body.contains("client_id=${YandexDeviceAuth.CLIENT_ID}"))
-        // Секрет на `/token` обязателен, в отличие от `/device/code`.
-        assertTrue(body.contains("client_secret=${YandexDeviceAuth.CLIENT_SECRET}"))
+        assertTrue(body.contains("client_id=${YandexOAuth.CLIENT_ID}"))
+        // Секрет на `/token` обязателен, в отличие от `/device/code`. Проверено вживью:
+        // без него Яндекс отвечает `invalid_client: Wrong client secret` и до гранта не доходит.
+        assertTrue(body.contains("client_secret=${YandexOAuth.CLIENT_SECRET}"))
     }
 
     @Test
@@ -74,7 +85,7 @@ class YandexDeviceAuthTest {
     }
 
     @Test
-    fun `basic authorization is base64 of the public client pair`() {
+    fun `basic authorization is base64 of the registered client pair`() {
         val header = YandexDeviceAuth.basicAuthorization()
 
         assertTrue(header.startsWith("Basic "))
@@ -83,7 +94,7 @@ class YandexDeviceAuthTest {
                 Base64.getDecoder().decode(header.removePrefix("Basic ")),
                 StandardCharsets.UTF_8,
             )
-        assertEquals("${YandexDeviceAuth.CLIENT_ID}:${YandexDeviceAuth.CLIENT_SECRET}", decoded)
+        assertEquals("${YandexOAuth.CLIENT_ID}:${YandexOAuth.CLIENT_SECRET}", decoded)
     }
 
     @Test
