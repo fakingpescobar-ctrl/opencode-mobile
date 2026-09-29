@@ -202,7 +202,7 @@ object YandexAccountClient {
     private const val MUSIC_CLIENT = "YandexMusicAndroid/24023621"
     private const val CONNECT_TIMEOUT_MS = 5_000
     private const val READ_TIMEOUT_MS = 15_000
-private const val FORM_CONTENT_TYPE = "application/x-www-form-urlencoded; charset=UTF-8"
+    private const val FORM_CONTENT_TYPE = "application/x-www-form-urlencoded; charset=UTF-8"
     private const val HTTP_OK = 200
     private const val HTTP_MAX = 299
     private const val TOKEN_BODY = "token"

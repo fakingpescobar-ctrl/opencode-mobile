@@ -39,7 +39,7 @@ class YandexDeviceAuthTest {
      */
     @Test
     fun `device flow identifies as the same app as pkce`() {
-        assertEquals(YandexOAuth.CLIENT_ID, YandexDeviceAuth.clientId)
+        assertEquals(YandexOAuth.CLIENT_ID, YandexDeviceAuth.CLIENT_ID)
     }
 
     @Test

@@ -483,6 +483,7 @@ object YandexAccountController {
         val token: YandexToken,
         val identity: YandexIdentity,
     )
+
     /**
      * Токен для внешних потребителей, которых зовёт НЕ UI: сейчас — запускатель Ynison.
      * Отдельный метод, а не переиспользование [session], потому что Ynison не знает юзера

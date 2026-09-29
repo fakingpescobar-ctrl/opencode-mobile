@@ -29,7 +29,7 @@ import java.util.Base64
  * - **`/token` секрета требует**, в отличие от `/device/code`. Без него ответ —
  *   `invalid_client: Wrong client secret`; с ним на заведомо неверном коде приходит
  *   `invalid_grant`. Разница ошибок и есть доказательство: с верным секретом запрос
- *   проходит проверку клиента и доходит до проверки гранта. Отсюда и [clientId], и
+ *   проходит проверку клиента и доходит до проверки гранта. Отсюда и [CLIENT_ID], и
  *   [YandexOAuth.CLIENT_SECRET] в теле каждой из форм ниже.
  * - `verification_url` приходит как `https://ya.ru/device` — не `yandex.ru/auth/device`,
  *   как учат примеры, — поэтому ссылку берём из ответа, а не конструируем сами.
@@ -42,17 +42,16 @@ import java.util.Base64
  */
 object YandexDeviceAuth {
     /** Наша регистрация, общая с PKCE-входом. См. [YandexOAuth]. */
-    const val clientId: String = YandexOAuth.CLIENT_ID
+    const val CLIENT_ID: String = YandexOAuth.CLIENT_ID
 
     /**
      * Секрет достаётся из [YandexOAuth] на месте, а не хранится своим полем.
      *
-     * Приватный — в отличие от [clientId], о котором можно сказать наружу, потому что он
+     * Приватный — в отличие от [CLIENT_ID], о котором можно сказать наружу, потому что он
      * публичный по смыслу. Дублировать же его константой здесь значило бы завести ровно
-     * ту расхождение, ради устранения которой секрет и вынесен в одно место.
+     * то же расхождение, ради устранения которого секрет и вынесен в одно место.
      */
-    private const val clientSecret: String = YandexOAuth.CLIENT_SECRET
-
+    private const val CLIENT_SECRET: String = YandexOAuth.CLIENT_SECRET
 
     const val DEVICE_CODE_URL = "https://oauth.yandex.ru/device/code"
 
@@ -155,7 +154,7 @@ object YandexDeviceAuth {
 
     /** Тело `/device/code`. Секрета нет: этому эндпоинту он не нужен — см. KDoc объекта. */
     fun deviceCodeForm(deviceId: String): String =
-        "client_id=$clientId" +
+        "client_id=$CLIENT_ID" +
             "&device_id=${encode(deviceId)}" +
             "&device_name=${encode(DEVICE_NAME)}"
 
@@ -163,8 +162,8 @@ object YandexDeviceAuth {
     fun deviceTokenForm(deviceCode: String): String =
         "grant_type=$GRANT_DEVICE_CODE" +
             "&code=${encode(deviceCode)}" +
-            "&client_id=$clientId" +
-            "&client_secret=$clientSecret"
+            "&client_id=$CLIENT_ID" +
+            "&client_secret=$CLIENT_SECRET"
 
     /**
      * Тело обновления токена, выданного device-flow.
@@ -176,8 +175,8 @@ object YandexDeviceAuth {
     fun deviceRefreshForm(refreshToken: String): String =
         "grant_type=$GRANT_REFRESH" +
             "&refresh_token=${encode(refreshToken)}" +
-            "&client_id=$clientId" +
-            "&client_secret=$clientSecret"
+            "&client_id=$CLIENT_ID" +
+            "&client_secret=$CLIENT_SECRET"
 
     /**
      * `Authorization: Basic` для `/token`.
@@ -191,7 +190,7 @@ object YandexDeviceAuth {
      * настоящий пароль, и искать его потом пришлось бы по всему логу.
      */
     fun basicAuthorization(): String =
-        "Basic " + Base64.getEncoder().encodeToString("$clientId:$clientSecret".toByteArray(StandardCharsets.UTF_8))
+        "Basic " + Base64.getEncoder().encodeToString("$CLIENT_ID:$CLIENT_SECRET".toByteArray(StandardCharsets.UTF_8))
 
     /**
      * Разбор ответа `/device/code`.
