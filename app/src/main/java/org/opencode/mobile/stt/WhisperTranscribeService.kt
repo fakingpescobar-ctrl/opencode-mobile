@@ -233,39 +233,51 @@ class WhisperTranscribeService : Service() {
             // блокирует новые enqueue и не считается зря, пока в очереди.
             // Идемпотентно: при нормальном complete задача уже вне очереди — no-op.
             deferred.invokeOnCompletion { removeTask(task.id) }
-            // ВАЖНО, ИНВАРИАНТ: пока deferred жив, он — не-completed ребёнок Job
-            // вызывающей корутины (parent= выше), и этот Job НЕ МОЖЕТ завершиться.
-            // Поэтому на каждом пути, где мы уходим без результата воркера, deferred
-            // обязан быть отменён — иначе вызывающий scope (Activity/ViewModel/
-            // runBlocking) зависнет навсегда. cancel() идемпотентен и безопасен,
-            // когда воркер уже успел положить результат.
-            if (!enqueue(task)) {
-                deferred.cancel()
-                return "ОШИБКА WHISPER: очередь переполнена ($MAX_QUEUE_SIZE задач) — попробуй ещё раз"
-            }
-            // Задача в очереди до старта сервиса: даже если сервис в процессе
-            // остановки, onStartCommand пересоздаст/подхватит и заберёт её.
-            val ctx = context.applicationContext
-            try {
-                ctx.startForegroundService(Intent(ctx, WhisperTranscribeService::class.java))
-            } catch (e: Exception) {
-                // Android 12+: запуск сервиса из фона запрещён
-                // (ForegroundServiceStartNotAllowedException). Задача уже в очереди,
-                // но worker стартует только из onStartCommand — без сервиса она
-                // провисела бы до таймаута. Снимаем её и сообщаем честную причину.
-                Log.w(TAG, "startForegroundService запрещён — откат задачи #${task.id}", e)
-                removeTask(task.id)
-                deferred.cancel()
-                return "ОШИБКА WHISPER: запуск сервиса запрещён (Android 12+) — повтори из активного экрана"
-            }
-            val result = withTimeoutOrNull(timeoutMs) { task.deferred.await() }
-            if (result != null) return result
+            val result = submit(context, task) ?: withTimeoutOrNull(timeoutMs) { task.deferred.await() }
+
+            // ИНВАРИАНТ: deferred — не-completed ребёнок Job вызывающей корутины
+            // (parent= выше), а незавершённый ребёнок блокирует завершение родителя.
+            // Отменяем его на каждом пути, где мы ушли без результата воркера (отказ
+            // при постановке, запрет запуска сервиса, таймаут) — иначе вызывающий
+            // scope (Activity/ViewModel/runBlocking) не завершится никогда.
+            // Проверка «воркер не положил результат» покрывает все пути структурно:
+            // новый выход раньше этой строки зависнуть уже не может.
+            if (!task.deferred.isCompleted) deferred.cancel()
             // Не дождались: снимаем задачу из очереди, если она ещё не в обработке
             // (если уже считается — досчитается и результат будет отброшен).
-            removeTask(task.id)
-            deferred.cancel()
-            return "ОШИБКА WHISPER: таймаут ${timeoutMs.coerceAtLeast(1000) / 1000}с — телефон не даёт CPU"
+            if (result == null) removeTask(task.id)
+
+            return result ?: "ОШИБКА WHISPER: таймаут ${timeoutMs.coerceAtLeast(1000) / 1000}с — телефон не даёт CPU"
         }
+
+        /**
+         * Ставит задачу в очередь и поднимает сервис, который её посчитает.
+         *
+         * @return текст ошибки, если задача не принята; null — задача ушла в работу.
+         */
+        private fun submit(
+            context: Context,
+            task: SttTask,
+        ): String? =
+            if (!enqueue(task)) {
+                "ОШИБКА WHISPER: очередь переполнена ($MAX_QUEUE_SIZE задач) — попробуй ещё раз"
+            } else {
+                // Задача в очереди до старта сервиса: даже если сервис в процессе
+                // остановки, onStartCommand пересоздаст/подхватит и заберёт её.
+                val ctx = context.applicationContext
+                try {
+                    ctx.startForegroundService(Intent(ctx, WhisperTranscribeService::class.java))
+                    null
+                } catch (e: Exception) {
+                    // Android 12+: запуск сервиса из фона запрещён
+                    // (ForegroundServiceStartNotAllowedException). Задача уже в очереди,
+                    // но worker стартует только из onStartCommand — без сервиса она
+                    // провисела бы до таймаута. Снимаем её и сообщаем честную причину.
+                    Log.w(TAG, "startForegroundService запрещён — откат задачи #${task.id}", e)
+                    removeTask(task.id)
+                    "ОШИБКА WHISPER: запуск сервиса запрещён (Android 12+) — повтори из активного экрана"
+                }
+            }
 
         /**
          * Запускает единственный worker распознавания: крутится, пока в очереди
