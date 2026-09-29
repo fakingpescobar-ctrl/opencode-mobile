@@ -114,8 +114,8 @@ private const val SEEK_FORWARD_MS = 5_000L
  * Ни shell, ни UI-автоматизация, ни доступ к данным приложений здесь не используются.
  */
 // LargeClass: это диспетчер сессий, и его размер давно не про обход дерева -
-// сам обход живёт в MediaLibraryBrowser. Дальше дробить имеет смысл только вместе
-// с переездом probe/capabilities, а не из-за двух десятков строк входа в библиотеку.
+// обход дерева выведен вместе с MediaLibraryBrowser. Дробить имеет смысл только
+// вместе с переездом probe/capabilities, а не из-за размера оставшегося входа.
 @Suppress("TooManyFunctions", "LargeClass")
 object MediaControlController {
     const val TRANSPORT_SESSION = "media_session"
@@ -150,13 +150,6 @@ object MediaControlController {
         setOf(
             "androidx.media3.session.MediaLibraryService",
             "androidx.media3.session.MediaSessionService",
-        )
-
-    /** Action-ы сервисов, которые умеют отдавать дерево, а не только кнопки. */
-    private val LIBRARY_SERVICE_ACTIONS =
-        setOf(
-            "androidx.media3.session.MediaLibraryService",
-            "android.media.browse.MediaBrowserService",
         )
 
     /** Порядок попыток: родной протокол приложения первым, платформенный — запасным. */
@@ -312,41 +305,6 @@ object MediaControlController {
             exactTrackId = result.exactTrackId,
             resolvedBy = result.resolvedBy,
         )
-    }
-
-    /**
-     * Обход дерева библиотеки плеера.
-     *
-     * Смысл не в красоте, а в том, что отсюда берётся mediaId, который сессия признаёт своим.
-     * Трек из публичного каталога сессия игнорирует, а трек, на который она сама дала ссылку,
-     * принять обязана — иначе ссылка была бы неправильной.
-     */
-    fun library(spec: MediaLibrarySpec): MediaLibraryResult {
-        val apps = mediaApps()
-        require(apps.isNotEmpty()) { "no installed app exposes a media session" }
-        val app = apps.firstOrNull { it.packageName == spec.packageName }
-            ?: error("no media session app for ${spec.packageName}")
-        val components = libraryComponents(app)
-        require(components.isNotEmpty()) { "${spec.packageName} has no media library service" }
-        val result = MediaLibraryBrowser(contextOrThrow(), looper).browse(components, spec)
-        Log.i(
-            TAG,
-            "media library ${spec.packageName} node=${spec.node} query=${spec.query} " +
-                "entries=${result.entries.size} state=${result.message}",
-        )
-        return result
-    }
-
-    /**
-     * Кандидаты в порядке убывания правды: media3-библиотека умеет дерево по протоколу, обычная
-     * сессия — нет, legacy-браузер — последний шанс. Проверяем всех, потому что отказ одного
-     * сервиса ничего не говорит о втором, а молчаливый «первый ответ» скрыл бы различие.
-     */
-    private fun libraryComponents(app: MediaAppSnapshot): List<ComponentName> {
-        val refs = sessionRefs(app)
-        val library = refs.filter { ref -> ref.action in LIBRARY_SERVICE_ACTIONS }
-        val ordered = library.ifEmpty { refs }.sortedBy { ref -> if (ref.isMedia3) 0 else 1 }
-        return ordered.map { ref -> ref.component }
     }
 
     fun capabilities(packageName: String?): MediaCapabilities {
