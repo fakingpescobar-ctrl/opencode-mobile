@@ -233,7 +233,14 @@ class WhisperTranscribeService : Service() {
             // блокирует новые enqueue и не считается зря, пока в очереди.
             // Идемпотентно: при нормальном complete задача уже вне очереди — no-op.
             deferred.invokeOnCompletion { removeTask(task.id) }
+            // ВАЖНО, ИНВАРИАНТ: пока deferred жив, он — не-completed ребёнок Job
+            // вызывающей корутины (parent= выше), и этот Job НЕ МОЖЕТ завершиться.
+            // Поэтому на каждом пути, где мы уходим без результата воркера, deferred
+            // обязан быть отменён — иначе вызывающий scope (Activity/ViewModel/
+            // runBlocking) зависнет навсегда. cancel() идемпотентен и безопасен,
+            // когда воркер уже успел положить результат.
             if (!enqueue(task)) {
+                deferred.cancel()
                 return "ОШИБКА WHISPER: очередь переполнена ($MAX_QUEUE_SIZE задач) — попробуй ещё раз"
             }
             // Задача в очереди до старта сервиса: даже если сервис в процессе
@@ -248,6 +255,7 @@ class WhisperTranscribeService : Service() {
                 // провисела бы до таймаута. Снимаем её и сообщаем честную причину.
                 Log.w(TAG, "startForegroundService запрещён — откат задачи #${task.id}", e)
                 removeTask(task.id)
+                deferred.cancel()
                 return "ОШИБКА WHISPER: запуск сервиса запрещён (Android 12+) — повтори из активного экрана"
             }
             val result = withTimeoutOrNull(timeoutMs) { task.deferred.await() }
@@ -255,6 +263,7 @@ class WhisperTranscribeService : Service() {
             // Не дождались: снимаем задачу из очереди, если она ещё не в обработке
             // (если уже считается — досчитается и результат будет отброшен).
             removeTask(task.id)
+            deferred.cancel()
             return "ОШИБКА WHISPER: таймаут ${timeoutMs.coerceAtLeast(1000) / 1000}с — телефон не даёт CPU"
         }
 
@@ -279,8 +288,10 @@ class WhisperTranscribeService : Service() {
                     Log.d(TAG, "worker: задача #${task.id}, ${task.samples.size} сэмплов, модель=${task.model}, движок=${task.engine}")
                     val text = transcribeTask(task)
                     Log.d(TAG, "worker: результат #${task.id}: '${text.take(80)}'")
-                    // withTimeoutOrNull отменяет только await вызывающего, сам deferred
-                    // не отменяется — complete() успешен даже если никто не ждёт.
+                    // complete() вернёт false, если вызывающая сторона уже ушла
+                    // (таймаут/откат) и отменила deferred — это ожидаемо: результат
+                    // больше никому не нужен, и он молча отбрасывается. Раньше здесь
+                    // deferred оставался не-завершённым и блокировал Job вызывающего.
                     task.deferred.complete(text)
                 }
                 synchronized(queue) { workerActive = false }
