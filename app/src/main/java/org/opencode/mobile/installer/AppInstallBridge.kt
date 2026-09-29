@@ -5,6 +5,7 @@ import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import org.opencode.mobile.account.LikedPage
+import org.opencode.mobile.account.PlaylistEdit
 import org.opencode.mobile.account.PlaylistPage
 import org.opencode.mobile.account.PlaylistPlayback
 import org.opencode.mobile.account.PlaylistSummary
@@ -192,11 +193,14 @@ object AppInstallBridge {
             // обработчики значило бы держать вход, которым никто не пользуется.
             Route("POST", "/v1/media/like", ::likeMedia),
             Route("POST", "/v1/account/yandex/connect", ::connectYandex),
+            Route("POST", "/v1/account/yandex/device/poll", ::yandexDevicePoll),
             Route("GET", "/v1/account/yandex/status", ::yandexStatus),
             Route("POST", "/v1/account/yandex/disconnect", ::disconnectYandex),
             Route("GET", "/v1/account/yandex/likes", ::yandexLikes),
             Route("GET", "/v1/account/yandex/playlists", ::yandexPlaylists),
             Route("GET", "/v1/account/yandex/playlist", ::yandexPlaylist),
+            Route("POST", "/v1/account/yandex/playlist/track/add", ::yandexPlaylistAddTrack),
+            Route("POST", "/v1/account/yandex/playlist/track/remove", ::yandexPlaylistRemoveTrack),
             Route("POST", "/v1/account/yandex/playlist/play", ::yandexPlaylistPlay),
         )
 
@@ -293,12 +297,37 @@ object AppInstallBridge {
                 .put("ok", true)
                 .put("account", status.toJson())
                 // Отдельным полем, а не внутри status: именно это должен сделать агент —
-                // отдать ссылку юзеру и дождаться согласия, а не считать задачу выполненной.
+                // показать юзеру код, дождаться подтверждения и позвать poll, а не считать
+                // задачу выполненной. Окно жизни кода — пять минут, поэтому промедление
+                // агента здесь стоит реально: код протухнет и вход придётся начинать заново.
                 .put(
                     "next_step",
-                    "a browser was opened; ask the user to sign in and approve, then re-check status",
+                    "show the user account.device_prompt.user_code with " +
+                        "account.device_prompt.verification_url, then poll /v1/account/yandex/device/poll " +
+                        "every account.device_prompt.interval_seconds seconds",
                 ),
         )
+    }
+
+    /**
+     * Один опрос device-flow.
+     *
+     * Отдельный поток не нужен: мост уже обслуживает каждое соединение на своём пуле, и
+     * остальные сетевые эндпоинты Яндекса ходят так же. Свой поток заводить было бы
+     * дублированием — опрос занимает ровно один запрос с тем же таймаутом, что и чтение
+     * библиотеки. [offRpcPool] тут не подходит: он для долгих заданий с бюджетом
+     * ожидания, а не для одиночного запроса.
+     */
+    private fun yandexDevicePoll(
+        output: BufferedOutputStream,
+        @Suppress("UNUSED_PARAMETER") request: Request,
+    ) {
+        val outcome =
+            runCatching { YandexAccountController.pollConnect() }
+                .getOrElse { error ->
+                    YandexAccountController.Outcome.Rejected(error.message ?: "device authorization failed")
+                }
+        writeJson(output, 200, outcome.toJson())
     }
 
     private fun yandexStatus(
@@ -357,6 +386,43 @@ object AppInstallBridge {
             )
         val page = YandexAccountController.readPlaylist(kind, offset, limit)
         writeJson(output, 200, JSONObject().put("ok", true).put("playlist", page.toJson()))
+    }
+
+    /**
+     * Кладёт трек в плейлист.
+     *
+     * Намеренно тонкий мост: ревизия, позиция и `albumId` — вещи, которые обязан решать
+     * владелец аккаунта ([YandexAccountController]), а не проксировать агент. Иначе агент
+     * получает право составить diff по чужой ревизии и узнаёт об этом только из 400.
+     */
+    private fun yandexPlaylistAddTrack(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val body = jsonObject(request)
+        val kind = YandexAccountRequestValidator.playlistKind(body.optionalString("kind"))
+        val edit =
+            YandexAccountController.addTrackToPlaylist(
+                kind = kind,
+                trackId = YandexAccountRequestValidator.trackId(body.optionalString("track_id")),
+                at = YandexAccountRequestValidator.insertPosition(body.optionalString("at")),
+            )
+        writeJson(output, 200, JSONObject().put("ok", true).put("edit", edit.toJson()))
+    }
+
+    /** Убирает трек из плейлиста; позиция вычисляется по прочитанному плейлисту, агент её не задаёт. */
+    private fun yandexPlaylistRemoveTrack(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val body = jsonObject(request)
+        val kind = YandexAccountRequestValidator.playlistKind(body.optionalString("kind"))
+        val edit =
+            YandexAccountController.removeTrackFromPlaylist(
+                kind = kind,
+                trackId = YandexAccountRequestValidator.trackId(body.optionalString("track_id")),
+            )
+        writeJson(output, 200, JSONObject().put("ok", true).put("edit", edit.toJson()))
     }
 
     private fun yandexPlaylistPlay(
@@ -607,6 +673,37 @@ object AppInstallBridge {
             .put("updated_at", updatedAt)
             .put("signing_certificate_sha256", signingCertificateSha256 ?: JSONObject.NULL)
 
+
+
+    /**
+     * Итог опроса device-flow. Три исхода остаются тремя: [YandexAccountController.Outcome]
+     * различает «ещё не подтверждено» и «отказали» именно потому, что свёртка в boolean
+     * отдала бы агенту ложь, а retry при [YandexAccountController.Outcome.Waiting] тут же
+     * и объясняет, когда следующий запрос.
+     */
+    private fun YandexAccountController.Outcome.toJson(): JSONObject =
+        when (this) {
+            is YandexAccountController.Outcome.Connected ->
+                JSONObject()
+                    .put("state", "connected")
+                    .put(
+                        "identity",
+                        JSONObject()
+                            .put("login", identity.login)
+                            .put("uid", identity.uid),
+                    )
+
+            is YandexAccountController.Outcome.Rejected ->
+                JSONObject()
+                    .put("state", "rejected")
+                    .put("reason", reason)
+
+            is YandexAccountController.Outcome.Waiting ->
+                JSONObject()
+                    .put("state", "waiting")
+                    .put("retry_after_seconds", retryAfterSeconds)
+        }
+
     private fun YandexAccountController.Status.toJson(): JSONObject =
         JSONObject()
             .put("connected", connected)
@@ -618,6 +715,8 @@ object AppInstallBridge {
             // подключение, но и не поломка, и агенту надо различать эти два состояния.
             .put("awaiting_code", awaitingCode)
 
+
+
     private fun LikedPage.toJson(): JSONObject =
         JSONObject()
             .put("login", login)
@@ -628,6 +727,7 @@ object AppInstallBridge {
             .put("has_more", hasMore)
             .put("track_ids", JSONArray(trackIds))
             .put("tracks", trackArray(tracks))
+
 
     private fun PlaylistSummary.toJson(): JSONObject =
         JSONObject()
@@ -654,6 +754,23 @@ object AppInstallBridge {
             .put("track_ids", JSONArray(trackIds))
             .put("original_indexes", JSONArray(originalIndexes))
             .put("tracks", trackArray(tracks, originalIndexes))
+
+    /**
+     * Отчёт о правке плейлиста.
+     *
+     * `track_title` кладётся только когда он есть: `put` с null в org.json **убирает** ключ,
+     * а не пишет null, и это как раз то поведение, которого хочется - у удалённого трека
+     * названия уже нет, и пустой строкой врать не о чем.
+     */
+    private fun PlaylistEdit.toJson(): JSONObject =
+        JSONObject()
+            .put("action", action)
+            .put("kind", kind)
+            .put("title", title)
+            .put("track_id", trackId)
+            .put("track_title", trackTitle)
+            .put("position", position)
+            .put("track_count", trackCount)
 
     private fun PlaylistPlayback.toJson(): JSONObject =
         JSONObject()
