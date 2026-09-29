@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.opencode.mobile.account.YandexAccountController
 import org.opencode.mobile.server.OpencodeServerService
 import org.opencode.mobile.server.OpencodeServerService.ServerStatus
 import org.opencode.mobile.server.RuntimeError
@@ -632,6 +633,13 @@ private fun dumpValidationSection(
     sb.append("Basic-аутентификация: ${v.serverAuth}\n")
     sb.append("Serve (HTTP): ${v.serverHttp}\n")
     sb.append("Память MCP: ${v.memoryMcp}\n")
+    sb.append(
+        if (YandexAccountController.status().connected) {
+            "Музыка MCP: ${v.musicMcp}\n"
+        } else {
+            "Музыка MCP: (Яндекс не подключён - не проверяется)\n"
+        },
+    )
     sb.append("ncnn-turbo: ${v.ncnnTurbo}\n")
 }
 

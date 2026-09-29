@@ -19,6 +19,7 @@ import org.opencode.mobile.stt.NcnnModelValidator
 object RuntimeValidation {
     const val SERVER_PORT = OpencodeApp.ServerConfig.PORT
     const val MEMORY_PORT = OpencodeRuntime.MEMORY_PORT
+    const val YNISON_PORT = OpencodeRuntime.YNISON_PORT
 
 /** TCP-таймаут коннекта при проверке порта (мс). */
     private const val CONNECT_TIMEOUT_MS = 1_000
@@ -37,15 +38,23 @@ object RuntimeValidation {
         val serverAuth: Boolean,
 /** opencode serve отвечает по TCP на SERVER_PORT. */
         val serverHttp: Boolean,
-        /** Локальная память MCP отвечает протокольно (HTTP 2xx на GET /mcp). */
+/** Локальная память MCP отвечает протокольно (HTTP 2xx на GET /mcp). */
         val memoryMcp: Boolean,
+        /**
+         * Музыка MCP отвечает протокольно (HTTP 2xx на GET /mcp).
+         *
+         * Ложь только когда музыка ОЖИДАЛАСЬ (Яндекс подключён, bearer выдан) и не
+         * отвечает. Без подключённого Яндекса музыка — опциональная подсистема, и её
+         * отсутствие не должно красить весь отчёт; поэтому здесь true.
+         */
+        val musicMcp: Boolean,
         /** Полный набор файлов ncnn-turbo на месте (NcnnModelValidator). */
         val ncnnTurbo: Boolean,
         /** Свободно байт на хранилище моделей. */
         val storageFreeBytes: Long,
     ) {
         val allOk: Boolean
-            get() = nativeRuntime && serverAuth && serverHttp && memoryMcp && ncnnTurbo
+            get() = nativeRuntime && serverAuth && serverHttp && memoryMcp && musicMcp && ncnnTurbo
     }
 
 /** Текущий отчёт. Вызывать вне main-потока (файловые проверки). */
@@ -55,6 +64,9 @@ object RuntimeValidation {
             serverAuth = ServerAuth.password != null,
             serverHttp = tcpOk(SERVER_PORT),
             memoryMcp = memoryHttpOk(),
+            // Музыка проверяется только когда ожидалась (см. KDoc поля): без bearer'а
+            // витка проверять нечего, и `true` отражает «опциональна, требований нет».
+            musicMcp = YnisonAuth.bearerHeader()?.let { probeMcp(YNISON_PORT, it) } ?: true,
             ncnnTurbo = NcnnModelValidator.checkTurbo(context).ok,
             storageFreeBytes = ModelDownloader.freeBytes(context),
         )
@@ -75,15 +87,18 @@ object RuntimeValidation {
     @Suppress("SwallowedException") // Диагностика: любой отказ = «память не готова», причина не влияет на вердикт.
     fun memoryHttpOk(): Boolean {
         val authorization = MemoryAuth.bearerHeader() ?: return false
-        return probeMemoryMcp(authorization)
+        return probeMcp(MEMORY_PORT, authorization)
     }
 
     /** GET /mcp с bearer — 2xx значит живой MCP (тело SSE не читаем). */
-    @Suppress("SwallowedException") // Любой отказ = «память не готова», причина не влияет на вердикт.
-    private fun probeMemoryMcp(authorization: String): Boolean {
+    @Suppress("SwallowedException") // Любой отказ = «подсистема не готова», причина не влияет на вердикт.
+    private fun probeMcp(
+        port: Int,
+        authorization: String,
+    ): Boolean {
         try {
             val conn =
-                (java.net.URL("http://127.0.0.1:$MEMORY_PORT/mcp").openConnection() as java.net.HttpURLConnection)
+                (java.net.URL("http://127.0.0.1:$port/mcp").openConnection() as java.net.HttpURLConnection)
                     .apply {
                         connectTimeout = CONNECT_TIMEOUT_MS
                         readTimeout = CONNECT_TIMEOUT_MS

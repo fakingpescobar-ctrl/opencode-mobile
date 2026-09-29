@@ -64,6 +64,12 @@ enum class RuntimeErrorCode {
     /** Процесс локальной памяти умер ПОСЛЕ успешного старта (serve жив, чат без неё). */
     MEMORY_DIED,
 
+    /** Музыка (ynison.js) не подняла MCP-порт в окно ожидания. */
+    YNISON_START_FAILED,
+
+    /** Музыка (ynison.js) умерла ПОСЛЕ успешного старта (serve жив, чат без неё). */
+    YNISON_DIED,
+
     /** Процесс serve не стартовал (startServe == null). */
     SERVER_START_FAILED,
 
