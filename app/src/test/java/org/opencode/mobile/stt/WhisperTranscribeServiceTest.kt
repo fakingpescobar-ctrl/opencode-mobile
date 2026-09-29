@@ -11,44 +11,41 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Before
-import org.junit.Ignore
 import org.junit.Test
 
 /**
- * Characterization-тесты [WhisperTranscribeService.transcribe] на JVM.
+ * Characterization-тесты на все пять ветвей [WhisperTranscribeService.transcribe].
  *
- * Зачем: функция — горячий путь диктовки с ПЯТЬЮ точками выхода, каждая со своим
- * текстом ошибки, и ДО этих тестов у неё не было ни одного теста. Любой рефакторинг
- * без сетки — вслепую. Эти тесты фиксируют ТЕКУЩЕЕ поведение, включая точные
- * формулировки: их правка обязана быть осознанной.
+ * ЗАЧЕМ ОНИ: страховка перед рефакторингом transcribe. У функции 5 точек выхода
+ * и нет ни одного теста — любой рефакторинг вслепую. Тесты описывают текущее
+ * (правильное) поведение, а не желаемое.
  *
- * Как работает без устройства: android.jar в unit-тестах — заглушки, поэтому в
- * build.gradle.kts включён `unitTests.isReturnDefaultValues = true`, а Context
- * мокается mockk. Реальный foreground-сервис в тестах не поднимается, поэтому
- * успешный путь имитируется прямой установкой результата в CompletableDeferred
- * задачи (см. completeOldest) — так же, как это делает worker в проде.
+ * НАЙДЕННЫЙ ИМИ БАГ (исправлен в transcribe): deferred создаётся как
+ * `CompletableDeferred(parent = coroutineContext[Job])`, то есть становится
+ * не-completed ребёнком Job вызывающей корутины. На трёх путях, где transcribe
+ * уходил без результата воркера (переполнение очереди / запрет запуска
+ * сервиса / таймаут), deferred оставался не-завершённым — а значит Job
+ * вызывающей корутины не мог завершиться никогда. Это и висело в тестах, и в
+ * проде означало утечку scope вызывающего (Activity/ViewModel).
  *
- * СОСТОЯНИЕ: работают 2 теста из 5 (emptySamplesRejected, successReturnsWorkerResult).
- * Остальные три помечены @Ignore — они виснут до JUnit timeout. Причина НЕ найдена
- * и важное наблюдение: зависает даже ветка, до withTimeoutOrNull не доходящая
- * (serviceStartForbidden — там catch и ранний return), так что дело не в таймаутах.
- * Тесты оставлены написанными намеренно: они и есть искомая страховка перед
- * рефакторингом transcribe. Снять @Ignore можно после выяснения причины —
- * вероятный кандидат, kotlinx-coroutines-test с виртуальным временем вместо
- * реальных таймаутов на заглушках.
+ * Теперь каждый такой путь делает `deferred.cancel()`, и все пять тестов зелёные.
+ * Возврат к зелёному — не «тесты починили», а «сломанный инвариант починили».
+ *
+ * ОСТОРОЖНО, если будешь править transcribe: `deferred.cancel()` на каждом
+ * раннем выходе — не украшение, а условие, при котором вызывающий scope
+ * вообще способен завершиться. Убери его — и ветки снова зависнут.
  */
 class WhisperTranscribeServiceTest {
     private lateinit var ctx: Context
 
     @Before
     fun setUp() {
-        // Строгий мок, НЕ relaxed: у Context ~200 методов, и relaxed заставляет
-        // mockk создать мок для return-типа каждого — это минуты CPU и ~2.4 ГБ RAM
-        // на один тест. Заглушить нужно ровно два вызова, которые делает transcribe.
-        ctx = mockk<Context>()
-        every { ctx.applicationContext } returns ctx
-        every { ctx.startForegroundService(any()) } returns mockk()
         clearQueue()
+        // Строгий mock, НЕ relaxed: у Context ~200 методов, relaxed-экземпляр
+        // жрёт 2.4 ГБ RAM и минуты CPU на создание.
+        ctx = mockk<Context>()
+        every { ctx.applicationContext } answers { ctx }
+        every { ctx.startForegroundService(any()) } returns mockk()
     }
 
     @After
@@ -56,7 +53,7 @@ class WhisperTranscribeServiceTest {
         clearQueue()
     }
 
-    /** Ветка 1: пустой вход отсекается до касания очереди и Android. */
+    /** Ветка 1: пустые сэмплы — отказ до создания задачи. */
     @Test(timeout = 60_000L)
     fun emptySamplesRejected() =
         runBlocking {
@@ -66,13 +63,7 @@ class WhisperTranscribeServiceTest {
             assertEquals("в очередь ничего не должно попасть", 0, queueSize())
         }
 
-    /**
-     * Ветка 2: очередь полна — новая задача отклоняется, очередь не растёт.
-     *
-     * ЗАГЛУШЕНО: тест виснет (60 с, JUnit timeout) — причина не найдена.
-     * Подробности в KDoc класса: три оставшихся ветки блокируются одинаково.
-     */
-    @Ignore("виснет: transcribe не возвращается в этом окружении, причина не установлена")
+    /** Ветка 2: очередь полна — новая задача отклоняется, очередь не растёт. */
     @Test(timeout = 60_000L)
     fun queueOverflowRejected() =
         runBlocking {
@@ -87,17 +78,11 @@ class WhisperTranscribeServiceTest {
 
             assertEquals("ОШИБКА WHISPER: очередь переполнена (4 задач) — попробуй ещё раз", result)
             assertEquals("отказ не должен добавлять задачу", 4, queueSize())
+
             blocked.forEach { it.cancel() }
         }
 
-    /**
-     * Ветка 3: Android 12+ запретил старт сервиса — задача откатывается из очереди.
-     *
-     * ЗАГЛУШЕНО: виснет наравне с ветками 2 и 5, хотя сюда ветка с
-     * withTimeoutOrNull вообще не доходит (бросок перехватывается, ранний return) —
-     * значит зависание не в таймауте, и причина пока не найдена.
-     */
-    @Ignore("виснет: transcribe не возвращается в этом окружении, причина не установлена")
+    /** Ветка 3: Android 12+ запретил старт сервиса — задача откатывается из очереди. */
     @Test(timeout = 60_000L)
     fun serviceStartForbiddenRollsBackTask() =
         runBlocking {
@@ -129,26 +114,13 @@ class WhisperTranscribeServiceTest {
             assertEquals(0, queueSize())
         }
 
-    /**
-     * Ветка 5: таймаут — задача снимается, наружу уходит честная ошибка.
-     *
-     * ЗАГЛУШЕНО: withTimeoutOrNull(1000) в этом окружении не срабатывает, тест
-     * висит до JUnit timeout. Именно ради этой ветки и нужна страховка перед
-     * рефакторингом transcribe — см. KDoc класса.
-     */
-    @Ignore("виснет: withTimeoutOrNull не срабатывает на заглушках android.jar, причина не установлена")
+    /** Ветка 5: таймаут — задача снимается, наружу уходит честная ошибка. */
     @Test(timeout = 60_000L)
     fun timeoutRemovesTaskAndReports() =
         runBlocking {
-            // Именно через Dispatchers.Default, а не напрямую на потоке runBlocking:
-            // на BlockingEventLoop ветка withTimeoutOrNull внутри transcribe не
-            // срабатывает и тест висит вечно. Прод-код не трогаем — это особенность
-            // тестового event loop.
-            val pending = async(Dispatchers.Default) {
-                WhisperTranscribeService.transcribe(ctx, floatArrayOf(0.1f), timeoutMs = 1_000L)
-            }
+            val result = WhisperTranscribeService.transcribe(ctx, floatArrayOf(0.1f), timeoutMs = 1_000L)
 
-            assertEquals("ОШИБКА WHISPER: таймаут 1с — телефон не даёт CPU", pending.await())
+            assertEquals("ОШИБКА WHISPER: таймаут 1с — телефон не даёт CPU", result)
             assertEquals("по таймауту задача обязана быть снята", 0, queueSize())
         }
 
