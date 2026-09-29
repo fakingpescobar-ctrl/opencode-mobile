@@ -247,7 +247,8 @@ object YandexCatalog {
      * что Яндекс показывает в своей карточке трека.
      */
     private fun readAlbumId(node: JSONObject): String =
-        node.optJSONArray("albums")
+        node
+            .optJSONArray("albums")
             ?.optJSONObject(0)
             ?.optString("id")
             ?.trim()

@@ -386,7 +386,8 @@ object OpencodeRuntime {
      */
     private fun resolveIpv4(host: String): String? =
         runCatching {
-            InetAddress.getAllByName(host)
+            InetAddress
+                .getAllByName(host)
                 .firstOrNull { it is Inet4Address }
                 ?.hostAddress
         }.getOrNull()
