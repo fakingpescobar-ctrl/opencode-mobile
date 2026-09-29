@@ -12,25 +12,8 @@ import org.opencode.mobile.account.YandexAccountController
 import org.opencode.mobile.account.YandexAccountRequestValidator
 import org.opencode.mobile.account.YandexPlaylistPlayer
 import org.opencode.mobile.media.CatalogTrack
-import org.opencode.mobile.media.MediaAppSnapshot
-import org.opencode.mobile.media.MediaAutomationShield
-import org.opencode.mobile.media.MediaCapabilities
 import org.opencode.mobile.media.MediaControlController
 import org.opencode.mobile.media.MediaControlRequestValidator
-import org.opencode.mobile.media.MediaControlResult
-import org.opencode.mobile.media.MediaLibraryEntry
-import org.opencode.mobile.media.MediaLibraryResult
-import org.opencode.mobile.media.MediaLikeResult
-import org.opencode.mobile.media.MediaPlaybackSnapshot
-import org.opencode.mobile.media.MediaSearchResult
-import org.opencode.mobile.media.MediaStatusResult
-import org.opencode.mobile.media.MediaUiAction
-import org.opencode.mobile.media.MediaUiAutomation
-import org.opencode.mobile.media.MediaUiBounds
-import org.opencode.mobile.media.MediaUiCandidate
-import org.opencode.mobile.media.MediaUiJob
-import org.opencode.mobile.media.MediaUiOutcome
-import org.opencode.mobile.media.MediaUiTarget
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
@@ -50,6 +33,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import kotlin.concurrent.thread
+import org.opencode.mobile.media.MediaPlaybackSnapshot
+import org.opencode.mobile.media.MediaLikeResult
 
 /**
  * Небольшой loopback RPC только для локального opencode MCP.
@@ -68,7 +53,6 @@ object AppInstallBridge {
     private const val MAX_HEADER_BYTES = 16 * 1024
     private const val MAX_BODY_BYTES = 32 * 1024
     private const val SOCKET_TIMEOUT_MS = 10_000
-    private const val DEFAULT_UI_CLICK_TIMEOUT_MS = 8_000L
     private const val UI_CLICK_HARD_TIMEOUT_GRACE_MS = 3_000L
 
     private data class Request(
@@ -111,7 +95,6 @@ object AppInstallBridge {
             ApkInstaller.initialize(context)
             InstalledAppController.initialize(context)
             MediaControlController.initialize(context)
-            MediaAutomationShield.initialize(context)
             YandexAccountController.initialize(context)
             YandexPlaylistPlayer.initialize(context)
             val nextToken = token.ifBlank { UUID.randomUUID().toString() }
@@ -203,17 +186,11 @@ object AppInstallBridge {
             Route("GET", "/v1/apps/status", ::status),
             Route("POST", "/v1/apps/launch", ::launchApp),
             Route("POST", "/v1/apps/install", ::install),
-            Route("GET", "/v1/media/apps", ::listMediaApps),
-            Route("GET", "/v1/media/status", ::mediaStatus),
-            Route("POST", "/v1/media/control", ::controlMedia),
-            Route("POST", "/v1/media/play", ::playMedia),
-            Route("GET", "/v1/media/capabilities", ::mediaCapabilities),
+            // Из /v1/media/* живёт только like: лайк у Яндекс Музыки идёт кастомной
+            // командой сессии, и REST/OAuth его не заменяют. Остальные десять маршрутов
+            // обслуживали инструменты, которых в выдаче агента больше нет, - держать
+            // обработчики значило бы держать вход, которым никто не пользуется.
             Route("POST", "/v1/media/like", ::likeMedia),
-            Route("GET", "/v1/media/search", ::searchMedia),
-            Route("GET", "/v1/media/library", ::mediaLibrary),
-            Route("POST", "/v1/media/ui/click", ::clickMediaUi),
-            Route("POST", "/v1/media/ui/text", ::textMediaUi),
-            Route("POST", "/v1/media/ui/shield", ::mediaUiShield),
             Route("POST", "/v1/account/yandex/connect", ::connectYandex),
             Route("GET", "/v1/account/yandex/status", ::yandexStatus),
             Route("POST", "/v1/account/yandex/disconnect", ::disconnectYandex),
@@ -268,140 +245,6 @@ object AppInstallBridge {
         writeJson(output, 200, JSONObject().put("ok", true).put("job", status.toJson()))
     }
 
-    private fun listMediaApps(
-        output: BufferedOutputStream,
-        request: Request,
-    ) {
-        val spec =
-            MediaControlRequestValidator.list(
-                query = parameter(request.query, "query"),
-                limit = optionalIntParameter(request.query, "limit"),
-            )
-        val apps = MediaControlController.listApps(spec)
-        val items =
-            JSONArray().apply {
-                apps.forEach { app -> put(app.toJson()) }
-            }
-        writeJson(
-            output,
-            200,
-            JSONObject().put("ok", true).put("count", apps.size).put("apps", items),
-        )
-    }
-
-    private fun mediaStatus(
-        output: BufferedOutputStream,
-        request: Request,
-    ) {
-        val packageName = MediaControlRequestValidator.status(parameter(request.query, "package"))
-        val status = MediaControlController.status(packageName)
-        writeJson(output, 200, JSONObject().put("ok", true).put("media", status.toJson()))
-    }
-
-    private fun controlMedia(
-        output: BufferedOutputStream,
-        request: Request,
-    ) {
-        val body = jsonObject(request)
-        val spec =
-            MediaControlRequestValidator.control(
-                action = body.getString("action"),
-                packageName = body.optionalString("package"),
-            )
-        val result = MediaControlController.control(spec)
-        writeJson(output, 200, JSONObject().put("ok", true).put("media", result.toJson()))
-    }
-
-    private fun searchMedia(
-        output: BufferedOutputStream,
-        request: Request,
-    ) {
-        val spec =
-            MediaControlRequestValidator.search(
-                query = parameter(request.query, "query"),
-                limit = optionalIntParameter(request.query, "limit"),
-            )
-        val result = MediaControlController.search(spec)
-        writeJson(output, 200, JSONObject().put("ok", true).put("search", result.toJson()))
-    }
-
-    private fun mediaLibrary(
-        output: BufferedOutputStream,
-        request: Request,
-    ) {
-        val spec =
-            MediaControlRequestValidator.library(
-                packageName = parameter(request.query, "package"),
-                node = parameter(request.query, "node"),
-                query = parameter(request.query, "query"),
-                limit = optionalIntParameter(request.query, "limit"),
-            )
-        val result = MediaControlController.library(spec)
-        writeJson(output, 200, JSONObject().put("ok", true).put("library", result.toJson()))
-    }
-
-    private fun clickMediaUi(
-        output: BufferedOutputStream,
-        request: Request,
-    ) {
-        val body = jsonObject(request)
-        performUiAction(output, body, MediaUiAction.Click)
-    }
-
-    private fun textMediaUi(
-        output: BufferedOutputStream,
-        request: Request,
-    ) {
-        val body = jsonObject(request)
-        // По умолчанию именно set_text: агент зовёт ручку, чтобы напечатать запрос, а не чтобы
-        // стереть поле, и пустой action не должен молча стирать.
-        val kind = body.optionalString("action") ?: MediaUiAction.SET_TEXT
-        performUiAction(output, body, MediaUiAction.parse(kind, body.optionalString("text")))
-    }
-
-    private fun performUiAction(
-        output: BufferedOutputStream,
-        body: JSONObject,
-        action: MediaUiAction,
-    ) {
-        val target =
-            MediaUiTarget(
-                packageName = body.optionalString("package").orEmpty(),
-                textContains = body.optionalStringList("text_contains"),
-                contentDescriptions = body.optionalStringList("content_description"),
-                resourceIds = body.optionalStringList("resource_id"),
-                bounds = body.optionalBounds("bounds"),
-                requireClickable = body.optBoolean("require_clickable", true),
-            )
-        // Бюджет проверяем здесь, а не внутри задачи: иначе агент получил бы 200 с «ok=false»
-        // вместо внятного 400 на плохой аргумент.
-        val timeoutMs = body.optionalLong("timeout_ms", DEFAULT_UI_CLICK_TIMEOUT_MS)
-        require(timeoutMs in MediaUiJob.MIN_TIMEOUT_MS..MediaUiJob.MAX_TIMEOUT_MS) {
-            "timeout_ms must be between ${MediaUiJob.MIN_TIMEOUT_MS} and ${MediaUiJob.MAX_TIMEOUT_MS}"
-        }
-        val outcome =
-            clickOffRpcPool {
-                MediaUiAutomation.perform(target = target, action = action, timeoutMs = timeoutMs)
-            }
-        writeJson(
-            output,
-            200,
-            JSONObject()
-                .put("ok", outcome is MediaUiOutcome.Performed)
-                .put("ui", outcome.toJson()),
-        )
-    }
-
-    /**
-     * Уводим работу с чужим окном с пула RPC: сам он ждёт accessibility-сервис, а тот - чужое окно.
-     *
-     * Страховка по времени нужна, чтобы мост не завис, даже если accessibility-сервис вообще
-     * не ответит: поток вернёт неотговорённый результат, но RPC-ответ уйдёт вовремя.
-     */
-    private fun clickOffRpcPool(action: () -> MediaUiOutcome): MediaUiOutcome =
-        offRpcPool(MediaUiJob.MAX_TIMEOUT_MS + UI_CLICK_HARD_TIMEOUT_GRACE_MS, "ui job") { action() }
-            ?: MediaUiOutcome.Failed("ui job did not answer inside its budget")
-
     /**
      * То же, но для работы, которая держится минуту: запуск плейлиста ждёт загрузку экрана,
      * тап, а затем чтение сессии, и на пуле RPC (а он на два потока) это значит «половина моста
@@ -436,33 +279,6 @@ object AppInstallBridge {
         } catch (failure: ExecutionException) {
             throw failure.cause ?: failure
         }
-    }
-
-    private fun mediaUiShield(
-        output: BufferedOutputStream,
-        request: Request,
-    ) {
-        val body = jsonObject(request)
-        val placed =
-            if (body.optBoolean("show", true)) {
-                MediaAutomationShield.show(body.optionalLong("lifetime_ms", 2_000L))
-            } else {
-                MediaAutomationShield.hide()
-                true
-            }
-        writeJson(
-            output,
-            200,
-            JSONObject()
-                .put("ok", placed)
-                .put(
-                    "shield",
-                    JSONObject()
-                        .put("showing", MediaAutomationShield.isShowing())
-                        .put("can_draw_overlays", MediaAutomationShield.canDraw())
-                        .put("reason", MediaAutomationShield.lastReason() ?: JSONObject.NULL),
-                ),
-        )
     }
 
     private fun connectYandex(
@@ -579,31 +395,6 @@ object AppInstallBridge {
             )
         val result = MediaControlController.like(spec)
         writeJson(output, 200, JSONObject().put("ok", result.ok).put("media", result.toJson()))
-    }
-
-    private fun mediaCapabilities(
-        output: BufferedOutputStream,
-        request: Request,
-    ) {
-        val packageName = MediaControlRequestValidator.status(parameter(request.query, "package"))
-        val capabilities = MediaControlController.capabilities(packageName)
-        writeJson(output, 200, JSONObject().put("ok", true).put("capabilities", capabilities.toJson()))
-    }
-
-    private fun playMedia(
-        output: BufferedOutputStream,
-        request: Request,
-    ) {
-        val body = jsonObject(request)
-        val spec =
-            MediaControlRequestValidator.play(
-                packageName = body.optionalString("package"),
-                mediaId = body.optionalString("media_id"),
-                uri = body.optionalString("uri"),
-                title = body.optionalString("title"),
-            )
-        val result = MediaControlController.play(spec)
-        writeJson(output, 200, JSONObject().put("ok", true).put("media", result.toJson()))
     }
 
     private fun install(
@@ -758,74 +549,6 @@ object AppInstallBridge {
     private fun JSONObject.optionalString(name: String): String? =
         if (has(name) && !isNull(name)) getString(name).takeIf { it.isNotBlank() } else null
 
-    private fun JSONObject.optionalLong(
-        name: String,
-        fallback: Long,
-    ): Long = if (has(name) && !isNull(name)) getLong(name) else fallback
-
-    private fun JSONObject.optionalStringList(name: String): List<String> {
-        if (!has(name) || isNull(name)) return emptyList()
-        val array = optJSONArray(name) ?: throw IllegalArgumentException("$name must be an array of strings")
-        return (0 until array.length()).map { index ->
-            array.optString(index).trim().takeIf { it.isNotEmpty() }
-                ?: throw IllegalArgumentException("$name[$index] must be a non empty string")
-        }
-    }
-
-    /** Прямоугольник приходит массивом [left,top,right,bottom] - ровно так, как его отдаёт not_found. */
-    private fun JSONObject.optionalBounds(name: String): MediaUiBounds? {
-        if (!has(name) || isNull(name)) return null
-        val array = optJSONArray(name) ?: throw IllegalArgumentException("$name must be an array of 4 numbers")
-        require(array.length() == 4) { "$name must have 4 numbers, got ${array.length()}" }
-        val numbers = (0 until 4).map { index ->
-            array.optDouble(index, Double.NaN).takeIf { it.isFinite() }?.toInt()
-                ?: throw IllegalArgumentException("$name[$index] must be a number")
-        }
-        require(numbers.all { kotlin.math.abs(it) <= MediaUiBounds.LIMIT }) { "$name is off screen" }
-        return MediaUiBounds(numbers[0], numbers[1], numbers[2], numbers[3])
-    }
-
-    private fun MediaUiBounds.toJson(): JSONArray =
-        JSONArray()
-            .put(left)
-            .put(top)
-            .put(right)
-            .put(bottom)
-
-    private fun MediaUiCandidate.toJson(): JSONObject =
-        JSONObject()
-            .put("label", label ?: JSONObject.NULL)
-            .put("bounds", bounds?.toJson() ?: JSONObject.NULL)
-            .put("clickable", clickable)
-            .put("editable", editable)
-
-    private fun MediaUiOutcome.toJson(): JSONObject =
-        when (this) {
-            is MediaUiOutcome.Performed ->
-                JSONObject()
-                    .put("state", "performed")
-                    .put("action", action.kind)
-                    .put("label", label)
-                    .put("window_focused", windowFocused)
-                    .put("gesture", gestureUsed)
-
-            is MediaUiOutcome.Rejected ->
-                JSONObject()
-                    .put("state", "rejected")
-                    .put("label", label)
-                    .put("reason", reason)
-
-            is MediaUiOutcome.NotFound ->
-                JSONObject()
-                    .put("state", "not_found")
-                    .put("candidates", JSONArray().apply { candidates.forEach { put(it.toJson()) } })
-
-            is MediaUiOutcome.Failed ->
-                JSONObject()
-                    .put("state", "failed")
-                    .put("reason", reason)
-        }
-
     private fun LaunchableAppSnapshot.toJson(): JSONObject =
         JSONObject()
             .put("package", packageName)
@@ -840,60 +563,9 @@ object AppInstallBridge {
             .put("component", componentName)
             .put("message", message)
 
-    private fun MediaAppSnapshot.toJson(): JSONObject =
-        JSONObject()
-            .put("package", packageName)
-            .put("label", label)
-            .put("session_service", sessionServices.firstOrNull() ?: JSONObject.NULL)
-            .put("session_services", JSONArray(sessionServices))
-            .put("media_button_receiver", mediaButtonReceiver ?: JSONObject.NULL)
-            .put("hidden_session_services", hiddenSessionServices)
-            .put("controlable", controlable)
 
-    private fun MediaSearchResult.toJson(): JSONObject =
-        JSONObject()
-            .put("query", query)
-            .put("resolved_by", resolvedBy)
-            .put("artist", artist?.toJson() ?: JSONObject.NULL)
-            // null означает «трека с таким названием в каталоге нет» — это и есть ответ на
-            // «включи то, что я назвал», а не пустой список на выбор.
-            .put("exact_track_id", exactTrackId ?: JSONObject.NULL)
-            .put(
-                "tracks",
-                JSONArray().apply {
-                    tracks.forEach { track ->
-                        put(
-                            JSONObject()
-                                .put("id", track.id)
-                                .put("title", track.title)
-                                .put("artist", track.artist)
-                                .put("album", track.album)
-                                .put("duration_ms", track.durationMs)
-                                .put("available", track.available)
-                                .put("uri", track.deepLink),
-                        )
-                    }
-                },
-            )
 
-    private fun MediaLibraryResult.toJson(): JSONObject =
-        JSONObject()
-            .put("root", root?.toJson() ?: JSONObject.NULL)
-            .put("state", message)
-            .put("result_code", resultCode ?: JSONObject.NULL)
-            .put(
-                "entries",
-                JSONArray().apply { entries.forEach { put(it.toJson()) } },
-            )
 
-    private fun MediaLibraryEntry.toJson(): JSONObject =
-        JSONObject()
-            .put("media_id", mediaId)
-            .put("title", title)
-            .put("subtitle", subtitle)
-            .put("browsable", browsable)
-            .put("playable", playable)
-            .put("uri", uri ?: JSONObject.NULL)
 
     private fun MediaLikeResult.toJson(): JSONObject =
         JSONObject()
@@ -904,12 +576,7 @@ object AppInstallBridge {
             .put("detail", detail ?: JSONObject.NULL)
             .put("playback", playback.toJson())
 
-    private fun MediaCapabilities.toJson(): JSONObject =
-        JSONObject()
-            .put("player_commands", JSONArray(playerCommands))
-            .put("session_commands", JSONArray(sessionCommands))
-            .put("supports_set_media_item", supportsSetMediaItem)
-            .put("player_error", playerError ?: JSONObject.NULL)
+
 
     private fun MediaPlaybackSnapshot.toJson(): JSONObject =
         JSONObject()
@@ -928,25 +595,7 @@ object AppInstallBridge {
     /** Трёхзначный флаг: true, false и «сессия не ответила» — это три разных значения. */
     private fun Boolean?.asJsonFlag(): Any = this ?: JSONObject.NULL
 
-    private fun MediaControlResult.toJson(): JSONObject =
-        JSONObject()
-            .put("package", packageName)
-            .put("label", label)
-            .put("transport", transport)
-            .put("command", command)
-            .put("delivered", true)
-            .put("verified", verified)
-            .put("message", message)
-            .put("before", before?.toJson() ?: JSONObject.NULL)
-            .put("after", after?.toJson() ?: JSONObject.NULL)
 
-    private fun MediaStatusResult.toJson(): JSONObject =
-        JSONObject()
-            .put("package", packageName)
-            .put("label", label)
-            .put("transport", transport)
-            .put("message", message)
-            .put("playback", playback.toJson())
 
     private fun InstallJobSnapshot.toJson(): JSONObject =
         JSONObject()

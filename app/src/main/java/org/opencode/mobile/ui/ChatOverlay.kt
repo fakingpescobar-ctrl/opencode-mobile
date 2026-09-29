@@ -125,6 +125,7 @@ import org.json.JSONObject
 import org.opencode.mobile.R
 import org.opencode.mobile.server.LocalOpenCodeClient
 import org.opencode.mobile.server.MemoryMcp
+import org.opencode.mobile.server.YnisonMcp
 import org.opencode.mobile.server.OpenCodePermissionApi
 import org.opencode.mobile.server.OpenCodePermissionRequest
 import org.opencode.mobile.server.PermissionDecision
@@ -1334,18 +1335,6 @@ fun ChatOverlay(
                 }
             }
             val msgs = snapshot?.messages ?: emptyList()
-            // Зеркало чата для окна-щита (MediaAutomationShield): пока
-            // щит закрывает Яндекс, активная Activity с чатом оказана
-            // НИЖЕ Яндекса и её лента невидима. Чтобы подмена этого окна не заметило, публикуем
-            // вставки ровно тей же чат: те же данные, шрифт/цвет
-            // модели и тот же вид полосы ввода.
-            LaunchedEffect(snapshot, draft, modelFontKey, modelColorHex) {
-                ChatMirror.publish(snapshot, draft, modelFontKey, modelColorHex)
-            }
-            LaunchedEffect(listState) {
-                snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
-                    .collect { (index, offset) -> ChatMirror.scrollTo(index, offset) }
-            }
             LaunchedEffect(msgs.size, snapshot?.thinking, snapshot?.liveTool) {
                 android.util.Log.d(
                     "ChatOverlay",
@@ -2456,9 +2445,11 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             var mcpConnected = 0
             var mcpTotal = 0
             val mcpServers = ArrayList<McpInfo>()
-            // Счётчик инструментов спрашиваем у наших локальных серверов (кэш 30с):
+            // Счётчики инструментов спрашиваем у наших локальных серверов (кэш 30с):
             // числа в коде разъехались бы с реальностью после обновления приложения.
-            val mcpToolCounts = MemoryMcp.toolCounts()
+            // Музыка жива только при подключённом Яндексе; нет токена — её toolCounts
+            // вернёт пустую карту, и строка в списке просто не получит счётчик.
+            val mcpToolCounts = MemoryMcp.toolCounts() + YnisonMcp.toolCounts()
             try {
                 val mcpRaw = getMcpCached(p)
                 if (mcpRaw != null) {
@@ -2807,200 +2798,4 @@ private fun postMessage(
 ): Boolean {
     val body = "{\"parts\":[{\"type\":\"text\",\"text\":${JSONObject.quote(text)}}]}"
     return LocalOpenCodeClient.postAsync(port, "/session/$sessionId/message", body)
-}
-
-/**
- * Зеркало чата для окна-щита.
- *
- * Пока щит перекрывает Яндекс, Activity с живым чатом оказана ниже него,
- * и лента не видна. Чтобы подмена окна не было заметно, щит рисует
- * тот же чат по тем же данным: те же сообщения, шрифт/цвет и положа
- * ленты. Всё, что нужно для отрисовки, публикует ChatOverlay;
- * читает щит.
- *
- * Содержимое для рисования без обработчиков касаний, сети, речи и TTS — иначе
- * щит инертен и ничего не ломает живую Activity.
- */
-internal object ChatMirror {
-    var snapshot: ChatSnapshot? by mutableStateOf(null)
-        private set
-    var draft: String by mutableStateOf("")
-        private set
-    var modelFontKey: String by mutableStateOf("mono")
-        private set
-    var modelColorHex: String by mutableStateOf("D97706")
-        private set
-    var scrollIndex: Int by mutableIntStateOf(0)
-        private set
-    var scrollOffset: Int by mutableIntStateOf(0)
-        private set
-
-    fun publish(
-        snap: ChatSnapshot?,
-        draft: String,
-        fontKey: String,
-        colorHex: String,
-    ) {
-        snapshot = snap
-        this.draft = draft
-        modelFontKey = fontKey
-        modelColorHex = colorHex
-    }
-
-    fun scrollTo(
-        index: Int,
-        offset: Int,
-    ) {
-        scrollIndex = index
-        scrollOffset = offset
-    }
-}
-
-/**
- * Голова чата для щита: тот же вид, что и в Activity, но без кабель
- * и микрофонова. Окно живёт для дельны секунды показан, поэтому
- * как обычное окно войдеш было инертным и не вмешало в живую ленту.
- */
-@Composable
-internal fun ChatMirrorSurface(modifier: Modifier = Modifier) {
-    val snapshot = ChatMirror.snapshot
-    val modelFont = remember(ChatMirror.modelFontKey) { fontFor(ChatMirror.modelFontKey) }
-    val modelColor = remember(ChatMirror.modelColorHex) { parseHexColor(ChatMirror.modelColorHex) }
-    Surface(
-        modifier = modifier.fillMaxSize(),
-        color = Color(0xFF101010),
-    ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                ContextGauge(
-                    filled = snapshot?.contextTokens ?: 0L,
-                    limit = CONTEXT_LIMIT,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            ChatMirrorTranscript(snapshot, modelFont, modelColor)
-            ChatMirrorComposerRow()
-        }
-    }
-}
-
-/** Лента щита: те же сообщения и та же позиция скролла, что и в Activity. */
-@Composable
-private fun ColumnScope.ChatMirrorTranscript(
-    snapshot: ChatSnapshot?,
-    modelFont: FontFamily,
-    modelColor: Color,
-) {
-    val msgs = snapshot?.messages ?: emptyList()
-    if (msgs.isEmpty()) {
-        Text(
-            "Сообщений пока нет — напиши в поле внизу.",
-            color = Color(0xFF8A8A8A),
-            fontSize = 14.sp,
-            modifier = Modifier.padding(vertical = 16.dp),
-        )
-        return
-    }
-    val listState = rememberLazyListState()
-    // Лента открывается ровно там же, где была в Activity. Без этого щит
-    // показал бы верх переписки, и когда он исчезает, содержимое прыгнуло бы.
-    LaunchedEffect(ChatMirror.scrollIndex, msgs.size) {
-        val last = (msgs.size - 1).coerceAtLeast(0)
-        val index = ChatMirror.scrollIndex.coerceIn(0, last)
-        if (index > 0 || ChatMirror.scrollOffset > 0) {
-            listState.scrollToItem(index, ChatMirror.scrollOffset)
-        }
-    }
-    LazyColumn(
-        state = listState,
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .padding(top = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        items(msgs) { m ->
-            MessageRow(m, snapshot?.modelName ?: "Модель", modelFont, modelColor)
-        }
-        if (snapshot?.thinking == true) {
-            val snap = requireNotNull(snapshot)
-            item(key = if (snap.stalled) "stalled" else "thinking") {
-                if (snap.stalled) {
-                    StalledRow()
-                } else {
-                    ThinkingRow()
-                }
-            }
-            snap.liveTool?.let { t ->
-                item(key = "livetool_${t.name}_${t.detail.hashCode()}") {
-                    LiveToolRow(t)
-                }
-            }
-        }
-    }
-}
-
-/**
- * Поле ввода — тот же вид, но инертное: щит живёт доли секунды, ввод там невозможен
- * (окно не фокусируется), нужен только вид.
- */
-@Composable
-private fun ChatMirrorComposerRow() {
-    Row(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .padding(top = 8.dp),
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        Box(
-            modifier =
-                Modifier
-                    .weight(1f)
-                    .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-        ) {
-            val draft = ChatMirror.draft
-            if (draft.isEmpty()) {
-                Text(
-                    "Напиши сообщение…",
-                    color = Color(0xFF777777),
-                    fontSize = 15.sp,
-                )
-            } else {
-                Text(
-                    draft,
-                    color = Color(0xFFF0F0F0),
-                    fontSize = 15.sp,
-                    maxLines = 4,
-                )
-            }
-        }
-        ChatMirrorCircle(Icons.Filled.Mic, Color(0xFF252525))
-        ChatMirrorCircle(Icons.Filled.Stop, Color(0xFF9E1C1C))
-        ChatMirrorCircle(Icons.AutoMirrored.Filled.Send, Color(0xFF2E5E8E))
-    }
-}
-
-@Composable
-private fun ChatMirrorCircle(
-    imageVector: ImageVector,
-    color: Color,
-) {
-    Surface(
-        modifier =
-            Modifier
-                .padding(start = 8.dp)
-                .size(46.dp),
-        shape = CircleShape,
-        color = color,
-    ) {
-        Icon(
-            imageVector = imageVector,
-            contentDescription = null,
-            tint = Color.White,
-            modifier = Modifier.size(26.dp),
-        )
-    }
 }
