@@ -46,6 +46,15 @@ jobs:
           ./gradlew :app:ktlintCheck :app:detekt --no-daemon --console=plain -PskipNativeBuild=true
           ./gradlew :app:compileDebugKotlin --no-daemon --console=plain -PskipNativeBuild=true
 
+      # Юнит-тесты (CI-20). Их 214, и до этого они гонялись только локально:
+      # зелёный гейт проверял форматирование и запахи кода, но был слеп к
+      # регрессиям в логике — сломанный тест не мог уронить сборку в принципе.
+      # Флаг тот же, что и выше: нативку собирает windows-джоба, а тесты её
+      # не трогают (проверено локально: 214/0 с -PskipNativeBuild=true).
+      - name: "Unit tests"
+        run: |
+          ./gradlew :app:testDebugUnitTest --no-daemon --console=plain -PskipNativeBuild=true
+
       # Реальная сборка APK (CI-15): раньше CI ограничивался compileDebugKotlin и
       # НЕ проверял packaging (ресурсы, jniLibs, манифест). whisperlib-нативка на
       # ubuntu не собирается в принципе — ей нужны ВНЕШНИЕ whisper.cpp (вне репо)
@@ -85,6 +94,14 @@ jobs:
           path: |
             app/build/reports/ktlint
             app/build/reports/detekt
+          if-no-files-found: ignore
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: app/build/reports/tests
           if-no-files-found: ignore
 
   # Windows native job (CI-17): реальная сборка whisper-нативки против
