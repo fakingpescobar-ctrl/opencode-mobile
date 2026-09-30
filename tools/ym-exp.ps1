@@ -24,35 +24,9 @@ function Get-Fg {
     if ("$r" -match '([a-zA-Z0-9_.]+)/[a-zA-Z0-9_.]+') { $Matches[1] } else { '?' }
 }
 
-# Пароль сервера НЕ зашит в скрипт (правило из AGENTS.md): он живёт в env дочернего
-# opencode serve и на диске его нет - лежит зашифрованным в префсах.
-#
-# Две ловушки, обе проверены на устройстве:
-#  1) pidof НЕ подходит. Он отдаёт pid не того процесса (напр. app_process/zygote-наследника),
-#     и в его environ только zygote-переменные - пароля там нет.
-#  2) Цикл с 'for' через adb shell ломается о квотирование: PowerShell съедает кавычки,
-#     удалённый shell видит команду разорванной. Поэтому скан уходит ФАЙЛОМ.
-# Скан идёт от имени UID приложения (run-as), иначе hidepid не даст прочитать environ соседей.
-function Read-ServerPassword {
-    $pkg = 'org.opencode.mobile.debug'
-    $scanner = '/data/local/tmp/find_pw.sh'
-    $local = Join-Path $env:TEMP 'opencode_find_pw.sh'
-    @'
-for p in /proc/[0-9]*; do
-  if grep -qa OPENCODE_SERVER_PASSWORD $p/environ 2>/dev/null; then
-    echo "FOUND ${p#/proc/}"
-  fi
-done
-'@ | Set-Content -LiteralPath $local -NoNewline
-    & $adb push $local $scanner 2>&1 | Out-Null
-    $hit = & $adb shell "run-as $pkg sh $scanner" 2>$null | Select-String 'FOUND (\d+)' | Select-Object -First 1
-    if (-not $hit) { return $null }
-    $servePid = $hit.Matches[0].Groups[1].Value
-    $environ = (& $adb shell "run-as $pkg cat /proc/$servePid/environ" 2>$null) -join ''
-    $var = $environ -split "`0" | Where-Object { $_ -like 'OPENCODE_SERVER_PASSWORD=*' } | Select-Object -First 1
-    if (-not $var) { return $null }
-    ($var -split '=', 2)[1].Trim()
-}
+# Пароль сервера НЕ зашит в скрипт (см. tools/adb-auth-common.ps1 и AGENTS.md):
+# он лежит в env дочернего opencode serve, а UID у него тот же, что у приложения.
+. "$PSScriptRoot/adb-auth-common.ps1"
 function Get-Session {
     $ms = & $adb shell "dumpsys media_session 2>/dev/null"
     $ix = ($ms | Select-String "package=ru.yandex.music" | Select-Object -First 1).LineNumber
@@ -87,12 +61,8 @@ Write-Host "сессия после kill: $(if (Get-Session) { (Get-Session).Sta
 
 & $adb forward --remove-all 2>&1 | Out-Null
 & $adb forward tcp:4098 tcp:4096 | Out-Null
-# Пароль НЕ зашит в скрипт (правило из AGENTS.md): он лежит в env дочернего opencode serve,
-# а UID у него тот же, что и у приложения - читается через run-as. Значение каждый раз своё,
-# у debug-сборок оно фиксированное, но полагаться на это нельзя.
-$ServerPassword = Read-ServerPassword
-if (-not $ServerPassword) { throw "OPENCODE_SERVER_PASSWORD не найден в окружении serve" }
-$h = @{ Authorization = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("opencode:$ServerPassword")); "Content-Type" = "application/json" }
+$h = Get-OpencodeAuthHeader
+$h["Content-Type"] = "application/json"
 $body = @{ parts = @(@{ type = "text"; text = $Prompt }) } | ConvertTo-Json -Depth 6
 
 $t0 = Get-Date
