@@ -386,6 +386,32 @@ await test("list возвращает правило применения вме
   // делать без человека.
   okIf(typeof untrustedList.apply_rule === "string" && untrustedList.apply_rule.length > 10,
     "list не вернул apply_rule");
+  eq(untrustedList.scan_truncated, false, "выдача не должна быть обрезана молча");
+});
+
+await test("доверенная запись не теряется за более новой недоверенной", async () => {
+  // Регрессия: LIMIT в SQL стоял ДО фильтра доверия. Свежая внешняя запись
+  // занимала единственное место отсека, фильтр её убирал - и агент получал
+  // пустоту, решив, что доверенных записей у него нет. Запись без источника
+  // кладётся отдельным запуском сервера, чтобы её created заведомо был
+  // больше всех остальных.
+  const late = await runServer([
+    { method: "initialize", params: { protocolVersion: "2024-11-05" } },
+    { method: "tools/call", params: { name: "local_memory_store", arguments: {
+      id: "mem:late1", content: "самая свежая запись, источника нет",
+      type: "error-solution", project: "opencode-mobile" } } },
+    { method: "tools/call", params: { name: "local_memory_list", arguments: {
+      project: "opencode-mobile", limit: 1, trust: "trusted" } } },
+  ]);
+  const got = late.out.split("\n").map(l => l.trim()).filter(Boolean)
+    .map(l => JSON.parse(l)).filter(m => m.result && m.result.content)
+    .map(callResult);
+  if (got.length < 2) throw new Error("сервер не ответил на позднюю запись: " + late.out.slice(0, 300));
+  const one = got[1];
+  const ids = (one.memories || []).map(r => r.id);
+  okIf(ids.length === 1, "trusted+limit=1 должен вернуть ровно одну доверенную запись, получено: " + JSON.stringify(ids));
+  eq(ids[0], "mem:own1", "единственное место отсека отдало недоверенную запись вместо доверенной");
+  eq(one.memories[0].auto_applyable, true, "выданная запись не помечена как применяемая");
 });
 
 await test("stats показывает разбивку по доверию", async () => {
