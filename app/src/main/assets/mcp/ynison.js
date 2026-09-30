@@ -1018,17 +1018,38 @@ async function catalogGet(path) {
 
 const encode = (s) => encodeURIComponent(s);
 
+// The catalog ignores per-page: sent 100, get 20. Measured - the cap is 20 per page whatever
+// you ask for, and the pages are disjoint, so the ONLY way to see past the twentieth track is
+// to walk the pages. That matters because the twentieth entry is exactly where the real
+// failures hide: track 31198888 sits at position 25 of 90 for artist 4611844, so a single
+// page-0 request answers "this performer has no such song" about a song that plainly exists.
+//
+// MAX_ARTIST_PAGES is a ceiling, not a target. Onyx has 435 tracks = 22 pages, and the
+// fallback that uses this only needs real candidates to offer, not a complete discography.
+// Unbounded paging would turn one lookup into 22 sequential round trips.
+const CATALOG_PAGE_SIZE = 20;
+const MAX_ARTIST_PAGES = 10;
+
 // An artist's own catalogue. This is a different id space from the Ynison playable ids, and
 // the objects come back with the same field names as search results, so they drop straight
 // into the rest of this file without any reshaping.
-//
-// per-page is not optional. Omit it and the server applies its own default of 20: measured on
-// artist 4611844, whose catalogue reports total 90. We were silently seeing 20 of 90 tracks,
-// which reads exactly like "this performer has no such song" for anything past the twentieth
-// entry. That was the whole bug behind "play <title> by <artist>" failing.
 async function artistTracks(artistId) {
-  const body = await catalogGet(`/artists/${artistId}/tracks?page=0&per-page=100`);
-  return Array.isArray(body?.result?.tracks) ? body.result.tracks : [];
+  const first = await catalogGet(`/artists/${artistId}/tracks?page=0`);
+  const result = first?.result?.tracks;
+  if (!result) return [];
+  const page0 = Array.isArray(result) ? result : (result.results ?? []);
+  const total = Number(result.total ?? page0.length);
+  const wanted = Math.min(Math.ceil(total / CATALOG_PAGE_SIZE), MAX_ARTIST_PAGES);
+  if (wanted <= 1) return page0;
+
+  const tracks = [...page0];
+  for (let page = 1; page < wanted; page++) {
+    const body = await catalogGet(`/artists/${artistId}/tracks?page=${page}`);
+    const more = body?.result?.tracks?.results ?? [];
+    if (!more.length) break;
+    tracks.push(...more);
+  }
+  return tracks;
 }
 
 // Whether this track belongs to the named performer, judged by the PRIMARY credit.
