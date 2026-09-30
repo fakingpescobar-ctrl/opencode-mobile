@@ -234,8 +234,24 @@ object OpencodeRuntime {
      * Копирует memory.js (Streamable HTTP MCP-сервер локальной памяти) из встроенных
      * assets в filesDir/mem/memory.js, откуда его может запустить встроенный musl-Bun.
      * Возвращает путь к скрипту (или null при ошибке).
+     *
+     * Вместе с ним копируется provenance.js: memory.js импортирует его, и без
+     * спутника файл не стартует вообще. Поэтому отсутствие provenance.js — это не
+     * «часть памяти недоступна», а «памяти нет»: возвращаем null, чтобы падение было
+     * заметным, а не тихой пустой базой без источников.
      */
-    fun ensureMemoryScript(context: Context): File? = ensureAssetScript(context, MEMORY_ASSET, MEMORY_SCRIPT)
+    fun ensureMemoryScript(context: Context): File? {
+        val main = ensureAssetScript(context, MEMORY_ASSET, MEMORY_SCRIPT)
+        val companion = ensureAssetScript(context, PROVENANCE_ASSET, PROVENANCE_SCRIPT) != null
+        if (!companion) {
+            android.util.Log.e(
+                "OpencodeRuntime",
+                "ensureMemoryScript: ${PROVENANCE_SCRIPT} not installed, memory MCP disabled " +
+                    "(memory.js imports ./${PROVENANCE_SCRIPT})",
+            )
+        }
+        return if (companion) main else null
+    }
 
     /**
      * Копирует ynison.js — MCP-мост к Яндекс.Музыке. Тот же путь в filesDir/mem, потому
@@ -593,6 +609,8 @@ object OpencodeRuntime {
     private const val SCRIPT_DIR = "mem"
     private const val MEMORY_ASSET = "mcp/memory.js"
     private const val MEMORY_SCRIPT = "memory.js"
+    private const val PROVENANCE_ASSET = "mcp/provenance.js"
+    private const val PROVENANCE_SCRIPT = "provenance.js"
     private const val YNISON_ASSET = "mcp/ynison.js"
     private const val YNISON_SCRIPT = "ynison.js"
     private const val MEMORY_LABEL = "memory"
