@@ -1572,6 +1572,11 @@ async function opSessionStatus() {
       `other controllable media apps: ${others.length === 0 ? "none" : others.join(", ")}` +
         ` (${controllable.length} controllable of ${apps.apps.length} with a session)`,
     );
+  } else {
+    // Молча пропустить нельзя: у агента было бы две строки на неизвестно-что, и «просто
+    // Яндекс» выглядело бы как «других управляемых нет». Это разные вещи, и различие
+    // видно только по числу строк.
+    lines.push(`other controllable media apps: unknown (${apps.error || "no answer from the bridge"})`);
   }
   return lines.join("\n");
 }
