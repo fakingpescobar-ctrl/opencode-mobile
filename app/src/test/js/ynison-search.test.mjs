@@ -219,17 +219,102 @@ await test("название не найдено - отдаём кандидат
   ok(r.length > 0, "пусто: плейлист id взят, а каталог артиста - нет, то есть клиент забыл спросить телефон");
 });
 
-// These two pin the defect that made "play <title> by <artist>" fail against the live catalog.
-// Both are silent failures - the old code returned a plausible wrong answer, never an error.
-await test("РЕГРЕССИЯ: per-page в artistTracks - иначе видно 20 треков из 90", async () => {
-  const { searchTracks, calls } = build(DMX_ROUTES);
-  await searchTracks("трек без названия", "DMX");
-  const listing = calls.find((c) => c.path.includes("/artists/"));
-  ok(listing, "каталог артиста не запрашивался вовсе");
+// The catalogue ignores per-page: sent 100, get 20. So the only way past the twentieth track
+// is to walk the pages. Track 31198888 sits at position 25 of 90 for the duo, which is why a
+// single page-0 request answered "this performer has no such song" about a song that exists.
+await test("РЕГРЕССИЯ: artistTracks листает страницы - иначе видно только 20 треков", async () => {
+  const routes = {
+    ...DMX_ROUTES,
+    "/artists/4611844/tracks?page=0": {
+      result: {
+        tracks: {
+          total: 90,
+          results: Array.from({ length: 20 }, (_, i) => ({
+            id: `p0-${i}`,
+            title: `трек ${i}`,
+            artists: [{ id: "4611844", name: "Miyagi & Andy Panda" }],
+          })),
+        },
+      },
+    },
+    "/artists/4611844/tracks?page=1": {
+      result: {
+        tracks: {
+          // Position 25 of 90 - the one that made the original bug report.
+          results: [{ id: "31198888", title: "Компот", artists: [{ id: "4611844", name: "Miyagi & Andy Panda" }] }],
+        },
+      },
+    },
+    // Pages 2-4 exist too (90 tracks = 5 pages of 20), and each answers with a distinct track
+    // so the walk is visible in the returned catalogue rather than stopping early. Order
+    // matters: the matcher takes the first substring that hits, so the page-specific routes
+    // above must stay ahead of this one.
+    ...Object.fromEntries(
+      [2, 3, 4].map((p) => [
+        `/artists/4611844/tracks?page=${p}`,
+        {
+          result: {
+            tracks: {
+              total: 90,
+              results: [{ id: `p${p}`, title: `трек ${p * 20}`, artists: [{ id: "4611844", name: "Miyagi & Andy Panda" }] }],
+            },
+          },
+        },
+      ]),
+    ),
+    "type=track": { result: { tracks: { results: [] } } },
+    "type=artist": { result: { artists: { results: [{ id: "4611844", name: "Miyagi & Andy Panda" }] } } },
+  };
+  const { searchTracks, calls } = build(routes);
+  const r = await searchTracks("Компот", "Miyagi & Andy Panda");
+  const pages = calls.filter((c) => c.path.includes("/artists/4611844/tracks")).map((c) => c.path);
   ok(
-    listing.path.includes("per-page=100"),
-    `без per-page сервер отдаёт свой дефолт 20: ${listing.path} - треки за двадцатым не видны`,
+    pages.some((p) => p.includes("page=1")),
+    `страницы не листались: ${pages.join(", ")} - трек за двадцатым не виден никогда`,
   );
+  ok(
+    r.some((t) => t.id === "31198888") || r.length > 20,
+    "трек с позиции 25 не найден и каталог не привёз его",
+  );
+});
+
+await test("РЕГРЕССИЯ: листинг ограничен потолком страниц - Onyx это 435 треков", async () => {
+  // 435 tracks is 22 pages. Unbounded paging would turn one lookup into 22 sequential round
+  // trips, so the walk has a ceiling. What matters is that the ceiling stops it.
+  const routes = {
+    ...DMX_ROUTES,
+    "/artists/201808/tracks?page=0": {
+      result: {
+        tracks: {
+          total: 435,
+          results: [{ id: "onyx-0", title: "Slam", artists: [{ id: "201808", name: "Onyx" }] }],
+        },
+      },
+    },
+    // Every page answers with a distinct track, all 22 of them. If the ceiling were missing
+    // the walk would request all 22 and the assertion below would catch it. An empty fixture
+    // would hide that: the loop stops on the first empty page and looks like it respected a cap.
+    ...Object.fromEntries(
+      Array.from({ length: 21 }, (_, i) => i + 1).map((p) => [
+        `/artists/201808/tracks?page=${p}`,
+        {
+          result: {
+            tracks: {
+              total: 435,
+              results: [{ id: `onyx-${p}`, title: `трек ${p * 20}`, artists: [{ id: "201808", name: "Onyx" }] }],
+            },
+          },
+        },
+      ]),
+    ),
+    "type=track": { result: { tracks: { results: [] } } },
+    "type=artist": { result: { artists: { results: [{ id: "201808", name: "Onyx" }] } } },
+  };
+  const { searchTracks, calls } = build(routes);
+  await searchTracks("трек без названия", "Onyx");
+  const pages = calls.filter((c) => c.path.includes("/artists/201808/tracks")).length;
+  ok(pages > 1, "хотя бы вторая страница запрошена не должна была - потолок не работает");
+  ok(pages <= 10, `слишком много страниц: ${pages} - потолок страниц не соблюдён`);
 });
 
 await test("РЕГРЕССИЯ: трек лежит в выдаче по названию, но не в каталоге артиста", async () => {
