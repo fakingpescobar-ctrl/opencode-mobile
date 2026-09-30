@@ -240,8 +240,11 @@ await test("РЕГРЕССИЯ: artistTracks листает страницы - �
     "/artists/4611844/tracks?page=1": {
       result: {
         tracks: {
-          // Position 25 of 90 - the one that made the original bug report.
-          results: [{ id: "31198888", title: "Компот", artists: [{ id: "4611844", name: "Miyagi & Andy Panda" }] }],
+          // Position 25 of 90 - verified on the live catalog: track 31198888 is "Санавабич",
+          // primary credit "Miyagi & Эндшпиль", fifth entry of page 1. The primary credit
+          // deliberately differs from the artist whose catalogue it sits in, because that is
+          // what ledBy() has to survive.
+          results: [{ id: "31198888", title: "Санавабич", artists: [{ id: "999999", name: "Miyagi & Эндшпиль" }] }],
         },
       },
     },
@@ -266,15 +269,19 @@ await test("РЕГРЕССИЯ: artistTracks листает страницы - �
     "type=artist": { result: { artists: { results: [{ id: "4611844", name: "Miyagi & Andy Panda" }] } } },
   };
   const { searchTracks, calls } = build(routes);
-  const r = await searchTracks("Компот", "Miyagi & Andy Panda");
+  const r = await searchTracks("Санавабич", "Miyagi & Andy Panda");
   const pages = calls.filter((c) => c.path.includes("/artists/4611844/tracks")).map((c) => c.path);
   ok(
     pages.some((p) => p.includes("page=1")),
     `страницы не листались: ${pages.join(", ")} - трек за двадцатым не виден никогда`,
   );
+  // byTitle narrows to the one match, so this is the exact track and not "something was found".
+  // Its primary credit is Miyagi & Эндшпиль, not the duo - the fixture keeps that asymmetry on
+  // purpose: a catalogue entry does not have to belong to the artist it was found under, and
+  // ledBy() runs on the search branch only, so the listing must still deliver it.
   ok(
-    r.some((t) => t.id === "31198888") || r.length > 20,
-    "трек с позиции 25 не найден и каталог не привёз его",
+    r.length === 1 && r[0].id === "31198888",
+    `трек с позиции 25 не найден: ${JSON.stringify(r.map((t) => t.id))}`,
   );
 });
 
