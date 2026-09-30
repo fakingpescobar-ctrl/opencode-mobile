@@ -423,11 +423,17 @@ class RuntimeManager(
                             val ynDead = ynisonStarted && !ynison.isAlive
                             val memDead = memoryStarted && !memory.isAlive
                             if ((ynDead || memDead) && localMcpRecoveries < MAX_LOCAL_MCP_RECOVERIES) {
+                                // Exit code читаем ДО перезапуска: startXxxAndVerify вызывает
+                                // setProcess(), который обнуляет lastExitCode. Без этого recovery
+                                // чинит, но не объясняет - а именно по коду видно, OOM это (137),
+                                // падение (139) или ошибка приложения, и лечится это по-разному.
                                 if (ynDead && ynisonAccessToken != null && ynisonToken != null) {
+                                    val code = ynison.lastExitCode ?: ynison.currentExitCode()
                                     localMcpRecoveries++
                                     android.util.Log.i(
                                         "OpencodeServer",
-                                        "ynison умер, поднимаем заново (попытка $localMcpRecoveries)",
+                                        "ynison умер сам (exit=$code), поднимаем заново " +
+                                            "(попытка $localMcpRecoveries)",
                                     )
                                     ynisonStarted =
                                         startYnisonAndVerify(
@@ -442,10 +448,12 @@ class RuntimeManager(
                                         resolveActiveError(RuntimeStage.HEALTHY)
                                     }
                                 } else if (memDead) {
+                                    val code = memory.lastExitCode ?: memory.currentExitCode()
                                     localMcpRecoveries++
                                     android.util.Log.i(
                                         "OpencodeServer",
-                                        "память умерла, поднимаем заново (попытка $localMcpRecoveries)",
+                                        "память умерла сама (exit=$code), поднимаем заново " +
+                                            "(попытка $localMcpRecoveries)",
                                     )
                                     memoryStarted = startMemoryAndVerify(context, logFile, workspace, memoryToken)
                                     if (memoryStarted) {
