@@ -515,21 +515,30 @@ function summarize(state) {
 // State arrives asynchronously, so a single read right after a command proves
 // nothing. Poll briefly and accept the first frame that actually reflects the change.
 //
+// ONE socket for the whole poll, not one per attempt. The device id is stable, so
+// reopening a session looks to Yandex like the same device dialling again seconds later;
+// three quick connections under one id is what earns the
+// 400090001 / "go-away-for-seconds: 3600" ban, and a banned socket then costs the PHONE its
+// online presence, not just our retry. `frames` is a live array fed by onmessage, so
+// re-reading it is exactly what a fresh socket would have produced, minus the handshake.
+//
 // The settle wait after opening is not optional: reading immediately on the first
 // attempt returned a pre-command frame often enough to report a failed pause, even
 // though the phone had applied it. The server needs a moment after the handshake
 // before the write is reflected back.
 async function waitForState(expect, attempts = VERIFY_ATTEMPTS) {
-  for (let i = 0; i < attempts; i++) {
-    const { ws, frames } = await openSession();
-    await wait(VERIFY_MS);
-    const state = readState(frames);
+  const { ws, frames } = await openSession();
+  try {
+    for (let i = 0; i < attempts; i++) {
+      await wait(VERIFY_MS);
+      const state = readState(frames);
+      trace("verify attempt", i, "paused=", state?.paused, "index=", state?.index, "title=", state?.title, "qver=", state?.queue?.version?.version);
+      if (state && expect(state)) return state;
+    }
+    return null;
+  } finally {
     ws.close();
-    trace("verify attempt", i, "paused=", state?.paused, "index=", state?.index, "title=", state?.title, "qver=", state?.queue?.version?.version);
-    if (state && expect(state)) return state;
-    await wait(VERIFY_MS);
   }
-  return null;
 }
 
 // Retries only what a retry can fix. A token the server refuses, or a missing token, is
