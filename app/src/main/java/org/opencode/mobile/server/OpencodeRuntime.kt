@@ -1,6 +1,7 @@
 package org.opencode.mobile.server
 
 import android.content.Context
+import org.opencode.mobile.BuildConfig
 import org.opencode.mobile.OpencodeApp
 import org.opencode.mobile.installer.AppInstallBridge
 import java.io.File
@@ -365,6 +366,16 @@ object OpencodeRuntime {
                                         put("MCP_YNISON_TOKEN", creds.mcpToken)
                                         put("YNISON_DEVICE_ID", creds.deviceId)
                                         put("YNISON_TCP_PORT", YNISON_PORT.toString())
+                                        // Трассировка в ynison.js есть, но была недостижима:
+                                        // YNISON_DEBUG никто не выставлял, так что весь код
+                                        // trace() молчал, и всё это расследование шло вслепую -
+                                        // ни числа сокетов на операцию, ни момента, когда телефон
+                                        // пропал из-за go-away. Только в debug: в release трассировка
+                                        // пишет на каждый вызов инструмента.
+                                        if (BuildConfig.DEBUG) {
+                                            put("YNISON_DEBUG", "1")
+                                            put("YNISON_TRACE_FILE", File(workDir ?: context.filesDir, "ynison-trace.log").absolutePath)
+                                        }
                                         // musl-Bun не умеет DNS на Android; IP резолвится
                                         // системным стеком здесь, в Java, и уходит в скрипт
                                         // вместе с реальным hostname (скрипт шлёт его Host-заголовком).
