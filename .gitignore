@@ -51,6 +51,9 @@ local.properties
 *.log
 /build_log.txt
 
+# Watcher incident dumps (captured logcat/trace, can be large and machine-specific)
+/.watch/
+
 # Local build/device artifacts
 /build-inst.err
 /opencode.jsonc.device
