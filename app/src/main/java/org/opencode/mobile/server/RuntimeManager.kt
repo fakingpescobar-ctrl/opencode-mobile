@@ -55,6 +55,16 @@ class RuntimeManager(
 
         /** Таймаут TCP-коннекта к сокету памяти. */
         private const val MEMORY_TCP_TIMEOUT_MS = 1_000
+
+        /**
+         * Сколько раз за жизнь serve можно поднять умерший локальный MCP обратно.
+         *
+         * Ограничение существует из-за симптома «умирает сразу после старта»: без него цикл
+         * наблюдения респавнил бы процесс каждые 3 секунды и сам стал бы причиной падений.
+         * Счётчик обнуляется, как только сервер встал, поэтому редкий разбойный уход
+         * переживает сколько угодно раз, а зацикленная смерть - нет.
+         */
+        private const val MAX_LOCAL_MCP_RECOVERIES = 3
     }
 
     private val logFile = File(context.filesDir, "opencode.log")
@@ -138,6 +148,10 @@ class RuntimeManager(
             }
 
             var consecutiveFailures = 0
+
+            // Сколько раз за текущий виток serve мы подняли умерший локальный MCP
+            // (память или музыка). Не путать с consecutiveFailures: тот про serve.
+            var localMcpRecoveries = 0
             while (running) {
                 // Гасим ПРОЦЕССЫ прошлого витка (serve тоже — см. continue из restart-ветки:
                 // там процесс мог ещё не умереть, а новый виток уже пошёл) ДО ротации:
@@ -223,28 +237,8 @@ class RuntimeManager(
                 // который может мгновенно упасть или не открыть сокет — верифицируем
                 // isAlive + TCP-коннект на MEMORY_PORT (окно ~5s).
                 emit { copy(stage = RuntimeStage.STARTING_MEMORY, workspaceExternal = ext) }
-                val memProc =
-                    OpencodeRuntime.startMemoryServer(
-                        context,
-                        logFile = logFile,
-                        workDir = workspace,
-                        extraEnv =
-                            mapOf(
-                                "MCP_MEMORY_TOKEN" to memoryToken,
-                            ) + AppInstallBridge.environment(),
-                    )
-                // Регистрируем процесс СРАЗУ после запуска: даже если TCP-порт не
-                // поднимется (timeout/быстрая смерть), ProcessSupervisor обязан знать
-                // о процессе — иначе memory.stop() в finally не погасит orphan, и порт
-                // 4199 останется занят для следующего витка.
-                if (memProc != null) {
-                    memory.setProcess(memProc)
-                }
-                val memoryStarted = memProc != null && waitForPort(memProc, OpencodeRuntime.MEMORY_PORT)
+                var memoryStarted = startMemoryAndVerify(context, logFile, workspace, memoryToken)
                 if (!memoryStarted) {
-                    // Гасим явно: процесс мог стартовать, но не поднять MCP-порт
-                    // (битый старт). Без stop() следующий виток создал бы ещё один.
-                    memory.stop()
                     emitFailure(
                         stage = RuntimeStage.STARTING_MEMORY,
                         code = RuntimeErrorCode.MEMORY_START_FAILED,
@@ -259,36 +253,24 @@ class RuntimeManager(
                 // startYnisonServer) и запись music из конфига убирается сама.
                 var ynisonStarted = false
                 if (ynisonAccessToken != null && ynisonToken != null) {
-                    val ynProc =
-                        OpencodeRuntime.startYnisonServer(
+                    // Живой процесс != поднятая музыка: verify делает startYnisonAndVerify
+                    // (isAlive + TCP-коннект), иначе модель видела бы в конфиге инструменты,
+                    // которые не отвечают.
+                    ynisonStarted =
+                        startYnisonAndVerify(
                             context = context,
                             logFile = logFile,
-                            workDir = workspace,
-                            credentials =
-                                YnisonCredentials(
-                                    accessToken = ynisonAccessToken,
-                                    mcpToken = ynisonToken,
-                                    deviceId =
-                                        YandexAccountController.runtimeDeviceId()
-                                            ?: DEFAULT_YNISON_DEVICE_ID,
-                                ),
+                            workspace = workspace,
+                            accessToken = ynisonAccessToken,
+                            mcpToken = ynisonToken,
                         )
-                    if (ynProc != null) {
-                        ynison.setProcess(ynProc)
-                        // Живой процесс != поднятая музыка: как и с памятью, верифицируем
-                        // isAlive + TCP-коннект на YNISON_PORT, иначе модель видела бы в конфиге
-                        // инструменты, которые не отвечают. Провал — гасим процесс (битый старт)
-                        // и фиксируем recoverable-ошибку: serve продолжит без музыки.
-                        ynisonStarted = waitForPort(ynProc, OpencodeRuntime.YNISON_PORT)
-                        if (!ynisonStarted) {
-                            ynison.stop()
-                            emitFailure(
-                                stage = RuntimeStage.STARTING_MEMORY,
-                                code = RuntimeErrorCode.YNISON_START_FAILED,
-                                message = "Музыка MCP не поднялась - порт или процесс",
-                                recoverable = true,
-                            )
-                        }
+                    if (!ynisonStarted) {
+                        emitFailure(
+                            stage = RuntimeStage.STARTING_MEMORY,
+                            code = RuntimeErrorCode.YNISON_START_FAILED,
+                            message = "Музыка MCP не поднялась - порт или процесс",
+                            recoverable = true,
+                        )
                     }
                 }
 
@@ -424,6 +406,53 @@ class RuntimeManager(
                                         resolveActiveError(RuntimeStage.HEALTHY)
                                     }
                                 else -> Unit
+                            }
+
+                            // Мёртвый локальный MCP сам не воскреснет: виток цикла дальше
+                            // идёт только когда умирает serve, поэтому до перезапуска
+                            // приложения инструменты молчали в DEGRADED, отвечая
+                            // "Unable to connect". Поднимаем на месте.
+                            //
+                            // Условие - «поднимали И процесс мёртв», а не «не поднимали»:
+                            // ynisonStarted означает «сервер в принципе был нужен», он не
+                            // сбрасывается при смерти процесса. Живой процесс не трогаем:
+                            // вторая копия поверх него сразу упрётся в занятый порт.
+                            //
+                            // Попытки ограничены: смерть сразу после старта - это не отсветка,
+                            // а повод не молотить респавн каждые 3 секунды.
+                            val ynDead = ynisonStarted && !ynison.isAlive
+                            val memDead = memoryStarted && !memory.isAlive
+                            if ((ynDead || memDead) && localMcpRecoveries < MAX_LOCAL_MCP_RECOVERIES) {
+                                if (ynDead && ynisonAccessToken != null && ynisonToken != null) {
+                                    localMcpRecoveries++
+                                    android.util.Log.i(
+                                        "OpencodeServer",
+                                        "ynison умер, поднимаем заново (попытка $localMcpRecoveries)",
+                                    )
+                                    ynisonStarted =
+                                        startYnisonAndVerify(
+                                            context = context,
+                                            logFile = logFile,
+                                            workspace = workspace,
+                                            accessToken = ynisonAccessToken,
+                                            mcpToken = ynisonToken,
+                                        )
+                                    if (ynisonStarted) {
+                                        localMcpRecoveries = 0
+                                        resolveActiveError(RuntimeStage.HEALTHY)
+                                    }
+                                } else if (memDead) {
+                                    localMcpRecoveries++
+                                    android.util.Log.i(
+                                        "OpencodeServer",
+                                        "память умерла, поднимаем заново (попытка $localMcpRecoveries)",
+                                    )
+                                    memoryStarted = startMemoryAndVerify(context, logFile, workspace, memoryToken)
+                                    if (memoryStarted) {
+                                        localMcpRecoveries = 0
+                                        resolveActiveError(RuntimeStage.HEALTHY)
+                                    }
+                                }
                             }
                         }
                         delay(3000)
@@ -569,6 +598,70 @@ class RuntimeManager(
     private suspend fun restartBackoff(failures: Int) {
         emit { copy(stage = RuntimeStage.RESTARTING) }
         delay(backoff(failures))
+    }
+
+    /**
+     * Поднимает сервер памяти и регистрирует процесс у супервизора.
+     *
+     * Регистрация идёт СРАЗУ после запуска: даже если TCP-порт не поднимется
+     * (таймаут/быстрая смерть), супервизор обязан знать о процессе — иначе
+     * stop() в finally не погасит orphan и порт 4199 останется занят на следующий виток.
+     *
+     * Токен берётся параметром, а не генерируется здесь: ensureMcpConfig и окружение serve
+     * уже прописаны со [memoryToken] при старте, новый UUID развёл бы их с тем, что
+     * реально слушает порт.
+     */
+    private suspend fun startMemoryAndVerify(
+        context: Context,
+        logFile: File,
+        workspace: File,
+        memoryToken: String,
+    ): Boolean {
+        val proc =
+            OpencodeRuntime.startMemoryServer(
+                context,
+                logFile = logFile,
+                workDir = workspace,
+                extraEnv = mapOf("MCP_MEMORY_TOKEN" to memoryToken) + AppInstallBridge.environment(),
+            ) ?: return false
+        memory.setProcess(proc)
+        val ok = waitForPort(proc, OpencodeRuntime.MEMORY_PORT)
+        // Гасим явно: процесс мог стартовать, но не поднять MCP-порт (битый старт).
+        // Без stop() следующая попытка создала бы ещё один поверх занятого порта.
+        if (!ok) memory.stop()
+        return ok
+    }
+
+    /**
+     * Поднимает ynison.js и регистрирует процесс у супервизора. Проверка та же, что и у
+     * памяти: процесс жив И порт отвечает, иначе инструменты музыки в конфиге не работают.
+     *
+     * Токены — параметрами по той же причине, что и в [startMemoryAndVerify]: и MCP-конфиг,
+     * и окружение serve уже содержат именно эти значения.
+     */
+    private suspend fun startYnisonAndVerify(
+        context: Context,
+        logFile: File,
+        workspace: File,
+        accessToken: String,
+        mcpToken: String,
+    ): Boolean {
+        val proc =
+            OpencodeRuntime.startYnisonServer(
+                context = context,
+                logFile = logFile,
+                workDir = workspace,
+                credentials =
+                    YnisonCredentials(
+                        accessToken = accessToken,
+                        mcpToken = mcpToken,
+                        deviceId = YandexAccountController.runtimeDeviceId() ?: DEFAULT_YNISON_DEVICE_ID,
+                    ),
+            ) ?: return false
+        ynison.setProcess(proc)
+        val ok = waitForPort(proc, OpencodeRuntime.YNISON_PORT)
+        if (!ok) ynison.stop()
+        return ok
     }
 
     /**
