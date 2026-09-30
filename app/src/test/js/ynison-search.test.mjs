@@ -29,7 +29,7 @@ const SOURCE = join(HERE, "..", "..", "main", "assets", "mcp", "ynison.js");
 
 const BLOCK_START = "const CLIENT_ID =";
 const BLOCK_END = "// Shaped like the entries the phone itself publishes";
-const REQUIRED = ["catalogGet", "artistTracks", "resolveArtist", "byTitle", "searchTracks", "searchTrack"];
+const REQUIRED = ["catalogGet", "artistTracks", "resolveArtist", "byTitle", "searchTracks", "searchTrack", "ledBy", "catalogSearch"];
 
 // ---------------------------------------------------------------------------
 // Fixtures. Shapes copied from real responses, values trimmed to what a test needs.
@@ -215,8 +215,49 @@ await test("название трека сужает каталог артист
 
 await test("название не найдено - отдаём кандидатов, а не пустоту", async () => {
   const { searchTracks } = build(DMX_ROUTES);
-  const r = await searchTracks("нет такого трека", "DMX");
-  ok(r.length > 0, "пусто: выдумать id хуже, но показать нечего - значит агент не сможет предложить варианты");
+  const r = await searchTracks("трек без названия", "DMX");
+  ok(r.length > 0, "пусто: плейлист id взят, а каталог артиста - нет, то есть клиент забыл спросить телефон");
+});
+
+// These two pin the defect that made "play <title> by <artist>" fail against the live catalog.
+// Both are silent failures - the old code returned a plausible wrong answer, never an error.
+await test("РЕГРЕССИЯ: per-page в artistTracks - иначе видно 20 треков из 90", async () => {
+  const { searchTracks, calls } = build(DMX_ROUTES);
+  await searchTracks("трек без названия", "DMX");
+  const listing = calls.find((c) => c.path.includes("/artists/"));
+  ok(listing, "каталог артиста не запрашивался вовсе");
+  ok(
+    listing.path.includes("per-page=100"),
+    `без per-page сервер отдаёт свой дефолт 20: ${listing.path} - треки за двадцатым не видны`,
+  );
+});
+
+await test("РЕГРЕССИЯ: трек лежит в выдаче по названию, но не в каталоге артиста", async () => {
+  // The real case: track 31198888 is credited to artist 4611844 and is absent from that
+  // artist's 90-track listing, while /search finds it on the first page. Leading with the
+  // catalogue is therefore what made a real song look missing.
+  const routes = {
+    ...DMX_ROUTES,
+    "type=track": {
+      result: { tracks: { results: [{ id: "31198888", title: "Компот", artists: [{ name: "Miyagi & Andy Panda" }] }] } },
+    },
+    "type=artist": { result: { artists: { results: [{ id: "4611844", name: "Miyagi & Andy Panda" }] } } },
+    "/artists/4611844/tracks": { result: { tracks: [] } },
+  };
+  const { searchTracks } = build(routes);
+  const r = await searchTracks("Компот", "Miyagi & Andy Panda");
+  eq(r.map((t) => t.id), ["31198888"], "трек есть в выдаче по названию, но каталог артиста пуст");
+});
+
+await test("РЕГРЕССИЯ: соавторство не выдаёт себя за главного исполнителя", async () => {
+  // Same first-page results as above, but DMX is only a CO-CREDIT on them. Searching by
+  // primary credit is what keeps "play Party Up by DMX" from answering with Eminem.
+  const { searchTracks } = build(DMX_ROUTES);
+  const r = await searchTracks("Go To Sleep", "DMX");
+  ok(
+    r.every((t) => t.artists[0].name === "DMX"),
+    "в выдаче трек, где DMX лишь соавтор: главный исполнитель другой",
+  );
 });
 
 console.log("\nsearchTracks без артиста");
@@ -285,7 +326,14 @@ await test("каталог не шлёт токен: он всё равно по
     const hasAuth = Object.keys(c.headers).some((k) => k.toLowerCase() === "authorization");
     ok(!hasAuth, `Authorization ушёл в публичный каталог: ${c.path}`);
   }
-  eq(calls.length, 2, "ожидались artist-поиск + треки, без повторов на 403");
+  // The invariant is "no request is retried", not "exactly two requests". The count itself
+  // moves as the search strategy changes - it was 2 when the artist branch went straight to
+  // the catalogue, and is 3 now that a title search runs first. Pinning the total would make
+  // every improvement look like a regression, and would quietly permit a retry if a future
+  // change happened to land back on 2. What must never happen is the SAME request twice: that
+  // is what a 403 retry looks like, and it is what the old token-sending code did.
+  const paths = calls.map((c) => c.path);
+  eq(paths.length, new Set(paths).size, "один и тот же запрос повторился - это ретрай на 403");
 });
 
 console.log("\nисполнителя нет в каталоге");

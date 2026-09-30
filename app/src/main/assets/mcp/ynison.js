@@ -1021,9 +1021,38 @@ const encode = (s) => encodeURIComponent(s);
 // An artist's own catalogue. This is a different id space from the Ynison playable ids, and
 // the objects come back with the same field names as search results, so they drop straight
 // into the rest of this file without any reshaping.
+//
+// per-page is not optional. Omit it and the server applies its own default of 20: measured on
+// artist 4611844, whose catalogue reports total 90. We were silently seeing 20 of 90 tracks,
+// which reads exactly like "this performer has no such song" for anything past the twentieth
+// entry. That was the whole bug behind "play <title> by <artist>" failing.
 async function artistTracks(artistId) {
-  const body = await catalogGet(`/artists/${artistId}/tracks?page=0`);
+  const body = await catalogGet(`/artists/${artistId}/tracks?page=0&per-page=100`);
   return Array.isArray(body?.result?.tracks) ? body.result.tracks : [];
+}
+
+// Whether this track belongs to the named performer, judged by the PRIMARY credit.
+//
+// It has to be judged here rather than asked of the catalog: measured, /search honours no
+// artist filter. `filter=artists:<id>` returns the same total as sending nothing at all
+// (18125 unfiltered against 18126 filtered on a broad query - index jitter), and a bare
+// `artists=<id>` parameter likewise does nothing. A server-side filter that silently ignores
+// its argument looks exactly like one that works, right up until the wrong band plays.
+//
+// Primary credit, not "appears anywhere in the credits". DMX is a real co-credit on Eminem
+// and Limp Bizkit tracks that sit at the top of a search for "DMX", so any scan of the whole
+// credit list reads those as DMX songs - the exact substitution this check exists to prevent.
+function ledBy(track, name) {
+  const want = (name ?? "").trim().toLowerCase();
+  if (!want) return true;
+  const primary = (track?.artists ?? [])[0]?.name ?? "";
+  return primary.trim().toLowerCase() === want;
+}
+
+// Plain catalogue search by title. No artist filter, because the catalogue applies none.
+async function catalogSearch(query) {
+  const body = await catalogGet(`/search?text=${encode(query)}&type=track&page=0&per-page=20`);
+  return body?.result?.tracks?.results ?? [];
 }
 
 // Resolving the name to an id first is what makes "just play DMX" work. DMX is a name shared
@@ -1072,6 +1101,14 @@ async function searchTracks(query, artist) {
           `trying other spellings.`,
       );
     }
+    // Search FIRST, and check the credit list ourselves, before falling back to the artist's
+    // own catalogue. The fallback is not a substitute, it is a worse answer: the listing is
+    // demonstrably incomplete - track 31198888 ("<Компот>") belongs to artist 4611844 and is
+    // absent from that artist's 90-track listing entirely, while the plain title search finds
+    // it on the first page. Leading with the listing is what made a real song look missing.
+    const direct = (await catalogSearch(query)).filter((t) => ledBy(t, artist));
+    if (direct.length) return direct;
+
     const tracks = await artistTracks(hit.id);
     // The query is frequently the performer's own name, and no track of theirs carries it.
     // Falling back to the whole catalogue is what lets the list tool offer real candidates
@@ -1080,8 +1117,7 @@ async function searchTracks(query, artist) {
     return narrowed.length ? narrowed : tracks;
   }
 
-  const body = await catalogGet(`/search?text=${encode(query)}&type=track&page=0&per-page=20`);
-  const results = body?.result?.tracks?.results ?? [];
+  const results = await catalogSearch(query);
 
   // No artist was named, so a bare performer name ("play DMX") arrives here as query alone.
   // The tell is the PRIMARY artist of the top hit: if the query is the performer's own name
