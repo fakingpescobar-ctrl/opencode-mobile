@@ -768,15 +768,100 @@ function apiGet(path, headers) {
   });
 }
 
-async function searchTracks(query) {
-  const body = await apiGet(
-    `/search?text=${encodeURIComponent(query)}&type=track&page=0&per-page=20`,
-    {
-      Authorization: `OAuth ${OAUTH}`,
-      "X-Yandex-Music-Client": "YandexMusicAndroid/24023621",
-    },
-  );
-  return body?.result?.tracks?.results ?? [];
+const CLIENT_ID = "YandexMusicAndroid/24023621";
+
+// Every catalog request goes through here, so the scope story lives in one place.
+//
+// OAUTH authenticates the WEBSOCKET protocol and nothing else. Yandex never granted it the
+// REST catalog scopes, so api.music.yandex.net refuses it with 403 missing-required-scopes -
+// measured on the device, and reproduced off-device with the live token.
+//
+// The trap is that the catalog is fully public. The identical request carrying no
+// Authorization at all returns 200 and a normal result set. So attaching the token does not
+// merely fail to help, it converts a working call into a failing one - and because apiGet
+// drops the body on any non-2xx, all that reached the agent was the bare string "HTTP 403".
+//
+// A 403 here is therefore a scope problem and never a "not found", which makes the anonymous
+// retry the correct response rather than a workaround. The token stays on the socket, where
+// it is what actually authenticates this process.
+async function catalogGet(path) {
+  const anonymous = { "X-Yandex-Music-Client": CLIENT_ID };
+  try {
+    const headers = OAUTH ? { Authorization: `OAuth ${OAUTH}`, ...anonymous } : anonymous;
+    return await apiGet(path, headers);
+  } catch (err) {
+    if (!OAUTH || !/\b403\b/.test(String(err?.message ?? err))) throw err;
+    return await apiGet(path, anonymous);
+  }
+}
+
+const encode = (s) => encodeURIComponent(s);
+
+// An artist's own catalogue. This is a different id space from the Ynison playable ids, and
+// the objects come back with the same field names as search results, so they drop straight
+// into the rest of this file without any reshaping.
+async function artistTracks(artistId) {
+  const body = await catalogGet(`/artists/${artistId}/tracks?page=0`);
+  return Array.isArray(body?.result?.tracks) ? body.result.tracks : [];
+}
+
+// Resolving the name to an id first is what makes "just play DMX" work. DMX is a name shared
+// by 55 accounts, and the track search cannot tell them apart because it matches the TITLE
+// field: searching type=track for "DMX" returns five tracks by Locs, Primer and others, with
+// the real DMX nowhere in the list.
+//
+// `exact` is what the caller needs to decide whether this was really a match or just the
+// first name that happened to come back - guessing here is how a search for one band
+// quietly returns another.
+async function resolveArtist(name) {
+  const body = await catalogGet(`/search?text=${encode(name)}&type=artist&page=0`);
+  const found = body?.result?.artists?.results ?? [];
+  if (!found.length) return null;
+  const want = name.trim().toLowerCase();
+  const exact = found.find((a) => (a.name ?? "").trim().toLowerCase() === want);
+  return { id: (exact ?? found[0]).id, exact: Boolean(exact) };
+}
+
+// Narrows an artist's tracks by title. The caller decides what an empty result means - the
+// list tool turns it into candidates, the play tool refuses to guess.
+function byTitle(tracks, title) {
+  const want = (title ?? "").trim().toLowerCase();
+  if (!want) return tracks;
+  return tracks.filter((t) => (t.title ?? "").toLowerCase().includes(want));
+}
+
+async function searchTracks(query, artist) {
+  if (artist) {
+    const hit = await resolveArtist(artist);
+    const tracks = hit ? await artistTracks(hit.id) : [];
+    // The query is frequently the performer's own name, and no track of theirs carries it.
+    // Falling back to the whole catalogue is what lets the list tool offer real candidates
+    // instead of an empty answer.
+    const narrowed = byTitle(tracks, query);
+    return narrowed.length ? narrowed : tracks;
+  }
+
+  const body = await catalogGet(`/search?text=${encode(query)}&type=track&page=0&per-page=20`);
+  const results = body?.result?.tracks?.results ?? [];
+
+  // No artist was named, so a bare performer name ("play DMX") arrives here as query alone.
+  // The tell is the PRIMARY artist of the top hit: if the query is the performer's own name
+  // then results[0] is some other band's song that merely has the word in the TITLE, and the
+  // performer reading is the right one. Checking every artist instead does not work - DMX is
+  // a credited collaborator on Eminem and Limp Bizkit tracks that sit right at the top of a
+  // search for "DMX", which reads as a match and sends us back to the wrong answer.
+  const want = (query ?? "").trim().toLowerCase();
+  const lead = (results[0]?.artists ?? [])[0]?.name ?? "";
+  if (lead.trim().toLowerCase() !== want) {
+    const hit = await resolveArtist(query);
+    if (hit?.exact) {
+      const tracks = await artistTracks(hit.id);
+      const narrowed = byTitle(tracks, query);
+      if (narrowed.length) return narrowed;
+      return tracks;
+    }
+  }
+  return results;
 }
 
 // The catalog id, and not a Ynison playable id, is what a playlist needs - the two are
@@ -792,10 +877,25 @@ function trackSummary(t) {
 }
 
 async function searchTrack(query, artist) {
-  const results = await searchTracks(query);
+  const results = await searchTracks(query, artist);
   if (!results.length) throw new Error(`nothing found for "${query}"`);
+
   if (artist) {
-    const want = artist.toLowerCase();
+    // searchTracks has already preferred tracks whose title matches the query and, when none
+    // do, has fallen back to the performer's whole catalogue so the list tool can offer
+    // candidates. For PLAYBACK that fallback is not enough: picking the first of twenty
+    // tracks is a guess, and a guess that starts playing music is not recoverable by the
+    // caller. So refuse, and let the agent show the candidates. The exception is the
+    // legitimate "play <performer>" request, where the query IS the performer.
+    const asked = (query ?? "").trim().toLowerCase();
+    const byName = (artist ?? "").trim().toLowerCase();
+    const titleHit = results.some((t) => (t.title ?? "").toLowerCase().includes(asked));
+    if (asked && asked !== byName && !titleHit) {
+      throw new Error(
+        `no track titled "${query}" by ${artist}; call music_search to see what they have`,
+      );
+    }
+    const want = byName;
     return results.find((t) => (t.artists ?? []).some((a) => a.name?.toLowerCase() === want)) ?? results[0];
   }
   return results[0];
@@ -804,7 +904,7 @@ async function searchTrack(query, artist) {
 // Searching without starting playback: "add Drift to the playlist" must not make the
 // phone start playing the track it just saved.
 async function opSearchQuery(query, artist) {
-  const results = await searchTracks(query);
+  const results = await searchTracks(query, artist);
   if (!results.length) throw new Error(`nothing found for "${query}"`);
   const want = (artist ?? "").toLowerCase();
   const ordered = want
@@ -966,14 +1066,18 @@ const TOOLS = [
       "Search the Yandex Music catalog and return up to 5 matching tracks with their ids, without starting " +
       "playback. Use this when the user names a track they want to save, like or add to a playlist, not to hear " +
       "right now: music_play_query searches and starts in one step, this one leaves the phone alone. The id is " +
-      "the catalog id, which is exactly what mobile_yandex_playlist_add_track needs. Pass artist to break a tie " +
-      "when several tracks share a title - an exact artist match is listed first. An empty matches list means " +
-      "the catalog has no such track, so show what came back instead of inventing an id.",
+      "the catalog id, which is exactly what mobile_yandex_playlist_add_track needs. " +
+      "ALWAYS pass artist when you know it. It is not a tie-breaker, it is the whole lookup: with artist set the " +
+      "call resolves the name to an artist id and reads that performer's own catalogue. Without it the " +
+      "search runs over track titles, so a bare performer name comes back as other people's songs that merely " +
+      "have that word in the title - searching \"DMX\" with no artist returns five tracks by Locs and Primer " +
+      "and not one by DMX. An empty matches list means the catalog has nothing, so show what came back instead " +
+      "of inventing an id.",
     inputSchema: {
       type: "object",
       properties: {
-        query: str("Track title, or a catalog id."),
-        artist: str("Optional exact artist name to disambiguate a shared title."),
+        query: str("Track title, or - with artist set - any text, including the performer name alone."),
+        artist: str("Exact artist name. Pass it whenever you know it: it selects that performer's catalogue."),
       },
       required: ["query"],
     },
@@ -992,8 +1096,10 @@ const TOOLS = [
       "itself and waits for it to come online, so never call mobile_launch_app or any UI tap first - and never " +
       "reach for mobile_launch_app, ui_click or the withdrawn mobile_media_play, which reports the request " +
       "as sent and then plays whatever the phone already had. " +
-      "Example: music_play_query(query=\"Toxicity\", artist=\"System of a Down\").",
-    inputSchema: { type: "object", properties: { query: str("Track title or free text to search for."), artist: str("Optional exact artist name to disambiguate.") } },
+      "Example: music_play_query(query=\"Toxicity\", artist=\"System of a Down\"). For a performer with no " +
+      "track in mind use music_play_query(query=\"DMX\", artist=\"DMX\") - the artist is what does the work, " +
+      "so the query can be the performer's name on its own.",
+    inputSchema: { type: "object", properties: { query: str("Track title or free text to search for."), artist: str("Exact artist name. Pass it whenever you know it - it selects that performer's catalogue, not just a tie-breaker.") } },
   },
 ];
 
