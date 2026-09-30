@@ -23,7 +23,8 @@ import { extractSignals } from "./signals.js";
 // 300 МБ ради одной строчки - значит сожрать память телефона.
 const DEFAULT_MAX_BYTES = 4 * 1024 * 1024;
 
-const USAGE = "signals-cli.js <лог> [лог...] [--min-count N] [--max N] [--known id,id] [--text] [--max-bytes N]";
+const USAGE = "signals-cli.js <лог> [лог...] [--min-count N] [--max N] [--known id,id] " +
+  "[--draft] [--project NAME] [--text] [--max-bytes N]";
 
 function fail(message) {
   console.error("signals-cli: " + message);
@@ -32,11 +33,16 @@ function fail(message) {
 
 function parseArgs(argv) {
   const paths = [];
-  const options = { minCount: undefined, max: undefined, known: [], text: false, maxBytes: DEFAULT_MAX_BYTES };
+  const options = {
+    minCount: undefined, max: undefined, known: [], text: false,
+    draft: false, project: "", maxBytes: DEFAULT_MAX_BYTES,
+  };
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--text") options.text = true;
+    else if (arg === "--draft") options.draft = true;
+    else if (arg === "--project") options.project = argv[++i] || "";
     else if (arg === "--known") options.known = (argv[++i] || "").split(",").filter(Boolean);
     else if (arg === "--min-count") options.minCount = Number(argv[++i]);
     else if (arg === "--max") options.max = Number(argv[++i]);
@@ -46,6 +52,36 @@ function parseArgs(argv) {
   }
   if (!paths.length) fail("не указан ни один лог\n" + USAGE);
   return { paths, options };
+}
+
+/**
+ * Готовит запись памяти по сигналу - но не сохраняет её.
+ *
+ * Почему не сохраняет: что достойно памяти решает агент, а не инструмент.
+ * Инструмент, который сам решает, что запомнить, однажды запишет ерунду и
+ * закрепит её авторитетом собственной записи. Здесь только заготовка.
+ *
+ * id = отпечаток подписи, а не случайный: повторный прогон обновит ту же
+ * запись вместо того, чтобы накопить десяток одинаковых.
+ *
+ * Уже известные сигналы заготовки не получают - запись уже есть, второй раз
+ * предлагать её незачем.
+ */
+export function buildDraft(signal, project) {
+  if (signal.already_known) return null;
+  return {
+    id: signal.fingerprint,
+    content:
+      `Отказ повторился ${signal.count} раз в своём логе: ${signal.signature}. ` +
+      `Строки ${signal.first_line}-${signal.last_line}. Дословно: ${signal.example}. ` +
+      `Причина не установлена: доказательство есть, вывода нет.`,
+    // Не error-solution: решения нет. И не learned-pattern: закономерность
+    // ещё не понята, понятно лишь что она повторяется.
+    type: "signal",
+    tags: ["own-log", "signal"],
+    project,
+    provenance: "own-log",
+  };
 }
 
 /**
@@ -100,6 +136,11 @@ export function analyseLog(logPath, options) {
     maxSignals: options.max,
     known: options.known,
   });
+  if (options.draft) {
+    result.drafts = result.signals
+      .map(s => buildDraft(s, options.project))
+      .filter(Boolean);
+  }
   // Обрезанный лог показывается иначе: отсутствие отказа в первых мегабайтах
   // ничего не значит, если их не смотрели.
   if (tail.truncated) {
@@ -114,13 +155,14 @@ function printText(results) {
     console.log("== " + r.path + " (" + r.scanned_lines + " строк" +
       (r.truncated ? ", читался хвост " + r.bytes + " байт" : "") + ")");
     console.log(r.verdict);
-    for (const s of r.signals) {
-      console.log("  [" + s.count + "x] " + s.signature + (s.already_known ? "  (уже известен)" : ""));
-      console.log("        строки " + s.first_line + "-" + s.last_line + "  " + s.fingerprint);
-      console.log("        " + s.example.slice(0, 200));
-    }
-    console.log("");
+for (const s of r.signals) {
+    console.log("  [" + s.count + "x] " + s.signature + (s.already_known ? "  (уже известен)" : ""));
+    console.log("        строки " + s.first_line + "-" + s.last_line + "  " + s.fingerprint);
+    console.log("        " + s.example.slice(0, 200));
   }
+  for (const d of r.drafts || []) console.log("  заготовка: " + d.id + " → " + d.provenance);
+  console.log("");
+}
 }
 
 const invokedDirectly = process.argv[1] &&

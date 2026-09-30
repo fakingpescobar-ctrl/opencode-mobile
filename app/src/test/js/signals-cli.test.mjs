@@ -211,6 +211,44 @@ await test("--text даёт читаемый вывод без JSON", () => {
   okIf(!parsed, "--text не должен выдавать JSON");
 });
 
+await test("заготовка помечается своим источником, а не чужим", () => {
+  const p = writeLog("fail.log", FAILING_LOG);
+  const report = jsonOf(runCli([p, "--draft", "--project", "opencode-mobile"])).logs[0];
+  eq(report.drafts.length, 2, "заготовок");
+  const d = report.drafts[0];
+  eq(d.provenance, "own-log", "источник сигнала из своего лога");
+  eq(d.project, "opencode-mobile", "проект");
+  eq(d.type, "signal", "тип: решения нет, закономерность ещё не понята");
+  eq(d.id, report.signals[0].fingerprint, "id заготовки совпадает с отпечатком сигнала");
+  okIf(/Причина не установлена/.test(d.content), "заготовка не должна утверждать причину: " + d.content);
+  okIf(/3 раз/.test(d.content), "в заготовке должен быть счётчик: " + d.content);
+});
+
+await test("id заготовки постоянен между прогонами", () => {
+  // Иначе каждый прогон добавлял бы новую запись, и память забивалась бы
+  // десятками одинаковых.
+  const p = writeLog("fail.log", FAILING_LOG);
+  const a = jsonOf(runCli([p, "--draft"])).logs[0].drafts.map(d => d.id);
+  const b = jsonOf(runCli([p, "--draft"])).logs[0].drafts.map(d => d.id);
+  eq(a, b, "id заготовок");
+});
+
+await test("уже известный сигнал заготовки не получает", () => {
+  const p = writeLog("fail.log", FAILING_LOG);
+  const first = jsonOf(runCli([p, "--draft"])).logs[0];
+  const fps = first.drafts.map(d => d.id);
+  const again = jsonOf(runCli([p, "--draft", "--known", fps.join(",")])).logs[0];
+  eq(again.drafts.length, 0, "заготовок для уже известного быть не должно");
+  eq(again.signals.length, first.signals.length, "но сам сигнал остаётся виден");
+  okIf(again.signals.every(s => s.already_known === true), "все помечены как известные");
+});
+
+await test("без --draft заготовок в ответе нет вовсе", () => {
+  const p = writeLog("fail.log", FAILING_LOG);
+  const report = jsonOf(runCli([p])).logs[0];
+  eq(report.drafts, undefined, "заготовки должны появляться только по запросу");
+});
+
 await test("несколько логов в одном запуске разбираются по отдельности", () => {
   const good = writeLog("one.log", FAILING_LOG);
   const bad = writeLog("two.log", "clean line\n");
