@@ -430,65 +430,93 @@ class RuntimeManager(
                             //
                             // Попытки ограничены: смерть сразу после старта - это не отсветка,
                             // а повод не молотить респавн каждые 3 секунды.
-                            val ynDead = ynisonStarted && !ynison.isAlive
-                            val memDead = memoryStarted && !memory.isAlive
-                            if ((ynDead || memDead) && localMcpRecoveries < MAX_LOCAL_MCP_RECOVERIES) {
-                                // Exit code читаем ДО перезапуска: startXxxAndVerify вызывает
-                                // setProcess(), который обнуляет lastExitCode. Без этого recovery
-                                // чинит, но не объясняет - а именно по коду видно, OOM это (137),
-                                // падение (139) или ошибка приложения, и лечится это по-разному.
-                                if (ynDead && ynisonAccessToken != null && ynisonToken != null) {
-                                    val code = ynison.lastExitCode ?: ynison.currentExitCode()
-                                    localMcpRecoveries++
+                            // Решение вынесено в LocalMcpRecoveryPolicy. Пока оно жило
+                            // здесь, вперемешку с логированием и запуском процессов, его
+                            // нельзя было проверить ничем, кроме как сломать телефон - а он
+                            // чинит себя сам: ensureYnisonScript перезаписывает битый скрипт
+                            // из assets, а recovery успевает раньше, чем кто-то займёт порт.
+                            when (
+                                val action = LocalMcpPolicy.decide(
+                                    LocalMcpState(
+                                        ynison = LocalMcpProc(
+                                            started = ynisonStarted,
+                                            alive = ynison.isAlive,
+                                            recoverable = ynisonAccessToken != null &&
+                                                ynisonToken != null,
+                                        ),
+                                        memory = LocalMcpProc(
+                                            started = memoryStarted,
+                                            alive = memory.isAlive,
+                                            // memoryToken - всегда UUID на этой ветке,
+                                            // nullable там нет. Восстановима всегда.
+                                            recoverable = true,
+                                        ),
+                                        recoveries = localMcpRecoveries,
+                                        maxRecoveries = MAX_LOCAL_MCP_RECOVERIES,
+                                        alreadyReported = localMcpGaveUpReported,
+                                    ),
+                                )
+                            ) {
+                                is LocalMcpAction.Idle -> Unit
+
+                                is LocalMcpAction.Retry -> {
+                                    // Exit code читаем ДО перезапуска: startXxxAndVerify
+                                    // вызывает setProcess(), который обнуляет lastExitCode.
+                                    // Без этого recovery чинит, но не объясняет - а именно
+                                    // по коду видно, OOM это (137), падение (139) или ошибка
+                                    // приложения, и лечится это по-разному.
+                                    val ynCode = ynison.lastExitCode ?: ynison.currentExitCode()
+                                    val memCode = memory.lastExitCode ?: memory.currentExitCode()
+                                    localMcpRecoveries = action.attempt
+                                    val who = action.target.processName
                                     android.util.Log.i(
                                         "OpencodeServer",
-                                        "ynison умер сам (exit=$code), поднимаем заново " +
-                                            "(попытка $localMcpRecoveries)",
+                                        "$who: неожиданная смерть (exit=" +
+                                            "${LocalMcpPolicy.exitCodeOf(action.target, ynCode, memCode)}), " +
+                                            "поднимаем заново (попытка ${action.attempt})",
                                     )
-                                    // Результат старта НЕ присваиваем ynisonStarted.
-                                    // ynisonStarted - это «сервер в принципе был нужен», а не
-                                    // «сервер сейчас жив»: сбросить его на неудачной попытке
-                                    // значит навсегда ослепить восстановление, потому что
-                                    // ynDead = ynisonStarted && !isAlive станет false навсегда.
-                                    // Именно это и происходило: одна неудачная попытка тихо
-                                    // выключала recovery, счётчик переставал расти, ветка
-                                    // «попытки исчерпаны» не срабатывала, и MCP оставался
+                                    // Результат старта НЕ присваиваем ynisonStarted/memoryStarted.
+                                    // Этот флаг значит «сервер был нужен», а не «сервер жив»:
+                                    // сбросить его на неудачной попытке - значит навсегда
+                                    // ослепить восстановление, потому что условие смерти
+                                    // перестанет срабатывать. Ровно это и происходило: одна
+                                    // неудача тихо выключала recovery, счётчик переставал
+                                    // расти, ветка отказа не срабатывала, и MCP оставался
                                     // мёртвым навсегда без единой записи об этом.
-                                    val recovered =
-                                        startYnisonAndVerify(
-                                            context = context,
-                                            logFile = logFile,
-                                            workspace = workspace,
-                                            accessToken = ynisonAccessToken,
-                                            mcpToken = ynisonToken,
-                                        )
-                                    if (recovered) {
-                                        localMcpRecoveries = 0
-                                        localMcpGaveUpReported = false
-                                        resolveActiveError(RuntimeStage.HEALTHY)
-                                    } else {
-                                        android.util.Log.w(
-                                            "OpencodeServer",
-                                            "ynison не поднялся (попытка $localMcpRecoveries), " +
-                                                "следующая через ${RETRY_DELAY_MS}мс",
-                                        )
+                                    val recovered = when (action.target) {
+                                        LocalMcpTarget.YNISON -> {
+                                            val access = ynisonAccessToken
+                                            val mcp = ynisonToken
+                                            if (access == null || mcp == null) {
+                                                // decide() обещал Retry только когда
+                                                // ynisonRecoverable == true, то есть оба токена
+                                                // не null. Сюда попасть не должны, но молчать
+                                                // здесь нельзя - это тот же класс тишины.
+                                                android.util.Log.e(
+                                                    "OpencodeServer",
+                                                    "ynison мёртв, но токен исчез между проверкой " +
+                                                        "и подъёмом - восстановление пропущено",
+                                                )
+                                                false
+                                            } else {
+                                                startYnisonAndVerify(
+                                                    context = context,
+                                                    logFile = logFile,
+                                                    workspace = workspace,
+                                                    accessToken = access,
+                                                    mcpToken = mcp,
+                                                )
+                                            }
+                                        }
+
+                                        LocalMcpTarget.MEMORY ->
+                                            startMemoryAndVerify(
+                                                context,
+                                                logFile,
+                                                workspace,
+                                                memoryToken,
+                                            )
                                     }
-                                } else if (memDead) {
-                                    val code = memory.lastExitCode ?: memory.currentExitCode()
-                                    localMcpRecoveries++
-                                    android.util.Log.i(
-                                        "OpencodeServer",
-                                        "память умерла сама (exit=$code), поднимаем заново " +
-                                            "(попытка $localMcpRecoveries)",
-                                    )
-                                    // Как и выше: флаг «был нужен» не сбрасываем на неудаче.
-                                    val recovered =
-                                        startMemoryAndVerify(
-                                            context,
-                                            logFile,
-                                            workspace,
-                                            memoryToken,
-                                        )
                                     if (recovered) {
                                         localMcpRecoveries = 0
                                         localMcpGaveUpReported = false
@@ -496,34 +524,61 @@ class RuntimeManager(
                                     } else {
                                         android.util.Log.w(
                                             "OpencodeServer",
-                                            "память не поднялась (попытка $localMcpRecoveries), " +
+                                            "$who: подъём не удался (попытка ${action.attempt}), " +
                                                 "следующая через ${RETRY_DELAY_MS}мс",
                                         )
                                     }
                                 }
-                            } else if ((ynDead || memDead) && !localMcpGaveUpReported) {
-                                // Локальный MCP мёртв, а попытки восстановления исчерпаны.
-                                // Раньше эта ветка просто не существовала: условие выше молча
-                                // ложилось, цикл каждые 3с видел мёртвый процесс и не делал
-                                // ничего, - а stage оставался HEALTHY. Итог: UI показывал
-                                // "здоров", музыка не работала, инструменты висли по таймауту,
-                                // и нигде не было ни слова почему. Тишина тут - ложь.
-                                //
-                                // DEGRADED, а не CRASHED: serve жив, сломан только локальный MCP.
-                                localMcpGaveUpReported = true
-                                val which = listOfNotNull(
-                                    "ynison".takeIf { ynDead },
-                                    "память".takeIf { memDead },
-                                ).joinToString(" + ")
-                                val code = ynison.lastExitCode ?: ynison.currentExitCode()
-                                android.util.Log.e(
-                                    "OpencodeServer",
-                                    "локальный MCP не восстанавливается после " +
-                                        "$MAX_LOCAL_MCP_RECOVERIES попыток (мёртв: $which, " +
-                                        "exit=$code). serve продолжает работать, но музыка и " +
-                                        "память недоступны до перезапуска приложения.",
-                                )
-                                resolveActiveError(RuntimeStage.DEGRADED)
+
+                                is LocalMcpAction.Unrecoverable -> {
+                                    // Раньше это состояние просто проглатывалось: условие
+                                    // впускало мёртвый процесс, но поднимать его было нечем,
+                                    // счётчик не рос, и цикл каждые 3с молча крутился,
+                                    // ничего не делая и ничего не показывая.
+                                    if (!localMcpGaveUpReported) {
+                                        localMcpGaveUpReported = true
+                                        val who = action.targets.joinToString(" + ") { it.processName }
+                                        val lost = LocalMcpPolicy.unavailableText(action.targets)
+                                        android.util.Log.e(
+                                            "OpencodeServer",
+                                            "локальный MCP не восстанавливаем: $who " +
+                                                "(нечем поднимать). Повтор бессмыслен, serve " +
+                                                "продолжает работать, но $lost недоступно.",
+                                        )
+                                        resolveActiveError(RuntimeStage.DEGRADED)
+                                    }
+                                }
+
+                                is LocalMcpAction.GiveUp -> {
+                                    // Попытки исчерпаны. Раньше этой ветки не существовало:
+                                    // условие молча ложилось, цикл видел мёртвый процесс и не
+                                    // делал ничего, а stage оставался HEALTHY. Итог: UI
+                                    // показывал «здоров», музыка не работала, инструменты
+                                    // висли по таймауту, и нигде не было ни слова почему.
+                                    // Тишина тут - ложь.
+                                    //
+                                    // DEGRADED, а не CRASHED: serve жив, сломан только
+                                    // локальный MCP. Сообщение - один раз, а не каждые 3с.
+                                    if (!action.alreadyReported) {
+                                        localMcpGaveUpReported = true
+                                        val ynCode = ynison.lastExitCode ?: ynison.currentExitCode()
+                                        val memCode = memory.lastExitCode ?: memory.currentExitCode()
+                                        val who = action.targets.joinToString(" + ") { it.processName }
+                                        val codes = action.targets.joinToString(", ") {
+                                            "${it.processName} exit=" +
+                                                LocalMcpPolicy.exitCodeOf(it, ynCode, memCode)
+                                        }
+                                        val lost = LocalMcpPolicy.unavailableText(action.targets)
+                                        android.util.Log.e(
+                                            "OpencodeServer",
+                                            "локальный MCP не восстанавливается после " +
+                                                "$MAX_LOCAL_MCP_RECOVERIES попыток (мёртв: $who; " +
+                                                "$codes). serve продолжает работать, но $lost " +
+                                                "недоступно до перезапуска приложения.",
+                                        )
+                                        resolveActiveError(RuntimeStage.DEGRADED)
+                                    }
+                                }
                             }
                         }
                         delay(RETRY_DELAY_MS)
