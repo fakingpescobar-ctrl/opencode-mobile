@@ -1021,8 +1021,9 @@ const encode = (s) => encodeURIComponent(s);
 // The catalog ignores per-page: sent 100, get 20. Measured - the cap is 20 per page whatever
 // you ask for, and the pages are disjoint, so the ONLY way to see past the twentieth track is
 // to walk the pages. That matters because the twentieth entry is exactly where the real
-// failures hide: track 31198888 sits at position 25 of 90 for artist 4611844, so a single
-// page-0 request answers "this performer has no such song" about a song that plainly exists.
+// failures hide: track 31198888 ("Санавабич", primary credit Miyagi & Эндшпиль) sits at
+// position 25 of 90 in artist 4611844's catalogue, so a single page-0 request answers
+// "this performer has no such song" about a song that plainly exists.
 //
 // MAX_ARTIST_PAGES is a ceiling, not a target. Onyx has 435 tracks = 22 pages, and the
 // fallback that uses this only needs real candidates to offer, not a complete discography.
@@ -1122,11 +1123,15 @@ async function searchTracks(query, artist) {
           `trying other spellings.`,
       );
     }
-    // Search FIRST, and check the credit list ourselves, before falling back to the artist's
-    // own catalogue. The fallback is not a substitute, it is a worse answer: the listing is
-    // demonstrably incomplete - track 31198888 ("<Компот>") belongs to artist 4611844 and is
-    // absent from that artist's 90-track listing entirely, while the plain title search finds
-    // it on the first page. Leading with the listing is what made a real song look missing.
+    // Search FIRST, and check the credit list ourselves, before falling back to the artist's own
+    // catalogue. Now that artistTracks pages properly the two agree on content, and this order
+    // is about cost rather than correctness: the listing costs one round trip per 20 tracks
+    // (five for the duo, twenty-two for Onyx), while a title search answers in one. Forcing
+    // every lookup through the catalogue to keep one code path would be paying that on every
+    // query, including the ones where the title is unique anyway.
+    //
+    // The filter cannot be left to the catalog: /search applies no artist filter, so without
+    // ledBy() the first hit may belong to a band that merely shares the name.
     const direct = (await catalogSearch(query)).filter((t) => ledBy(t, artist));
     if (direct.length) return direct;
 
