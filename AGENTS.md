@@ -36,7 +36,8 @@ Basic auth = `base64("opencode:" + пароль)`.
 
 > Пароль генерируется `UUID.randomUUID()` при первом запуске и хранится зашифрованным.
 > В debug-сборках может быть фиксированным — **не зашивать это в скрипты намертво**,
-> каждый раз читать из `/proc`. Готовая функция есть в `tools/ym-exp.ps1` → `Read-ServerPassword`.
+> каждый раз читать из `/proc`. Готовая функция — `tools/adb-auth-common.ps1`
+> → `Get-OpencodeServePassword` (+ `Get-OpencodeAuthHeader`, уже с готовым Basic).
 
 ### 3. Запросы
 
