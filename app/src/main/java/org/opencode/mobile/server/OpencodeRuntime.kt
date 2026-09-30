@@ -600,14 +600,23 @@ object OpencodeRuntime {
     internal val MUSIC_NAME_KEY = "\"${YnisonMcp.NAME}\""
     private const val YNISON_AUTH_HEADER = "\"Authorization\": \"Bearer {env:MCP_YNISON_TOKEN}\""
 
+    /**
+     * Лимит одного вызова музыкального MCP. Должен быть заведомо больше худшего случая
+     *ensurePhone (запуск приложения плюс ожидание регистрации в Ynison), иначе инструмент
+     * не успевает отдать результат и вместо него приходит ошибка транспорта.
+     */
+    private const val YNISON_MCP_TIMEOUT_MS = 180_000
+
     private fun remoteServerBlock(
         name: String,
         url: String,
         authHeader: String = AUTH_HEADER,
+        timeoutMs: Int? = null,
     ): String =
         "\"$name\": {\n" +
             "      \"type\": \"remote\",\n" +
             "      \"url\": \"$url\",\n" +
+            (timeoutMs?.let { "      \"timeout\": $it,\n" } ?: "") +
             "      \"headers\": {\n" +
             "        $authHeader\n" +
             "      }\n" +
@@ -623,7 +632,17 @@ object OpencodeRuntime {
      * отдельная проверка `Authorization`, и общий токен означал бы, что любой из серверов
      * открывается заголовком, предназначенным другому.
      */
-    private fun mcpMusicBlock(): String = remoteServerBlock(YnisonMcp.NAME, YNISON_MCP_URL, YNISON_AUTH_HEADER)
+
+    /**
+     * Яндекс.Музыка с явным таймаутом.
+     *
+     * Измерено 30.09.2026: запуск приложения с нуля занимает у Яндекс.Музыки дольше, чем
+     * ждал ensurePhone, и вызов упирался в клиентский MCP-таймаут ("Request timed out"),
+     * не успев ни записать очередь, ни вернуть внятную ошибку. Остальным серверам хватает
+     * дефолта, потому что они отвечают сразу; здесь ожидание - часть работы инструмента,
+     * поэтому лимит должен покрывать холодный старт.
+     */
+    private fun mcpMusicBlock(): String = remoteServerBlock(YnisonMcp.NAME, YNISON_MCP_URL, YNISON_AUTH_HEADER, YNISON_MCP_TIMEOUT_MS)
 
     /** Содержимое объекта "mcp" — записи памяти и телефона, разделённые запятой. */
     private fun mcpEntries(): String = "${mcpMemoryBlock()},\n    ${mcpMobileBlock()}"

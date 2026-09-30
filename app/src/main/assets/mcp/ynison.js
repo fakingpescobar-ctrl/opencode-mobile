@@ -41,7 +41,7 @@
 //
 // Protocol shapes cross-checked against the Apache-2.0 music-assistant Ynison
 // client and MarshalX/yandex-music-api (LGPL, used as a protocol reference only).
-import { readFileSync, appendFileSync } from "node:fs";
+import { readFileSync, appendFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const OAUTH = process.env.YNISON_TOKEN || "";
@@ -64,6 +64,9 @@ const YNISON_PORT = Number(process.env.YNISON_WS_PORT) || 443;
 const BRIDGE_TOKEN = process.env.MOBILE_INSTALL_TOKEN || "";
 const BRIDGE_PORT = Number(process.env.MOBILE_INSTALL_PORT) || 4202;
 const MUSIC_APP_PACKAGE = "ru.yandex.music";
+// Пул моста — 2 потока, тяжёлые маршруты держат слот до 20+с. 25с — с запасом на самую долгую
+// штатную операцию (COLD_START у Яндекс.Музыки — 9с плюс connect), но не на ожидание в очереди.
+const BRIDGE_TIMEOUT_MS = 25_000;
 const RESOLVED_API_IP = process.env.YNISON_API_IP || "";
 const REDIRECT_SERVICE = "redirector.YnisonRedirectService/GetRedirectToYnison";
 const STATE_SERVICE = "ynison_state.YnisonStateService/PutYnisonState";
@@ -84,6 +87,12 @@ const WRITE_ATTEMPTS = 3;       // the server drops a valid write often enough t
 // logged-out or first-run app reports itself instead of hanging the tool.
 const APP_LAUNCH_SETTLE_MS = 3000;
 const APP_ONLINE_ATTEMPTS = 8;
+
+// Before deciding the phone is gone, ask the server again. Launching Yandex Music takes the
+// screen away from the chat the user is typing into, so it has to be the last resort, not
+// the first guess - the device list is allowed to be a beat behind.
+const PHONE_OFFLINE_PROBES = 3;
+const PHONE_OFFLINE_PROBE_MS = 1200;
 // Every tool opens a session first, so a cold start hit all of them at once: right after
 // the app (and this script) starts, the first connect can miss the per-step timeout while
 // the process and TLS warm up. A failed first call is worse than a slow one - the agent
@@ -93,6 +102,10 @@ const OPEN_ATTEMPTS = 3;
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const DEBUG = process.env.YNISON_DEBUG === "1";
 const TRACE_FILE = process.env.YNISON_TRACE_FILE || "";
+// Where the last real player_state is cached between runs. Derived from the trace path so
+// the app does not have to grow another env var - it is always the same directory.
+const STATE_CACHE = process.env.YNISON_STATE_CACHE
+  || (TRACE_FILE ? TRACE_FILE.replace(/[\\/][^\\/]*$/, "") + "/ynison-state.json" : "");
 const trace = (...a) => {
   if (!DEBUG) return;
   const line = "[ynison] " + a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ") + "\n";
@@ -367,6 +380,123 @@ function send(ws, message) {
 
 // ---- session ------------------------------------------------------------------
 
+// What this session says about itself, in the shape the server will accept.
+//
+// MEASURED, three times over on a real phone (30.09.2026). All three are load-bearing, and
+// together they mean this function has no freedom left - it can only report what it knows:
+//
+//  1. No player_state at all  -> 400030002 "Unspecified repeat mode is not allowed.",
+//     and the server tears the socket down, so nothing ever arrives.
+//  2. paused:false + empty queue -> 400030001 "Player is not paused, but queue is probably
+//     empty (currentIndex=-1, size=0)". Also fatal.
+//  3. So `paused: true` + empty queue is the ONLY legal way to say "I have nothing", which
+//     is exactly what the old handshake hardcoded - and that is what paused a playing track,
+//     on every single call, including the music_status that noticed the pause.
+//
+// So there is no neutral state to invent. The state is, in order of preference:
+//
+//   - the newest frame the server just sent on this socket
+//   - the last real state from any earlier session, from the on-disk cache
+//   - and only on a genuinely cold start (fresh install, no cache file), the empty
+//     paused:true state, because rule 2 leaves nothing else
+//
+// The cold case is a once-per-install event: saveCachedState runs on every state frame, so
+// the cache exists from the first successful call onwards. It is the price of a protocol
+// that will not let a device say "nothing" without saying "paused", and it is much better
+// than pausing on every call, which is what it replaced.
+//
+// can_be_player stays true: the claim in handoff needs it (see the header comment).
+
+// The last-resort state, for a cold start with nothing cached. Valid by rule 3 and nothing
+// else. Traced loudly, because "I published a pause I did not believe in" must be visible.
+function neutralState() {
+  trace("no live or cached player_state - publishing the empty paused state");
+  return {
+    status: { paused: true, duration_ms: "0", progress_ms: "0", playback_speed: 1, version: version() },
+    player_queue: {
+      current_playable_index: -1, entity_id: "", entity_type: "VARIOUS",
+      playable_list: [], options: { repeat_mode: "NONE" },
+      entity_context: "BASED_ON_ENTITY_BY_DEFAULT", version: version(), from_optional: "",
+    },
+  };
+}
+
+function loadCachedState() {
+  if (!STATE_CACHE) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(STATE_CACHE, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null; // no cache yet, or it was truncated - both mean "we know nothing"
+  }
+}
+
+function saveCachedState(state) {
+  if (!STATE_CACHE || !state) return;
+  try {
+    writeFileSync(STATE_CACHE, JSON.stringify(state));
+  } catch {
+    /* the cache is an optimisation, never a reason to fail a session */
+  }
+}
+
+// Repeat modes the server accepts. Measured: the phone publishes
+// options.repeat_mode = UNSPECIFIED, which is fine coming from the app and fatal coming
+// from us, so the echo repairs that one enum and nothing else - the queue, the position and
+// the paused flag go back exactly as they arrived, which is what makes the echo incapable of
+// pausing anything. A real setting (ONE, ALL) is left alone.
+const REPEAT_MODES = new Set(["NONE", "ONE", "ALL"]);
+
+function announceable(state) {
+  if (!state) return null;
+  const q = state.player_queue;
+  // No queue to repair: inventing one is exactly the thing this file must never do, and
+  // there is nothing here the server validates.
+  if (!q) return state;
+  const options = q.options || {};
+  if (REPEAT_MODES.has(options.repeat_mode)) return state;
+  return { ...state, player_queue: { ...q, options: { ...options, repeat_mode: "NONE" } } };
+}
+
+// What this session publishes about itself.
+//
+// Order matters. A live frame beats the cache beats the seed - except on an account whose
+// queue is empty, where the live frame and the cache are the same useless empty state and
+// the seed (the queue this call is about to write) is the only thing the server will take.
+//
+// `seed` is only ever a state the caller is going to write anyway, never a guess.
+function stateToAnnounce(frames, seed = null) {
+  let live = null;
+  for (let i = frames.length - 1; i >= 0; i--) {
+    if (frames[i].player_state) { live = frames[i].player_state; break; }
+  }
+  // The newest frame wins, not the first: the server may send several, and a stale one
+  // would undo the fix by the same route as the bug.
+  const chosen = live || loadCachedState() || seed || neutralState();
+  // Measured 30.09.2026: an empty playable_list is refused outright - 400030001
+  // "Empty playable list is restricted" - as the handshake and as anything sent on top of
+  // it. So when the account queue is empty, the only state that can be published is one
+  // that carries something. That is the whole reason seed exists.
+  if ((chosen.player_queue?.playable_list || []).length) return announceable(chosen);
+  return announceable(seed) || chosen;
+}
+
+function announceDevice(ws, frames, seed = null) {
+  const player_state = stateToAnnounce(frames, seed);
+  send(ws, {
+    ...meta(),
+    update_full_state: {
+      player_state,
+      device: {
+        info: { device_id: SELF_ID, type: "ANDROID", title: "OpenCode", app_name: "opencode" },
+        capabilities: { can_be_player: true, can_be_remote_controller: true, volume_granularity: 0 },
+        volume_info: { volume: 0 },
+      },
+      is_currently_active: false,
+    },
+  });
+}
+
 // Open a Ynison session and complete the handshake. Returns the live socket plus the
 // frames received so far. The handshake declares can_be_player:true because we must
 // be eligible for the active role during the handoff - see the header comment.
@@ -395,7 +525,7 @@ function goAwayError(payload) {
   return e;
 }
 
-async function openSessionOnce() {
+async function openSessionOnce(seed = null) {
   if (!OAUTH) throw new Error("YNISON_TOKEN is not set");
 
   const redirect = await new Promise((resolve, reject) => {
@@ -447,6 +577,9 @@ async function openSessionOnce() {
       const parsed = JSON.parse(e.data);
       trace("state frame keys:", Object.keys(parsed).join(",") || "(none)", String(e.data).slice(0, 300));
       frames.push(parsed);
+      // Remember it. The next session's handshake has to publish a valid state before it
+      // has seen any, and the only state worth publishing is a real one.
+      if (parsed.player_state) saveCachedState(parsed.player_state);
     } catch {
       trace("state frame non-JSON:", String(e.data).slice(0, 200));
     }
@@ -467,28 +600,35 @@ async function openSessionOnce() {
     if (away) { ws.close(); throw away; }
   }
 
-  send(ws, {
-    ...meta(),
-    update_full_state: {
-      player_state: {
-        status: { paused: true, duration_ms: "0", progress_ms: "0", playback_speed: 1, version: version() },
-        player_queue: {
-          current_playable_index: -1, entity_id: "", entity_type: "VARIOUS",
-          playable_list: [], options: { repeat_mode: "NONE" },
-          entity_context: "BASED_ON_ENTITY_BY_DEFAULT", version: version(), from_optional: "",
-        },
-      },
-      device: {
-        info: { device_id: SELF_ID, type: "ANDROID", title: "OpenCode", app_name: "opencode" },
-        capabilities: { can_be_player: true, can_be_remote_controller: true, volume_granularity: 0 },
-        volume_info: { volume: 0 },
-      },
-      is_currently_active: false,
-    },
-  });
+  // The first message on the socket has to carry a state the server will accept, and the
+  // account queue being empty leaves exactly one such state: the one this call is about to
+  // write. A read-only tool has no such state, and neither does a cold start, so it is told
+  // plainly instead of eating three protocol errors the agent cannot act on.
+  const seed_state = stateToAnnounce(frames, seed);
+  if (!(seed_state?.player_queue?.playable_list || []).length) {
+    ws.close();
+    const e = new Error(
+      "the Yandex Music queue is empty and Ynison refuses an empty playable list " +
+        "(ynison 400030001), so no session can be opened. Play anything once in the " +
+        "Yandex Music app on the phone, then retry.",
+    );
+    e.permanent = true;
+    throw e;
+  }
+
+  announceDevice(ws, frames, seed);
 
   await wait(HANDSHAKE_MS);
   trace(`handshake done: ${frames.length} frame(s)`);
+
+  // The server has now told us what is really going on, so hand that back instead of what we
+  // opened with. announceable() repairs only the repeat enum, so this cannot change what the
+  // phone is doing - but it does keep our published state from contradicting the live one.
+  if (frames.some((f) => f.player_state) && !seed) {
+    announceDevice(ws, frames);
+    await wait(CLAIM_SETTLE_MS);
+    trace("announced server state back");
+  }
   return { ws, frames };
 }
 
@@ -519,6 +659,9 @@ function readState(frames) {
 // app is reinstalled, and hardcoding it was how the first experiments silently
 // targeted a stale, offline device.
 function findPhone(state) {
+  // state is null whenever no frame has carried a player_state yet - a first call, or a gap
+  // between frames. That is "not known", not "offline", and must not throw.
+  if (!state || !Array.isArray(state.devices)) return null;
   return state.devices.find((d) => d.id !== SELF_ID && d.canBePlayer && !d.offline) ?? null;
 }
 
@@ -590,11 +733,11 @@ async function waitForState(expect, attempts = VERIFY_ATTEMPTS) {
 // the message happens to be worded.
 const PERMANENT_OPEN_ERRORS = ["is not set", "refused the token"];
 
-async function openSession() {
+async function openSession(seed = null) {
   let lastError = null;
   for (let attempt = 0; attempt < OPEN_ATTEMPTS; attempt++) {
     try {
-      return await openSessionOnce();
+      return await openSessionOnce(seed);
     } catch (e) {
       lastError = e;
       trace("open attempt", attempt, "failed:", e.message);
@@ -619,49 +762,67 @@ async function openSession() {
  * Only when no player-capable device is online do we start it, then wait for it to
  * publish itself.
  */
-async function ensurePhone(ws, frames) {
-  const known = readState(frames);
-  const already = known && findPhone(known);
+async function ensurePhone(ws, frames, seed = null, launched = { already: false }) {
+  // latestState, NOT readState: readState takes the FIRST frame with a player_state, which is
+  // the oldest one. The device list in a stale frame does not have the phone in it, so
+  // findPhone came back empty, we concluded the phone was offline, and launched Yandex Music
+  // into the foreground - over our own chat, leaving the user unable to type. latestState
+  // reads the newest frame, which is the one the server just sent us.
+  let already = findPhone(latestState(frames));
   if (already) {
     trace("phone already online:", already.id);
     return already;
   }
 
+  // A missing device is not proof of a dead one. The list can simply be a beat behind, and
+  // launching is expensive in the worst way: it takes the screen away from the chat the user
+  // is typing into. Re-announce and look again before spending that.
+  for (let i = 0; i < PHONE_OFFLINE_PROBES; i++) {
+    await wait(PHONE_OFFLINE_PROBE_MS);
+    announceDevice(ws, frames, seed);
+    await wait(VERIFY_MS);
+    already = findPhone(latestState(frames));
+    if (already) {
+      trace("phone turned up on probe", i + 1, ":", already.id);
+      return already;
+    }
+    trace("phone still not listed on probe", i + 1);
+  }
+
   if (!BRIDGE_TOKEN) {
     throw new Error("no Yandex Music device online, and the Android bridge is not available to start it");
   }
-  trace("no player-capable device online; launching", MUSIC_APP_PACKAGE);
-  const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/v1/apps/launch`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${BRIDGE_TOKEN}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ package: MUSIC_APP_PACKAGE }),
-  });
-  if (!res.ok) throw new Error(`could not start Yandex Music (bridge HTTP ${res.status})`);
+  // A launch resets playback, so it happens at most once per tool call. A retry after we
+  // already started the app waits for it to publish itself instead of starting it again -
+  // measured 30.09.2026: three cold starts in one call left the phone paused on its own
+  // restored position every time.
+  const skipLaunch = launched.already;
+  if (!skipLaunch) {
+    trace("phone genuinely absent after", PHONE_OFFLINE_PROBES, "probes; launching", MUSIC_APP_PACKAGE);
+    const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/v1/apps/launch`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${BRIDGE_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ package: MUSIC_APP_PACKAGE }),
+    });
+    if (!res.ok) throw new Error(`could not start Yandex Music (bridge HTTP ${res.status})`);
+    launched.already = true;
+  } else {
+    trace("app already launched earlier in this call; waiting instead of relaunching");
+  }
 
   // The app opens its own Ynison socket asynchronously. Ask the server for a fresh
-  // state each round: re-sending update_full_state is the protocol's own way to be
-  // told who is online, and it costs nothing compared to reconnecting.
-  for (let i = 0; i < APP_ONLINE_ATTEMPTS; i++) {
+  // state each round: re-announcing ourselves is the protocol's own way to be told who is
+  // online, and it costs nothing compared to reconnecting.
+  //
+  // Measured 30.09.2026: a cold start registers with Ynison in ~20s, and APP_ONLINE_ATTEMPTS
+  // rounds already cover that with room to spare. Growing this budget was a mistake - it is
+  // spent on top of the probes, handshake and write, and the whole call then runs into the
+  // client's MCP timeout, which surfaces as a transport error with nothing to show for it.
+  // If this ever needs to grow, raise YNISON_MCP_TIMEOUT_MS in OpencodeRuntime.kt with it.
+  const onlineAttempts = APP_ONLINE_ATTEMPTS;
+  for (let i = 0; i < onlineAttempts; i++) {
     await wait(APP_LAUNCH_SETTLE_MS);
-    send(ws, {
-      ...meta(),
-      update_full_state: {
-        player_state: {
-          status: { paused: true, duration_ms: "0", progress_ms: "0", playback_speed: 1, version: version() },
-          player_queue: {
-            current_playable_index: -1, entity_id: "", entity_type: "VARIOUS", playable_list: [],
-            options: { repeat_mode: "NONE" }, entity_context: "BASED_ON_ENTITY_BY_DEFAULT",
-            version: version(), from_optional: "",
-          },
-        },
-        device: {
-          info: { device_id: SELF_ID, type: "ANDROID", title: "OpenCode", app_name: "opencode" },
-          capabilities: { can_be_player: true, can_be_remote_controller: true, volume_granularity: 0 },
-          volume_info: { volume: 0 },
-        },
-        is_currently_active: false,
-      },
-    });
+    announceDevice(ws, frames, seed);
     await wait(VERIFY_MS);
     const state = latestState(frames);
     const phone = state && findPhone(state);
@@ -672,27 +833,38 @@ async function ensurePhone(ws, frames) {
   }
   // A Yandex Music that never appears is usually signed out or stuck on a first-run
   // screen - neither of which a retry can fix, so say so instead of failing vaguely.
+  // Retries in handoffUntil re-run this wait, so the message only has to say what happened;
+  // the app is already running by the time the second attempt gets here.
   throw new Error("Yandex Music was started but did not come online in ~" +
-    Math.round((APP_ONLINE_ATTEMPTS * (APP_LAUNCH_SETTLE_MS + VERIFY_MS)) / 1000) +
+    Math.round((onlineAttempts * (APP_LAUNCH_SETTLE_MS + VERIFY_MS)) / 1000) +
     "s (signed out, or waiting on a first-run screen?)");
 }
 
 /**
  * Take the active role, write the queue, give the role back.
  *
- * `mutate` returns the player_state to publish. The hand-back runs in `finally` on
- * purpose: if the write throws or the process is interrupted between claim and
- * hand-back, the session would be left with us as the active player - and the phone
- * would stop responding to Ynison entirely. Handing back to whatever was active
- * before costs nothing and makes that state impossible to leave behind.
+ * `mutate` returns the player_state to publish. `seed`, when given, is the state this call
+ * is about to write - it is also what the handshake publishes, which is the only way to open
+ * a session at all while the account queue is empty (see stateToAnnounce). The hand-back runs
+ * in `finally` on purpose: if the write throws or the process is interrupted between claim and
+ * hand-back, the session would be left with us as the active player - and the phone would
+ * stop responding to Ynison entirely. Handing back to whatever was active before costs nothing
+ * and makes that state impossible to leave behind.
+ *
+ * `launched` is carried across the caller's retries. Measured 30.09.2026: a fresh launch of
+ * Yandex Music restores the app's own saved playback position and leaves it PAUSED there, so
+ * every extra launch is a reset of whatever the previous attempt had just started. Three
+ * WRITE_ATTEMPTS meant three cold starts inside one tool call, and playback died at the
+ * restored position every time. Once we have started the app ourselves, the caller must wait
+ * for it rather than start it again.
  */
-async function handoff(mutate) {
-  const { ws, frames } = await openSession();
+async function handoff(mutate, seed = null, launched = { already: false }) {
+  const { ws, frames } = await openSession(seed);
   let phoneId = null;
   try {
     const before = readState(frames);
     if (!before) throw new Error("no player_state after handshake");
-    const phone = await ensurePhone(ws, frames);
+    const phone = await ensurePhone(ws, frames, seed, launched);
     phoneId = phone.id;
 
     send(ws, { ...meta(), update_active_device: { device_id_optional: SELF_ID } });
@@ -1006,14 +1178,31 @@ function toPlayableItem(track) {
 // timestamp, yet one resumes and the other leaves the phone paused. A write is
 // therefore not a guarantee - it has to be confirmed and retried, otherwise "resume"
 // fails a few times an hour and looks like a broken feature rather than a flaky server.
-async function handoffUntil(mutate, expect) {
+async function handoffUntil(mutate, expect, seed = null) {
   let phone = null;
+  let after = null;
+  let lastError = null;
+  // Shared by every attempt of this call: once ensurePhone has started Yandex Music, no
+  // later attempt starts it again. See handoff() for why that matters.
+  const launched = { already: false };
   for (let i = 0; i < WRITE_ATTEMPTS; i++) {
     trace("attempt", i + 1, "of", WRITE_ATTEMPTS);
-    phone = await handoff(mutate);
-    const after = await waitForState(expect);
-    if (after) return { phone, after };
+    // Measured 30.09.2026: ensurePhone throws when the app has not registered yet, and an
+    // uncaught throw ended the whole tool call on attempt 1 - so the retry below never ran and
+    // the app was never given a second chance. "play Eminem" failed outright while the phone
+    // showed up seconds later. Failures are therefore collected, not propagated, and the last
+    // one is re-thrown only if every attempt fails.
+    try {
+      phone = await handoff(mutate, seed, launched);
+      after = await waitForState(expect);
+      if (after) return { phone, after };
+      lastError = null;
+    } catch (e) {
+      lastError = e;
+      trace("attempt", i + 1, "failed:", e.message);
+    }
   }
+  if (lastError) throw lastError;
   return { phone, after: null };
 }
 
@@ -1083,14 +1272,23 @@ async function opSkip(direction) {
 
 async function opPlayQuery(query, artist) {
   const track = await searchTrack(query, artist);
-  const { after } = await handoffUntil(() => ({
+  // Built once and used twice: as the state to write, and as the handshake seed. An account
+  // with an empty queue cannot be opened at all - 400030001 refuses an empty playable list
+  // even in the handshake - so the only thing that can open this session is the queue we are
+  // about to write. It also means the handshake and the write can never disagree.
+  const target = {
     status: { paused: false, progress_ms: "0", duration_ms: "0", playback_speed: 1, version: version() },
     player_queue: {
       current_playable_index: 0, entity_id: "", entity_type: "VARIOUS",
       playable_list: [toPlayableItem(track)], options: { repeat_mode: "NONE" },
       entity_context: "BASED_ON_ENTITY_BY_DEFAULT", version: version(), from_optional: "",
     },
-  }), (s) => s.index === 0 && !s.paused);
+  };
+  const { after } = await handoffUntil(
+    () => target,
+    (s) => s.index === 0 && !s.paused,
+    target,
+  );
   if (!after) throw new Error(`phone did not start "${track.title}" after ${WRITE_ATTEMPTS} attempts`);
   return { picked: { id: String(track.realId ?? track.id), title: track.title, artist: (track.artists ?? []).map((a) => a.name).join(", ") }, after: summarize(after) };
 }
@@ -1168,7 +1366,168 @@ const TOOLS = [
       "so the query can be the performer's name on its own.",
     inputSchema: { type: "object", properties: { query: str("Track title or free text to search for."), artist: str("Exact artist name. Pass it whenever you know it - it selects that performer's catalogue, not just a tie-breaker.") } },
   },
+  {
+    name: "session_status",
+    description:
+      "What the phone is playing RIGHT NOW, read straight from the active MediaSession, plus which apps " +
+      "expose a session we can control. Use this when the music_* tools fail with the phone missing or " +
+      "with 'did not come online': Android blocks our background service from starting Yandex Music " +
+      "(BAL_BLOCK, result code=102) when its process was killed, and no music_* tool can fix that. " +
+      "This still reports real playback while the app is alive, so it tells 'not playing' apart from " +
+      "'app is gone'. It cannot pick a track - only report and control what already plays.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "session_control",
+    description:
+      "Drive the active MediaSession directly: play, pause, play_pause, next, previous, stop. This " +
+      "is the transport that survives when Ynison cannot - the commands go to the live session and " +
+      "Android starts nothing, so the background-launch block never comes into it. Use it to play, " +
+      "pause or skip what is already playing when music_play/music_next fail with the phone offline. " +
+      "It CANNOT choose a track by name: the session exposes only what is already queued, so for " +
+      "'play Eminem' use music_play_query first and fall back to this when that cannot start the app. " +
+      "There is no seek - use next if the track is wrong. Returns before and after state. " +
+      "'accepted but NOT verified' means the player took the command but reported no state change " +
+      "within the timeout - for next on a one-track queue that is correct behaviour, not a failure, " +
+      "so do not retry it in a loop.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["play", "pause", "play_pause", "next", "previous", "stop"],
+          description:
+            "play_pause toggles between play and pause. There is no seek: the phone cannot resume " +
+            "from a paused position anyway, which is why music_play restarts the track instead.",
+        },
+      },
+      required: ["action"],
+    },
+  },
 ];
+
+// ── MediaSession-транспорт ──────────────────────────────────────────────────
+// Запасной путь, который не упирается в Android BAL.
+//
+// Проблема, которую он обходит: Ynison умеет всё, кроме одного - поднять Яндекс.Музыку,
+// если её процесса нет. Serve работает как foreground service, у него нет видимого окна,
+// и Android режет любой фоновый запуск чужой activity с result code=102 (BAL_BLOCK).
+// startActivity при этом возвращает успех, так что мост раньше отвечал 200 {"ok":true} на
+// запуск, которого не было.
+//
+// MediaSession работает иначе: команды уходят в уже активную сессию через MediaController,
+// и Android при этом ничего не запускает - BAL тут не участвует. Плата - управлять можно
+// только тем, что уже играет, и нельзя выбрать конкретный трек. Поэтому это дополнение к
+// music_*, а не замена: музыкальный запрос -> music_play_query, а вот play/pause/next/
+// previous/секунды берём отсюда, когда Ynison не может поднять телефон.
+
+/** Вызов моста: общий транспорт для /v1/media/* и /v1/launch/*. */
+async function bridge(path, init = {}) {
+  if (!BRIDGE_TOKEN) throw new Error("Android bridge is not available");
+  const method = init.method || "GET";
+  // Дедлайн обязателен: мост обслуживает запросы пулом из 2 потоков, и тяжёлые маршруты
+  // (плейлисты Яндекса, опрос устройства) держат слот до 20+ секунд. Без таймаута клиент
+  // ждал бы их молча, не имея возможности ни отличить зависание от медленной работы.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), BRIDGE_TIMEOUT_MS);
+  let res;
+  try {
+    res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}${path}`, {
+      ...init,
+      method,
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${BRIDGE_TOKEN}`,
+        "Content-Type": "application/json",
+        ...(init.headers || {}),
+      },
+      // GET/HEAD тела не имеют, и fetch это запрещает - шлём пустое тело только там, где
+      // метод его допускает. Мост читает пустое тело как «параметров нет».
+      body: method === "GET" || method === "HEAD" ? undefined : (init.body === undefined ? "{}" : init.body),
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    if (e.name === "AbortError") {
+      throw new Error(`bridge ${path} timed out after ${BRIDGE_TIMEOUT_MS}ms - the Android bridge is busy or wedged`);
+    }
+    throw new Error(`bridge ${path} unreachable: ${e.message}`);
+  }
+  clearTimeout(timer);
+  const text = await res.text();
+  let body;
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`bridge ${path} returned non-JSON (HTTP ${res.status}): ${text.slice(0, 200)}`);
+  }
+  if (!res.ok) throw new Error(`bridge ${path} failed (HTTP ${res.status}): ${body.hint || body.error || text.slice(0, 200)}`);
+  return body;
+}
+
+function describePlayback(p) {
+  if (!p || !p.state || p.state === "none") return "nothing is playing";
+  const bits = [`"${p.title || "?"}"`, p.artist].filter(Boolean).join(" - ");
+  const pos = p.position_ms == null ? "" : ` at ${Math.round(p.position_ms / 1000)}s`;
+  return `${bits}${pos} (${p.state}${p.is_playing ? "" : ", not playing"})`;
+}
+
+async function opSessionStatus() {
+  // Три независимых вопроса, и все три нужны в одном вызове: что играет, что ещё управляемо и
+  // разрешён ли фоновый запуск. Последнее — частая причина «телефон молчит», и раньше агент
+  // мог узнать о нём только из лога, что он не читает.
+  const [status, blocker, apps] = await Promise.all([
+    bridge("/v1/media/status", {
+      method: "POST",
+      body: JSON.stringify({ package: MUSIC_APP_PACKAGE }),
+    }).catch((e) => ({ error: e.message })),
+    bridge("/v1/launch/blocker").catch((e) => ({ error: e.message })),
+    bridge("/v1/media/apps").catch((e) => ({ error: e.message })),
+  ]);
+  const lines = [];
+  if (status.media) {
+    lines.push(`Yandex Music: ${describePlayback(status.media.playback)} via ${status.media.transport}`);
+  } else {
+    lines.push(`Yandex Music: no active session (${status.error || "app is closed or never granted a session"})`);
+  }
+  if (blocker.system_alert_window_granted === true) {
+    lines.push("background launch: allowed");
+  } else if (blocker.system_alert_window_granted === false) {
+    lines.push(
+      "background launch: BLOCKED by Android - the app cannot start Yandex Music when its process " +
+        "was killed, because this service has no visible window. Grant \"display over other apps\" " +
+        "in the app Diagnostics -> Фоновый запуск приложений, then retry.",
+    );
+  } else {
+    lines.push(`background launch: unknown (${blocker.error || "no answer from the bridge"})`);
+  }
+  if (apps.apps) {
+    // Список media-приложений телефона — это 10-25 записей, и в контекст агента попадать
+    // должны только управляемые: остальные (звонилка, Bluetooth, наушники) всё равно нельзя
+    // рулить, и упоминать их незачем.
+    const controllable = apps.apps.filter((a) => a.controlable);
+    const others = controllable.filter((a) => a.package !== MUSIC_APP_PACKAGE).map((a) => a.label);
+    lines.push(
+      `other controllable media apps: ${others.length === 0 ? "none" : others.join(", ")}` +
+        ` (${controllable.length} controllable of ${apps.apps.length} with a session)`,
+    );
+  }
+  return lines.join("\n");
+}
+
+async function opSessionControl(action) {
+  const res = await bridge("/v1/media/control", {
+    method: "POST",
+    body: JSON.stringify({ action, package: MUSIC_APP_PACKAGE }),
+  });
+  const m = res.media || {};
+  // verified лежит внутри media - это ответ самого контроллера. Верхний ok лишь зеркалит его.
+  const verified = m.verified === true;
+  // verified=false - это не ошибка вызова, а честный ответ плеера. Например next при единственном
+  // треке в очереди ничего не меняет. Поэтому такое возвращаем как есть, с пояснением причины.
+  const verdict = verified ? "verified" : "accepted but NOT verified";
+  const detail = m.message ? ` (${m.message})` : "";
+  return `${action}: ${verdict}${detail}\nbefore: ${describePlayback(m.before)}\nafter:  ${describePlayback(m.after)}\nvia ${m.transport || "?"}`;
+}
 
 async function runTool(name, args) {
   switch (name) {
@@ -1180,6 +1539,8 @@ async function runTool(name, args) {
     case "music_prev": return opSkip(-1);
     case "music_search": return opSearchQuery(args.query, args.artist);
     case "music_play_query": return opPlayQuery(args.query, args.artist);
+    case "session_status": return opSessionStatus();
+    case "session_control": return opSessionControl(args.action);
     default: throw new Error(`unknown tool: ${name}`);
   }
 }
