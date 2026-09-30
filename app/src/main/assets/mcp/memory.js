@@ -901,6 +901,14 @@ function store(args) {
 // Доверие - это свойство записи, а не параметр SQL. Фильтр применяется в JS
 // по normalizeProvenance, потому что уровень доверия выводится из источника
 // по правилам модуля, а не вычисляется в БД.
+// Сколько строк читаем перед фильтром доверия. Уровень доверия выводится из
+// источника правилами provenance.js, поэтому фильтр живёт в JS, а LIMIT в SQL
+// отрезал бы доверенные записи раньше фильтра. Читаем с запасом, фильтруем,
+// и только потом режем по limit.
+// Обрезка scan_cap не молчит: вызов получает scan_truncated=true и знает, что
+// доверенная запись могла остаться за пределом просмотренного.
+const SCAN_CAP = 5000;
+
 function shapeRows(rows) {
   return rows.map(r => {
     const p = normalizeProvenance(r.provenance);
@@ -915,16 +923,22 @@ function recall(args) {
   const type = args.type || "";
   const wantTrust = String(args.trust || args.provenance || "");
   const qv = embed(q, project);
-  const rows = DB.prepare(
+  const all = DB.prepare(
     `SELECT id,content,type,tags,project,created,provenance FROM memories
      WHERE (?1 = '' OR project = ?1) AND (?2 = '' OR type = ?2)`
   ).all(project, type);
+  const scanTruncated = all.length > SCAN_CAP;
+  const scanned = scanTruncated ? all.slice(0, SCAN_CAP) : all;
   // Фильтр доверия применяется ДО отсева по score: иначе внешний совет
   // занял бы верхушку выдачи и вытеснил бы доверенные записи, а агент
   // получил бы «свои» мысли там, где должен увидеть чужие.
-  const filtered = shapeRows(rows).filter(r => matchesTrust(r.provenance, wantTrust));
+  const filtered = shapeRows(scanned).filter(r => matchesTrust(r.provenance, wantTrust));
   if (!Object.keys(qv).length) {
-    return { results: filtered.slice(0, limit).map(r => ({ ...r, score: 1 })) };
+    return {
+      results: filtered.slice(0, limit).map(r => ({ ...r, score: 1 })),
+      apply_rule: APPLY_RULE,
+      scan_truncated: scanTruncated,
+    };
   }
   const scores = [];
   for (const r of filtered) {
@@ -933,7 +947,7 @@ function recall(args) {
     if (score > 0) scores.push({ score, ...r });
   }
   scores.sort((a, b) => b.score - a.score);
-  return { results: scores.slice(0, limit) };
+  return { results: scores.slice(0, limit), apply_rule: APPLY_RULE, scan_truncated: scanTruncated };
 }
 
 function list(args) {
@@ -944,12 +958,21 @@ function list(args) {
   const rows = DB.prepare(
     `SELECT id,content,type,tags,project,created,provenance FROM memories
      WHERE (?1 = '' OR project = ?1) AND (?2 = '' OR type = ?2)
-     ORDER BY created DESC LIMIT ?3`
-  ).all(project, type, limit);
-  // Фильтр доверия до отсева по limit, чтобы внешние записи не вытесняли
-  // доверенные из топа: LIMIT берётся уже по отфильтрованным.
-  const filtered = shapeRows(rows).filter(r => matchesTrust(r.provenance, wantTrust));
-  return { memories: filtered.slice(0, limit), apply_rule: APPLY_RULE };
+     ORDER BY created DESC`
+  ).all(project, type);
+  const scanTruncated = rows.length > SCAN_CAP;
+  const scanned = scanTruncated ? rows.slice(0, SCAN_CAP) : rows;
+  // Фильтр доверия применяется ДО отсева по limit. LIMIT в SQL стоял бы
+  // перед фильтром и отрезал бы доверенные записи раньше, чем агент их
+  // увидит: «дай мои доверенные, 20 штук» вернуло бы пустоту, и агент решил
+  // бы, что доверенных записей нет вовсе. Поэтому читаем шире, фильтруем
+  // и режем по limit уже после.
+  const filtered = shapeRows(scanned).filter(r => matchesTrust(r.provenance, wantTrust));
+  return {
+    memories: filtered.slice(0, limit),
+    apply_rule: APPLY_RULE,
+    scan_truncated: scanTruncated,
+  };
 }
 
 function forget(args) {
