@@ -288,6 +288,56 @@ await test("каталог не шлёт токен: он всё равно по
   eq(calls.length, 2, "ожидались artist-поиск + треки, без повторов на 403");
 });
 
+console.log("\nисполнителя нет в каталоге");
+
+// The real shape: an artist search that comes back with an empty result list, which is what
+// the catalog returns for an artist it does not carry. Measured against the live API - a
+// mainstream artist in the same script resolves fine, so an empty list here means absence
+// from the index, not a spelling variant.
+const ARTIST_SEARCH_ABSENT = { result: { artists: { results: [] } } };
+
+await test("отсутствие исполнителя объясняется, а не выглядит как опечатка", async () => {
+  const { searchTracks } = build({ "type=artist": ARTIST_SEARCH_ABSENT });
+  await rejects(
+    () => searchTracks("Wherever I Go", "Roxen St."),
+    /no artist named "Roxen St\."/i,
+    "агент не отличит отсутствие исполнителя от своей опечатки и будет перебирать написания",
+  );
+});
+
+await test("в объяснении сказано, что токен не поможет", async () => {
+  // The reason the search cannot be widened is the whole point: without it the caller assumes
+  // there is some credential to try, and burns a session looking for one.
+  const { searchTracks } = build({ "type=artist": ARTIST_SEARCH_ABSENT });
+  try {
+    await searchTracks("Wherever I Go", "Roxen St.");
+    throw new Error("ожидался выброс");
+  } catch (e) {
+    ok(/token/i.test(e.message), `в объяснении нет про токен: ${e.message}`);
+    ok(/anonymously/i.test(e.message), `не сказано, что каталог читается анонимно: ${e.message}`);
+  }
+});
+
+await test("отсутствие исполнителя не выглядит как пустой результат", async () => {
+  // Returning [] would be read as "no matches, try another spelling" - the exact dead end the
+  // explicit error exists to end. It must throw rather than return an empty list.
+  //
+  // The rejection has to be DELIBERATE, and "did it throw" alone does not say that: removing
+  // the guard makes the same path crash on a null artist id, and that crash also satisfies a
+  // bare "threw" assertion. So the message is checked for being a real explanation - naming the
+  // artist, and not carrying an internal-crash signature.
+  const { searchTracks } = build({ "type=artist": ARTIST_SEARCH_ABSENT });
+  let e;
+  try {
+    const v = await searchTracks("Wherever I Go", "Roxen St.");
+    e = new Error(`вернулся результат вместо отказа: ${JSON.stringify(v)}`);
+  } catch (err) {
+    e = err;
+  }
+  ok(!/cannot read|undefined is not|is not iterable/i.test(e.message), `упало внутренне, а не ответило: ${e.message}`);
+  ok(/Roxen St\./.test(e.message), `в отказе не назван исполнитель: ${e.message}`);
+});
+
 // ---------------------------------------------------------------------------
 
 console.log(`\n${failures.length ? "ПРОВАЛЕНО" : "зелёное"}: ${passed} ок, ${failures.length} сломалось\n`);
