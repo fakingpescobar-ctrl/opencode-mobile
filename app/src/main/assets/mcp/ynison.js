@@ -879,10 +879,28 @@ function byTitle(tracks, title) {
   return tracks.filter((t) => (t.title ?? "").toLowerCase().includes(want));
 }
 
+// A named performer that resolves to nothing is a fact about the catalog, not a mistyped query,
+// and the two need different answers. "nothing found" reads like the agent got the name wrong,
+// so it retries spelling variations forever - a real dead end dressed as a retryable mistake.
+//
+// The catalog is queried anonymously on purpose (see catalogGet): Yandex refuses REST catalog
+// access to this client, so sending the token only turns working requests into 403s. That means
+// no credential can widen the search, which is worth saying outright instead of leaving the
+// caller to try harder. Measured, not assumed: the artist is absent under every spelling tried,
+// while mainstream artists in the same script resolve fine, so this is a genuine gap in the
+// index rather than a naming variant to guess at.
 async function searchTracks(query, artist) {
   if (artist) {
     const hit = await resolveArtist(artist);
-    const tracks = hit ? await artistTracks(hit.id) : [];
+    if (!hit) {
+      throw new Error(
+        `Yandex's catalog has no artist named "${artist}". Not a spelling variant - the artist ` +
+          `is absent from the index, and no token can widen it because this catalog is read ` +
+          `anonymously (a token is refused with 403). Report this to the user instead of ` +
+          `trying other spellings.`,
+      );
+    }
+    const tracks = await artistTracks(hit.id);
     // The query is frequently the performer's own name, and no track of theirs carries it.
     // Falling back to the whole catalogue is what lets the list tool offer real candidates
     // instead of an empty answer.
