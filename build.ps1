@@ -25,13 +25,18 @@
 .PARAMETER SkipNative
     Не собирать нативку whisperlib (сборка из prebuilt jniLibs).
 
+.PARAMETER Task
+    verify  — ktlint + detekt + compileDebugKotlin (вордёр, который держит зелёный гейт)
+    jstest  — офлайн-тесты JS-ассетов MCP (node, без сети и без gradle)
+
 .EXAMPLE
     .\build.ps1 -Task verify
+    .\build.ps1 -Task jstest
     .\build.ps1 -Task native -WhisperCppDir C:\src\whisper.cpp
     .\build.ps1 -Task release -SkipNative
 #>
 param(
-    [ValidateSet('verify', 'debug', 'release', 'native')]
+    [ValidateSet('verify', 'jstest', 'debug', 'release', 'native')]
     [string]$Task = 'debug',
     [string]$WhisperCppDir = '',
     [string]$VulkanSdkDir = '',
@@ -90,6 +95,35 @@ if (-not $SkipNative -and ($Task -eq 'debug' -or $Task -eq 'release' -or $Task -
     if (-not $vcvars) {
         throw 'Visual Studio Build Tools (VC++) ne naideny: nuzhny dlya vulkan-shaders-gen (host MSVC). Ustanovite VS s "Desktop development with C++"'
     }
+}
+
+# ---- JS-тесты ассетов MCP: node, без gradle и без сети ----
+# Отдельная задача, а не часть verify: verify - это гейт, который держит зелёным КАЖДый
+# коммит, и втягивать туда node значит сделать его зависимым от того, установлен ли node на
+# машине сборки. Здесь node обязателен - иначе тест, который нечем запустить, тихо исчезает.
+if ($Task -eq 'jstest') {
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $node) {
+        Write-Host 'jstest: node не найден в PATH - тесты JS пропущены' -ForegroundColor Red
+        exit 1
+    }
+    $jsTests = Get-ChildItem (Join-Path $Root 'app\src\test\js') -Filter '*.test.mjs' -ErrorAction SilentlyContinue
+    if (-not $jsTests) {
+        Write-Host 'jstest: тестов не найдено' -ForegroundColor Red
+        exit 1
+    }
+    $failed = @()
+    foreach ($t in $jsTests) {
+        Write-Host "== $($t.Name) @ $(Get-Date -Format o)"
+        & $node.Source $t.FullName
+        if ($LASTEXITCODE -ne 0) { $failed += $t.Name }
+    }
+    if ($failed) {
+        Write-Host "jstest: сломалось -> $($failed -join ', ')" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host 'OK: jstest' -ForegroundColor Green
+    exit 0
 }
 
 # ---- Gradle-задачи и флаги ----

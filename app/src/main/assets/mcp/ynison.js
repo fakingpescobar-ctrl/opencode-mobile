@@ -772,27 +772,22 @@ const CLIENT_ID = "YandexMusicAndroid/24023621";
 
 // Every catalog request goes through here, so the scope story lives in one place.
 //
-// OAUTH authenticates the WEBSOCKET protocol and nothing else. Yandex never granted it the
-// REST catalog scopes, so api.music.yandex.net refuses it with 403 missing-required-scopes -
-// measured on the device, and reproduced off-device with the live token.
+// OAUTH authenticates the WEBSOCKET protocol and nothing else. api.music.yandex.net refuses it
+// with 403 missing-required-scopes - measured on the device and reproduced off-device with the
+// live token. That is NOT fixed by asking for more: the token requests "login:info
+// music:api-public", that is the entire set registered for this client, and the catalog still
+// answers 403. Yandex simply does not sell REST catalog access to this registration. The
+// catalog's own /users/me is 403 with the token AND without it, so nothing is lost by leaving
+// the token off entirely - there is no account-scoped call to make. Account identity comes from
+// login.yandex.ru instead, which answers 200 with this very token.
 //
-// The trap is that the catalog is fully public. The identical request carrying no
-// Authorization at all returns 200 and a normal result set. So attaching the token does not
-// merely fail to help, it converts a working call into a failing one - and because apiGet
-// drops the body on any non-2xx, all that reached the agent was the bare string "HTTP 403".
+// So the token is not sent, rather than sent and retried: it cannot help, and sending it turns
+// every working call into a failing one first. That mattered because apiGet drops the body on
+// any non-2xx, so a retry-on-403 scheme spent two round trips to arrive where one would.
 //
-// A 403 here is therefore a scope problem and never a "not found", which makes the anonymous
-// retry the correct response rather than a workaround. The token stays on the socket, where
-// it is what actually authenticates this process.
+// A 403 from here is now a real signal about a real problem, not an artefact of our own header.
 async function catalogGet(path) {
-  const anonymous = { "X-Yandex-Music-Client": CLIENT_ID };
-  try {
-    const headers = OAUTH ? { Authorization: `OAuth ${OAUTH}`, ...anonymous } : anonymous;
-    return await apiGet(path, headers);
-  } catch (err) {
-    if (!OAUTH || !/\b403\b/.test(String(err?.message ?? err))) throw err;
-    return await apiGet(path, anonymous);
-  }
+  return await apiGet(path, { "X-Yandex-Music-Client": CLIENT_ID });
 }
 
 const encode = (s) => encodeURIComponent(s);
