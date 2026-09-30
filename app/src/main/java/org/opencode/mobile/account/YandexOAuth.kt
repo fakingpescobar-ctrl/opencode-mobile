@@ -19,9 +19,15 @@ import java.util.Base64
  *
  * - **Домен `.ru`, а не `.com`.** Сессия пользователя живёт на `.ru`: запрос на
  *   `oauth.yandex.com` уводит на `passport.yandex.com` и заставляет логиниться заново.
- * - **Scope только `login:info`.** Отдельного «музыкального» scope в рабочем виде нет:
- *   `music:api-public` отвечает `invalid_scope`, а `api.music.yandex.net` прекрасно
- *   отдаёт библиотеку на токене с `login:info`. Лишние права ещё и уменьшают TTL токена.
+ * - **Scope надо запрашивать явно, и это [SCOPE], а не `login:info`.** Раньше здесь стоял
+ *   вывод «отдельного музыкального scope нет: `music:api-public` отвечает `invalid_scope`,
+ *   а `api.music.yandex.net` прекрасно отдаёт библиотеку на `login:info`». Проверка была
+ *   верной, но выполнена на другой регистрации — той, что была в коде до `f749d88` и
+ *   больше не используется. У клиента, который остался сейчас, `music:api-public`
+ *   зарегистрирован: `/device/code` и с ним, и с `login:info music:api-public`
+ *   отвечает `200`. Без явного `scope` Яндекс выдаёт токен с урезанным набором, и
+ *   `api.music.yandex.net` режет его `403 missing-required-scopes` — при живом токене
+ *   и верном `X-Yandex-Music-Client`, то есть отказ не в подписи запроса.
  * - **Секрет нужен только device-flow.** PKCE обходится без него, а [YandexDeviceAuth]
  *   без секрета получает `invalid_client: Wrong client secret` — проверено вживую, и
  *   отказ приходит именно на проверке клиента, до проверки самого гранта.
@@ -38,12 +44,12 @@ import java.util.Base64
 @Suppress("TooManyFunctions")
 object YandexOAuth {
     /**
-     * Идентификатор приложения в консоли Яндекса.
+     * Идентификатор клиента — публичные креды официального приложения Яндекс Музыки для
+     * Android; оговорка про «свою регистрацию» разобрана в [YandexDeviceAuth].
      *
      * Единственное место, где он записан: и PKCE, и device-flow обязаны читать его отсюда.
-     * Два независимых литерала в двух объектах — уже расходились (PKCE смотрел на нашу
-     * регистрацию, device-flow на чужую), и такая ошибка не падает: обе формы собираются,
-     * обе отправляются, просто вход идёт не от того приложения.
+     * Два независимых литерала в двух объектах уже расходились, и такая ошибка не падает:
+     * обе формы собираются, обе отправляются, просто вход идёт не от того приложения.
      */
     const val CLIENT_ID = "70e7fc7e75144b2badc68ba8d0293882"
 
@@ -69,7 +75,14 @@ object YandexOAuth {
      */
     const val HOST = "oauth"
 
-    const val SCOPE = "login:info"
+    /**
+     * Скоупы, зарегистрированные за этим клиентом в консоли Яндекса.
+     *
+     * Запрашиваются явно и обоими входами одинаково. Набор нельзя расширять: `login:email`
+     * Яндекс отклоняет с «Scope from POST does not match the client's one», а `read:music`
+     * — с «err_scope not empty». Ровно эти два скоупа и есть всё, что есть у клиента.
+     */
+    const val SCOPE = "login:info music:api-public"
     const val AUTHORIZE_URL = "https://oauth.yandex.ru/authorize"
     const val TOKEN_URL = "https://oauth.yandex.ru/token"
     const val INFO_URL = "https://login.yandex.ru/info?format=json"

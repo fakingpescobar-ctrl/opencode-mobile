@@ -47,10 +47,20 @@ class YandexOAuthTest {
         assertTrue(url.startsWith(YandexOAuth.AUTHORIZE_URL))
         assertTrue(url.contains("response_type=code"))
         assertTrue(url.contains("client_id=${YandexOAuth.CLIENT_ID}"))
-        assertTrue(url.contains("scope=login%3Ainfo"))
+        assertTrue(url.contains("scope=login%3Ainfo+music%3Aapi-public"))
         assertTrue(url.contains("code_challenge_method=S256"))
         // Схема redirect уходит в запрос закодированной: иначе Яндекс не примет заявку.
         assertTrue(url.contains("redirect_uri=org.opencode.mobile%3A%2F%2Foauth"))
+    }
+
+    /**
+     * Скоуп здесь — условие работы, а не настройка: без `music:api-public` Music API
+     * отвечает `403 missing-required-scopes` на вполне живом токене. Тест отдельный, чтобы
+     * изменение скоупа не прошло ревью как «причесали константу».
+     */
+    @Test
+    fun `scope carries the music permission`() {
+        assertTrue(YandexOAuth.SCOPE.contains("music:api-public"))
     }
 
     @Test

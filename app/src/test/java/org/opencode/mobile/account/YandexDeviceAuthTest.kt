@@ -33,6 +33,22 @@ class YandexDeviceAuthTest {
     }
 
     /**
+     * Сторож против молчаливой потери музыки: форма обязана нести `scope`.
+     *
+     * Без него `/device/code` отвечает `200`, вход выглядит успешным, а токен приходит без
+     * `music:api-public` — и `api.music.yandex.net` режет его `403 missing-required-scopes`.
+     * Ни проверка секрета, ни проверка единой регистрации этого не ловили: на сломанной
+     * форме обе зелёные, а музыки нет.
+     */
+    @Test
+    fun `device code form requests the scopes registered for the client`() {
+        val body = YandexDeviceAuth.deviceCodeForm("opencode1")
+
+        val encodedScope = java.net.URLEncoder.encode(YandexOAuth.SCOPE, Charsets.UTF_8.name())
+        assertTrue(body.contains("scope=$encodedScope"))
+    }
+
+    /**
      * Сторож против повторения расхождения: device-flow обязан идти от той же регистрации,
      * что и PKCE. Раньше у него был свой литерал, и он молча уехал на чужой `client_id` —
      * тесты были зелёные, формы собирались, а вход шёл не от того приложения.
