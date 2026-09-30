@@ -7,6 +7,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Обход Android BAL: без этого serve (foreground service без видимого окна) не может
+         запустить Яндекс.Музыку, Android молча режет старт с result code=102 (BAL_BLOCK),
+         и /v1/apps/launch отвечает 200 {"ok":true}, хотя процесс не поднялся.
+         Разрешение special access выдаётся руками: Настройки -> Приложения -> Отображение
+         поверх других приложений. MediaSession-транспорт (/v1/media/*) работает и без него. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Внешнее хранилище: чтобы рабочая директория модели указывала на настоящие

@@ -3,6 +3,7 @@ package org.opencode.mobile.installer
 import android.content.Context
 import android.util.Log
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
 import org.opencode.mobile.account.LikedPage
 import org.opencode.mobile.account.PlaylistEdit
@@ -13,10 +14,14 @@ import org.opencode.mobile.account.YandexAccountController
 import org.opencode.mobile.account.YandexAccountRequestValidator
 import org.opencode.mobile.account.YandexPlaylistPlayer
 import org.opencode.mobile.media.CatalogTrack
+import org.opencode.mobile.media.MediaAppListSpec
+import org.opencode.mobile.media.MediaAppSnapshot
 import org.opencode.mobile.media.MediaControlController
 import org.opencode.mobile.media.MediaControlRequestValidator
+import org.opencode.mobile.media.MediaControlResult
 import org.opencode.mobile.media.MediaLikeResult
 import org.opencode.mobile.media.MediaPlaybackSnapshot
+import org.opencode.mobile.media.MediaStatusResult
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
@@ -154,6 +159,11 @@ object AppInstallBridge {
                 route(output, request)
             } catch (error: IllegalArgumentException) {
                 writeJson(output, 400, error(error.message ?: "invalid request"))
+            } catch (error: JSONException) {
+                // Отсутствующее или нестроковое обязательное поле уезжало в 500, потому что
+                // JSONException - потомок RuntimeException, а не IllegalArgumentException, и мимо
+                // первого catch-а проскакивал в общий. Это плохой вход, а не сбой сервера: 400.
+                writeJson(output, 400, error(error.message ?: "malformed JSON body"))
             } catch (error: Exception) {
                 Log.w(TAG, "Installer bridge request failed", error)
                 writeJson(output, 500, error(error.message ?: "request failed"))
@@ -192,6 +202,16 @@ object AppInstallBridge {
             // обслуживали инструменты, которых в выдаче агента больше нет, - держать
             // обработчики значило бы держать вход, которым никто не пользуется.
             Route("POST", "/v1/media/like", ::likeMedia),
+            // MediaSession-транспорт: работает по активной сессии и НЕ запускает activity, а
+            // значит не упирается в Android BAL (result code=102), который блокирует запуск
+            // Яндекс.Музыки из фонового serve. Это запасной путь, когда приложение ещё живо,
+            // но поднять его из фона система не даёт.
+            Route("POST", "/v1/media/status", ::mediaStatus),
+            Route("POST", "/v1/media/control", ::mediaControl),
+            Route("GET", "/v1/media/apps", ::mediaApps),
+            // Честный ответ на «почему Яндекс.Музыка не поднялась»: выдано ли то самое
+            // SYSTEM_ALERT_WINDOW, без которого BAL запрещает фоновому serve любой запуск.
+            Route("GET", "/v1/launch/blocker", ::launchBlocker),
             Route("POST", "/v1/account/yandex/connect", ::connectYandex),
             Route("POST", "/v1/account/yandex/device/poll", ::yandexDevicePoll),
             Route("GET", "/v1/account/yandex/status", ::yandexStatus),
@@ -236,7 +256,27 @@ object AppInstallBridge {
         val body = jsonObject(request)
         val spec = AppControlRequestValidator.launch(body.getString("package"))
         val app = InstalledAppController.launchApp(spec)
-        writeJson(output, 200, JSONObject().put("ok", true).put("app", app.toJson()))
+        writeJson(
+            output,
+            200,
+            // ok означает «intent принят», а не «приложение запустилось»: мы не можем знать
+            // второе (см. InstalledAppController). Ставить сюда признак жизни нельзя - потребитель
+            // memory.js бросает на !body.ok, и приложение, у которого нет чему подтвердить запуск,
+            // стало бы падать на КАЖДОМ вызове, включая заведомо успешные запуски.
+            JSONObject()
+                .put("ok", true)
+                .put("app", app.toJson())
+                .put("background_launch_allowed", app.backgroundLaunchAllowed)
+                .put(
+                    "hint",
+                    if (app.backgroundLaunchAllowed) {
+                        "to confirm the app really came up, read its own state (media session)"
+                    } else {
+                        "Android may block this start (BAL_BLOCK): grant SYSTEM_ALERT_WINDOW in " +
+                            "Diagnostics -> Фоновый запуск приложений, then start the app by hand"
+                    },
+                ),
+        )
     }
 
     private fun status(
@@ -463,6 +503,107 @@ object AppInstallBridge {
         writeJson(output, 200, JSONObject().put("ok", result.ok).put("media", result.toJson()))
     }
 
+    /** Текущее состояние плеера через активную MediaSession - без запуска приложения. */
+    private fun mediaStatus(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val body = jsonObject(request)
+        // package необязателен: контроллер сам найдёт единственную живую сессию и в ошибке
+        // перечислит кандидатов. Обязателен он ровно там, где сессий несколько.
+        val result = MediaControlController.status(MediaControlRequestValidator.status(body.optionalString("package")))
+        writeJson(output, 200, JSONObject().put("ok", true).put("media", result.toJson()))
+    }
+
+    /**
+     * Команда транспорта: play, pause, play_pause, next, previous, stop.
+     *
+     * Перемотки тут нет намеренно: `MediaController.TransportControls` не умеет seek-to-offset,
+     * а телефон всё равно не возобновляет с паузы. Полный список — в [MediaCommand.fromWireName],
+     * и enum агентского инструмента session_control обязан совпадать с ним, иначе заявленное
+     * значение будет отвергаться валидатором с 400.
+     *
+     * Это то, чем Ynison не может: сессия уже активна, поэтому команда уходит прямо в
+     * [android.media.session.MediaController] и Android ничего запускать не пытается.
+     */
+    private fun mediaControl(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val body = jsonObject(request)
+        val result =
+            MediaControlController.control(
+                MediaControlRequestValidator.control(
+                    action = body.optionalString("action"),
+                    packageName = body.optionalString("package"),
+                ),
+            )
+        writeJson(output, 200, JSONObject().put("ok", result.verified).put("media", result.toJson()))
+    }
+
+    /**
+     * Диагностика фонового запуска.
+     *
+     * Android не даёт приложению без видимого окна запускать чужую activity: `startActivity`
+     * возвращает успех, но старт режется с `result code=102 (BAL_BLOCK)`. Serve живёт как
+     * foreground service, то есть ровно в этой ситуации. Единственное штатное исключение -
+     * выданное `SYSTEM_ALERT_WINDOW`, и оно выдаётся пользователем руками, поэтому агент должен
+* знать текущее состояние и уметь показать, куда идти, вместо того чтобы повторять запуск.
+     *
+     * Тело запроса не нужно: спрашивать тут не о чем - маршрут возвращает состояние права.
+     */
+    @Suppress("UnusedParameter")
+    private fun launchBlocker(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val granted = InstalledAppController.canDrawOverlays()
+        writeJson(
+            output,
+            200,
+            JSONObject()
+                .put(
+                    "ok",
+                    true,
+                ).put("system_alert_window_granted", granted)
+                .put(
+                    "background_launch_allowed",
+                    granted,
+                ).put(
+                    "hint",
+                    if (granted) {
+                        "SYSTEM_ALERT_WINDOW is granted: launching other apps from the background is allowed"
+                    } else {
+                        "SYSTEM_ALERT_WINDOW is NOT granted, so Android blocks any background app " +
+                            "launch with BAL_BLOCK (result code=102). Grant it in Settings -> Apps -> " +
+                            "Display over other apps -> OpenCode. Until then use /v1/media/* , which " +
+                            "drives the active MediaSession and never starts an activity."
+                    },
+                ).put("settings_action", "android.settings.action.MANAGE_OVERLAY_PERMISSION"),
+        )
+    }
+
+    /** Какие приложения вообще публикуют MediaSession - нужно, чтобы понять, к кому есть доступ. */
+    private fun mediaApps(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val apps =
+            MediaControlController.listApps(
+                MediaAppListSpec(
+                    query = jsonObject(request).optionalString("package"),
+                    limit = MediaControlRequestValidator.DEFAULT_LIST_LIMIT,
+                ),
+            )
+        writeJson(
+            output,
+            200,
+            JSONObject()
+                .put("ok", true)
+                .put("apps", org.json.JSONArray().apply { apps.forEach { put(it.toJson()) } }),
+        )
+    }
+
     private fun install(
         output: BufferedOutputStream,
         request: Request,
@@ -607,10 +748,20 @@ object AppInstallBridge {
         return raw.toIntOrNull() ?: throw IllegalArgumentException("$name must be an integer")
     }
 
-    private fun jsonObject(request: Request): JSONObject =
-        runCatching { JSONObject(request.body) }.getOrElse {
+    /**
+     * Тело запроса как объект.
+     *
+     * GET-запросы тела не имеют вовсе, и это не ошибка - это «параметров нет». Раньше пустое тело
+     * падало в 400 "body must be a JSON object", из-за чего /v1/media/apps был недостижим:
+     * отправить "{}" тоже нельзя, fetch запрещает body на GET. Поэтому пустое тело читается
+     * как пустой объект, а не-пустое не-объектное - честная ошибка.
+     */
+    private fun jsonObject(request: Request): JSONObject {
+        if (request.body.isBlank()) return JSONObject()
+        return runCatching { JSONObject(request.body) }.getOrElse {
             throw IllegalArgumentException("body must be a JSON object")
         }
+    }
 
     private fun JSONObject.optionalString(name: String): String? =
         if (has(name) && !isNull(name)) getString(name).takeIf { it.isNotBlank() } else null
@@ -628,6 +779,7 @@ object AppInstallBridge {
             .put("label", label)
             .put("component", componentName)
             .put("message", message)
+            .put("background_launch_allowed", backgroundLaunchAllowed)
 
     private fun MediaLikeResult.toJson(): JSONObject =
         JSONObject()
@@ -647,10 +799,54 @@ object AppInstallBridge {
             .put("album", album ?: JSONObject.NULL)
             .put("duration_ms", durationMs ?: JSONObject.NULL)
             .put("position_ms", positionMs ?: JSONObject.NULL)
-            // null здесь — «сессия не публикует оценку», а не «трек не лайкнут»: агент обязан
-            // сказать «не знаю», а не выдавать отсутствие ответа за отрицательный ответ.
+            // null читается как «не знаем, есть ли лайк», а не «лайка нет»: доступно только
+            // приложение, которое держит сессию, и у Яндекс Музыки это вторая сторона.
             .put("liked", liked.asJsonFlag())
             .put("disliked", disliked.asJsonFlag())
+
+    /** Ответ /v1/media/status: кто это приложение и что сейчас играет. */
+    private fun MediaStatusResult.toJson(): JSONObject =
+        JSONObject()
+            .put("package", packageName)
+            .put("label", label)
+            .put("transport", transport)
+            .put("message", message)
+            .put("playback", playback.toJson())
+
+    /**
+     * Ответ /v1/media/control.
+     *
+     * [MediaControlResult.verified] - главное поле: команда может уйти в сессию и не дать
+     * эффекта (например, next у плейлиста на одном треке). Без before/after агент не отличил бы
+     * «приложение проигнорировало команду» от «команда сработала».
+     */
+    private fun MediaControlResult.toJson(): JSONObject =
+        JSONObject()
+            .put("package", packageName)
+            .put("label", label)
+            .put("transport", transport)
+            .put("command", command)
+            .put("message", message)
+            .put("verified", verified)
+            .put("before", before?.toJson() ?: JSONObject.NULL)
+            .put("after", after?.toJson() ?: JSONObject.NULL)
+
+    /**
+     * Список приложений с активной MediaSession - кому вообще можно слать команды.
+     *
+     * [MediaAppSnapshot.controlable] важнее списка сервисов: приложение может публиковать
+     * сессию, но без явного `MediaBrowserService` наш контроллер к ней не подключится, и
+     * команды будут уходить в никуда. `hiddenSessionServices` показывает, что сессия есть,
+     * но доступ к ней закрыт - это и есть отличие «нечем играть» от «нечем управлять».
+     */
+    private fun MediaAppSnapshot.toJson(): JSONObject =
+        JSONObject()
+            .put("package", packageName)
+            .put("label", label)
+            .put("controlable", controlable)
+            .put("session_services", org.json.JSONArray().apply { sessionServices.forEach { put(it) } })
+            .put("hidden_session_services", hiddenSessionServices)
+            .put("media_button_receiver", mediaButtonReceiver ?: JSONObject.NULL)
 
     /** Трёхзначный флаг: true, false и «сессия не ответила» — это три разных значения. */
     private fun Boolean?.asJsonFlag(): Any = this ?: JSONObject.NULL

@@ -39,7 +39,7 @@ function slice(from, to) {
 
 // goAwayError sits above openSessionOnce; the retry loop sits below it. Both are needed to
 // test the decision, so both are pulled out and stitched together here.
-const BAN_BLOCK = slice("function goAwayError(", "async function openSessionOnce()");
+const BAN_BLOCK = slice("function goAwayError(", "async function openSessionOnce(seed = null)");
 const RETRY_BLOCK = slice("const PERMANENT_OPEN_ERRORS", "// ---- the handoff ---");
 
 /** Runs the real goAwayError and openSession against a scripted openSessionOnce. */

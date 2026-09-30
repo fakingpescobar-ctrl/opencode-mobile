@@ -3,7 +3,10 @@ package org.opencode.mobile.ui
 import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -29,6 +32,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -46,10 +50,14 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.opencode.mobile.account.YandexAccountController
+import org.opencode.mobile.installer.InstalledAppController
 import org.opencode.mobile.server.OpencodeServerService
 import org.opencode.mobile.server.OpencodeServerService.ServerStatus
 import org.opencode.mobile.server.RuntimeError
@@ -115,6 +123,22 @@ fun DiagnosticsScreen(
     // Системный Back закрывает оверлей, как и иконка ✕ (иначе Back ушёл бы
     // из Activity, оставив оверлей на экране — UX-ловушка).
     BackHandler(onBack = onClose)
+
+    // Право «наложение поверх окон» выдаётся в настройках СИСТЕМЫ, а не на этом экране,
+    // поэтому состояние перечитывается при каждом возврате в приложение. Без этого экран
+    // после выдачи продолжит врать «не выдано» до перезапуска.
+    var overlayGranted by remember { mutableStateOf(InstalledAppController.canDrawOverlays()) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer =
+            LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    overlayGranted = InstalledAppController.canDrawOverlays()
+                }
+            }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     // Снапшот собирается ОДИН раз при открытии, на IO-диспатчере: проверка
     // ncnn-каталога (полный набор файлов — NcnnModelValidator, тот же, что в
@@ -268,6 +292,59 @@ fun DiagnosticsScreen(
                 }
                 if (serverState.errorHistory.isNotEmpty()) {
                     InfoRow("Сбои (последние ${serverState.errorHistory.size})", historyText(serverState.errorHistory))
+                }
+
+                sectionHeader("Фоновый запуск приложений")
+                InfoRow(
+                    "Наложение поверх окон",
+                    if (overlayGranted) {
+                        "✔ выдано — агент может запускать приложения из фона"
+                    } else {
+                        "✘ не выдано — Android блокирует фоновый запуск (BAL_BLOCK)"
+                    },
+                    if (overlayGranted) Color(0xFF7BD88F) else Color(0xFFFF6F5A),
+                )
+                if (overlayGranted) {
+                    InfoRow("Можно", "music_play, mobile_launch_app и другие команды запуска")
+                } else {
+                    InfoRow(
+                        "Что это чинит",
+                        "Сервер работает фоновым сервисом без видимого окна. Android запрещает ему " +
+                            "запускать activity других приложений и молча режет старт с кодом 102 — " +
+                            "команда рапортует об успехе, а процесс не поднимается. Это право снимает " +
+                            "запрет: Яндекс.Музыка запускается, даже если Android её убил.",
+                    )
+                    downloadButton("Выдать разрешение") {
+                        // Три попытки по убыванию точности. Первые две важны потому, что ColorOS
+                        // игнорирует package-URI у этого action и открывает общий список
+                        // «выберите приложение» - рабочий путь, но с лишней прокруткой.
+                        // Последняя - страница приложения, где пункт есть всегда.
+                        val attempts =
+                            listOf(
+                                Intent(
+                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:${context.packageName}"),
+                                ),
+                                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION),
+                                Intent(
+                                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    Uri.parse("package:${context.packageName}"),
+                                ),
+                            )
+                        // Молчаливый отказ тут недопустим: это единственный путь к починке BAL,
+                        // и если все три не сработали, пользователь должен об этом узнать.
+                        if (attempts.none { runCatching { context.startActivity(it) }.isSuccess }) {
+                            Toast
+                                .makeText(
+                                    context,
+                                    "Не удалось открыть настройки наложения. Разреши вручную: " +
+                                        "Настройки → Приложения → " +
+                                        "${context.applicationInfo.loadLabel(context.packageManager)} " +
+                                        "→ Специальный доступ → Отображение поверх других приложений",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                        }
+                    }
                 }
 
                 sectionHeader("Голосовое распознавание")
