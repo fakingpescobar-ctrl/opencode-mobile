@@ -370,6 +370,31 @@ function send(ws, message) {
 // Open a Ynison session and complete the handshake. Returns the live socket plus the
 // frames received so far. The handshake declares can_be_player:true because we must
 // be eligible for the active role during the handoff - see the header comment.
+// A ban arrives as data, not as a closed socket. Ynison answers
+//
+//   {"ynison-error-code":"400090001","ynison-go-away-for-seconds":"3600"}
+//
+// which is the server asking this device id to disappear for that many seconds, because too
+// many sessions were opened under it in a short window.
+//
+// Two things must not happen here. It must not look like an auth failure: the token is fine,
+// and an agent told "refused the token" will go and re-login a working token for nothing. And
+// it must not be retried: every retry is one more connection from the id that is being
+// penalised, so retrying does not just fail, it lengthens the ban. Hence the permanent flag -
+// matching on message text would only catch the wording we happen to use today.
+function goAwayError(payload) {
+  if (!payload || String(payload["ynison-error-code"]) !== "400090001") return null;
+  const secs = payload["ynison-go-away-for-seconds"] || "some";
+  const e = new Error(
+    `Yandex Music dropped this device and asked it to stay away ${secs}s (ynison 400090001). ` +
+      `The phone goes offline when too many Ynison sessions are opened under one device id. ` +
+      `The token is valid - do not re-login. Wait out the interval before trying again.`,
+  );
+  e.permanent = true;
+  e.goAwaySeconds = Number(payload["ynison-go-away-for-seconds"]) || 0;
+  return e;
+}
+
 async function openSessionOnce() {
   if (!OAUTH) throw new Error("YNISON_TOKEN is not set");
 
@@ -383,7 +408,16 @@ async function openSessionOnce() {
       }),
     });
     const timer = setTimeout(() => { ws.terminate(); reject(new Error("redirect timeout")); }, STEP_TIMEOUT_MS);
-    ws.onmessage = (e) => { clearTimeout(timer); resolve(JSON.parse(e.data)); ws.close(); };
+    ws.onmessage = (e) => {
+      clearTimeout(timer);
+      let parsed = null;
+      try { parsed = JSON.parse(e.data); } catch { parsed = null; }
+      // Close before rejecting so a ban does not leave the redirect socket hanging.
+      ws.close();
+      const away = goAwayError(parsed);
+      if (away) reject(away);
+      else resolve(parsed);
+    };
     ws.onerror = (e) => { clearTimeout(timer); reject(new Error(`ynison redirect failed: ${e.message}`)); };
     ws.connect();
   });
@@ -424,6 +458,14 @@ async function openSessionOnce() {
     ws.onerror = (e) => { clearTimeout(timer); reject(new Error(`ynison state connect failed: ${e.message}`)); };
     ws.connect().then(() => { clearTimeout(timer); resolve(); }).catch((e) => { clearTimeout(timer); reject(e); });
   });
+
+  // The ban can arrive on the state socket instead of the redirect, as a frame that carries
+  // the code rather than a close. Checked here, after the handshake and before any write, so
+  // a banned device is not sent a command on the way to reporting that it is banned.
+  for (const frame of frames) {
+    const away = goAwayError(frame);
+    if (away) { ws.close(); throw away; }
+  }
 
   send(ws, {
     ...meta(),
@@ -543,6 +585,9 @@ async function waitForState(expect, attempts = VERIFY_ATTEMPTS) {
 
 // Retries only what a retry can fix. A token the server refuses, or a missing token, is
 // a configuration problem: repeating it just delays the same message three times over.
+// A go-away ban is worse than useless to retry - each attempt is another connection from the
+// id being penalised - and it carries permanent=true so the decision does not depend on how
+// the message happens to be worded.
 const PERMANENT_OPEN_ERRORS = ["is not set", "refused the token"];
 
 async function openSession() {
@@ -553,7 +598,7 @@ async function openSession() {
     } catch (e) {
       lastError = e;
       trace("open attempt", attempt, "failed:", e.message);
-      if (PERMANENT_OPEN_ERRORS.some((s) => e.message.includes(s))) break;
+      if (e.permanent || PERMANENT_OPEN_ERRORS.some((s) => e.message.includes(s))) break;
       await wait(500);
     }
   }
