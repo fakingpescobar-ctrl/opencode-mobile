@@ -377,6 +377,11 @@ fun ChatOverlay(
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     var snapshot by remember { mutableStateOf<ChatSnapshot?>(null) }
+    // Защёлка на плашку причины. Retry/ошибка провайдера - УСТОЙЧИВОЕ состояние,
+    // а не событие: сервер будет отдавать free_tier_limit и после любого TTL, пока
+    // квота не восстановится. Поэтому держим плашку, пока идёт ход, и гасим только
+    // когда opencode дошёл до успешного assistant-шага (thinking снят).
+    var noticeLatch by remember { mutableStateOf<ChatNotice?>(null) }
     var draft by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -1087,6 +1092,14 @@ fun ChatOverlay(
                 // изменилось (messages + thinking + stalled одинаковы — пропускаем).
                 // При частом поллинге это не даёт Compose реконсилить всю
                 // ленту без необходимости, сохраняя рендер максимально дешёвым.
+                // Защёлка: сервер может моргнуть статусом на один тик, а причина у
+                // пользователя должна висеть, пока он её не закрыл. Гасим только на
+                // успешном шаге модели (thinking снят) - это и есть «проблема решена».
+                if (final.notice != null) {
+                    noticeLatch = final.notice
+                } else if (!final.thinking) {
+                    noticeLatch = null
+                }
                 changed = old == null ||
                     old.messages != final.messages ||
                     old.thinking != final.thinking ||
@@ -1095,7 +1108,8 @@ fun ChatOverlay(
                     old.liveTool != final.liveTool ||
                     old.question != final.question ||
                     old.permission != final.permission ||
-                    old.notice != final.notice
+                    old.notice != final.notice ||
+                    noticeLatch != (final.notice ?: noticeLatch)
                 if (changed) {
                     snapshot = final
                 }
@@ -1510,7 +1524,9 @@ fun ChatOverlay(
                     }
                     // Причина отказа сервера (квота/ретрай) — всегда последняя строка,
                     // чтобы её не съедал автоскролл вниз и она читалась как вывод.
-                    snapshot?.notice?.let { n ->
+                    // Рендерим защёлку: плашка должна висеть, пока сервер держит
+                    // ту же причину, даже если конкретный тик опроса её не увидел.
+                    (noticeLatch ?: snapshot?.notice)?.let { n ->
                         item(key = "notice_${n.title}_${n.attempt}") {
                             NoticeRow(n, context)
                         }
@@ -2696,7 +2712,14 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             val permissionDeferred = async { PermissionCache.get(p, activeId) }
             // Статус хода от сервера: квота/ретрай провайдера. Отдельным async,
             // чтобы не добавлять его задержку к ленте — оба вызова блокирующие.
-            val noticeDeferred = async { fetchNotice(p, activeId) }
+            // Опрашиваем ТОЛЬКО пока ход незавершён: в покое статус не может дать
+            // новое (проверено — на успешном ходе он и так пустой), а лишний запрос
+            // на каждом тике поллинга это чистый оверхед. Решение берём по thinking
+            // прошлого тика; на первом тике после старта кэша ещё нет, догоняем
+            // следующим (разница — доли секунды, статус виден только как плашка).
+            val noticeDeferred = async {
+                if (ChatCache.result?.thinking == true) fetchNotice(p, activeId) else null
+            }
             // MCP-серверы: GET /mcp → Record<name, McpServer{name,enabled,status,...}> (иначе пустой {}).
             // Читаем из кэша (обновляется раз в MCP_CACHE_MS), чтобы не дёргать сервис каждый поллинг.
             // Подключёнными считаем тех, у кого status == "connected". Показываем «N MCP».
