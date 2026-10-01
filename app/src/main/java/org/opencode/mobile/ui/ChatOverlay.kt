@@ -417,12 +417,10 @@ fun ChatOverlay(
     // Настройка шрифта ответов модели: хранится в SharedPreferences, меняется на лету.
     val prefs = remember { context.getSharedPreferences("chat_overlay", Context.MODE_PRIVATE) }
     var modelFontKey by remember { mutableStateOf(prefs.getString("model_font_key", "mono") ?: "mono") }
-    var showFontPicker by remember { mutableStateOf(false) }
     val modelFont = remember(modelFontKey) { fontFor(modelFontKey) }
 
     // Настройка цвета ответов модели: hex-строка без '#', меняется на лету через цветовой пикер.
     var modelColorHex by remember { mutableStateOf(prefs.getString("model_color", "D97706") ?: "D97706") }
-    var showColorPicker by remember { mutableStateOf(false) }
     val modelColor = remember(modelColorHex) { parseHexColor(modelColorHex) }
 
     fun setModelColor(hex: String) {
@@ -485,16 +483,11 @@ fun ChatOverlay(
             sttModel = "turbo"
         }
     }
-    var showSettings by remember { mutableStateOf(false) }
     // Полноэкранная диагностика: состояние сервера, STT-модели, лог serve.
     // Оверлей рисуется ПОСЛЕДНИМ в корневом Surface — поверх чата и панелей.
     var showDiagnostics by remember { mutableStateOf(false) }
-    // Выпадающий список MCP-серверов (открывается тапом по индикатору MCP).
-    var showMcpList by remember { mutableStateOf(false) }
-    // Панель выбора голосового движка (system | ncnn) - отдельная от showSettings.
-    // GaugeSettings отвечает только за полосы гейджа, поэтому выбор STT вынесен
-    // в собственную панель с собственной иконкой в хедере.
-    var showSttSettings by remember { mutableStateOf(false) }
+    // Панели шапки (список MCP, пикер цвета, пикер шрифта, настройки гейджа,
+    // выбор STT) живут не здесь, а в activePanel выше — одним состоянием.
     // «Новая сессия» в полёте — иконка + подсвечивается зелёным (UI-19:
     // подсветка НЕ привязана к showMcpList — это два независимых состояния).
     var creatingSession by remember { mutableStateOf(false) }
@@ -510,24 +503,30 @@ fun ChatOverlay(
     var whisperRecorder: AudioRecorder? = null
     val permissionActionBusy = permissionRespondingId != null || stopping
 
-    // Панели, выпадающие из шапки, ВЗАИМОИСКЛЮЧАЮЩИЕ. Каждая рендерится своим
-    // `if (...)` и занимает полную ширину под шапкой, поэтому две открытые
-    // панели складывались по высоте и хедер вздваивался. Переключение идёт
-    // ТОЛЬКО здесь: раньше сброс жил внутри кликов по иконкам, и асимметрия
-    // (Mic гасил Settings, а Settings не гасил Mic) позволяла открыть обе.
-    // Один атомарный сброс вместо пяти разрозненных — иначе следующая иконка
-    // снова принесёт свой вариант правил.
-    fun toggleHeaderPanel(
-        self: String,
-        isOpen: Boolean,
-    ) {
-        val open = !isOpen
-        showMcpList = open && self == PANEL_MCP
-        showColorPicker = open && self == PANEL_COLOR
-        showFontPicker = open && self == PANEL_FONT
-        showSettings = open && self == PANEL_SETTINGS
-        showSttSettings = open && self == PANEL_STT
+    // Активная выпадающая панель шапки; null — закрыты все. ОДНО состояние
+    // вместо пяти флагов: панели взаимоисключающие СТРУКТУРНО, а не по
+    // договорённости между обработчиками. Пять флагов требовали в каждом
+    // клике перечислить четыре остальных, и договорённость уже дала баг:
+    // Mic гасил Settings, а Settings не гасил Mic — обе панели открывались
+    // одновременно и хедер вздваивался по высоте. Выводить признаки из одного
+    // значения дешевле, чем каждый раз вспоминать остальные.
+    var activePanel by remember { mutableStateOf<String?>(null) }
+
+    fun toggleHeaderPanel(self: String) {
+        activePanel = if (activePanel == self) null else self
     }
+
+    // Закрытие панели по выбору внутри неё (например, применён шрифт).
+    // Через сравнение, а не присваивание null: чужая панель закрываться не должна.
+    fun closeHeaderPanel(self: String) {
+        if (activePanel == self) activePanel = null
+    }
+
+    val showMcpList = activePanel == PANEL_MCP
+    val showColorPicker = activePanel == PANEL_COLOR
+    val showFontPicker = activePanel == PANEL_FONT
+    val showSettings = activePanel == PANEL_SETTINGS
+    val showSttSettings = activePanel == PANEL_STT
 
     fun answerQuestion(
         q: ChatQuestion,
@@ -1306,7 +1305,7 @@ fun ChatOverlay(
                 MCPIndicator(
                     connected = snapshot?.mcpConnected ?: 0,
                     total = snapshot?.mcpTotal ?: 0,
-                    onClick = { toggleHeaderPanel(PANEL_MCP, showMcpList) },
+                    onClick = { toggleHeaderPanel(PANEL_MCP) },
                     modifier = Modifier.padding(start = 4.dp),
                 )
                 // Цветовой пикер для ответов модели. ИКОНКА — готовая «капля»
@@ -1322,7 +1321,7 @@ fun ChatOverlay(
                             .size(22.dp)
                             .clip(CircleShape)
                             .background(if (showColorPicker) Color(0xFF3A3A3A) else Color.Transparent)
-                            .clickable { toggleHeaderPanel(PANEL_COLOR, showColorPicker) }
+                            .clickable { toggleHeaderPanel(PANEL_COLOR) }
                             .padding(3.dp),
                 )
                 Icon(
@@ -1335,7 +1334,7 @@ fun ChatOverlay(
                             .size(22.dp)
                             .clip(CircleShape)
                             .background(if (showFontPicker) Color(0xFF3A3A3A) else Color.Transparent)
-                            .clickable { toggleHeaderPanel(PANEL_FONT, showFontPicker) }
+                            .clickable { toggleHeaderPanel(PANEL_FONT) }
                             .padding(3.dp),
                 )
                 Icon(
@@ -1348,7 +1347,7 @@ fun ChatOverlay(
                             .size(22.dp)
                             .clip(CircleShape)
                             .background(if (showSettings) Color(0xFF3A3A3A) else Color.Transparent)
-                            .clickable { toggleHeaderPanel(PANEL_SETTINGS, showSettings) }
+                            .clickable { toggleHeaderPanel(PANEL_SETTINGS) }
                             .padding(3.dp),
                 )
                 Icon(
@@ -1361,7 +1360,7 @@ fun ChatOverlay(
                             .size(22.dp)
                             .clip(CircleShape)
                             .background(if (showSttSettings) Color(0xFF3A3A3A) else Color.Transparent)
-                            .clickable { toggleHeaderPanel(PANEL_STT, showSttSettings) }
+                            .clickable { toggleHeaderPanel(PANEL_STT) }
                             .padding(3.dp),
                 )
                 // Диагностика: состояние сервера, STT-модели и хвост лога serve.
@@ -1668,7 +1667,7 @@ fun ChatOverlay(
                                     .clickable {
                                         modelFontKey = key
                                         prefs.edit().putString("model_font_key", key).apply()
-                                        showFontPicker = false
+                                        closeHeaderPanel(PANEL_FONT)
                                     }.padding(vertical = 6.dp),
                         ) {
                             Text(
