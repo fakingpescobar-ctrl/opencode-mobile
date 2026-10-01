@@ -142,9 +142,35 @@ private const val MAX_SHOWN = 120
 // шапке чата показывает current/limit зрительно.
 private const val CONTEXT_LIMIT = 200_000L
 
-// Число сегментов (наклонных кубиков) индикатора контекста в шапке чата.
-// 30 — очень много мелких кубиков на всю ширину строки.
-private const val SEGMENTS = 30
+// Наносекунды в миллисекундах: замер пинга отдаёт наносекунды, в UI нужны мс.
+private const val NS_PER_MS = 1_000_000L
+
+// Пороги цвета полосы расхода Zen: с 60% жёлтый («прибереги квоту»), с 90% красный
+// («почти всё»). Ровно как у шкалы заполнения контекста.
+private const val ZEN_WARN_RATIO = 0.6f
+private const val ZEN_DANGER_RATIO = 0.9f
+
+// Миллисекунд в минуте для паузы между обходами сессий.
+private const val MS_PER_MINUTE = 60_000L
+
+// Геометрия полосы-индикатора расхода. Одна и та же для контекста и Zen-квоты:
+// контекст и квота рисуются общей функцией GaugeBars, поэтому разойтись по
+// высоте, наклону или числу ячеек они уже не могут физически.
+private const val GAUGE_CELLS = 90
+
+// Наклон ленты как доля её высоты: сдвиг верхнего ребра относительно нижнего.
+// 0.45 — это 24°, заметно больше, чем у прежних кубиков (~8°).
+private const val GAUGE_LEAN = 0.45f
+
+// Высота полосы в dp. Замерено по скриншоту: цифры в «105ms» занимают 32px
+// при плотности 3.5, то есть 9dp. Полоса должна быть ровно такой же высоты —
+// тогда она читается как часть строки статуса. 40.dp был тонкой ниткой, а
+// 120.dp — гигантом на четверть экрана.
+private const val GAUGE_HEIGHT_DP = 9
+
+// Толщина щели между ячейками в dp. Полоса низкая, шаг ячейки тоже мелкий,
+// поэтому щель должна быть узкой — 1.5.dp съедало бы треть ячейки.
+private const val GAUGE_CELL_GAP_DP = 0.6f
 
 // Вариант B: если модель "думает" (последнее — user, или assistant с пустым текстом)
 // дольше этого времени без какого-либо прогресса в сессии — считаем зависание
@@ -329,6 +355,17 @@ internal data class ChatSnapshot(
     // Заполненность контекста (входные токены сессии). Контекст-лимит модели
     // (порог компакта) задаётся константой CONTEXT_LIMIT — берётся из модели.
     val contextTokens: Long = 0L,
+    // Ответ сервера на последний запрос, мс. Показывается цифрами рядом со
+    // статусом в шапке: «Online 42ms». Замер бесплатный — берётся вокруг запроса,
+    // который и так делается каждый тик, отдельного запроса не добавляем.
+    val pingMs: Long = 0L,
+    // Израсходовано запросов Zen (opencode/big-pickle) за текущие UTC-сутки.
+    // Считается из ленты — см. ZenQuota. Показывается полосой в шапке.
+    // живёт в Compose-состоянии шапки. Дублировать его здесь означало бы держать
+    // две копии одного числа, которые разъедутся при неудачном обходе сессий.
+    // Отвечает ли сервер вообще. null — ещё ни разу не удалось достучаться, то
+    // есть состояние неизвестно, и показывать «Offline» было бы враньём.
+    val reachable: Boolean? = null,
     // MCP-серверы: (подключено, всего). Для индикатора «mcp N» в шапке — зелёный
     // если есть хотя бы один подключённый, красный если 0.
     val mcpConnected: Int = 0,
@@ -621,13 +658,11 @@ fun ChatOverlay(
                 withContext(Dispatchers.IO) {
                     // Код ответа бесполезен: abort на несуществующей сессии отдаёт
                     // 200 + HTML (SPA-fallback на любой путь), то есть «успех» не
-                    // значит ничего. Судим по результату: сервер убирает запись из
-                    // /session/status, когда ход реально остановлен.
-                    val runningBefore = sessionRunning(serverPort, sid)
+                    // значит ничего. Судим по результату: был ли ход в
+                    // /session/status до abort и уехал ли после.
+                    val before = sessionRunning(serverPort, sid)
                     abortSession(serverPort, sid)
-                    // Записи не было — останавливать нечего, состояние мёртвое само
-                    // по себе, значит abort ничего не изменил и нужен сброс.
-                    runningBefore && !sessionRunning(serverPort, sid)
+                    abortResolvedTurn(before, sessionRunning(serverPort, sid))
                 }
             ChatCache.result = null
             if (!stopped) {
@@ -1061,6 +1096,8 @@ fun ChatOverlay(
                 stableRounds = 0
                 continue
             }
+// Счётчик Zen обновляем отдельным циклом раз в минуту (см. LaunchedEffect ниже).
+// Здесь только читаем кэш: поллинг чата идёт 2.5 раза/с, обход сессий туда не втыкаем.
             val snap = fetchChatSnapshot(serverPort)
             var changed = false
             if (snap != null) {
@@ -1186,6 +1223,30 @@ fun ChatOverlay(
         }
     }
 
+    // Отдельный цикл счётчика Zen-расхода. Живёт отдельно от поллинга чата, потому
+    // что обход сессий стоит HTTP-запросов, а поллинг идёт 2.5 раза/с. Раз в минуту.
+    // Пишем результат в Compose-состояние напрямую: refresh возвращает null при
+    // неудаче, и тогда оставляем показанное значение — обнулять нельзя, иначе
+    // шкала дёргалась бы вниз при каждом сетевом сбое.
+    // Цифры счётчика Zen и признак их свежести. Пока точного замера не было ни
+    // разу — показываем `--`, а не ноль: неизвестное не должно выглядеть как
+    // «квоты нет».
+    var zenUsedState by remember { mutableStateOf(0) }
+    var zenExactState by remember { mutableStateOf(false) }
+    LaunchedEffect(serverPort) {
+        while (lifecycleState.currentState == Lifecycle.State.RESUMED) {
+            val fresh = withContext(Dispatchers.IO) { ZenQuota.refreshAcrossSessions(serverPort, System.currentTimeMillis()) }
+            if (fresh != null) {
+                zenUsedState = fresh
+            }
+            // Сбрасываем признак свежести при любой неудаче: иначе после первого
+            // успеха он навсегда застрянет в true и старый замер будет выдаваться за
+            // текущий. Саму цифру не трогаем — она остаётся последней известной.
+            zenExactState = fresh != null
+            delay(ZenQuota.REFRESH_MINUTES * MS_PER_MINUTE)
+        }
+    }
+
     Surface(
         modifier =
             modifier
@@ -1195,13 +1256,14 @@ fun ChatOverlay(
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // Круговой индикатор заполнения контекста. Показывает, сколько уже
-                // накоплено входных токенов сессии относительно лимита модели
-                // (CONTEXT_LIMIT). Зелёный → жёлтый → красный по мере приближения
-                // к компакту; внутри — процент заполнения.
-                ContextGauge(
-                    filled = snapshot?.contextTokens ?: 0L,
-                    limit = CONTEXT_LIMIT,
+                // Статус связи с сервером и пинг: «Online 42ms» зелёным, «Offline»
+                // красным. Отдельная от ContextGauge строка — индикатор занятости
+                // контекста уехал ниже, чтобы шапка не расползалась: раньше круг
+                // занимал всю свободную ширину и отжимал индикаторы вправо.
+                QuotaBadge(
+                    reachable = snapshot?.reachable,
+                    pingMs = snapshot?.pingMs ?: 0L,
+                    rejected = snapshot?.notice != null,
                     modifier = Modifier.weight(1f),
                 )
                 // Индикатор MCP-серверов (НЕОНОВЫЙ): «N MCP» + мигающая точка.
@@ -1295,6 +1357,26 @@ fun ChatOverlay(
                             ).padding(3.dp),
                 )
             }
+            // Индикатор заполнения контекста — своей строкой ПОД шапкой со статусом.
+            // Показывает, сколько накоплено входных токенов сессии относительно
+            // лимита модели (CONTEXT_LIMIT). Зелёный → жёлтый → красный по мере
+            // приближения к компакту; внутри — процент заполнения.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ContextGauge(
+                    filled = snapshot?.contextTokens ?: 0L,
+                    limit = CONTEXT_LIMIT,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            // Расход дневной Zen-квоты — ПОД индикатором контекста, отдельной
+            // строкой и в его же стиле. В шапку он больше не влезает: там ряд
+            // иконок, и любая полоса ломает выравнивание по центру. Зазор 4.dp —
+            // полосы читаются как один блок индикаторов, но не слипаются.
+            ZenMeter(
+                used = zenUsedState,
+                exact = zenExactState,
+                modifier = Modifier.padding(top = 4.dp),
+            )
             // Выпадающий список подключённых MCP-серверов (тап по индикатору «N MCP»).
             // У каждого имени — мигающая точка: зелёная (работает) / красная (нет).
             if (showMcpList) {
@@ -2224,6 +2306,115 @@ private fun DeadRow(
  * — тёмные. Зрительно видно, сколько контекста накоплено и когда скоро будет
  * компакт. Полоска занимает всю доступную ширину (weight 1f).
  */
+
+/**
+ * Статус связи с сервером + пинг: «Online 42ms» зелёным, «Offline» красным.
+ *
+ * Что именно показывает. Сервер opencode НЕ умеет отдавать остаток квоты — в его
+ * API нет ни одного эндпоинта про usage/limits/billing (проверено по схеме /doc).
+ * Поэтому честный сигнал здесь один: прошёл ли последний запрос и что на него
+ * ответили. «Online» = сервер ответил и не отказал в квоте; «Offline» = либо не
+ * ответил вовсе, либо ответил отказом (reason/message провайдера — квота или ретрай).
+ *
+ * Почему `rejected` отдельным флагом, а не через `reachable`: отказ по квоте — это
+ * УСПЕШНЫй HTTP-ответ с телом про отказ. Сервер доступен, но квоты нет — и по одному
+ * факту «досстучались» это не отличить от успеха. Без отдельного флага плашка горела
+ * бы «Online» ровно тогда, когда модель уже не отвечает.
+ *
+ * @param reachable null → состояние неизвестно (ни разу не достучались). Показываем
+ *   серый «Online?» вместо красного «Offline»: врать об отказе хуже, чем не знать.
+ * @param rejected сервер ответил отказом по квоте/ретраю (текст — в плашке под лентой).
+ * @param pingMs задержка последнего запроса, мс. Показываем только когда есть чему
+ *   верить: при reachable == null замер обрывается и цифра бессмысленна.
+ */
+@Composable
+private fun QuotaBadge(
+    reachable: Boolean?,
+    pingMs: Long,
+    rejected: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val offline = reachable == false || rejected
+    val unknown = reachable == null
+    val color =
+        when {
+            offline -> Color(0xFFE53935)
+            unknown -> Color(0xFF9E9E9E)
+            else -> Color(0xFF7BD88F)
+        }
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(color),
+        )
+        Text(
+            text = if (offline) "Offline" else "Online",
+            color = color,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(start = 6.dp),
+        )
+        // Пинг цифрами — только при подтверждённом контакте. На неизвестном
+        // состоянии показывать «—ms» значило бы рисовать число, которого нет.
+        val pingSuffix =
+            when {
+                reachable == null -> ""
+                else -> " ${pingMs}ms"
+            }
+        if (pingSuffix.isNotEmpty()) {
+            Text(
+                text = pingSuffix,
+                color = Color(0xFF8A8A8A),
+                fontSize = 11.sp,
+                modifier = Modifier.padding(start = 4.dp),
+            )
+        }
+    }
+}
+
+/**
+ * Расход дневной Zen-квоты — та же полоса-кубики, что индикатор контекста,
+ * строкой ниже него.
+ *
+ * Ровно та же функция [GaugeBars], тот же цвет кубиков для «свободного места»,
+ * та же высота. Различается только цвет заливки: у контекста он зелёно-жёлто-
+ * красный по мере заполнения, у квоты — голубой, пока есть запас, и жёлто-красный
+ * на последних процентах (там опасно уже не «много занято», а «скоро кончится»).
+ *
+ * Ни цифр, ни процентов, ни подписи: сколько именно занято, полоса показывает
+ * сама. Держать рядом ещё и текст значило бы дублировать одно и то же дважды и
+ * забирать высоту у чата.
+ *
+ * Пока точного замера не было (`exact = false`), полоса пустая: неизвестное
+ * значение нельзя рисовать как «почти пусто», иначе 2000 потраченных запросов
+ * выглядели бы как 0.
+ */
+@Suppress("MagicNumber")
+@Composable
+private fun ZenMeter(
+    used: Int,
+    exact: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val ratio = ZenQuota.ratio(used, ZenQuota.DAILY_LIMIT).coerceIn(0f, 1f)
+    val calm = Color(0xFF5BC0EB)
+    val yellow = Color(0xFFFFC107)
+    val red = Color(0xFFE53935)
+    val active =
+        when {
+            ratio >= ZEN_DANGER_RATIO -> red
+            ratio >= ZEN_WARN_RATIO -> yellow
+            else -> calm
+        }
+    GaugeBars(
+        ratio = if (exact) ratio else 0f,
+        active = active,
+        modifier = modifier.height(GAUGE_HEIGHT_DP.dp).fillMaxWidth(),
+    )
+}
+
 @Composable
 private fun ContextGauge(
     filled: Long,
@@ -2231,40 +2422,89 @@ private fun ContextGauge(
     modifier: Modifier = Modifier,
 ) {
     val ratio = if (limit <= 0) 0f else (filled.toFloat() / limit.toFloat()).coerceIn(0f, 1f)
-    // Цвет прогресса по мере заполнения: зелёный → жёлтый → красный.
-    val g = Color(0xFF4CAF50)
-    val y = Color(0xFFFFC107)
-    val r = Color(0xFFE53935)
+    val green = Color(0xFF4CAF50)
+    val yellow = Color(0xFFFFC107)
+    val red = Color(0xFFE53935)
     val active =
         when {
-            ratio < 0.50f -> g
-            ratio < 0.80f -> y
-            else -> r
+            ratio < 0.50f -> green
+            ratio < 0.80f -> yellow
+            else -> red
         }
+    GaugeBars(
+        ratio = ratio,
+        active = active,
+        modifier = modifier.height(GAUGE_HEIGHT_DP.dp).fillMaxWidth(),
+    )
+}
+
+/**
+ * Общая полоса-кубики для индикаторов расхода.
+ *
+ * Её используют и контекст, и Zen-квота. Раньше каждый рисовал кубики сам, и они
+ * разошлись: у квоты ромбики вышли наклонены в другую сторону и вдвое ниже. Общая
+ * функция сделана, чтобы они больше не могли стать разными по сюжету.
+ *
+ * Форма — наклонная лента: параллелограмм, у которого верхнее ребро сдвинуто
+ * вправо на `lean = GAUGE_LEAN * height`. Поверх заливки лента нарезана щелями
+ * на [GAUGE_CELLS] ячеек, щели идут параллельно наклону.
+ *
+ * Почему лента, а не кубики: ячейки должны быть узкими (90 штук на всю
+ * ширину), а наклон — заметным. У кубика наклон задаётся сдвигом вершины на
+ * величину порядка его ширины, поэтому 90 узких ячеек плюс сильный наклон
+ * вместе невозможны — ячейки либо слипаются в гладкую полосу без делений, либо
+ * наклон получается нулевым. Лента решает это: наклон идёт по всей длине, а
+ * ячейки остаются видимыми.
+ */
+@Composable
+private fun GaugeBars(
+    ratio: Float,
+    active: Color,
+    modifier: Modifier = Modifier,
+) {
     val track = Color(0xFF242424)
-    val filledCubes = (ratio * SEGMENTS).toInt().coerceIn(0, SEGMENTS)
-    Canvas(modifier.height(40.dp).fillMaxWidth()) {
-        val segW = size.width / SEGMENTS
-        // Полуось по горизонтали (ширина кубика) и по вертикали (ВЫСОТА).
-        // halfY ≈ 2× halfX — кубики вытянуты вверх вдвое, наклон вправо сохранён.
-        val halfX = segW * 0.38f
-        val halfY = halfX * 2f
-        val skew = halfX * 0.55f
-        for (i in 0 until SEGMENTS) {
-            val cx = size.width * (i + 0.5f) / SEGMENTS
-            val cy = size.height / 2f
-            val color = if (i < filledCubes) active else track
-            val path =
-                Path().apply {
-                    moveTo(cx - halfX + skew, cy - halfY) // верх-лево (сдвинут вправо)
-                    lineTo(cx + halfX + skew, cy - halfY) // верх-право
-                    lineTo(cx + halfX, cy + halfY) // низ-право
-                    lineTo(cx - halfX, cy + halfY) // низ-лево
-                    close()
-                }
-            drawPath(path, color)
+    // Щели рисуются цветом фона шапки, поэтому выглядят как пустота между
+    // ячейками, а не как линии поверх полосы.
+    val backdrop = Color(0xFF101010)
+    val fill = ratio.coerceIn(0f, 1f)
+    Canvas(modifier) {
+        val h = size.height
+        val lean = h * GAUGE_LEAN
+        // Лента вписана в холст по диагонали: нижний левый угол у левого края,
+        // верхний правый — у правого, поэтому ничего не обрезается.
+        val bandW = (size.width - lean).coerceAtLeast(1f)
+        drawPath(leanBand(0f, bandW, lean, h), track)
+        if (fill > 0f) {
+            drawPath(leanBand(0f, bandW * fill, lean, h), active)
+        }
+        val step = bandW / GAUGE_CELLS
+        val gap = GAUGE_CELL_GAP_DP.dp.toPx()
+        if (gap < step * 0.5f) {
+            for (k in 1 until GAUGE_CELLS) {
+                val x = step * k
+                drawLine(
+                    color = backdrop,
+                    start = Offset(x, h),
+                    end = Offset(x + lean, 0f),
+                    strokeWidth = gap,
+                )
+            }
         }
     }
+}
+
+/** Параллелограмм-лента: низ от [left] до [left] + [width], верх сдвинут на [lean]. */
+private fun leanBand(
+    left: Float,
+    width: Float,
+    lean: Float,
+    height: Float,
+) = Path().apply {
+    moveTo(left, height)
+    lineTo(left + width, height)
+    lineTo(left + width + lean, 0f)
+    lineTo(left + lean, 0f)
+    close()
 }
 
 /**
@@ -2755,7 +2995,26 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
     withContext(Dispatchers.IO) {
         val p = port ?: return@withContext null
         try {
-            val sessionsRaw = LocalOpenCodeClient.get(p, "/session") ?: return@withContext null
+            // Замер пинга: оборачиваем первый запрос, который и так уходит каждый
+            // тик. Отдельный /health-запрос не делаем — это лишний трафик и лишняя
+            // нагрузка на сервер ради цифры в шапке.
+            val pingStart = System.nanoTime()
+            val sessionsBody = LocalOpenCodeClient.get(p, "/session")
+            val pingMs = (System.nanoTime() - pingStart) / NS_PER_MS
+            if (sessionsBody == null) {
+                // Сервер не ответил. Снапшот строить не из чего, но сам факт
+                // «недоступен» важен шапке — возвращаем пустой снапшот с
+                // reachable=false, чтобы в шапке горело Offline, а не вечный
+                // спиннер. Иначе отказ сервера выглядит как «сообщение не отправляется».
+                return@withContext ChatSnapshot(
+                    messages = emptyList(),
+                    label = "нет связи с сервером",
+                    activeId = null,
+                    pingMs = pingMs,
+                    reachable = false,
+                )
+            }
+            val sessionsRaw = sessionsBody
             val sessions = JSONArray(sessionsRaw)
             var bestId: String? = null
             var bestTs = -1L
@@ -2771,7 +3030,13 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             }
             if (bestId == null) {
                 PermissionCache.clearAll()
-                return@withContext ChatSnapshot(emptyList(), "нет сессий", null)
+                return@withContext ChatSnapshot(
+                    emptyList(),
+                    "нет сессий",
+                    null,
+                    pingMs = pingMs,
+                    reachable = true,
+                )
             }
             val activeId = bestId
             val label = titleOf(sessions, activeId)
@@ -2835,7 +3100,15 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             val notice = noticeDeferred.await()
             val msgRaw =
                 msgDeferred.await()
-                    ?: return@withContext ChatSnapshot(emptyList(), label, activeId, permission = permission, notice = notice)
+                    ?: return@withContext ChatSnapshot(
+                        emptyList(),
+                        label,
+                        activeId,
+                        pingMs = pingMs,
+                        reachable = true,
+                        permission = permission,
+                        notice = notice,
+                    )
             // Инкрементальный кэш: если за этой сессией тот же самый сырой JSON /message
             // (hash совпал) — лента и все производные (thinking/liveTool/ctxTokens/question)
             // гарантированно идентичны. Переиспользуем готовые объекты, НЕ пересоздавая
@@ -2858,6 +3131,14 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                         prettyModel(bestModelId),
                         liveTool = liveTool,
                         contextTokens = cached.contextTokens,
+                        // Пинг/доступность НЕ из кэша: это свойство текущего запроса,
+                        // а не ленты. Из кэша тянуть нельзя — иначе в шапке застынет
+                        // первое измерение и «Offline» не появится, когда сервер ляжет.
+                        pingMs = pingMs,
+                        reachable = true,
+                        // Расход Zen из кэша ленты: если сырой JSON тот же, то и число
+                        // завершённых ответов то же — пересчитывать незачем. Новый
+                        // ответ меняет /message, значит меняет hash и кэш протухает.
                         mcpConnected = mcpConnected,
                         mcpTotal = mcpTotal,
                         mcpServers = mcpServers,
@@ -2998,6 +3279,11 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                     prettyModel(bestModelId),
                     liveTool = liveTool,
                     contextTokens = ctxTokens,
+                    pingMs = pingMs,
+                    reachable = true,
+                    // Расход Zen — из БАЗЫ СЕРВЕРА, который обновляется раз в
+                    // ZEN_REFRESH_MS. Лента тут не годится: она покрывает только
+                    // активную сессию, а день мог начаться в нескольких сессиях.
                     mcpConnected = mcpConnected,
                     mcpTotal = mcpTotal,
                     mcpServers = mcpServers,
