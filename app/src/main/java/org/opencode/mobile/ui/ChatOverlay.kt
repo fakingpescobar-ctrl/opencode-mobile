@@ -482,6 +482,10 @@ fun ChatOverlay(
     var showDiagnostics by remember { mutableStateOf(false) }
     // Выпадающий список MCP-серверов (открывается тапом по индикатору MCP).
     var showMcpList by remember { mutableStateOf(false) }
+    // Панель выбора голосового движка (system | ncnn) - отдельная от showSettings.
+    // GaugeSettings отвечает только за полосы гейджа, поэтому выбор STT вынесен
+    // в собственную панель с собственной иконкой в хедере.
+    var showSttSettings by remember { mutableStateOf(false) }
     // «Новая сессия» в полёте — иконка + подсвечивается зелёным (UI-19:
     // подсветка НЕ привязана к showMcpList — это два независимых состояния).
     var creatingSession by remember { mutableStateOf(false) }
@@ -1308,7 +1312,7 @@ fun ChatOverlay(
                 )
                 Icon(
                     imageVector = Icons.Filled.Settings,
-                    contentDescription = "Настройки голосового распознавания",
+                    contentDescription = "Настройки гейджа",
                     tint = if (showSettings) Color.White else Color(0xFFBDBDBD),
                     modifier =
                         Modifier
@@ -1318,6 +1322,23 @@ fun ChatOverlay(
                             .background(if (showSettings) Color(0xFF3A3A3A) else Color.Transparent)
                             .clickable { showSettings = !showSettings }
                             .padding(3.dp),
+                )
+                Icon(
+                    imageVector = Icons.Filled.Mic,
+                    contentDescription = "Настройки голосового ввода (STT)",
+                    tint = if (showSttSettings) Color.White else Color(0xFFBDBDBD),
+                    modifier =
+                        Modifier
+                            .padding(start = 8.dp)
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .background(if (showSttSettings) Color(0xFF3A3A3A) else Color.Transparent)
+                            .clickable {
+                                showSttSettings = !showSttSettings
+                                if (showSttSettings) {
+                                    showSettings = false
+                                }
+                            }.padding(3.dp),
                 )
                 // Диагностика: состояние сервера, STT-модели и хвост лога serve.
                 // Полноэкранный оверлей (DiagnosticsScreen), рисуется поверх всего.
@@ -1508,6 +1529,27 @@ fun ChatOverlay(
                         },
                     )
                     Spacer(Modifier.height(8.dp))
+                    Text(
+                        if (ttsTestRunning) "TTS-тест: синтезирую и распознаю…" else "Диагностика: синтез → распознавание (см. лог VOICE)",
+                        color = Color(0xFF5A8DEE),
+                        fontSize = 11.sp,
+                        modifier =
+                            Modifier
+                                .padding(top = 6.dp)
+                                .clickable(enabled = !ttsTestRunning) { runTtsTest() },
+                    )
+                }
+            }
+            // Панель выбора голосового движка (system | ncnn). Отдельная от showSettings:
+            // GaugeSettings отвечает только за полосы гейджа. Открывается иконкой Mic в хедере.
+            if (showSttSettings) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, bottom = 2.dp)
+                        .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                ) {
                     Text("Голосовое распознавание:", color = Color(0xFFBDBDBD), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -1574,15 +1616,6 @@ fun ChatOverlay(
                             modifier = Modifier.padding(start = 20.dp, top = 2.dp, bottom = 4.dp),
                         )
                     }
-                    Text(
-                        if (ttsTestRunning) "TTS-тест: синтезирую и распознаю…" else "Диагностика: синтез → распознавание (см. лог VOICE)",
-                        color = Color(0xFF5A8DEE),
-                        fontSize = 11.sp,
-                        modifier =
-                            Modifier
-                                .padding(top = 6.dp)
-                                .clickable(enabled = !ttsTestRunning) { runTtsTest() },
-                    )
                 }
             }
             val msgs = snapshot?.messages ?: emptyList()
