@@ -1,6 +1,7 @@
 package org.opencode.mobile.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -127,5 +128,22 @@ class ChatNoticeTest {
         val fresh = noticeFromStatus("""{"ses_a":{"type":"error","message":"provider down"}}""", "ses_a")
         val latch = nextNoticeLatch(old, fresh, turnFinished = false)
         assertEquals(fresh, latch)
+    }
+
+    /**
+     * Сработал ли abort. Это правило уже один раз сделало всю фичу недостижимой:
+     * судили по коду ответа, а abort на несуществующей сессии отдаёт 200+HTML,
+     * то есть всегда «успех», и диалог сброса не открывался никогда.
+     */
+    @Test
+    fun `abort считается сработавшим только если запись хода уехала`() {
+        // Нормальный случай: ход был, abort его снял — выходим, диалог не нужен.
+        assertTrue(abortResolvedTurn(runningBefore = true, runningAfter = false))
+        // Ход остался в статусе — abort не пробился, нужен сброс.
+        assertFalse(abortResolvedTurn(runningBefore = true, runningAfter = true))
+        // Записи не было ВООБЩЕ: останавливать нечего, состояние мёртвое само по
+        // себе, abort ничего не изменил. Считать это успехом нельзя.
+        assertFalse(abortResolvedTurn(runningBefore = false, runningAfter = false))
+        assertFalse(abortResolvedTurn(runningBefore = false, runningAfter = true))
     }
 }

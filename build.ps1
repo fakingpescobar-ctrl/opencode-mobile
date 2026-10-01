@@ -26,19 +26,17 @@
     Не собирать нативку whisperlib (сборка из prebuilt jniLibs).
 
 .PARAMETER Task
-    verify  — ktlint + detekt + compileDebugKotlin (вордёр, который держит зелёный гейт)
+    verify  — ktlint + detekt + compileDebugKotlin + юнит-тесты JVM
     jstest  — офлайн-тесты JS-ассетов MCP (node, без сети и без gradle)
-    utest   — юнит-тесты JVM (JUnit, testDebugUnitTest).
+    utest   — только юнит-тесты JVM (testDebugUnitTest), для быстрого локального
+              прогона без ktlint/detekt.
 
-    utest намеренно отдельная задача, а не часть verify: verify и так медленный,
-    а компиляция тестов — самая тяжёлая часть. Если test повесить на verify, то
-    при любом сбое окружения или конфига гейт перестанет собирать APK, то есть
-    сломается главная проверка (silent failure на ровном месте). Отдельная
-    задача даёт «зелёный гейт» и «зелёные тесты» раздельно.
-
-    Это уже стоило реальной поломки: 244 теста не запускались вообще, потому
-    что задачи test в build.ps1 не было, а сломанный test-исходник никто не
-    компилировал. Теперь запускать надо явно: .\build.ps1 -Task utest
+    Почему тесты в verify, а не только в utest: сломанный test-исходник НЕ роняет
+    сборку APK (сборка идёт отдельной задачей :app:assembleDebug и от verify не
+    зависит) — но и не роняет verify, если тесты в него не включены. Из-за этого
+    244 теста молча не компилировались месяцами: сломанный код никто не видел.
+    Комментарий тут не защита, зависимость — защита. Проверено: verify просто
+    список задач, отдельной «сборки через verify» не существует.
 
 .EXAMPLE
     .\build.ps1 -Task verify
@@ -141,7 +139,7 @@ if ($Task -eq 'jstest') {
 # ---- Gradle-задачи и флаги ----
 $gradleArgs = @()
 switch ($Task) {
-    'verify'  { $gradleArgs += @(':app:ktlintCheck', ':app:detekt', ':app:compileDebugKotlin') }
+    'verify'  { $gradleArgs += @(':app:ktlintCheck', ':app:detekt', ':app:compileDebugKotlin', ':app:testDebugUnitTest') }
     'utest'   { $gradleArgs += ':app:testDebugUnitTest' }
     'debug'   { $gradleArgs += ':app:assembleDebug' }
     'release' { $gradleArgs += ':app:assembleRelease' }

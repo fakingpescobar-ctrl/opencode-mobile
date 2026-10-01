@@ -83,6 +83,25 @@ internal fun nextNoticeLatch(
     }
 
 /**
+ * Решил ли abort проблему, или ход пора сбрасывать.
+ *
+ * Код ответа abort бесполезен: на несуществующей сессии тот же эндпоинт отдаёт
+ * 200 + HTML (SPA-fallback на любой путь), то есть «успех» бывает всегда. Единственный
+ * честный признак — уехала ли запись хода из /session/status.
+ *
+ * Тонкость, ради которой это отдельная функция, а не `!aborted`: если записи не
+ * было до abort, останавливать нечего, состояние мёртвое само по себе и abort ничего
+ * не изменил. Такой случай тоже требует сброса, хотя abort «прошёл».
+ *
+ * [runningBefore] — была ли сессия в /session/status до abort,
+ * [runningAfter] — осталась ли после него.
+ */
+internal fun abortResolvedTurn(
+    runningBefore: Boolean,
+    runningAfter: Boolean,
+): Boolean = runningBefore && !runningAfter
+
+/**
  * GET /session/status → Record<sessionId, {...}>. Любая сессия без записи в карте
  * даёт null, то есть тихо и дёшево.
  */

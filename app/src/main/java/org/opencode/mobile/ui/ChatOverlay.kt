@@ -153,24 +153,10 @@ private const val ZEN_DANGER_RATIO = 0.9f
 // Миллисекунд в минуте для паузы между обходами сессий.
 private const val MS_PER_MINUTE = 60_000L
 
-// Геометрия полосы-индикатора расхода. Одна и та же для контекста и Zen-квоты:
-// контекст и квота рисуются общей функцией GaugeBars, поэтому разойтись по
-// высоте, наклону или числу ячеек они уже не могут физически.
-private const val GAUGE_CELLS = 90
-
-// Наклон ленты как доля её высоты: сдвиг верхнего ребра относительно нижнего.
-// 0.45 — это 24°, заметно больше, чем у прежних кубиков (~8°).
-private const val GAUGE_LEAN = 0.45f
-
-// Высота полосы в dp. Замерено по скриншоту: цифры в «105ms» занимают 32px
-// при плотности 3.5, то есть 9dp. Полоса должна быть ровно такой же высоты —
-// тогда она читается как часть строки статуса. 40.dp был тонкой ниткой, а
-// 120.dp — гигантом на четверть экрана.
-private const val GAUGE_HEIGHT_DP = 9
-
-// Толщина щели между ячейками в dp. Полоса низкая, шаг ячейки тоже мелкий,
-// поэтому щель должна быть узкой — 1.5.dp съедало бы треть ячейки.
-private const val GAUGE_CELL_GAP_DP = 0.6f
+// Геометрия и цвета полос расхода живут в GaugeStyle.kt и меняются пользователем
+// из панели шестерёнки в шапке. Констант GAUGE_* здесь больше нет намеренно:
+// именно из-за того, что они были константами, любую правку приходилось делать
+// через меня и пересборку APK.
 
 // Вариант B: если модель "думает" (последнее — user, или assistant с пустым текстом)
 // дольше этого времени без какого-либо прогресса в сессии — считаем зависание
@@ -434,6 +420,22 @@ fun ChatOverlay(
         modelColorHex = hex
         prefs.edit().putString("model_color", hex).apply()
     }
+
+    // ---- Настройки полос расхода (контекст и Zen-квота) ----
+    // Читаются из того же prefs и живут в mutableStateOf, поэтому ползунок в
+    // панели шестерёнки перерисовывает полосу в ту же секунду — без перезапуска.
+    // В prefs пишем по завершении перетаскивания, а не на каждом кадре: запись
+    // в файл на каждое движение ползунка — это лишний ввод-вывод в UI-потоке.
+    var ctxShape by remember { mutableStateOf(prefs.readGaugeShape(CTX_PREFIX)) }
+    var zenShape by remember { mutableStateOf(prefs.readGaugeShape(ZEN_PREFIX)) }
+    var gaugePalette by remember { mutableStateOf(prefs.readGaugePalette()) }
+    var gaugeBarGap by remember { mutableStateOf(prefs.readGaugeBarGap()) }
+
+    fun persistCtxShape() = prefs.writeGaugeShape(CTX_PREFIX, ctxShape)
+
+    fun persistZenShape() = prefs.writeGaugeShape(ZEN_PREFIX, zenShape)
+
+    fun persistBarGap() = prefs.writeGaugeBarGap(gaugeBarGap)
 
     // Голосовой ввод: системный распознаватель (SpeechRecognizer). Удержание кнопки — запись, отпускание — распознавание и отправка.
     val speechRecognizer = remember { createSpeechRecognizer(context) }
@@ -1365,17 +1367,22 @@ fun ChatOverlay(
                 ContextGauge(
                     filled = snapshot?.contextTokens ?: 0L,
                     limit = CONTEXT_LIMIT,
+                    shape = ctxShape,
+                    palette = gaugePalette,
                     modifier = Modifier.weight(1f),
                 )
             }
             // Расход дневной Zen-квоты — ПОД индикатором контекста, отдельной
             // строкой и в его же стиле. В шапку он больше не влезает: там ряд
-            // иконок, и любая полоса ломает выравнивание по центру. Зазор 4.dp —
-            // полосы читаются как один блок индикаторов, но не слипаются.
+            // иконок, и любая полоса ломает выравнивание по центру. Зазор
+            // настраивается пользователем, чтобы полосы читались как блок, но
+            // не слипались.
             ZenMeter(
                 used = zenUsedState,
                 exact = zenExactState,
-                modifier = Modifier.padding(top = 4.dp),
+                shape = zenShape,
+                palette = gaugePalette,
+                modifier = Modifier.padding(top = gaugeBarGap.dp),
             )
             // Выпадающий список подключённых MCP-серверов (тап по индикатору «N MCP»).
             // У каждого имени — мигающая точка: зелёная (работает) / красная (нет).
@@ -1473,6 +1480,34 @@ fun ChatOverlay(
                         .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                 ) {
+                    GaugeSettings(
+                        ctxShape = ctxShape,
+                        onCtxShapeChange = { ctxShape = it },
+                        onCtxShapePersist = { persistCtxShape() },
+                        zenShape = zenShape,
+                        onZenShapeChange = { zenShape = it },
+                        onZenShapePersist = { persistZenShape() },
+                        palette = gaugePalette,
+                        onColorChange = { k, c ->
+                            gaugePalette = gaugePalette.copyWith(k, c)
+                            prefs.writeGaugeColor(k, c)
+                        },
+                        onPalettePersist = { /* цвета уже записаны по клику */ },
+                        barGap = gaugeBarGap,
+                        onBarGapChange = { gaugeBarGap = it },
+                        onBarGapPersist = { persistBarGap() },
+                        onResetDefaults = {
+                            ctxShape = GaugeShape.DEFAULT
+                            zenShape = GaugeShape.DEFAULT
+                            gaugePalette = GaugePalette.DEFAULT
+                            gaugeBarGap = GaugeBarGap.DEFAULT
+                            persistCtxShape()
+                            persistZenShape()
+                            persistBarGap()
+                            GaugeColorKey.entries.forEach { prefs.writeGaugeColor(it, it.argb(GaugePalette.DEFAULT)) }
+                        },
+                    )
+                    Spacer(Modifier.height(8.dp))
                     Text("Голосовое распознавание:", color = Color(0xFFBDBDBD), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -2396,45 +2431,48 @@ private fun QuotaBadge(
 private fun ZenMeter(
     used: Int,
     exact: Boolean,
+    shape: GaugeShape,
+    palette: GaugePalette,
     modifier: Modifier = Modifier,
 ) {
     val ratio = ZenQuota.ratio(used, ZenQuota.DAILY_LIMIT).coerceIn(0f, 1f)
-    val calm = Color(0xFF5BC0EB)
-    val yellow = Color(0xFFFFC107)
-    val red = Color(0xFFE53935)
     val active =
         when {
-            ratio >= ZEN_DANGER_RATIO -> red
-            ratio >= ZEN_WARN_RATIO -> yellow
-            else -> calm
+            ratio >= ZEN_DANGER_RATIO -> Color(palette.zenDanger)
+            ratio >= ZEN_WARN_RATIO -> Color(palette.zenWarn)
+            else -> Color(palette.zenCalm)
         }
     GaugeBars(
         ratio = if (exact) ratio else 0f,
         active = active,
-        modifier = modifier.height(GAUGE_HEIGHT_DP.dp).fillMaxWidth(),
+        track = Color(palette.track),
+        shape = shape,
+        modifier = modifier.height(shape.height).fillMaxWidth(),
     )
 }
 
+@Suppress("MagicNumber")
 @Composable
 private fun ContextGauge(
     filled: Long,
     limit: Long,
+    shape: GaugeShape,
+    palette: GaugePalette,
     modifier: Modifier = Modifier,
 ) {
     val ratio = if (limit <= 0) 0f else (filled.toFloat() / limit.toFloat()).coerceIn(0f, 1f)
-    val green = Color(0xFF4CAF50)
-    val yellow = Color(0xFFFFC107)
-    val red = Color(0xFFE53935)
     val active =
         when {
-            ratio < 0.50f -> green
-            ratio < 0.80f -> yellow
-            else -> red
+            ratio < 0.50f -> Color(palette.ctxLow)
+            ratio < 0.80f -> Color(palette.ctxMid)
+            else -> Color(palette.ctxHigh)
         }
     GaugeBars(
         ratio = ratio,
         active = active,
-        modifier = modifier.height(GAUGE_HEIGHT_DP.dp).fillMaxWidth(),
+        track = Color(palette.track),
+        shape = shape,
+        modifier = modifier.height(shape.height).fillMaxWidth(),
     )
 }
 
@@ -2460,16 +2498,20 @@ private fun ContextGauge(
 private fun GaugeBars(
     ratio: Float,
     active: Color,
+    track: Color,
+    shape: GaugeShape,
     modifier: Modifier = Modifier,
 ) {
-    val track = Color(0xFF242424)
     // Щели рисуются цветом фона шапки, поэтому выглядят как пустота между
     // ячейками, а не как линии поверх полосы.
     val backdrop = Color(0xFF101010)
     val fill = ratio.coerceIn(0f, 1f)
+    val cells = shape.cells
+    val leanRatio = shape.lean
+    val gapDp = shape.cellGapDp
     Canvas(modifier) {
         val h = size.height
-        val lean = h * GAUGE_LEAN
+        val lean = h * leanRatio
         // Лента вписана в холст по диагонали: нижний левый угол у левого края,
         // верхний правый — у правого, поэтому ничего не обрезается.
         val bandW = (size.width - lean).coerceAtLeast(1f)
@@ -2477,10 +2519,10 @@ private fun GaugeBars(
         if (fill > 0f) {
             drawPath(leanBand(0f, bandW * fill, lean, h), active)
         }
-        val step = bandW / GAUGE_CELLS
-        val gap = GAUGE_CELL_GAP_DP.dp.toPx()
-        if (gap < step * 0.5f) {
-            for (k in 1 until GAUGE_CELLS) {
+        val step = bandW / cells
+        val gap = gapDp.dp.toPx()
+        if (gap > 0f && gap < step * 0.5f) {
+            for (k in 1 until cells) {
                 val x = step * k
                 drawLine(
                     color = backdrop,
