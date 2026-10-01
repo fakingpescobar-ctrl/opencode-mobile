@@ -88,4 +88,44 @@ class ChatNoticeTest {
         assertNull(noticeFromStatus("<html>502</html>", "ses_a"))
         assertNull(noticeFromStatus("{не json", "ses_a"))
     }
+
+    /**
+     * Защёлка, а не TTL-кэш: причина — устойчивое состояние (сервер отдаёт
+     * free_tier_limit после любого TTL, пока квота не восстановится), поэтому
+     * плашка не должна мигать вслед за опросом. Гаснуть она обязана ровно на
+     * успешном assistant-шаге — это и есть «проблема решена».
+     */
+    @Test
+    fun `защёлка держит причину через пустые тики и гаснет на успешном шаге`() {
+        val reason = noticeFromStatus("""{"ses_a":{"type":"retry","message":"quota"}}""", "ses_a")
+        assertTrue(reason != null)
+
+        // Тик, где статус ещё есть — обновляем плашку.
+        var latch = nextNoticeLatch(null, reason, turnFinished = false)
+        assertEquals(reason, latch)
+
+        // Тик, где сервер моргнул и статуса нет: ход ещё идёт — плашка обязана
+        // остаться. Иначе причина мигает и её перестаёшь читать.
+        latch = nextNoticeLatch(latch, null, turnFinished = false)
+        assertEquals("плашка не должна исчезать, пока ход идёт", reason, latch)
+        latch = nextNoticeLatch(latch, null, turnFinished = false)
+        assertEquals(reason, latch)
+
+        // Пришёл успешный assistant-шаг (thinking снят) — гасим.
+        latch = nextNoticeLatch(latch, null, turnFinished = true)
+        assertNull("на успешном шаге плашка обязана погаснуть", latch)
+
+        // И следующая причина появляется снова, то есть защёлка не «слипла».
+        latch = nextNoticeLatch(null, reason, turnFinished = false)
+        assertEquals(reason, latch)
+    }
+
+    /** Статус, пришедший на последнем тике, должен перебивать устаревшую защёлку. */
+    @Test
+    fun `свежая причина заменяет старую в защёлке`() {
+        val old = noticeFromStatus("""{"ses_a":{"type":"retry","attempt":1,"message":"quota"}}""", "ses_a")
+        val fresh = noticeFromStatus("""{"ses_a":{"type":"error","message":"provider down"}}""", "ses_a")
+        val latch = nextNoticeLatch(old, fresh, turnFinished = false)
+        assertEquals(fresh, latch)
+    }
 }

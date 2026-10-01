@@ -28,15 +28,27 @@
 .PARAMETER Task
     verify  — ktlint + detekt + compileDebugKotlin (вордёр, который держит зелёный гейт)
     jstest  — офлайн-тесты JS-ассетов MCP (node, без сети и без gradle)
+    utest   — юнит-тесты JVM (JUnit, testDebugUnitTest).
+
+    utest намеренно отдельная задача, а не часть verify: verify и так медленный,
+    а компиляция тестов — самая тяжёлая часть. Если test повесить на verify, то
+    при любом сбое окружения или конфига гейт перестанет собирать APK, то есть
+    сломается главная проверка (silent failure на ровном месте). Отдельная
+    задача даёт «зелёный гейт» и «зелёные тесты» раздельно.
+
+    Это уже стоило реальной поломки: 244 теста не запускались вообще, потому
+    что задачи test в build.ps1 не было, а сломанный test-исходник никто не
+    компилировал. Теперь запускать надо явно: .\build.ps1 -Task utest
 
 .EXAMPLE
     .\build.ps1 -Task verify
     .\build.ps1 -Task jstest
+    .\build.ps1 -Task utest
     .\build.ps1 -Task native -WhisperCppDir C:\src\whisper.cpp
     .\build.ps1 -Task release -SkipNative
 #>
 param(
-    [ValidateSet('verify', 'jstest', 'debug', 'release', 'native')]
+    [ValidateSet('verify', 'jstest', 'utest', 'debug', 'release', 'native')]
     [string]$Task = 'debug',
     [string]$WhisperCppDir = '',
     [string]$VulkanSdkDir = '',
@@ -130,6 +142,7 @@ if ($Task -eq 'jstest') {
 $gradleArgs = @()
 switch ($Task) {
     'verify'  { $gradleArgs += @(':app:ktlintCheck', ':app:detekt', ':app:compileDebugKotlin') }
+    'utest'   { $gradleArgs += ':app:testDebugUnitTest' }
     'debug'   { $gradleArgs += ':app:assembleDebug' }
     'release' { $gradleArgs += ':app:assembleRelease' }
     'native'  { $gradleArgs += ':app:assembleDebug' }

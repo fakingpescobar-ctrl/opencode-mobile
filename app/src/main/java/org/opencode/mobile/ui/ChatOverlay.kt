@@ -617,11 +617,21 @@ fun ChatOverlay(
     // из явного диалога и только если шаг 1 не вывел нас из висящего состояния.
     fun recoverDeadTurn(sid: String) {
         scope.launch {
-            val aborted =
-                withContext(Dispatchers.IO) { abortSession(serverPort, sid) }
+            val stopped =
+                withContext(Dispatchers.IO) {
+                    // Код ответа бесполезен: abort на несуществующей сессии отдаёт
+                    // 200 + HTML (SPA-fallback на любой путь), то есть «успех» не
+                    // значит ничего. Судим по результату: сервер убирает запись из
+                    // /session/status, когда ход реально остановлен.
+                    val runningBefore = sessionRunning(serverPort, sid)
+                    abortSession(serverPort, sid)
+                    // Записи не было — останавливать нечего, состояние мёртвое само
+                    // по себе, значит abort ничего не изменил и нужен сброс.
+                    runningBefore && !sessionRunning(serverPort, sid)
+                }
             ChatCache.result = null
-            if (!aborted) {
-                // abort не пробился — сервер, видимо, не отвечает на эту сессию.
+            if (!stopped) {
+                // abort не помог — сервер, видимо, не отвечает на эту сессию.
                 // Оставляем пользователю выбор: без удаления он зависнет навсегда,
                 // а delete без спроса — потерять переписку без предупреждения.
                 confirmResetDead = true
@@ -1125,11 +1135,10 @@ fun ChatOverlay(
                 // Защёлка: сервер может моргнуть статусом на один тик, а причина у
                 // пользователя должна висеть, пока он её не закрыл. Гасим только на
                 // успешном шаге модели (thinking снят) - это и есть «проблема решена».
-                if (final.notice != null) {
-                    noticeLatch = final.notice
-                } else if (!final.thinking) {
-                    noticeLatch = null
-                }
+                // Сравниваем latch ДО присваивания: сравнение после всегда даёт
+                // false и молча пропускало бы перерисовку в UI.
+                val latchBefore = noticeLatch
+                noticeLatch = nextNoticeLatch(latchBefore, final.notice, turnFinished = !final.thinking)
                 changed = old == null ||
                     old.messages != final.messages ||
                     old.thinking != final.thinking ||
@@ -1139,7 +1148,7 @@ fun ChatOverlay(
                     old.question != final.question ||
                     old.permission != final.permission ||
                     old.notice != final.notice ||
-                    noticeLatch != (final.notice ?: noticeLatch)
+                    latchBefore != noticeLatch
                 if (changed) {
                     snapshot = final
                 }
@@ -1543,7 +1552,7 @@ fun ChatOverlay(
                                 snap.stalledDead ->
                                     DeadRow(
                                         onAbort = { snap.activeId?.let(::recoverDeadTurn) },
-                                        onReset = { snap.activeId?.let(::resetDeadSession) },
+                                        onReset = { snap.activeId?.let { confirmResetDead = true } },
                                     )
                                 snap.stalled -> StalledRow()
                                 else -> ThinkingRow()
@@ -3129,11 +3138,35 @@ private fun createSession(port: Int): String? {
  * Прерывает текущую генерацию модели в сессии. opencode serve принимает
  * POST /session/{id}/abort (200 + "true"). Ответ приходит сразу, блокировать
  * нечего — это не долгий стрим.
+ *
+ * Осторожно, bool здесь обманчив: на несуществующей сессии тот же эндпоинт
+ * отдаёт 200 + HTML (SPA-fallback на любой путь), то есть true бывает даже
+ * когда ничего не прервалось. Проверять надо через [sessionRunning].
  */
 private fun abortSession(
     port: Int,
     sessionId: String,
 ): Boolean = LocalOpenCodeClient.post(port, "/session/$sessionId/abort", "") != null
+
+/**
+ * Есть ли запись сессии в /session/status, то есть считает ли сервер её ход
+ * незавершённым.
+ *
+ * Нужна потому, что по коду ответа abort узнать «прервалось ли» нельзя (см.
+ * [abortSession]). Единственный честный признак — уехала ли запись из карты
+ * статусов после abort.
+ */
+private fun sessionRunning(
+    port: Int,
+    sessionId: String,
+): Boolean {
+    val raw = LocalOpenCodeClient.get(port, "/session/status") ?: return false
+    return try {
+        JSONObject(raw).has(sessionId)
+    } catch (_: Exception) {
+        false
+    }
+}
 
 /**
  * Откат только что созданной сессии. Нужен потому, что создание и отправка -

@@ -58,6 +58,31 @@ internal fun noticeOf(entry: JSONObject?): ChatNotice? {
 }
 
 /**
+ * Правило защёлки плашки причины.
+ *
+ * Retry — устойчивое состояние, а не событие: сервер отдаёт `free_tier_limit`
+ * после любого TTL, пока квота не восстановится. Поэтому плашка не мигает, а
+ * висит, пока идёт ход, и гаснет ровно на успешном assistant-шаге.
+ *
+ * Сделано функцией, а не inline в корутине, ради теста: переход «retry=true,
+ * потом пришёл assistant-шаг» — это ровно тот случай, который нельзя поймать
+ * живьём, не дожидаясь лимита квоты.
+ *
+ * [seen] — что пришло на этом тике, [held] — что висит сейчас,
+ * [turnFinished] — opencode дошёл до успешного шага (thinking снят).
+ */
+internal fun nextNoticeLatch(
+    held: ChatNotice?,
+    seen: ChatNotice?,
+    turnFinished: Boolean,
+): ChatNotice? =
+    when {
+        turnFinished -> null
+        seen != null -> seen
+        else -> held
+    }
+
+/**
  * GET /session/status → Record<sessionId, {...}>. Любая сессия без записи в карте
  * даёт null, то есть тихо и дёшево.
  */
