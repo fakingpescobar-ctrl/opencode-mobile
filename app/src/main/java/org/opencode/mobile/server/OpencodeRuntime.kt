@@ -511,10 +511,32 @@ object OpencodeRuntime {
             require(memoryToken.isNotBlank()) { "MCP memory token is empty" }
             val cfg = OpencodeApp.ServerConfig
             val file = File(File(cfg.opencodeConfig, "opencode"), "opencode.jsonc")
-            ensureMcpConfigFile(file, ynisonToken)
+            val ok = ensureMcpConfigFile(file, ynisonToken)
+            // Эталон в Documents пишем только после успеха: копия неразобранного
+            // конфига хуже отсутствия копии — потом её не отличить от рабочей.
+            if (ok) mirrorConfig(file)
+            ok
         }.onFailure { error ->
             android.util.Log.e("OpencodeRuntime", "ensureMcpConfig failed: ${error.message}")
         }.getOrDefault(false)
+
+    /**
+     * Кладёт копию конфига в общую папку, откуда её читает ПК-агент по adb.
+     *
+     * Ошибка молча игнорируется: это удобство для диагностики, а не условие
+     * работоспособности. Недоступное внешнее хранилище (нет прав, нет места)
+     * не должно мешать серверу стартовать.
+     */
+    private fun mirrorConfig(configFile: File) {
+        val mirror = OpencodeApp.ServerConfig.mirroredConfigFile() ?: return
+        runCatching {
+            if (mirror.exists() && mirror.readText() == configFile.readText()) return
+            mirror.parentFile?.mkdirs()
+            mirror.writeText(configFile.readText())
+        }.onFailure {
+            android.util.Log.w("OpencodeRuntime", "config mirror skipped: ${it.message}")
+        }
+    }
 
     private fun ensureMcpConfigFile(
         file: File,

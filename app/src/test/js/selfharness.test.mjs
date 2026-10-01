@@ -25,7 +25,14 @@ import { tmpdir } from "node:os";
 // создаётся, и каждый тест, писавший туда, падал с EACCES независимо от
 // кода harness. Черновик, который проходит на ПК и падает на устройстве,
 // хуже отсутствия черновика: гейт проверен там, где петля не работает.
-// TEMP переопределяется окружением, иначе берётся каталог рядом с harness -
+// Каталог самого теста. Объявлен ДО resolveTmp(): фолбэк в catch обязан иметь
+// право на него обратиться, а HARNESS тут ещё не существует - обращение к нему
+// из resolveTmp давало ReferenceError ровно там, где страховка и была нужна,
+// то есть на устройстве без /tmp. Петля объявляла себя ненадёжной из-за
+// собственного теста, а не из-за проверяемого гейта.
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+// TEMP переопределяется окружением, иначе берётся каталог рядом с тестом -
 // он существует и на ПК, и внутри filesDir на устройстве.
 function resolveTmp() {
   const fromEnv = process.env.SELFHARNESS_TEST_TMP;
@@ -34,12 +41,11 @@ function resolveTmp() {
     mkdtempSync(join(tmpdir(), "probe-"));
     return tmpdir();
   } catch (e) {
-    return dirname(HARNESS);
+    return HERE;
   }
 }
 const TMP = resolveTmp();
 
-const HERE = dirname(fileURLToPath(import.meta.url));
 const HARNESS = join(HERE, "..", "..", "main", "assets", "harness", "selfharness.js");
 
 let ok = 0;
