@@ -85,6 +85,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
@@ -100,6 +101,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -150,6 +154,20 @@ private const val PANEL_COLOR = "color"
 private const val PANEL_FONT = "font"
 private const val PANEL_SETTINGS = "settings"
 private const val PANEL_STT = "stt"
+
+// testTag-метки для проверки геометрии по дампу uiautomator (resource-id).
+// Читать их в коде не нужно - это якоря для инструментов, а не логика.
+// Сегменты полос сознательно НЕ помечены: 90 ячеек на гейдж дали бы 180 узлов
+// ради арифметики, которая восстанавливается из ширины ряда и cellGap.
+private const val TAG_CTX_GAUGE = "ctx_gauge"
+private const val TAG_ZEN_METER = "zen_meter"
+private const val TAG_CTX_ROW = "ctx_row"
+private const val TAG_ZEN_ROW = "zen_row"
+private const val TAG_PANEL_MCP = "panel_mcp"
+private const val TAG_PANEL_COLOR = "panel_color"
+private const val TAG_PANEL_FONT = "panel_font"
+private const val TAG_PANEL_SETTINGS = "panel_settings"
+private const val TAG_PANEL_STT = "panel_stt"
 
 // Наносекунды в миллисекундах: замер пинга отдаёт наносекунды, в UI нужны мс.
 private const val NS_PER_MS = 1_000_000L
@@ -378,7 +396,7 @@ internal data class ChatSnapshot(
  * сервера каждые 2с + отправка через POST /session/{id}/message.
  * Поле ввода внизу, лента наверху, клавиатура не перекрывает поле (imePadding).
  */
-@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 fun ChatOverlay(
     modifier: Modifier = Modifier,
@@ -1284,7 +1302,14 @@ fun ChatOverlay(
         modifier =
             modifier
                 .fillMaxSize()
-                .imePadding(),
+                .imePadding()
+                // Проставляет testTag как resource-id в дереве доступности.
+                // Без этой строки Modifier.testTag() не виден в дампе
+                // uiautomator, и геометрию панелей/полос нечем проверять
+                // автоматом. Экспериментальное, но единственное, что даёт
+                // проверяемую геометрию: contentDescription озвучивался бы
+                // TalkBack на каждом сегменте, а testTag не произносится.
+                .semantics { testTagsAsResourceId = true },
         color = Color(0xFF101010),
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
@@ -1413,7 +1438,7 @@ fun ChatOverlay(
                     limit = CONTEXT_LIMIT,
                     shape = ctxShape,
                     palette = gaugePalette,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).testTag(TAG_CTX_GAUGE),
                 )
             }
             // Расход дневной Zen-квоты — ПОД индикатором контекста, отдельной
@@ -1426,7 +1451,7 @@ fun ChatOverlay(
                 exact = zenExactState,
                 shape = zenShape,
                 palette = gaugePalette,
-                modifier = Modifier.padding(top = gaugeBarGap.dp),
+                modifier = Modifier.padding(top = gaugeBarGap.dp).testTag(TAG_ZEN_METER),
             )
             // Выпадающий список подключённых MCP-серверов (тап по индикатору «N MCP»).
             // У каждого имени — мигающая точка: зелёная (работает) / красная (нет).
@@ -1436,7 +1461,8 @@ fun ChatOverlay(
                     modifier =
                         Modifier
                             .fillMaxWidth()
-                            .padding(top = 8.dp, bottom = 2.dp),
+                            .padding(top = 8.dp, bottom = 2.dp)
+                            .testTag(TAG_PANEL_MCP),
                 )
             }
             // Цветовой пикер для ответов модели: квадрат-градиент (X — оттенок, Y — яркость), тап/драг точкой.
@@ -1447,6 +1473,7 @@ fun ChatOverlay(
                         .fillMaxWidth()
                         .padding(top = 8.dp, bottom = 2.dp)
                         .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
+                        .testTag(TAG_PANEL_COLOR)
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                 ) {
                     Text("Цвет ответов модели (тап/тяни точку):", color = Color(0xFF8A8A8A), fontSize = 11.sp)
@@ -1522,6 +1549,7 @@ fun ChatOverlay(
                         .fillMaxWidth()
                         .padding(top = 8.dp, bottom = 2.dp)
                         .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
+                        .testTag(TAG_PANEL_SETTINGS)
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                 ) {
                     GaugeSettings(
@@ -1571,6 +1599,7 @@ fun ChatOverlay(
                         .fillMaxWidth()
                         .padding(top = 8.dp, bottom = 2.dp)
                         .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
+                        .testTag(TAG_PANEL_STT)
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                 ) {
                     Text("Голосовое распознавание:", color = Color(0xFFBDBDBD), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
@@ -1655,6 +1684,7 @@ fun ChatOverlay(
                         .fillMaxWidth()
                         .padding(top = 8.dp, bottom = 2.dp)
                         .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
+                        .testTag(TAG_PANEL_FONT)
                         .padding(horizontal = 10.dp, vertical = 6.dp),
                 ) {
                     Text("Шрифт ответов модели (тап — применить):", color = Color(0xFF8A8A8A), fontSize = 11.sp)
@@ -2512,6 +2542,7 @@ private fun ZenMeter(
         active = active,
         track = Color(palette.track),
         shape = shape,
+        rowTag = TAG_ZEN_ROW,
         modifier = modifier.height(shape.height).fillMaxWidth(),
     )
 }
@@ -2537,6 +2568,7 @@ private fun ContextGauge(
         active = active,
         track = Color(palette.track),
         shape = shape,
+        rowTag = TAG_CTX_ROW,
         modifier = modifier.height(shape.height).fillMaxWidth(),
     )
 }
@@ -2565,6 +2597,7 @@ private fun GaugeBars(
     active: Color,
     track: Color,
     shape: GaugeShape,
+    rowTag: String,
     modifier: Modifier = Modifier,
 ) {
     // Щели рисуются цветом фона шапки, поэтому выглядят как пустота между
@@ -2574,7 +2607,9 @@ private fun GaugeBars(
     val cells = shape.cells
     val leanRatio = shape.lean
     val gapDp = shape.cellGapDp
-    Canvas(modifier) {
+    // Canvas сам по себе не создаёт узла доступности, поэтому ряду нужен
+    // явный testTag - иначе в дампе не видно, где полоса и какова её высота.
+    Canvas(modifier.testTag(rowTag)) {
         val h = size.height
         val lean = h * leanRatio
         // Лента вписана в холст по диагонали: нижний левый угол у левого края,
