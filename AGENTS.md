@@ -147,6 +147,42 @@ adb install -r -d app\build\outputs\apk\debug\app-debug.apk
 - `ynison-goaway.test.mjs` якорится на `async function openSessionOnce(seed = null)` —
   добавление параметра ломает `jstest` с «якорь не найден».
 
+## Параметры экрана для правок UI ( ОБЯЗАТЕЛЬНО считать ДО вёрстки)
+
+Целевая платформа: **OPPO CPH2747**, Android 16.
+
+| Параметр | Значение |
+|---|---|
+| Разрешение | 1272 × 2772 px |
+| Density | 560 dpi = **3.5 px/dp** |
+| Ширина экрана | **363 dp** (не 411! узкий телефон) |
+| Высота экрана | 792 dp |
+| font_scale | 1.0 |
+
+**Главное правило: в Compose-шапке ширины в dp почти нет.**
+
+- Корневой `Column` в `ChatOverlay` имеет `padding(horizontal = 12.dp)` → на ряд остаётся **339 dp**.
+- Ряд иконок в шапке: 6 иконок по 22 dp + 7 зазоров по 4 dp = 160 dp, чип MCP (~75 dp)
+  и `QuotaBadge` в `weight(1f)`. Бейджу остаётся ~100 dp.
+- **Любой Text в шапке обязан иметь `softWrap = false, maxLines = 1, overflow = TextOverflow.Ellipsis`.**
+  Иначе при нехватке ширины Compose переносит текст на вторую строку и шапка
+  вздваивается по высоте (реально было: `● Online 69m` / `s` — 02.10.2026).
+- Добавление ЛЮБОЙ иконки в шапку: сначала посчитай dp, потом пиши. Иначе та же поломка.
+- Зазоры в шапке — `padding(start = 4.dp)`; в строке ввода ниже остались `8.dp`
+  (там другое место, не путать — это ~строки 1851+ в `ChatOverlay.kt`).
+
+Проверка вёрстки БЕЗ скриншота (vision-mcp в этом окружении может быть недоступен):
+
+```powershell
+$adb="C:\Users\OLD\AppData\Local\Android\Sdk\platform-tools\adb.exe"
+& $adb shell uiautomator dump /sdcard/ui.xml
+& $adb pull /sdcard/ui.xml "$env:TEMP\ui.xml"
+# дальше распарсить bounds: у элементов ОДНОЙ строки одинаковый y и h
+```
+
+Ориентиры по координатам шапки (px, 3.5 px/dp): `Online` x=91, пинг x=240,
+чип MCP x=535, иконки с шагом 91 px начиная с x=653.
+
 ## DeepSeek critic
 
 `node C:\Users\OLD\.config\opencode\plugin\critic.mjs "<промпт>" --file <file> --quiet`
