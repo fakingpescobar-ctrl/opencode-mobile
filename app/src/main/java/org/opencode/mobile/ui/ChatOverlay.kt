@@ -142,6 +142,15 @@ private const val MAX_SHOWN = 120
 // шапке чата показывает current/limit зрительно.
 private const val CONTEXT_LIMIT = 200_000L
 
+// Идентификаторы выпадающих панелей шапки — ключи для [ChatOverlay] переключателя
+// toggleHeaderPanel. Строками, а не enum: ключ нужен ровно в двух местах
+// (объявление и клик по иконке), а enum здесь стоил бы лишней печати.
+private const val PANEL_MCP = "mcp"
+private const val PANEL_COLOR = "color"
+private const val PANEL_FONT = "font"
+private const val PANEL_SETTINGS = "settings"
+private const val PANEL_STT = "stt"
+
 // Наносекунды в миллисекундах: замер пинга отдаёт наносекунды, в UI нужны мс.
 private const val NS_PER_MS = 1_000_000L
 
@@ -500,6 +509,25 @@ fun ChatOverlay(
     var stopping by remember { mutableStateOf(false) }
     var whisperRecorder: AudioRecorder? = null
     val permissionActionBusy = permissionRespondingId != null || stopping
+
+    // Панели, выпадающие из шапки, ВЗАИМОИСКЛЮЧАЮЩИЕ. Каждая рендерится своим
+    // `if (...)` и занимает полную ширину под шапкой, поэтому две открытые
+    // панели складывались по высоте и хедер вздваивался. Переключение идёт
+    // ТОЛЬКО здесь: раньше сброс жил внутри кликов по иконкам, и асимметрия
+    // (Mic гасил Settings, а Settings не гасил Mic) позволяла открыть обе.
+    // Один атомарный сброс вместо пяти разрозненных — иначе следующая иконка
+    // снова принесёт свой вариант правил.
+    fun toggleHeaderPanel(
+        self: String,
+        isOpen: Boolean,
+    ) {
+        val open = !isOpen
+        showMcpList = open && self == PANEL_MCP
+        showColorPicker = open && self == PANEL_COLOR
+        showFontPicker = open && self == PANEL_FONT
+        showSettings = open && self == PANEL_SETTINGS
+        showSttSettings = open && self == PANEL_STT
+    }
 
     fun answerQuestion(
         q: ChatQuestion,
@@ -1278,7 +1306,7 @@ fun ChatOverlay(
                 MCPIndicator(
                     connected = snapshot?.mcpConnected ?: 0,
                     total = snapshot?.mcpTotal ?: 0,
-                    onClick = { showMcpList = !showMcpList },
+                    onClick = { toggleHeaderPanel(PANEL_MCP, showMcpList) },
                     modifier = Modifier.padding(start = 4.dp),
                 )
                 // Цветовой пикер для ответов модели. ИКОНКА — готовая «капля»
@@ -1294,7 +1322,7 @@ fun ChatOverlay(
                             .size(22.dp)
                             .clip(CircleShape)
                             .background(if (showColorPicker) Color(0xFF3A3A3A) else Color.Transparent)
-                            .clickable { showColorPicker = !showColorPicker }
+                            .clickable { toggleHeaderPanel(PANEL_COLOR, showColorPicker) }
                             .padding(3.dp),
                 )
                 Icon(
@@ -1307,7 +1335,7 @@ fun ChatOverlay(
                             .size(22.dp)
                             .clip(CircleShape)
                             .background(if (showFontPicker) Color(0xFF3A3A3A) else Color.Transparent)
-                            .clickable { showFontPicker = !showFontPicker }
+                            .clickable { toggleHeaderPanel(PANEL_FONT, showFontPicker) }
                             .padding(3.dp),
                 )
                 Icon(
@@ -1320,7 +1348,7 @@ fun ChatOverlay(
                             .size(22.dp)
                             .clip(CircleShape)
                             .background(if (showSettings) Color(0xFF3A3A3A) else Color.Transparent)
-                            .clickable { showSettings = !showSettings }
+                            .clickable { toggleHeaderPanel(PANEL_SETTINGS, showSettings) }
                             .padding(3.dp),
                 )
                 Icon(
@@ -1333,12 +1361,8 @@ fun ChatOverlay(
                             .size(22.dp)
                             .clip(CircleShape)
                             .background(if (showSttSettings) Color(0xFF3A3A3A) else Color.Transparent)
-                            .clickable {
-                                showSttSettings = !showSttSettings
-                                if (showSttSettings) {
-                                    showSettings = false
-                                }
-                            }.padding(3.dp),
+                            .clickable { toggleHeaderPanel(PANEL_STT, showSttSettings) }
+                            .padding(3.dp),
                 )
                 // Диагностика: состояние сервера, STT-модели и хвост лога serve.
                 // Полноэкранный оверлей (DiagnosticsScreen), рисуется поверх всего.
