@@ -18,16 +18,16 @@ import androidx.compose.ui.unit.dp
 
 /** Границы значений. Защищают от нулевых/безумных полей из битой базы. */
 object GaugeLimits {
-    const val MIN_HEIGHT_DP = 3
-    const val MAX_HEIGHT_DP = 120
-    const val MIN_CELLS = 5
-    const val MAX_CELLS = 200
+    const val MIN_HEIGHT_DP = 6
+    const val MAX_HEIGHT_DP = 20
+    const val MIN_CELLS = 40
+    const val MAX_CELLS = 120
     const val MIN_CELL_GAP_DP = 0f
-    const val MAX_CELL_GAP_DP = 8f
-    const val MIN_LEAN = 0f
-    const val MAX_LEAN = 1.2f
+    const val MAX_CELL_GAP_DP = 2.5f
+    const val MIN_LEAN = -0.40f
+    const val MAX_LEAN = 0.40f
     const val MIN_BAR_GAP_DP = 0
-    const val MAX_BAR_GAP_DP = 24
+    const val MAX_BAR_GAP_DP = 6
 }
 
 /** Геометрия одной полосы-ленты. Своя у полосы контекста и у полосы Zen-квоты. */
@@ -53,7 +53,7 @@ data class GaugeShape(
          * Значение по умолчанию подобрано замером по скриншону телефона: цифры в
          * «105ms» занимают 32px при плотности 3.5, то есть ровно 9dp.
          */
-        val DEFAULT = GaugeShape(heightDp = 9, cells = 90, cellGapDp = 0.6f, lean = 0.45f)
+        val DEFAULT = GaugeShape(heightDp = 9, cells = 90, cellGapDp = 0.6f, lean = 0.40f)
 
         /**
          * Собирает форму из сырых значений хранилища. `null` означает «ключа нет» —
