@@ -61,7 +61,40 @@ if (!dbPath) {
 }
 
 const { Database } = require("bun:sqlite");
-const db = new Database(dbPath);
+
+// Живой opencode держит соединение с этой же базой, поэтому запись может
+// упереться в SQLITE_BUSY. Живой файл базы вообще может отсутствовать - см.
+// примечание про права доступа ниже.
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function openWithRetry(tries = 4) {
+  let last = null;
+  for (let i = 0; i < tries; i++) {
+    try {
+      // Открываем без create: база обязана существовать. Явный create:false
+      // в этой версии bun даёт SQLITE_MISUSE, а дефолт и так не создаёт.
+      return new Database(dbPath);
+    } catch (e) {
+      last = e;
+      if (i + 1 < tries) sleep(800 * (i + 1));
+    }
+  }
+  throw last;
+}
+
+let db;
+try {
+  db = openWithRetry();
+} catch (e) {
+  // Нет доступа - это НЕ повод паять: чаще всего скрипт запустили из adb
+  // shell / run-as, где у процесса нет прав на файл, принадлежащий uid
+  // приложения. В лог уходит инструкция, что делать.
+  console.error(`retention: не открыть ${dbPath}: ${e.code || e.message}`);
+  console.error("retention: если это EACCES - запускай из процесса приложения, а не из run-as.");
+  process.exit(3);
+}
 
 // Сессии-кандидаты на обрезку: payload журнала больше порога.
 // Считаем по aggregate_id, а не по json_extract(data,'$.sessionID'):

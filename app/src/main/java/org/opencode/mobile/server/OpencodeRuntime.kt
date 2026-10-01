@@ -260,14 +260,14 @@ object OpencodeRuntime {
     fun ensureYnisonScript(context: Context): File? = ensureAssetScript(context, YNISON_ASSET, YNISON_SCRIPT)
 
     /**
-     * Общая часть копирования скрипта из assets в filesDir/mem.
+     * Копирует retention.js — обрезку раздутого журнала событий — в filesDir/mem.
      *
-     * Один хелпер на оба скрипта не из любви к DRY, а потому что атомарность здесь
-     * единственное, что спасает: обрезанный writeBytes (kill посреди записи) оставил бы
-     * битый .js по целевому имени навсегда — dest.size()==source.size() прошёл бы только
-     * при совпадении длины. Скопировать этот хрупкий кусок в третий раз — значит
-     * рано или поздно скопировать его без атомарности.
+     * Запускать его нужно ОТСЮДА, а не из adb shell / run-as: файл базы на sdcard
+     * принадлежит uid приложения с правами 0660, и процесс, запущенный через
+     * run-as, получает на него EACCES. Внутри приложения доступ есть.
      */
+    fun ensureRetentionScript(context: Context): File? = ensureAssetScript(context, RETENTION_ASSET, RETENTION_SCRIPT)
+
     private fun ensureAssetScript(
         context: Context,
         assetName: String,
@@ -646,6 +646,8 @@ object OpencodeRuntime {
     private const val PROVENANCE_SCRIPT = "provenance.js"
     private const val YNISON_ASSET = "mcp/ynison.js"
     private const val YNISON_SCRIPT = "ynison.js"
+    private const val RETENTION_ASSET = "harness/retention.js"
+    private const val RETENTION_SCRIPT = "retention.js"
     private const val MEMORY_LABEL = "memory"
     private const val YNISON_LABEL = "ynison"
     internal val MUSIC_NAME_KEY = "\"${YnisonMcp.NAME}\""

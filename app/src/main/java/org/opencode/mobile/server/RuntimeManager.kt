@@ -315,6 +315,7 @@ class RuntimeManager(
                     continue
                 }
                 serve.setProcess(proc)
+                Retention.schedule(context, logFile)
 
                 val healthy = waitForHttp(OpencodeApp.ServerConfig.PORT)
                 // Штатная отмена (стоп сервиса / рестарт юзера) во время health-ожидания
