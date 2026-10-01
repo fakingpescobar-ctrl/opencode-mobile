@@ -20,6 +20,7 @@ import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.RepeatMode
@@ -476,10 +477,31 @@ fun ChatOverlay(
         sending = true
         userScrolledUp = false
         scope.launch {
-            val ok =
+            // Создание сессии идёт ВНУТРИ той же операции, что и отправка.
+            // Раньше сессия создавалась, а отправка могла не уйти - и оставалась
+            // сирота с одним session.created.1 и нулём сообщений (три такие
+            // нашлись в базе при разборе). Молчание было худшей частью: у
+            // пользователя сообщение выглядело отправленным, а текст оставался
+            // в поле случайно.
+            val (ok, createdHere) =
                 withContext(Dispatchers.IO) {
-                    val id = sessionId ?: createSession(serverPort)
-                    if (id != null) postMessage(serverPort, id, text) else false
+                    if (sessionId != null) {
+                        postMessage(serverPort, sessionId, text) to null
+                    } else {
+                        val fresh = createSession(serverPort)
+                        when {
+                            fresh == null -> false to null
+                            postMessage(serverPort, fresh, text) -> true to null
+                            else -> {
+                                // postAsync отдаёт true сразу после записи тела,
+                                // поэтому false означает «сервер не получил запрос
+                                // вообще», а не «ответ не успел». Откатываем только
+                                // в этом случае: при неоднозначности стирать нельзя.
+                                deleteSession(serverPort, fresh)
+                                false to fresh
+                            }
+                        }
+                    }
                 }
             sending = false
             if (ok) {
@@ -489,6 +511,20 @@ fun ChatOverlay(
                 // Оптимистично: мгновенно показываем своё сообщение в ленте.
                 snapshot = snapshot?.let { it.copy(messages = it.messages + ChatMsg("user", text)) }
                 scrollToBottomFull(listState, (snapshot?.messages?.size ?: 0) - 1)
+            } else {
+                // Черновик намеренно остаётся: сообщение не ушло, повтор должен
+                // быть возможен одним нажатием. Молчаливый отказ - это тот баг,
+                // который чиним.
+                val toast =
+                    Toast.makeText(
+                        context,
+                        "Не отправилось: сообщение осталось в поле. Нажми ещё раз.",
+                        Toast.LENGTH_LONG,
+                    )
+                toast.show()
+                if (createdHere != null) {
+                    android.util.Log.w("ChatOverlay", "откат новой сессии $createdHere после сбоя отправки")
+                }
             }
         }
     }
@@ -2788,6 +2824,17 @@ private fun abortSession(
     port: Int,
     sessionId: String,
 ): Boolean = LocalOpenCodeClient.post(port, "/session/$sessionId/abort", "") != null
+
+/**
+ * Откат только что созданной сессии. Нужен потому, что создание и отправка -
+ * одна операция: если отправка не ушла, сессия остаётся сиротой (одно событие
+ * session.created, ноль сообщений) и засоряет список сессий. На живом сервере
+ * DELETE /session/{id} отвечает 200 и сессия исчезает.
+ */
+private fun deleteSession(
+    port: Int,
+    sessionId: String,
+): Boolean = LocalOpenCodeClient.delete(port, "/session/$sessionId")
 
 private fun postMessage(
     port: Int,
