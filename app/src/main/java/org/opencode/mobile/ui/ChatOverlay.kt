@@ -316,24 +316,6 @@ internal data class McpInfo(
     val tools: Int? = null,
 )
 
-/**
- * Статус сессии от самого opencode (GET /session/status): ретрай провайдера,
- * исчерпанная квота и т.п.
- *
- * Зачем: сервер честно отдаёт причину («Free usage exceeded, subscribe to Go»),
- * но ответ assistant при этом остаётся пустым, а thinking=true — без конца.
- * Без чтения этого эндпоинта пользователь видит только вечный спиннер и через
- * минуту — «зависло», из чего нельзя понять, что делать. Это молчание хуже
- * самой ошибки: тут нужен не кот, а конкретное действие.
- */
-internal data class ChatNotice(
-    val title: String,
-    val message: String,
-    val actionLabel: String? = null,
-    val actionLink: String? = null,
-    val attempt: Int = 0,
-)
-
 internal data class ChatSnapshot(
     val messages: List<ChatMsg>,
     val label: String,
@@ -466,6 +448,10 @@ fun ChatOverlay(
     var creatingSession by remember { mutableStateOf(false) }
     // Диалог подтверждения «очистить все сессии» (long-press на +).
     var confirmClearAll by remember { mutableStateOf(false) }
+
+    // Подтверждение сброса зависшей сессии из DeadRow. Удаление необратимо,
+    // поэтому отдельный диалог, а не кнопка в один тап.
+    var confirmResetDead by remember { mutableStateOf(false) }
     var permissionRespondingId by remember { mutableStateOf<String?>(null) }
     var permissionError by remember { mutableStateOf<String?>(null) }
     var stopping by remember { mutableStateOf(false) }
@@ -620,6 +606,50 @@ fun ChatOverlay(
             }
             // thinking сбросится сам на следующем поллинге: abort завершит
             // стрим, и fetchChatSnapshot увидит step-finish → thinking=false.
+        }
+    }
+
+    // Восстановление после зависшего хода (DeadRow), дешёвый порядок:
+    //  1) abort через сервер — останавливает генерацию, история остаётся целой;
+    //  2) если abort не помог — удалить сессию и создать новую.
+    // Порядок не переставлен специально: abort стоит копейки и сохраняет переписку,
+    // а удаление необратимо и может снести 161 сообщение. Поэтому шаг 2 только
+    // из явного диалога и только если шаг 1 не вывел нас из висящего состояния.
+    fun recoverDeadTurn(sid: String) {
+        scope.launch {
+            val aborted =
+                withContext(Dispatchers.IO) { abortSession(serverPort, sid) }
+            ChatCache.result = null
+            if (!aborted) {
+                // abort не пробился — сервер, видимо, не отвечает на эту сессию.
+                // Оставляем пользователю выбор: без удаления он зависнет навсегда,
+                // а delete без спроса — потерять переписку без предупреждения.
+                confirmResetDead = true
+            }
+        }
+    }
+
+    // Шаг 2: сессия-зомби не отдаёт даже abort. Сносим её и создаём свежую.
+    // Вызывается только из диалога подтверждения.
+    fun resetDeadSession(sid: String) {
+        creatingSession = true
+        scope.launch {
+            val ok =
+                withContext(Dispatchers.IO) {
+                    abortSession(serverPort, sid)
+                    deleteSession(serverPort, sid) &&
+                        createSession(serverPort)?.let {
+                            ChatCache.sessionId = null
+                            ChatCache.rawHash = 0
+                            true
+                        } ?: false
+                }
+            // Сбрасываем кэш в любом случае: если удаление прошло, поллинг обязан
+            // перечитать список и уйти на новую сессию, иначе вернёт удалённую.
+            ChatCache.result = null
+            PermissionCache.clearAll()
+            creatingSession = false
+            if (ok) vibrate(context)
         }
     }
 
@@ -1510,7 +1540,11 @@ fun ChatOverlay(
                         val snap = requireNotNull(snapshot)
                         item(key = if (snap.stalled) "stalled" else "thinking") {
                             when {
-                                snap.stalledDead -> DeadRow()
+                                snap.stalledDead ->
+                                    DeadRow(
+                                        onAbort = { snap.activeId?.let(::recoverDeadTurn) },
+                                        onReset = { snap.activeId?.let(::resetDeadSession) },
+                                    )
                                 snap.stalled -> StalledRow()
                                 else -> ThinkingRow()
                             }
@@ -1751,6 +1785,37 @@ fun ChatOverlay(
                 },
                 dismissButton = {
                     TextButton(onClick = { confirmClearAll = false }) { Text("Отмена", color = Color(0xFFBDBDBD)) }
+                },
+            )
+        }
+
+        // Подтверждение сброса зависшей сессии (шаг 2 в recoverDeadTurn).
+        // Сессию-зомби не спасает даже abort, но в ней может быть вся переписка,
+        // поэтому удаление — только через явный диалог.
+        if (confirmResetDead) {
+            AlertDialog(
+                onDismissRequest = { confirmResetDead = false },
+                containerColor = Color(0xFF1C1C1C),
+                titleContentColor = Color(0xFFE6E6E6),
+                textContentColor = Color(0xFFBDBDBD),
+                title = { Text("Удалить зависшую сессию?") },
+                text = {
+                    Text(
+                        "Сессия не отвечает даже на прерывание. Она будет удалена " +
+                            "безвозвратно вместе с историей, и откроется новая пустая. " +
+                            "Если переписка нужна — сначала попробуй «Прервать ход».",
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmResetDead = false
+                        snapshot?.activeId?.let(::resetDeadSession)
+                    }) { Text("Удалить и начать заново", color = Color(0xFFFF6F5A)) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmResetDead = false }) {
+                        Text("Отмена", color = Color(0xFFBDBDBD))
+                    }
                 },
             )
         }
@@ -2073,9 +2138,20 @@ private fun StalledRow() {
  * шага — обычно он уже ответил ошибкой (неизвестная модель, 500 провайдера) или
  * списал квоту в ретрае. Отличать от «долго думает» принципиально: там модель
  * работает и надо ждать, тут она не вернётся сама и ждать бессмысленно.
+ *
+ * Само по себе «текст + иди жди» — это тупик: ход не завершится никогда, и
+ * единственный выход (сменить сессию) надо ещё и догадаться. Поэтому здесь два
+ * действия, и они неравнозначны по цене:
+ *   [onAbort] — «прервать ход»: abort через сервер, история остаётся целой.
+ *   [onReset] — «начать заново»: удалить сессию-зомби и создать новую.
+ * Удаление необратимо, поэтому второй путь открывается только через диалог
+ * подтверждения (см. resetDeadSession).
  */
 @Composable
-private fun DeadRow() {
+private fun DeadRow(
+    onAbort: () -> Unit,
+    onReset: () -> Unit,
+) {
     Column(Modifier.padding(vertical = 6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -2099,6 +2175,34 @@ private fun DeadRow() {
             lineHeight = 18.sp,
             modifier = Modifier.padding(top = 2.dp),
         )
+
+        // Два выхода из тупика, цена разная и это видно по цвету: зелёный —
+        // бесплатный (abort), красный — необратимый (удаление сессии).
+        Row(
+            Modifier.padding(top = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Прервать ход",
+                color = Color(0xFF7BD88F),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.clickable(onClick = onAbort),
+            )
+            Text(
+                "·",
+                color = NoticePalette.dim,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(horizontal = 8.dp),
+            )
+            Text(
+                "Начать заново",
+                color = Color(0xFFFF6F5A),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.clickable(onClick = onReset),
+            )
+        }
     }
 }
 
@@ -2630,57 +2734,13 @@ private fun MessageRow(
 }
 
 /**
- * GET /session/status → Record<sessionId, {type, attempt, message, action?, next}>.
- *
- * Показываем только то, что мешает ходу: ретрай провайдера и его ошибку.
- * Статусы вида «работает» (type=working/retry с next в будущем и без action)
- * шумом не считаем — про них пользователь и так видит индикатор думания.
- * Любая сессия без записи в карте = null, то есть тихо и дёшево.
+ * Забирает статус хода у сервера. Разбор - в [noticeFromStatus], он чистый и
+ * покрыт юнит-тестом; здесь только поход по сети.
  */
 private suspend fun fetchNotice(
     port: Int,
     sessionId: String,
-): ChatNotice? {
-    val raw = LocalOpenCodeClient.get(port, "/session/status")
-    val entry =
-        try {
-            raw?.trim()?.takeIf { it.startsWith("{") }?.let { JSONObject(it).optJSONObject(sessionId) }
-        } catch (_: Exception) {
-            null
-        }
-    return noticeOf(entry)
-}
-
-/**
- * Разбор одной записи /session/status. null — показывать нечего.
- * Показываем только то, что реально мешает ходу (retry/error). Статусы вида
- * «работает» отфильтровываются молча: про них и так видно индикатор думания.
- */
-private fun noticeOf(entry: JSONObject?): ChatNotice? {
-    val type = entry?.optString("type", "").orEmpty()
-    val action = entry?.optJSONObject("action")
-    val msg = entry?.optString("message", "").orEmpty().trim()
-    val actionMsg = action?.optString("message", "").orEmpty().trim()
-    val detail = if (actionMsg.isBlank()) msg else actionMsg
-    val interesting = type == "retry" || type == "error"
-    val fallback = if (type == "error") "Модель ответила с ошибкой" else "Модель повторяет запрос"
-    // Ничего внятного от сервера — лучше тишина, чем пустая плашка.
-    return if (interesting && detail.isNotBlank()) {
-        val actionTitle = action?.optString("title", "").orEmpty().trim()
-        val title = if (actionTitle.isBlank()) fallback else actionTitle
-        val label = action?.optString("label", "").orEmpty()
-        val link = action?.optString("link", "").orEmpty()
-        ChatNotice(
-            title = title,
-            message = if (msg.isBlank() || msg == detail) detail else "$detail ($msg)",
-            actionLabel = label.ifBlank { null },
-            actionLink = link.ifBlank { null },
-            attempt = entry?.optInt("attempt", 0) ?: 0,
-        )
-    } else {
-        null
-    }
-}
+): ChatNotice? = noticeFromStatus(LocalOpenCodeClient.get(port, "/session/status"), sessionId)
 
 private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
     withContext(Dispatchers.IO) {

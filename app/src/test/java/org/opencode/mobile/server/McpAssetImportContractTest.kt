@@ -1,7 +1,6 @@
 package org.opencode.mobile.server
 
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
 import org.junit.Test
 import java.io.File
 
@@ -32,8 +31,10 @@ class McpAssetImportContractTest {
             File("app/src/main/assets/mcp"),
             File("../../../../main/assets/mcp"),
         )
+        // error(), а не Assert.fail(): JUnit-овский fail возвращает void, из-за чего
+        // elvis-выражение типизировался как Any и файл не компилировался.
         candidates.firstOrNull { it.isDirectory }
-            ?: fail("каталог assets/mcp не найден, проверяли: $candidates")
+            ?: error("каталог assets/mcp не найден, проверяли: $candidates")
     }
 
     @Test
