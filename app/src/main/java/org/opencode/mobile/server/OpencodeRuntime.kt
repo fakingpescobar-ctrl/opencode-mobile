@@ -530,9 +530,20 @@ object OpencodeRuntime {
     private fun mirrorConfig(configFile: File) {
         val mirror = OpencodeApp.ServerConfig.mirroredConfigFile() ?: return
         runCatching {
-            if (mirror.exists() && mirror.readText() == configFile.readText()) return
+            val privateText = configFile.readTextOrEmpty()
+            if (mirror.exists()) {
+                val mirrorText = mirror.readTextOrEmpty()
+                if (mirrorText != privateText) {
+                    android.util.Log.w(
+                        "OpencodeRuntime",
+                        "config mirror drift detected: private=${privateText.length} mirror=${mirrorText.length}",
+                    )
+                } else {
+                    return@runCatching
+                }
+            }
             mirror.parentFile?.mkdirs()
-            mirror.writeText(configFile.readText())
+            mirror.writeText(privateText)
         }.onFailure {
             android.util.Log.w("OpencodeRuntime", "config mirror skipped: ${it.message}")
         }
