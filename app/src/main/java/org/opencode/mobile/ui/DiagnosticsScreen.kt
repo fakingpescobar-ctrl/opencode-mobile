@@ -28,9 +28,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -53,13 +55,16 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.opencode.mobile.OpencodeApp
 import org.opencode.mobile.account.YandexAccountController
 import org.opencode.mobile.installer.InstalledAppController
 import org.opencode.mobile.server.OpencodeServerService
 import org.opencode.mobile.server.OpencodeServerService.ServerStatus
+import org.opencode.mobile.server.Retention
 import org.opencode.mobile.server.RuntimeError
 import org.opencode.mobile.server.RuntimeStage
 import org.opencode.mobile.server.RuntimeValidation
@@ -84,6 +89,9 @@ import java.util.Locale
 /** Сколько последних сбоев показываем в UI и дампе (кольцо хранит до MAX_ERROR_HISTORY). */
 private const val HISTORY_SHOWN = 5
 private const val PERCENT_MAX = 100
+
+/** Сколько строк вывода retention показывать на экране (хвост, не дамп). */
+private const val RETENTION_OUTPUT_TAIL_LINES = 12
 private const val PROGRESS_TRACK_COLOR = 0xFF2A2A2AL
 
 /** Состояние скачивания ncnn-набора (кнопка в секции «Голосовое распознавание»). */
@@ -152,6 +160,8 @@ fun DiagnosticsScreen(
     // потокобезопасен); выход с экрана отменяет корутину (CancellationException
     // проходит сквозь downloadTurbo через ensureActive) — .part остаётся для resume.
     var ncnnDl by remember { mutableStateOf<NcnnDownloadState>(NcnnDownloadState.Idle) }
+    // Вывод последнего ручного прогона retention (расчёт или обрезка).
+    var retentionOut by remember { mutableStateOf<String?>(null) }
     val startNcnnDownload: () -> Unit = {
         if (ncnnDl !is NcnnDownloadState.Running) {
             ncnnDl = NcnnDownloadState.Running(0L, NcnnModelDownloader.TOTAL_BYTES)
@@ -404,6 +414,11 @@ fun DiagnosticsScreen(
                 // runtime читает итог, поэтому встаёт после них.
                 yandexAccountSection()
 
+                retentionSection(context, scope, retentionOut) {
+                    retentionOut = it
+                    refreshKey++
+                }
+
                 sectionHeader("Валидация runtime")
                 if (snap == null) {
                     InfoRow("Проверка", "загрузка…")
@@ -513,6 +528,108 @@ internal fun sectionHeader(title: String) {
     )
     Spacer(Modifier.height(1.dp).fillMaxWidth().background(Color(0xFF222222)))
 }
+
+/**
+ * Ручной прогон обрезки журнала событий.
+ *
+ * Тик retention ходит раз в час, но для диагностики этого мало: чтобы увидеть
+ * результат, пришлось бы ждать. Здесь обе кнопки запускают тот же самый код,
+ * что и тик, — ничего отдельного «для диагностики» не дублируется.
+ *
+ * Обрезка необратима, поэтому у неё подтверждение, а расчёт — нет: расчёт
+ * ничего не удаляет по построению, и лишний вопрос перед безопасным действием
+ * просто приучает нажимать «да» не читая.
+ */
+@Composable
+private fun retentionSection(
+    context: Context,
+    scope: CoroutineScope,
+    output: String?,
+    onDone: (String?) -> Unit,
+) {
+    var busy by remember { mutableStateOf(false) }
+    var confirmApply by remember { mutableStateOf(false) }
+    val logFile = File(context.filesDir, "opencode.log")
+
+    fun run(
+        apply: Boolean,
+        bytes: Long,
+    ) {
+        if (busy) return
+        busy = true
+        scope.launch {
+            val text =
+                withContext(Dispatchers.IO) {
+                    Retention.runOnce(context, logFile, apply = apply, thresholdBytes = bytes)
+                }
+            busy = false
+            onDone(text)
+        }
+    }
+
+    sectionHeader("Журнал событий (retention)")
+    InfoRow(
+        "Что это",
+        "event в opencode - append-only журнал изменений, втрое больше итога. " +
+            "Он растёт на каждый чанк стрима, и база растёт на 38 МБ в сутки. " +
+            "Обрезка режет журнал, итог переписки (part) не трогает.",
+    )
+    InfoRow("Тик", "раз в час, первый — через 10 мин после старта сервера")
+    if (busy) {
+        InfoRow("Идёт", "…", Color(0xFFFFC107))
+    }
+    if (output != null) {
+        // Вывод скрипта — это несколько коротких строк, а не дамп: режем
+        // до хвоста, иначе сам экран диагностики станет источником проблемы,
+        // которую мы тут чиним.
+        val tail = output.trim().lines().takeLast(RETENTION_OUTPUT_TAIL_LINES)
+        InfoRow(
+            "Результат",
+            tail.joinToString("\n"),
+            if (output.contains("VACUUM")) Color(0xFF7BD88F) else Color(0xFFE6E6E6),
+        )
+    }
+    downloadButton("Расчёт (ничего не удаляет)") {
+        run(apply = false, bytes = Retention.DRYRUN_BYTES)
+    }
+    downloadButton("Обрезать (необратимо)") { confirmApply = true }
+
+    if (confirmApply) {
+        AlertDialog(
+            onDismissRequest = { confirmApply = false },
+            title = { Text("Обрезать журнал?") },
+            text = {
+                Text(
+                    "Удалятся события (журнал изменений) у сессий, чей журнал больше " +
+                        "8 МБ. Итог переписки останется, но историю изменений восстановить " +
+                        "нельзя. Сейчас база ${fmtBytes(dbSize())}.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmApply = false
+                    run(apply = true, bytes = Retention.APPLY_BYTES)
+                }) { Text("Обрезать") }
+            },
+            dismissButton = { TextButton(onClick = { confirmApply = false }) { Text("Отмена") } },
+        )
+    }
+}
+
+/**
+ * Размер БД вместе с WAL: -wal у нас весит больше самой базы, и показывать
+ * только .db - значит показывать половину правды.
+ */
+
+/**
+ * Размер БД вместе с WAL: -wal у нас весит больше самой базы, и показывать
+ * только .db - значит показывать половину правды.
+ */
+private fun dbSize(): Long =
+    runCatching {
+        val db = File(OpencodeApp.ServerConfig.opencodeData, "opencode/opencode.db")
+        db.length() + File(db.parentFile, "opencode.db-wal").length()
+    }.getOrDefault(0L)
 
 @Composable
 private fun InfoRow(
