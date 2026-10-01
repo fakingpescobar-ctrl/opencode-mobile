@@ -523,6 +523,12 @@ object OpencodeRuntime {
     /**
      * Кладёт копию конфига в общую папку, откуда её читает ПК-агент по adb.
      *
+     * Одностороннее зеркало: приватный конфиг - источник истины, внешний -
+     * производная копия ТОЛЬКО НА ЧТЕНИЕ. Обратного импорта нет и не должно
+     * быть, поэтому при расхождении внешний перезаписывается. Типичная причина
+     * расхождения - правка зеркала руками: она будет стёрта, и об этом стоит
+     * сказать прямо в лог, а не оставлять догадку.
+     *
      * Ошибка молча игнорируется: это удобство для диагностики, а не условие
      * работоспособности. Недоступное внешнее хранилище (нет прав, нет места)
      * не должно мешать серверу стартовать.
@@ -533,14 +539,13 @@ object OpencodeRuntime {
             val privateText = configFile.readTextOrEmpty()
             if (mirror.exists()) {
                 val mirrorText = mirror.readTextOrEmpty()
-                if (mirrorText != privateText) {
-                    android.util.Log.w(
-                        "OpencodeRuntime",
-                        "config mirror drift detected: private=${privateText.length} mirror=${mirrorText.length}",
-                    )
-                } else {
-                    return@runCatching
-                }
+                if (mirrorText == privateText) return@runCatching
+                android.util.Log.w(
+                    "OpencodeRuntime",
+                    "config mirror перезаписан приватным: private=${privateText.length} " +
+                        "mirror=${mirrorText.length}. Источник истины - приватный конфиг; " +
+                        "правки зеркала вручную не сохраняются.",
+                )
             }
             mirror.parentFile?.mkdirs()
             mirror.writeText(privateText)
