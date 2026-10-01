@@ -158,6 +158,12 @@ private const val STALL_TIMEOUT_MS = 120_000L
 // иначе помечаем «Нет ответа» при реально работающей модели. 90с = 1.5 мин паузы.
 private const val STALL_EMPTY_MS = 90_000L
 
+// Мёртвый ход: сервер принял сообщение, но ассистент не создал НИ ОДНОГО шага.
+// Утверждение сильнее, чем «долго думает», поэтому и пород жёстче: сразу после
+// отправки assistant-часть появляется не мгновенно (очередь у провайдера, холодный
+// старт), и 90с тут давали бы ложное «не ответила» на живой сессии. 180с = 3 мин.
+private const val STALL_DEAD_MS = 180_000L
+
 // Интервал опроса serve. КРАЙНЕ ВАЖНО для скорости появления ответа: serve пишет
 // полный ответ мгновенно, но приложение узнаёт о нём только на следующем поллинге.
 // Раз поллинг стоит 2_000мс — ответ «задерживался» на 0..2с (в среднем ~1с), что
@@ -310,6 +316,24 @@ internal data class McpInfo(
     val tools: Int? = null,
 )
 
+/**
+ * Статус сессии от самого opencode (GET /session/status): ретрай провайдера,
+ * исчерпанная квота и т.п.
+ *
+ * Зачем: сервер честно отдаёт причину («Free usage exceeded, subscribe to Go»),
+ * но ответ assistant при этом остаётся пустым, а thinking=true — без конца.
+ * Без чтения этого эндпоинта пользователь видит только вечный спиннер и через
+ * минуту — «зависло», из чего нельзя понять, что делать. Это молчание хуже
+ * самой ошибки: тут нужен не кот, а конкретное действие.
+ */
+internal data class ChatNotice(
+    val title: String,
+    val message: String,
+    val actionLabel: String? = null,
+    val actionLink: String? = null,
+    val attempt: Int = 0,
+)
+
 internal data class ChatSnapshot(
     val messages: List<ChatMsg>,
     val label: String,
@@ -318,6 +342,7 @@ internal data class ChatSnapshot(
     val thinking: Boolean = false,
     val modelName: String = "Модель",
     val stalled: Boolean = false,
+    val stalledDead: Boolean = false,
     val liveTool: ChatTool? = null,
     // Заполненность контекста (входные токены сессии). Контекст-лимит модели
     // (порог компакта) задаётся константой CONTEXT_LIMIT — берётся из модели.
@@ -329,6 +354,8 @@ internal data class ChatSnapshot(
     // Полный список MCP-серверов (имя + статус) для выпадающего списка по тапу.
     val mcpServers: List<McpInfo> = emptyList(),
     val permission: OpenCodePermissionRequest? = null,
+    // Причина, по которой сервер сам не может продолжить ход (квота/ретрай).
+    val notice: ChatNotice? = null,
 )
 
 /**
@@ -493,11 +520,14 @@ fun ChatOverlay(
                             fresh == null -> false to null
                             postMessage(serverPort, fresh, text) -> true to null
                             else -> {
-                                // postAsync отдаёт true сразу после записи тела,
-                                // поэтому false означает «сервер не получил запрос
-                                // вообще», а не «ответ не успел». Откатываем только
-                                // в этом случае: при неоднозначности стирать нельзя.
-                                deleteSession(serverPort, fresh)
+                                // postAsync отдаёт true сразу после записи тела, поэтому
+                                // false означает «успешного ответа не было». Но сервер мог
+                                // успеть сохранить сообщение и упасть уже после этого —
+                                // проверено на живой сессии: неизвестная модель даёт
+                                // HTTP 500, а user-сообщение уже лежит в базе. Стирать
+                                // такую сессию нельзя, поэтому сначала спрашиваем сервер.
+                                val saved = sessionHasMessages(serverPort, fresh)
+                                if (!saved) deleteSession(serverPort, fresh)
                                 false to fresh
                             }
                         }
@@ -1001,12 +1031,14 @@ fun ChatOverlay(
                             old.messages != snap.messages ||
                                 old.liveTool != snap.liveTool ||
                                 old.question != snap.question ||
-                                old.permission != snap.permission
+                                old.permission != snap.permission ||
+                                old.notice != snap.notice
                         )
                 if (madeProgress || snap.permission != null) {
                     stallSince = 0L
                     emptyStallSince = 0L
                 }
+                var deadStall = false
                 val stalled =
                     if (!snap.thinking) {
                         stallSince = 0L
@@ -1015,20 +1047,28 @@ fun ChatOverlay(
                     } else {
                         // Пуст ли последний открытый assistant-шаг (модель не дала ни part)?
                         val lastMsg = snap.messages.lastOrNull()
+                        // Ход МЁРТВ, если последнее сообщение — наше собственное user'ское:
+                        // ассистент не создал ни одного шага. Проверено на живой сессии —
+                        // сервер принял запрос, отдал HTTP 500 и оставил висящий user-part,
+                        // поэтому /session/status пуст и плашка причины тут не поможет.
+                        val deadThinking = lastMsg?.role == "user"
                         // «Пустой» = открыт assistant-шаг, никакого текста И никакого выполняемого
                         // тула (liveTool == null). Если модель реально гоняет websearch/тул,
                         // liveTool не null → идём в общий таймаут 120с (тул может работать долго).
                         val emptyThinking =
-                            lastMsg != null &&
+                            !deadThinking &&
+                                lastMsg != null &&
                                 lastMsg.role == "assistant" &&
                                 lastMsg.text.isBlank() &&
                                 snap.liveTool == null
                         var el: Long
-                        if (emptyThinking) {
+                        deadStall = deadThinking
+                        if (deadThinking || emptyThinking) {
                             if (emptyStallSince == 0L) emptyStallSince = now
                             el = now - emptyStallSince
-                            android.util.Log.d("ChatOverlay", "STALL empty-thinking since=${el}ms")
-                            if (el >= STALL_EMPTY_MS) true else false
+                            val limit = if (deadThinking) STALL_DEAD_MS else STALL_EMPTY_MS
+                            android.util.Log.d("ChatOverlay", "STALL dead=$deadThinking since=${el}ms")
+                            if (el >= limit) true else false
                         } else {
                             emptyStallSince = 0L
                             if (stallSince == 0L) stallSince = now
@@ -1037,7 +1077,12 @@ fun ChatOverlay(
                             if (el >= STALL_TIMEOUT_MS) true else false
                         }
                     }
-                val final = if (stalled) snap.copy(stalled = true) else snap
+                val final =
+                    if (stalled) {
+                        snap.copy(stalled = true, stalledDead = deadStall)
+                    } else {
+                        snap
+                    }
                 // Дельта-поллинг: ставим snapshot в UI только если содержимое реально
                 // изменилось (messages + thinking + stalled одинаковы — пропускаем).
                 // При частом поллинге это не даёт Compose реконсилить всю
@@ -1046,9 +1091,11 @@ fun ChatOverlay(
                     old.messages != final.messages ||
                     old.thinking != final.thinking ||
                     old.stalled != final.stalled ||
+                    old.stalledDead != final.stalledDead ||
                     old.liveTool != final.liveTool ||
                     old.question != final.question ||
-                    old.permission != final.permission
+                    old.permission != final.permission ||
+                    old.notice != final.notice
                 if (changed) {
                     snapshot = final
                 }
@@ -1448,10 +1495,10 @@ fun ChatOverlay(
                     if (snapshot?.thinking == true) {
                         val snap = requireNotNull(snapshot)
                         item(key = if (snap.stalled) "stalled" else "thinking") {
-                            if (snap.stalled) {
-                                StalledRow()
-                            } else {
-                                ThinkingRow()
+                            when {
+                                snap.stalledDead -> DeadRow()
+                                snap.stalled -> StalledRow()
+                                else -> ThinkingRow()
                             }
                         }
                         // Живой чип «какой тул выполняет модель» — поверх индикатора думания.
@@ -1459,6 +1506,13 @@ fun ChatOverlay(
                             item(key = "livetool_${t.name}_${t.detail.hashCode()}") {
                                 LiveToolRow(t)
                             }
+                        }
+                    }
+                    // Причина отказа сервера (квота/ретрай) — всегда последняя строка,
+                    // чтобы её не съедал автоскролл вниз и она читалась как вывод.
+                    snapshot?.notice?.let { n ->
+                        item(key = "notice_${n.title}_${n.attempt}") {
+                            NoticeRow(n, context)
                         }
                     }
                 }
@@ -1898,6 +1952,86 @@ private fun PermissionCard(
     }
 }
 
+/**
+ * Палитра плашки причины отказа: тёмно-коричневый фон (не красный — это не
+ * ошибка приложения, а отказ провайдера), янтарный акцент и приглушённый вторичный.
+ */
+@Suppress("MagicNumber")
+private object NoticePalette {
+    val bg = Color(0xFF2A1F1A)
+    val accent = Color(0xFFFFC107)
+    val dim = Color(0xFF9A8C7A)
+}
+
+/**
+ * Плашка причины, по которой сервер не двигает ход (исчерпанная квота провайдера,
+ * ретрай после ошибки). Показывается вместо безликого «зависло»: у пользователя
+ * должно быть конкретное действие, а не гипотеза про сеть.
+ */
+@Composable
+private fun NoticeRow(
+    notice: ChatNotice,
+    context: Context,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+            .background(NoticePalette.bg, RoundedCornerShape(12.dp))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(10.dp)
+                    .background(NoticePalette.accent, RoundedCornerShape(3.dp)),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                notice.title,
+                color = NoticePalette.accent,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            if (notice.attempt > 0) {
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "попытка ${notice.attempt}",
+                    color = NoticePalette.dim,
+                    fontSize = 11.sp,
+                )
+            }
+        }
+        Text(
+            notice.message,
+            color = Color(0xFFEDEDED),
+            fontSize = 13.sp,
+            lineHeight = 18.sp,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        val link = notice.actionLink
+        val label = notice.actionLabel
+        if (!link.isNullOrBlank() && !label.isNullOrBlank()) {
+            Text(
+                label,
+                color = Color(0xFF7BD88F),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                modifier =
+                    Modifier
+                        .padding(top = 6.dp)
+                        .clickable {
+                            try {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)))
+                            } catch (_: Exception) {
+                                // Без браузера — просто молча оставляем текст.
+                            }
+                        },
+            )
+        }
+    }
+}
+
 @Composable
 private fun StalledRow() {
     Row(
@@ -1914,6 +2048,40 @@ private fun StalledRow() {
             "Нет ответа (зависло) — проверь сеть/провайдера",
             color = Color(0xFFE25822),
             fontSize = 13.sp,
+        )
+    }
+}
+
+/**
+ * Плашка МЁРТВОГО хода: сервер принял запрос, но ассистент не создал ни одного
+ * шага — обычно он уже ответил ошибкой (неизвестная модель, 500 провайдера) или
+ * списал квоту в ретрае. Отличать от «долго думает» принципиально: там модель
+ * работает и надо ждать, тут она не вернётся сама и ждать бессмысленно.
+ */
+@Composable
+private fun DeadRow() {
+    Column(Modifier.padding(vertical = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(10.dp)
+                    .background(NoticePalette.accent, RoundedCornerShape(3.dp)),
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                "Модель не ответила — запрос не прошёл",
+                color = NoticePalette.accent,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        Text(
+            "Сервер принял сообщение, но шага ответа не создал. Проверь квоту " +
+                "провайдера и отправь сообщение ещё раз.",
+            color = Color(0xFFEDEDED),
+            fontSize = 13.sp,
+            lineHeight = 18.sp,
+            modifier = Modifier.padding(top = 2.dp),
         )
     }
 }
@@ -2445,6 +2613,59 @@ private fun MessageRow(
     }
 }
 
+/**
+ * GET /session/status → Record<sessionId, {type, attempt, message, action?, next}>.
+ *
+ * Показываем только то, что мешает ходу: ретрай провайдера и его ошибку.
+ * Статусы вида «работает» (type=working/retry с next в будущем и без action)
+ * шумом не считаем — про них пользователь и так видит индикатор думания.
+ * Любая сессия без записи в карте = null, то есть тихо и дёшево.
+ */
+private suspend fun fetchNotice(
+    port: Int,
+    sessionId: String,
+): ChatNotice? {
+    val raw = LocalOpenCodeClient.get(port, "/session/status")
+    val entry =
+        try {
+            raw?.trim()?.takeIf { it.startsWith("{") }?.let { JSONObject(it).optJSONObject(sessionId) }
+        } catch (_: Exception) {
+            null
+        }
+    return noticeOf(entry)
+}
+
+/**
+ * Разбор одной записи /session/status. null — показывать нечего.
+ * Показываем только то, что реально мешает ходу (retry/error). Статусы вида
+ * «работает» отфильтровываются молча: про них и так видно индикатор думания.
+ */
+private fun noticeOf(entry: JSONObject?): ChatNotice? {
+    val type = entry?.optString("type", "").orEmpty()
+    val action = entry?.optJSONObject("action")
+    val msg = entry?.optString("message", "").orEmpty().trim()
+    val actionMsg = action?.optString("message", "").orEmpty().trim()
+    val detail = if (actionMsg.isBlank()) msg else actionMsg
+    val interesting = type == "retry" || type == "error"
+    val fallback = if (type == "error") "Модель ответила с ошибкой" else "Модель повторяет запрос"
+    // Ничего внятного от сервера — лучше тишина, чем пустая плашка.
+    return if (interesting && detail.isNotBlank()) {
+        val actionTitle = action?.optString("title", "").orEmpty().trim()
+        val title = if (actionTitle.isBlank()) fallback else actionTitle
+        val label = action?.optString("label", "").orEmpty()
+        val link = action?.optString("link", "").orEmpty()
+        ChatNotice(
+            title = title,
+            message = if (msg.isBlank() || msg == detail) detail else "$detail ($msg)",
+            actionLabel = label.ifBlank { null },
+            actionLink = link.ifBlank { null },
+            attempt = entry?.optInt("attempt", 0) ?: 0,
+        )
+    } else {
+        null
+    }
+}
+
 private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
     withContext(Dispatchers.IO) {
         val p = port ?: return@withContext null
@@ -2473,6 +2694,9 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             // блокирующие, поэтому async убирает их последовательную задержку.
             val msgDeferred = async { LocalOpenCodeClient.get(p, "/session/$activeId/message") }
             val permissionDeferred = async { PermissionCache.get(p, activeId) }
+            // Статус хода от сервера: квота/ретрай провайдера. Отдельным async,
+            // чтобы не добавлять его задержку к ленте — оба вызова блокирующие.
+            val noticeDeferred = async { fetchNotice(p, activeId) }
             // MCP-серверы: GET /mcp → Record<name, McpServer{name,enabled,status,...}> (иначе пустой {}).
             // Читаем из кэша (обновляется раз в MCP_CACHE_MS), чтобы не дёргать сервис каждый поллинг.
             // Подключёнными считаем тех, у кого status == "connected". Показываем «N MCP».
@@ -2516,9 +2740,10 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                 // MCP недоступен — покажем 0 красным
             }
             val permission = permissionDeferred.await()
+            val notice = noticeDeferred.await()
             val msgRaw =
                 msgDeferred.await()
-                    ?: return@withContext ChatSnapshot(emptyList(), label, activeId, permission = permission)
+                    ?: return@withContext ChatSnapshot(emptyList(), label, activeId, permission = permission, notice = notice)
             // Инкрементальный кэш: если за этой сессией тот же самый сырой JSON /message
             // (hash совпал) — лента и все производные (thinking/liveTool/ctxTokens/question)
             // гарантированно идентичны. Переиспользуем готовые объекты, НЕ пересоздавая
@@ -2545,11 +2770,12 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                         mcpTotal = mcpTotal,
                         mcpServers = mcpServers,
                         permission = permission,
+                        notice = notice,
                     )
                 android.util.Log.d(
                     "ChatOverlay",
                     "FETCH(cached) out=${take.size} thinking=$thinking q=${q != null} " +
-                        "permission=${permission != null} label=$label model=$bestModelId",
+                        "permission=${permission != null} notice=${notice != null} label=$label model=$bestModelId",
                 )
                 return@withContext snap
             }
@@ -2684,6 +2910,7 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                     mcpTotal = mcpTotal,
                     mcpServers = mcpServers,
                     permission = permission,
+                    notice = notice,
                 )
             val lastDiag = last?.let { "role=${it.role} text='${it.text.take(30)}'" } ?: "null"
             android.util.Log.d(
@@ -2835,6 +3062,23 @@ private fun deleteSession(
     port: Int,
     sessionId: String,
 ): Boolean = LocalOpenCodeClient.delete(port, "/session/$sessionId")
+
+/**
+ * Есть ли в сессии хоть одно сообщение. Разделяет «сервер не получил запрос»
+ * (тогда сессию можно откатить) и «сервер записал, но ответил ошибкой»
+ * (тогда откат съел бы чужое сообщение).
+ */
+private fun sessionHasMessages(
+    port: Int,
+    sessionId: String,
+): Boolean =
+    try {
+        val raw = LocalOpenCodeClient.get(port, "/session/$sessionId/message")
+        raw != null && JSONArray(raw).length() > 0
+    } catch (_: Exception) {
+        // Не смогли узнать — считаем, что сохранилось: на неопределённости не стираем.
+        true
+    }
 
 private fun postMessage(
     port: Int,
