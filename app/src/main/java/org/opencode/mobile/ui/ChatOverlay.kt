@@ -1279,7 +1279,7 @@ fun ChatOverlay(
                     connected = snapshot?.mcpConnected ?: 0,
                     total = snapshot?.mcpTotal ?: 0,
                     onClick = { showMcpList = !showMcpList },
-                    modifier = Modifier.padding(start = 8.dp),
+                    modifier = Modifier.padding(start = 4.dp),
                 )
                 // Цветовой пикер для ответов модели. ИКОНКА — готовая «капля»
                 // (Material Icons: Icons.Filled.InvertColors) — узнаваемая капля,
@@ -1290,7 +1290,7 @@ fun ChatOverlay(
                     tint = modelColor,
                     modifier =
                         Modifier
-                            .padding(start = 8.dp)
+                            .padding(start = 4.dp)
                             .size(22.dp)
                             .clip(CircleShape)
                             .background(if (showColorPicker) Color(0xFF3A3A3A) else Color.Transparent)
@@ -1303,7 +1303,7 @@ fun ChatOverlay(
                     tint = if (showFontPicker) modelColor else Color(0xFF8A8A8A),
                     modifier =
                         Modifier
-                            .padding(start = 8.dp)
+                            .padding(start = 4.dp)
                             .size(22.dp)
                             .clip(CircleShape)
                             .background(if (showFontPicker) Color(0xFF3A3A3A) else Color.Transparent)
@@ -1316,7 +1316,7 @@ fun ChatOverlay(
                     tint = if (showSettings) Color.White else Color(0xFFBDBDBD),
                     modifier =
                         Modifier
-                            .padding(start = 8.dp)
+                            .padding(start = 4.dp)
                             .size(22.dp)
                             .clip(CircleShape)
                             .background(if (showSettings) Color(0xFF3A3A3A) else Color.Transparent)
@@ -1329,7 +1329,7 @@ fun ChatOverlay(
                     tint = if (showSttSettings) Color.White else Color(0xFFBDBDBD),
                     modifier =
                         Modifier
-                            .padding(start = 8.dp)
+                            .padding(start = 4.dp)
                             .size(22.dp)
                             .clip(CircleShape)
                             .background(if (showSttSettings) Color(0xFF3A3A3A) else Color.Transparent)
@@ -1348,7 +1348,7 @@ fun ChatOverlay(
                     tint = if (showDiagnostics) Color.White else Color(0xFFBDBDBD),
                     modifier =
                         Modifier
-                            .padding(start = 8.dp)
+                            .padding(start = 4.dp)
                             .size(22.dp)
                             .clip(CircleShape)
                             .background(if (showDiagnostics) Color(0xFF3A3A3A) else Color.Transparent)
@@ -1370,7 +1370,7 @@ fun ChatOverlay(
                     tint = if (creatingSession) Color(0xFF7BD88F) else Color(0xFFBDBDBD),
                     modifier =
                         Modifier
-                            .padding(start = 8.dp)
+                            .padding(start = 4.dp)
                             .size(22.dp)
                             .clip(CircleShape)
                             .background(Color.Transparent)
@@ -2422,6 +2422,12 @@ private fun QuotaBadge(
             color = color,
             fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold,
+            // ОДНА строка любой ценой: бейдж живёт в weight(1f)-слоте шапки, и при
+            // нехватке ширины Compose переносил «Online 69ms» на вторую строку —
+            // хедер вздваивался по высоте. Лучше обрезать хвост, чем ломать вёрстку.
+            softWrap = false,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(start = 6.dp),
         )
         // Пинг цифрами — только при подтверждённом контакте. На неизвестном
@@ -2436,6 +2442,9 @@ private fun QuotaBadge(
                 text = pingSuffix,
                 color = Color(0xFF8A8A8A),
                 fontSize = 11.sp,
+                softWrap = false,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(start = 4.dp),
             )
         }
