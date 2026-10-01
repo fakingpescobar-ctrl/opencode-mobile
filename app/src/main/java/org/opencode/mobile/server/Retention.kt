@@ -54,33 +54,66 @@ internal object Retention {
     /** Порог для реальной обрезки: режем только явный разрыв. */
     const val APPLY_BYTES = 8L * 1024 * 1024
 
+    /** Живой тик, если он уже есть. См. [schedule]. */
+    @Volatile private var ticker: Thread? = null
+
     /**
-     * Запускает фоновый тик. Поток-демон: он не должен держать процесс живым,
-     * а переживать рестарт сервера ему не нужно - новый виток создаст свой.
+     * Запускает фоновый тик, если он ещё не работает.
+     *
+     * Идемпотентность здесь не микрооптимизация, а защита от лавины: [schedule]
+     * вызывается на каждом успешном старте сервера, а поток переживает рестарт
+     * и продолжает тикать. Без проверки десять перезапусков дали бы десять
+     * обрезок в час — десять процессов на одной живой базе, где каждый второй
+     * упирается в блокировку WAL, а VACUUM с честным намерением «подчистить»
+     * становится источником задержек для сервера.
+     *
+     * Поток-демон: он не должен держать процесс живым. Если он всё же умер,
+     * следующий [schedule] создаст новый.
      */
+    @Synchronized
     fun schedule(
         context: Context,
         logFile: File,
     ) {
-        Thread(
-            {
-                try {
-                    Thread.sleep(FIRST_DELAY_MS)
-                } catch (_: InterruptedException) {
-                    return@Thread
-                }
-                while (true) {
-                    runOnce(context, logFile, apply = false, thresholdBytes = DRYRUN_BYTES)
-                    runOnce(context, logFile, apply = true, thresholdBytes = APPLY_BYTES)
+        val alive = ticker
+        if (alive != null && alive.isAlive) {
+            android.util.Log.i("Retention", "тик уже тикает, второй не создаём")
+            return
+        }
+        val thread =
+            Thread(
+                {
                     try {
-                        Thread.sleep(INTERVAL_MS)
+                        Thread.sleep(FIRST_DELAY_MS)
                     } catch (_: InterruptedException) {
                         return@Thread
                     }
-                }
-            },
-            "opencode-retention",
-        ).apply { isDaemon = true }.start()
+                    while (true) {
+                        // runOnce глотает свои ошибки, но plan() внутри него
+                        // бросает наружу всё, что не поймал. Падение тика из-за
+                        // одной неудачной подготовки молча отключило бы обрезку
+                        // до следующего рестарта сервера, поэтому ловим здесь.
+                        // Широкий catch - осознанно: пережить должен любой сбой,
+                        // а не только те, что мы догадались перечислить.
+                        @Suppress("TooGenericExceptionCaught")
+                        try {
+                            runOnce(context, logFile, apply = false, thresholdBytes = DRYRUN_BYTES)
+                            runOnce(context, logFile, apply = true, thresholdBytes = APPLY_BYTES)
+                        } catch (e: Exception) {
+                            android.util.Log.e("Retention", "тик не отработал: ${e.message}")
+                        }
+                        try {
+                            Thread.sleep(INTERVAL_MS)
+                        } catch (_: InterruptedException) {
+                            return@Thread
+                        }
+                    }
+                },
+                "opencode-retention",
+            )
+        thread.isDaemon = true
+        ticker = thread
+        thread.start()
     }
 
     /**
