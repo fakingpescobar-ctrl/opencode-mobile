@@ -1276,9 +1276,15 @@ fun ChatOverlay(
                         TtsNarrator.onNewResponse()
                     }
                     if (ttsOn && ttsArmed) {
-                        final.messages.lastOrNull { it.role == "assistant" }?.let { last ->
-                            TtsNarrator.onAssistantText(context, last.text, isFinal = !final.thinking)
-                        }
+                        // Пустой текст — это начало thinking или tool call, а не откат
+                        // ответа. Если such отдать в нарратор, он примет снапшот короче
+                        // уже озвученного, сбросит чанкер и погасит речь на каждом
+                        // таком шаге (в логе 6 сбросов на 6 шагов).
+                        final.messages.lastOrNull { it.role == "assistant" }
+                            ?.takeIf { it.text.isNotEmpty() }
+                            ?.let { last ->
+                                TtsNarrator.onAssistantText(context, last.text, isFinal = !final.thinking)
+                            }
                     }
                 }
                 if (completed > knownMsgs) {

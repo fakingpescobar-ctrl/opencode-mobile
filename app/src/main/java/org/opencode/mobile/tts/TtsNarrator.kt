@@ -58,6 +58,10 @@ object TtsNarrator {
      * Текст assistant-сообщения. [isFinal] — ответ дописан, можно отдавать остаток буфера.
      */
     fun onAssistantText(context: Context, text: String, isFinal: Boolean) {
+        // Пустой снапшот — начало thinking-а или tool call. Озвучивать нечего, и это
+        // НЕ откат: раньше пустой текст доезжал до логики отката, сбрасывал чанкер
+        // и гасил речь на каждом таком шаге.
+        if (text.isEmpty()) return
         val cfg = TtsConfig.read(context)
         if (!cfg.isEnabled) return
         val sp = ensureSpeaker(context, cfg)
