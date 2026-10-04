@@ -780,8 +780,9 @@ fun ChatOverlay(
     }
 
     // «Начать новую сессию»: создаём пустую свежую сессию и ПЕРЕКЛЮЧАЕМСЯ на неё
-    // (старые сессии остаются в списке). Жёсткая очистка ВСЕХ сессий — отдельно,
-    // clearAllSessions (long-press на +) с диалогом подтверждения (UI-20).
+    // (сессии с перепиской остаются в списке — это история диалогов). Жёсткая
+    // очистка ВСЕГО — отдельно, clearAllSessions (long-press на +) с диалогом
+    // подтверждения (UI-20).
     fun newSession() {
         creatingSession = true
         scope.launch {
@@ -795,6 +796,9 @@ fun ChatOverlay(
                         ChatCache.rawHash = 0
                         ChatCache.result = null
                         PermissionCache.clearAll()
+                        // Подчищаем пустые сироты: новая сессия только что создана и
+                        // тоже пуста, поэтому её id обязателен в keep.
+                        pruneEmptySessions(serverPort, keep = setOf(id))
                     }
                     id != null
                 }
@@ -3837,6 +3841,75 @@ private fun sessionHasMessages(
         // Не смогли узнать — считаем, что сохранилось: на неопределённости не стираем.
         true
     }
+
+/**
+ * Множество сессий, занятых сервером прямо сейчас (значения из
+ * /session/status). Пустое множество, если статус не прочитался: тогда
+ * проверка «занята ли» ничего не запретит, но полезная нагрузка всё равно
+ * отсечёт пустые сессии.
+ */
+private fun busySessionIds(port: Int): Set<String> =
+    try {
+        val raw = LocalOpenCodeClient.get(port, "/session/status") ?: return emptySet()
+        val obj = JSONObject(raw)
+        val out = LinkedHashSet<String>()
+        for (k in obj.keys()) {
+            if (k.isNotBlank()) out.add(k)
+        }
+        out
+    } catch (_: Exception) {
+        emptySet()
+    }
+
+/**
+ * Подчистить сессии-сироты: созданные, но так и не использованные.
+ *
+ * Откуда они берутся: создание сессии и отправка первого сообщения — две
+ * операции. Между ними остаётся окно, в котором сессия уже есть в списке, а
+ * сообщений в ней ещё нет. Если отправка не ушла (сеть, сервер, неизвестная
+ * модель), сессия навсегда остаётся пустой мусором в ленте.
+ *
+ * Удаляются ТОЛЬКО сессии без единого сообщения: потерять нечего. Сессии с
+ * перепиской, текущая и любая busy не трогаются. Если список отдать не удалось
+ * или у сессии не удалось прочитать сообщения — тоже не стираем.
+ *
+ * Отдельный запрос на каждую сессию: список обычно короткий, а лезть в
+ * сообщения всех подряд ради пустых — лишняя работа на каждый чих.
+ */
+private fun pruneEmptySessions(
+    port: Int,
+    keep: Set<String>,
+) {
+    val raw = LocalOpenCodeClient.get(port, "/session") ?: return
+    val ids =
+        try {
+            val arr = JSONArray(raw)
+            (0 until arr.length())
+                .mapNotNull { arr.getJSONObject(it).optString("id").takeIf(String::isNotBlank) }
+        } catch (_: Exception) {
+            return
+        }
+    var removed = 0
+    // Список busy берём ОДИН раз на весь проход: /session/status отдаёт объект,
+    // где ключи — занятые сессии. Проверять надо обязательно: у busy-сессии
+    // сообщений может быть ноль (генерация только началась), и без этой
+    // проверки такая сессия попала бы под нож вместе с живым ответом.
+    val busy = busySessionIds(port)
+    for (sid in ids) {
+        // Текущую и те, что мы сами бережём, не трогаем.
+        if (sid in keep) continue
+        // Занятые сервером — не мусор, это идущая генерация.
+        if (sid in busy) continue
+        if (sessionHasMessages(port, sid)) continue
+        if (deleteSession(port, sid)) {
+            removed++
+            android.util.Log.d("ChatOverlay", "подчистил пустую сессию $sid")
+        }
+    }
+    if (removed > 0) {
+        android.util.Log.i("ChatOverlay", "подчищено пустых сессий: $removed")
+    }
+}
 
 private fun postMessage(
     port: Int,
