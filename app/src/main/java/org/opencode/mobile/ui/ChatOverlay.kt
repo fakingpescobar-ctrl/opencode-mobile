@@ -108,6 +108,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
@@ -134,6 +135,9 @@ import org.opencode.mobile.server.PermissionDecision
 import org.opencode.mobile.server.YnisonMcp
 import org.opencode.mobile.stt.NcnnModelValidator
 import org.opencode.mobile.stt.WhisperTranscribeService
+import org.opencode.mobile.tts.TtsConfig
+import org.opencode.mobile.tts.TtsEngine
+import org.opencode.mobile.tts.TtsNarrator
 import java.io.File
 import java.util.Locale
 import kotlin.concurrent.thread
@@ -168,6 +172,7 @@ private const val TAG_PANEL_COLOR = "panel_color"
 private const val TAG_PANEL_FONT = "panel_font"
 private const val TAG_PANEL_SETTINGS = "panel_settings"
 private const val TAG_PANEL_STT = "panel_stt"
+private const val TAG_PANEL_TTS = "panel_tts"
 
 // Наносекунды в миллисекундах: замер пинга отдаёт наносекунды, в UI нужны мс.
 private const val NS_PER_MS = 1_000_000L
@@ -504,6 +509,20 @@ fun ChatOverlay(
     // Полноэкранная диагностика: состояние сервера, STT-модели, лог serve.
     // Оверлей рисуется ПОСЛЕДНИМ в корневом Surface — поверх чата и панелей.
     var showDiagnostics by remember { mutableStateOf(false) }
+
+    // Озвучка ответов (§12.3/§12.5). Выключатель — здесь же, в панели STT.
+    // Настройки живут в том же prefs "chat_overlay": tts_engine/tts_model/tts_sid.
+    var ttsConfig by remember { mutableStateOf(TtsConfig.read(context)) }
+    var ttsOn by remember { mutableStateOf(TtsConfig.read(context).isEnabled) }
+    // Сколько user-реплик уже было озвучено: рост счётчика означает новый вопрос.
+// -1 = «ещё не знаю, что было в ленте», первый снапшот только запомнит счётчик.
+    var ttsSeenUserMsgs by remember { mutableIntStateOf(-1) }
+    // Озвучка включается лишь после первого нового вопроса: иначе при запуске
+    // приложение читает вслух последнее сообщение из истории.
+    var ttsArmed by remember { mutableStateOf(false) }
+    LaunchedEffect(ttsOn) {
+        if (!ttsOn) TtsNarrator.stop()
+    }
     // Панели шапки (список MCP, пикер цвета, пикер шрифта, настройки гейджа,
     // выбор STT) живут не здесь, а в activePanel выше — одним состоянием.
     // «Новая сессия» в полёте — иконка + подсвечивается зелёным (UI-19:
@@ -692,6 +711,9 @@ fun ChatOverlay(
                 snapshot = snapshot?.copy(permission = null, stalled = false)
                 vibrate(context)
             }
+            // Стоп генерации = стоп озвучки: иначе голос продолжал бы читать
+            // уже отменённый ответ (очередь синтеза опустошается, игра гасится).
+            TtsNarrator.stop()
             // thinking сбросится сам на следующем поллинге: abort завершит
             // стрим, и fetchChatSnapshot увидит step-finish → thinking=false.
         }
@@ -1239,6 +1261,25 @@ fun ChatOverlay(
                     latchBefore != noticeLatch
                 if (changed) {
                     snapshot = final
+                    // Озвучка: раскладываем растущий текст ответа на предложения.
+                    // Новый вопрос юзера — жёсткий сброс: очередь чистим, игра гасится.
+                    val userCount = final.messages.count { it.role == "user" }
+                    if (ttsSeenUserMsgs < 0) {
+                        // Первый снапшот после запуска: запоминаем, что уже было в ленте,
+                        // и НЕ озвучиваем старое. Иначе приложение при запуске читает
+                        // вслух последний ответ из истории.
+                        ttsSeenUserMsgs = userCount
+                    } else if (userCount != ttsSeenUserMsgs) {
+                        ttsSeenUserMsgs = userCount
+                        ttsArmed = true
+                        TtsNarrator.stop()
+                        TtsNarrator.onNewResponse()
+                    }
+                    if (ttsOn && ttsArmed) {
+                        final.messages.lastOrNull { it.role == "assistant" }?.let { last ->
+                            TtsNarrator.onAssistantText(context, last.text, isFinal = !final.thinking)
+                        }
+                    }
                 }
                 if (completed > knownMsgs) {
                     // Ответ появился в сессии (модель завершила, `completed` считает
@@ -1667,6 +1708,85 @@ fun ChatOverlay(
                             fontSize = 10.sp,
                             modifier = Modifier.padding(start = 20.dp, top = 2.dp, bottom = 4.dp),
                         )
+                    }
+                }
+            }
+            // Панель озвучки. Открывается там же, где STT, и живёт по тем же правилам:
+            // настройка в prefs, переключение — сразу, без рестарта чата.
+            if (showSttSettings) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, bottom = 2.dp)
+                        .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
+                        .testTag(TAG_PANEL_TTS)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                ) {
+                    Text(
+                        "Озвучка ответов:",
+                        color = Color(0xFFBDBDBD),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    TtsRadioRow("Читать вслух", ttsOn) {
+                        ttsOn = !ttsOn
+                        TtsNarrator.setEnabled(context, ttsOn)
+                        if (ttsOn) ttsConfig = TtsConfig.read(context)
+                    }
+                    if (!ttsOn) {
+                        Text(
+                            if (TtsConfig.read(context).modelInstalled(context)) {
+                                "Supertonic offline: модель на месте, 2 потока, sid ${ttsConfig.sid}"
+                            } else {
+                                "Модель Supertonic не скачана — пока доступен только системный голос"
+                            },
+                            color = Color(0xFF90A4AE),
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(start = 20.dp, top = 2.dp),
+                        )
+                    }
+                    if (ttsOn) {
+                        TtsRadioRow("Supertonic (offline, русский)", ttsConfig.engine == TtsEngine.sherpa) {
+                            ttsConfig = ttsConfig.copy(engine = TtsEngine.sherpa)
+                            TtsConfig.save(context, ttsConfig)
+                            TtsNarrator.stop()
+                        }
+                        TtsRadioRow("Системный Android", ttsConfig.engine == TtsEngine.system) {
+                            ttsConfig = ttsConfig.copy(engine = TtsEngine.system)
+                            TtsConfig.save(context, ttsConfig)
+                            TtsNarrator.stop()
+                        }
+                        Text(
+                            "Голос:",
+                            color = Color(0xFF8A8A8A),
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(start = 20.dp, top = 4.dp),
+                        )
+                        /** Голоса в две строки по пять: на шапке телефона одна строка уже не помещалась. */
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            (0 until TtsConfig.MAX_SID + 1).chunked(5).forEach { row ->
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    row.forEach { sid ->
+                                        val active = ttsConfig.sid == sid
+                                        Text(
+                                            "${sid + 1}",
+                                            color = if (active) Color(0xFF1C1C1C) else Color(0xFFE6E6E6),
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            textAlign = TextAlign.Center,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(if (active) Color(0xFFBDBDBD) else Color(0xFF2A2A2A))
+                                                .clickable {
+                                                    ttsConfig = ttsConfig.copy(sid = sid)
+                                                    TtsConfig.save(context, ttsConfig)
+                                                    TtsNarrator.stop()
+                                                }.padding(horizontal = 12.dp, vertical = 5.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -3631,4 +3751,29 @@ private fun postMessage(
 ): Boolean {
     val body = "{\"parts\":[{\"type\":\"text\",\"text\":${JSONObject.quote(text)}}]}"
     return LocalOpenCodeClient.postAsync(port, "/session/$sessionId/message", body)
+}
+
+/** Ряд-переключатель в стиле панели STT: активен или нет. */
+@Composable
+private fun TtsRadioRow(
+    label: String,
+    active: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(vertical = 6.dp),
+    ) {
+Text(
+            if (active) "● " else "○ ",
+            color = Color(0xFFFF6D00),
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(label, color = Color(0xFFE6E6E6), fontSize = 13.sp)
+    }
 }
