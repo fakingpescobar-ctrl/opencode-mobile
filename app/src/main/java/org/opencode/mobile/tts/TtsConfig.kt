@@ -25,6 +25,8 @@ data class TtsConfig(
     val model: String,
     val sid: Int,
     val speechRate: Float,
+    /** Писать сырой PCM в файл для проверки озвучки без ушей. */
+    val dumpPcm: Boolean = false,
 ) {
     val isEnabled: Boolean get() = engine != TtsEngine.off
 
@@ -40,6 +42,9 @@ data class TtsConfig(
         const val KEY_MODEL = "tts_model"
         const val KEY_SID = "tts_sid"
         const val KEY_RATE = "tts_speech_rate"
+
+    /** Отладочный ключ: дамп PCM в filesDir/tts-dump.pcm для проверки озвучки. */
+    const val KEY_DUMP = "tts_dump_pcm"
 
         const val DEFAULT_MODEL = "supertonic-3-tts-int8"
 
@@ -62,8 +67,9 @@ data class TtsConfig(
                 engine = TtsEngine.fromPref(prefs.getString(KEY_ENGINE, TtsEngine.off.prefValue)),
                 model = prefs.getString(KEY_MODEL, DEFAULT_MODEL) ?: DEFAULT_MODEL,
                 sid = prefs.getInt(KEY_SID, DEFAULT_SID).coerceIn(0, MAX_SID),
-                speechRate = prefs.getFloat(KEY_RATE, 1.0f).coerceIn(0.5f, 2.0f),
-            )
+speechRate = prefs.getFloat(KEY_RATE, 1.0f).coerceIn(0.5f, 2.0f),
+            dumpPcm = prefs.getBoolean(KEY_DUMP, false),
+        )
         }
 
         fun save(context: Context, config: TtsConfig) {

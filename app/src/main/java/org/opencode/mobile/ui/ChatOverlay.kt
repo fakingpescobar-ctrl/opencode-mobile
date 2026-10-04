@@ -517,6 +517,9 @@ fun ChatOverlay(
     // Сколько user-реплик уже было озвучено: рост счётчика означает новый вопрос.
 // -1 = «ещё не знаю, что было в ленте», первый снапшот только запомнит счётчик.
     var ttsSeenUserMsgs by remember { mutableIntStateOf(-1) }
+
+    /** Сколько assistant-сообщений текущего ответа уже отдано озвучке. */
+    var ttsSaidAssistants by remember { mutableIntStateOf(0) }
     // Озвучка включается лишь после первого нового вопроса: иначе при запуске
     // приложение читает вслух последнее сообщение из истории.
     var ttsArmed by remember { mutableStateOf(false) }
@@ -1272,6 +1275,7 @@ fun ChatOverlay(
                     } else if (userCount != ttsSeenUserMsgs) {
                         ttsSeenUserMsgs = userCount
                         ttsArmed = true
+                        ttsSaidAssistants = 0
                         TtsNarrator.stop()
                         TtsNarrator.onNewResponse()
                     }
@@ -1280,11 +1284,26 @@ fun ChatOverlay(
                         // ответа. Если such отдать в нарратор, он примет снапшот короче
                         // уже озвученного, сбросит чанкер и погасит речь на каждом
                         // таком шаге (в логе 6 сбросов на 6 шагов).
-                        final.messages.lastOrNull { it.role == "assistant" }
-                            ?.takeIf { it.text.isNotEmpty() }
-                            ?.let { last ->
-                                TtsNarrator.onAssistantText(context, last.text, isFinal = !final.thinking)
-                            }
+                        //
+                        // Берём ВСЕ assistant-сообщения, а не только последнее: агент
+                        // часто пишет несколько предложений подряд (рассуждение ->
+                        // tool call -> новый текст), и `lastOrNull` молча ронял
+                        // предыдущие. Каждое новое сообщение доигрывает остаток
+                        // предыдущего, а не гасит его.
+                        val assistants = final.messages.filter { it.role == "assistant" && it.text.isNotEmpty() }
+                        val said = minOf(ttsSaidAssistants, assistants.size)
+                        if (said < assistants.size && ttsSaidAssistants > 0) {
+                            TtsNarrator.onNewAssistantMessage()
+                        }
+                        for (i in said until assistants.size) {
+                            val isLast = i == assistants.size - 1
+                            TtsNarrator.onAssistantText(
+                                context,
+                                assistants[i].text,
+                                isFinal = if (isLast) !final.thinking else true,
+                            )
+                        }
+                        if (said < assistants.size) ttsSaidAssistants = assistants.size
                     }
                 }
                 if (completed > knownMsgs) {

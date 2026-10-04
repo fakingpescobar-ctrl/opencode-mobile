@@ -142,7 +142,34 @@ object TtsNarrator {
         return letters.toDouble() / text.length >= 0.6
     }
 
-    /** Новый ответ: то, что было сказано, больше не актуально. */
+    /**
+ * Агент прислал новое сообщение ответа, а не дополнил текущее.
+ *
+ * Если агент пишет несколько предложений подряд (обычная практика: рассуждал,
+ * вызвал tool, заговорил снова), UI раньше брал только последнее сообщение, а
+ * приход нового считался откатом: `sp.stop()` с fadeOut 60мс срезал уже начатое
+ * предложение, и на слух получались обрывки — с одного предложения на другое.
+ *
+ * Здесь остаток текущего сообщения доигрывается, чанкер сбрасывается, но
+ * играющее НЕ гасится: новое встаёт в очередь сразу после старого.
+ */
+fun onNewAssistantMessage() {
+    val sp = speaker
+    if (sp == null) {
+        consumedPrefix = ""
+        chunker.reset()
+        return
+    }
+    val rest = chunker.flush().filter(::isSpeechable)
+    if (rest.isNotEmpty()) {
+        rest.forEach { sp.enqueue(it) }
+        Log.d(TAG, "перед новым сообщением доигрываю остаток: ${rest.size}")
+    }
+    chunker.reset()
+    consumedPrefix = ""
+}
+
+/** Новый ответ: то, что было сказано, больше не актуально. */
     fun onNewResponse() {
         consumedPrefix = ""
         chunker.reset()
@@ -204,6 +231,9 @@ object TtsNarrator {
             Log.i(TAG, "движок готов: ${cfg.engine.label}")
             speaker?.release()
             speaker = TtsSpeaker(synth)
+            if (cfg.dumpPcm) {
+                AudioTrackPlayer.startDump(java.io.File(context.filesDir, "tts-dump.pcm"))
+            }
 
             // Текст, пришедший во время загрузки, озвучиваем сразу — иначе первый
             // ответ после включения озвучки пропадал бы молча.

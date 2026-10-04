@@ -4,6 +4,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.util.Log
+import java.io.File
 
 /**
  * Воспроизведение PCM-флота в AudioTrack. Один трек на весь сеанс озвучки.
@@ -69,6 +70,7 @@ class AudioTrackPlayer(private val sampleRate: Int) {
             val until = headBefore + written
             playUntil.set(until)
             ensureMonitor(headBefore)
+            writeDump(audio, written)
             Log.d(TAG, "записано $written, в очереди трека $audioFramesLeftHint")
             true
         } catch (t: Throwable) {
@@ -97,6 +99,13 @@ class AudioTrackPlayer(private val sampleRate: Int) {
      */
     private val playUntil = java.util.concurrent.atomic.AtomicLong(0)
     private var monitor: Thread? = null
+
+private fun writeDump(audio: TtsAudio, written: Int) {
+        val out = dumpOut ?: return
+        val b = java.nio.ByteBuffer.allocate(written * 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        for (i in 0 until written) b.putFloat(audio.samples[i])
+        runCatching { out.write(b.array()) }
+    }
 
     private fun playedFrames(t: AudioTrack): Long = t.playbackHeadPosition.toLong() and 0xFFFFFFFFL
 
@@ -208,7 +217,29 @@ private fun hardStop(t: AudioTrack) {
         if (track === t) track = null
     }
 
-    private companion object {
+    companion object {
         const val TAG = "TTS"
+
+        /**
+         * Дамп сырого PCM в файл — то, что реально ушло в динамик, float32 LE, без
+         * заголовка. Нужен, чтобы проверить озвучку без ушей: по файлу видно
+         * длительность каждого фрагмента, паузы между ними и тишину, а лог этого
+         * не показывает. Включается ключом `tts_dump_pcm` в prefs.
+         */
+        @Volatile private var dumpOut: java.io.BufferedOutputStream? = null
+
+        fun startDump(file: File) {
+            stopDump()
+            dumpOut = java.io.BufferedOutputStream(java.io.FileOutputStream(file), 1 shl 16)
+            Log.i(TAG, "дамп PCM включён: ${file.absolutePath}")
+        }
+
+        fun stopDump() {
+            dumpOut?.let {
+                runCatching { it.flush() }
+                runCatching { it.close() }
+            }
+            dumpOut = null
+        }
     }
 }
