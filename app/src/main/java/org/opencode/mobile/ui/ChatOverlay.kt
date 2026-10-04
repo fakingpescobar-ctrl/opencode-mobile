@@ -518,8 +518,13 @@ fun ChatOverlay(
 // -1 = «ещё не знаю, что было в ленте», первый снапшот только запомнит счётчик.
     var ttsSeenUserMsgs by remember { mutableIntStateOf(-1) }
 
-    /** Сколько assistant-сообщений текущего ответа уже отдано озвучке. */
-    var ttsSaidAssistants by remember { mutableIntStateOf(0) }
+    /**
+     * Индекс assistant-сообщения, которое сейчас растёт и озвучивается.
+     * -1 = в этом обороте ещё ничего не отдано нарратору.
+     */
+    var ttsSaidAssistants by remember { mutableIntStateOf(-1) }
+    /** Сессия, для которой считается состояние озвучки выше. */
+    var ttsSessionId by remember { mutableStateOf<String?>(null) }
     // Озвучка включается лишь после первого нового вопроса: иначе при запуске
     // приложение читает вслух последнее сообщение из истории.
     var ttsArmed by remember { mutableStateOf(false) }
@@ -1267,7 +1272,20 @@ fun ChatOverlay(
                     // Озвучка: раскладываем растущий текст ответа на предложения.
                     // Новый вопрос юзера — жёсткий сброс: очередь чистим, игра гасится.
                     val userCount = final.messages.count { it.role == "user" }
-                    if (ttsSeenUserMsgs < 0) {
+                    // Смена сессии — жёсткая граница озвучки. Гасим речь и НЕ
+                    // вооружаемся: у новой сессии своя история, читать её вслух
+                    // без запроса пользователя нельзя. Озвучка включится на первом
+                    // новом вопросе уже внутри неё.
+                    if (ttsSessionId != final.activeId) {
+                        if (ttsSessionId != null) {
+                            TtsNarrator.stop()
+                            TtsNarrator.onNewResponse()
+                        }
+                        ttsSessionId = final.activeId
+                        ttsArmed = false
+                        ttsSeenUserMsgs = userCount
+                        ttsSaidAssistants = -1
+                    } else if (ttsSeenUserMsgs < 0) {
                         // Первый снапшот после запуска: запоминаем, что уже было в ленте,
                         // и НЕ озвучиваем старое. Иначе приложение при запуске читает
                         // вслух последний ответ из истории.
@@ -1275,7 +1293,7 @@ fun ChatOverlay(
                     } else if (userCount != ttsSeenUserMsgs) {
                         ttsSeenUserMsgs = userCount
                         ttsArmed = true
-                        ttsSaidAssistants = 0
+                        ttsSaidAssistants = -1
                         TtsNarrator.stop()
                         TtsNarrator.onNewResponse()
                     }
@@ -1297,16 +1315,25 @@ fun ChatOverlay(
                         // и чанкер держит текст до конца предложения; без повторной
                         // передачи этот текст никогда не доигран (регрессия a2e85b9 —
                         // озвучка молчала целиком).
-                        val assistants = final.messages.filter { it.role == "assistant" && it.text.isNotEmpty() }
+                        //
+                        // Срез ТОЛЬКО текущего оборота: сообщения после последнего
+                        // user-реплики. Фильтр по всей ленте читал вслух историю
+                        // сессии заново на каждом новом вопросе, а при переключении
+                        // сессий — прочитанное из чужой переписки.
+                        val lastUserIdx = final.messages.indexOfLast { it.role == "user" }
+                        val assistants = final.messages
+                            .drop(lastUserIdx + 1)
+                            .filter { it.role == "assistant" && it.text.isNotEmpty() }
                         if (assistants.isNotEmpty()) {
                             val lastIdx = assistants.size - 1
                             if (lastIdx > ttsSaidAssistants) {
-                                // Сообщение на позиции ttsSaidAssistants уже частично
-                                // озвучено и больше не изменится — доигрываем остаток.
-                                // Сообщения между ним и последним — новые, их озвучиваем
-                                // целиком, ровно один раз.
-                                TtsNarrator.onNewAssistantMessage()
-                                for (i in ttsSaidAssistants + 1 until lastIdx) {
+                                // Сообщение на позиции ttsSaidAssistants — то, что уже
+                                // пошло в озвучку и расти больше не будет: доигрываем его
+                                // остаток. -1 означает «ещё ни одного не начато», тогда
+                                // доигрывать нечего, а все новые сообщения (включая
+                                // ПЕРВОЕ, индекс 0) озвучиваются целиком.
+                                if (ttsSaidAssistants >= 0) TtsNarrator.onNewAssistantMessage()
+                                for (i in maxOf(ttsSaidAssistants + 1, 0) until lastIdx) {
                                     TtsNarrator.onAssistantText(context, assistants[i].text, isFinal = true)
                                 }
                                 ttsSaidAssistants = lastIdx
@@ -1824,6 +1851,24 @@ fun ChatOverlay(
                                     }
                                 }
                             }
+                        }
+                        // Диагностика озвучки: дамп сырого PCM в filesDir/tts-dump.pcm
+                        // (float32, без заголовка). По нему видно длительность и паузы
+                        // каждого фрагмента — то, чего не показывает лог. Нужен, чтобы
+                        // проверять озвучку без возможности послушать.
+                        TtsRadioRow("Дамп PCM (диагностика)", ttsConfig.dumpPcm) {
+                            ttsConfig = ttsConfig.copy(dumpPcm = !ttsConfig.dumpPcm)
+                            TtsConfig.save(context, ttsConfig)
+                            TtsNarrator.stop()
+                        }
+                        if (ttsConfig.dumpPcm) {
+                            Text(
+                                "Пишет files/tts-dump.pcm. Забрать: adb exec-out run-as " +
+                                    "org.opencode.mobile.debug cat files/tts-dump.pcm > dump.pcm",
+                                color = Color(0xFF90A4AE),
+                                fontSize = 10.sp,
+                                modifier = Modifier.padding(start = 20.dp, top = 2.dp),
+                            )
                         }
                     }
                 }

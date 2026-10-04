@@ -79,6 +79,7 @@ speechRate = prefs.getFloat(KEY_RATE, 1.0f).coerceIn(0.5f, 2.0f),
                 .putString(KEY_MODEL, config.model)
                 .putInt(KEY_SID, config.sid)
                 .putFloat(KEY_RATE, config.speechRate)
+                .putBoolean(KEY_DUMP, config.dumpPcm)
                 .apply()
             Log.d(
                 "TTS",
