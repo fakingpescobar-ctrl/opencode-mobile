@@ -1296,6 +1296,14 @@ fun ChatOverlay(
                         ttsSaidAssistants = -1
                         TtsNarrator.stop()
                         TtsNarrator.onNewResponse()
+                    } else if (!ttsArmed && final.thinking) {
+                        // Смена сессии и новый вопрос могут прийти ОДНИМ снапшотом
+                        // (пользователь успевает отправить сообщение до следующего тика
+                        // поллинга). Тогда счётчик вопросов уже включает новый вопрос, и
+                        // ветка выше его не видит — первый ответ молча пропал бы. Ориентир:
+                        // у живой переписки thinking=true, у истории он снят.
+                        ttsArmed = true
+                        ttsSaidAssistants = -1
                     }
                     if (ttsOn && ttsArmed) {
                         // Пустой текст — это начало thinking или tool call, а не откат
