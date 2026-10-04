@@ -241,5 +241,8 @@ private fun hardStop(t: AudioTrack) {
             }
             dumpOut = null
         }
+
+        /** Идёт ли дамп прямо сейчас: нужно переключателю, чтобы не открыть файл дважды. */
+        fun isDumping(): Boolean = dumpOut != null
     }
 }

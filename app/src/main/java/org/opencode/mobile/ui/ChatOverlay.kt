@@ -1867,6 +1867,9 @@ fun ChatOverlay(
                         TtsRadioRow("Дамп PCM (диагностика)", ttsConfig.dumpPcm) {
                             ttsConfig = ttsConfig.copy(dumpPcm = !ttsConfig.dumpPcm)
                             TtsConfig.save(context, ttsConfig)
+                            // Применяем к живой озвучке сразу: dumpOut переживает смену
+                            // голоса и движка, иначе файл писался бы до перезапуска.
+                            TtsNarrator.applyDumpPref(context)
                             TtsNarrator.stop()
                         }
                         if (ttsConfig.dumpPcm) {

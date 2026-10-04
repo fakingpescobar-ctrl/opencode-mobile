@@ -185,6 +185,29 @@ fun onNewAssistantMessage() {
     }
 
     /**
+     * Применить переключатель дампа PCM к ЖИВОЙ озвучке.
+     *
+     * Дамп живёт в companion-объекте [AudioTrackPlayer] и переживает смену голоса,
+     * движка и перезапуск спикера, поэтому переключатель в настройках обязан
+     * применять его сам. Раньше флаг читался только при создании движка: тумблер
+     * менял prefs, но файл продолжал писаться до перезапуска приложения.
+     */
+    fun applyDumpPref(context: Context) {
+        val on = TtsConfig.read(context).dumpPcm
+        if (on) {
+            // Не открываем второй файл поверх уже открытого: startDump перезатирает
+            // прежний буфер, и начало текущей записи потерялось бы.
+            if (AudioTrackPlayer.isDumping()) return
+            AudioTrackPlayer.startDump(java.io.File(context.filesDir, "tts-dump.pcm"))
+            Log.i(TAG, "дамп PCM включён: ${context.filesDir}/tts-dump.pcm")
+        } else {
+            if (!AudioTrackPlayer.isDumping()) return
+            AudioTrackPlayer.stopDump()
+            Log.i(TAG, "дамп PCM выключен")
+        }
+    }
+
+    /**
      * Идёт ли сейчас озвучка.
      *
      * Функция, а не свойство: так её зовёт androidTest `SmokeTtsTest`, написанный
@@ -231,9 +254,7 @@ fun onNewAssistantMessage() {
             Log.i(TAG, "движок готов: ${cfg.engine.label}")
             speaker?.release()
             speaker = TtsSpeaker(synth)
-            if (cfg.dumpPcm) {
-                AudioTrackPlayer.startDump(java.io.File(context.filesDir, "tts-dump.pcm"))
-            }
+            applyDumpPref(context)
 
             // Текст, пришедший во время загрузки, озвучиваем сразу — иначе первый
             // ответ после включения озвучки пропадал бы молча.
