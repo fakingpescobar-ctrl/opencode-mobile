@@ -20,6 +20,14 @@ object TtsNarrator {
     private var consumedPrefix = ""
     private var loadedFor = ""
 
+    /**
+     * Текст, который пришёл, пока движок грузился: пара «текст, ответ дописан».
+     *
+     * Держим ровно один — последний. Поток ответов в чате быстрее загрузки модели,
+     * так что очередь из текстов только размножила бы озвучку устаревших кусков.
+     */
+    private var deferred: Pair<String, Boolean>? = null
+
     private val loader = Executors.newSingleThreadExecutor { r ->
         Thread(r, "tts-loader").apply { isDaemon = true }
     }
@@ -52,15 +60,51 @@ object TtsNarrator {
     fun onAssistantText(context: Context, text: String, isFinal: Boolean) {
         val cfg = TtsConfig.read(context)
         if (!cfg.isEnabled) return
-        val sp = ensureSpeaker(context, cfg) ?: return
+        val sp = ensureSpeaker(context, cfg)
+        if (sp == null) {
+            // Движок грузится в фоне (первый запуск грузит модель — около секунды).
+            // Раньше текст здесь просто проглатывался: включил озвучку, отправил вопрос —
+            // первый ответ молчал, озвучка начиналась только со второго. Откладываем
+            // последний куст текста и доигрываем его сразу после загрузки движка.
+            deferred = text to isFinal
+            Log.i(TAG, "движок ещё грузится, текст отложен: ${text.length} симв., isFinal=$isFinal")
+            return
+        }
+        speak(sp, cfg, text, isFinal)
+    }
+
+    /**
+     * Длина общего префикса двух строк.
+     *
+     * Нужна для случая, когда снапшот ответа перерисовывается целиком: если брать
+     * весь текст заново, уже поставленные в очередь куски теряются, а сброс
+     * чанкера поднимает поколение и гасит озвучку — на каждый апдейт опроса чата.
+     */
+    private fun commonPrefixLength(a: String, b: String): Int {
+        val n = minOf(a.length, b.length)
+        var i = 0
+        while (i < n && a[i] == b[i]) i++
+        return i
+    }
+
+    private fun speak(sp: TtsSpeaker, cfg: TtsConfig, text: String, isFinal: Boolean) {
         sp.start(cfg.sid, cfg.speechRate)
 
         val delta =
             when {
                 text.startsWith(consumedPrefix) -> text.substring(consumedPrefix.length)
-                // Снапшот переписан целиком (новая реплика или правка) — начинаем заново.
+                // Перерисовка целиком: начало то же, отдаём только хвост. Раньше здесь
+                // был безусловный сброс — 46 раз за сессию, и 10 сыгранных кусков
+                // против 65 синтезированных.
+                text.length >= consumedPrefix.length -> {
+                    val common = commonPrefixLength(text, consumedPrefix)
+                    Log.i(TAG, "текст перезаписан, беру хвост с позиции $common")
+                    text.substring(common)
+                }
+                // Текст стал короче осмотренного — это настоящий откат (новый ответ
+                // или правка), сбрасываем чанкер целиком.
                 else -> {
-                    Log.i(TAG, "текст перезаписан, сбрасываю чанкер")
+                    Log.i(TAG, "текст откатился, сбрасываю чанкер")
                     chunker.reset()
                     sp.stop(fadeOutMs = 60)
                     sp.start(cfg.sid, cfg.speechRate)
@@ -98,16 +142,24 @@ object TtsNarrator {
     fun onNewResponse() {
         consumedPrefix = ""
         chunker.reset()
+        deferred = null
     }
 
     /** Стоп озвучки: очередь чистим, играющее гасим. */
     fun stop() {
         consumedPrefix = ""
         chunker.reset()
+        deferred = null
         speaker?.stop(fadeOutMs = 120)
     }
 
-    val isSpeaking: Boolean get() = speaker?.isSpeaking == true
+    /**
+     * Идёт ли сейчас озвучка.
+     *
+     * Функция, а не свойство: так её зовёт androidTest `SmokeTtsTest`, написанный
+     * мобильным агентом против боевого DEX.
+     */
+    fun isSpeaking(): Boolean = speaker?.isSpeaking == true
 
     fun release() {
         stop()
@@ -148,8 +200,20 @@ object TtsNarrator {
             Log.i(TAG, "движок готов: ${cfg.engine.label}")
             speaker?.release()
             speaker = TtsSpeaker(synth)
+
+            // Текст, пришедший во время загрузки, озвучиваем сразу — иначе первый
+            // ответ после включения озвучки пропадал бы молча.
+            val late = deferred
+            if (late != null) {
+                deferred = null
+                speaker?.let { fresh ->
+                    Log.i(TAG, "доигрываю отложенный текст: ${late.first.length} симв.")
+                    speak(fresh, cfg, late.first, late.second)
+                }
+            }
         }
-        // Первый вызов после смены движка возвращает null: движок ещё грузится в фоне.
-        return speaker
+        // При смене движка возвращаем null: тот спикер, что остался в поле, поднят
+        // под ПРЕДЫДУЩИЙ ключ, озвучивать им новый движок нельзя. Текст уйдёт в deferred.
+        return null
     }
 }

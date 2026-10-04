@@ -128,6 +128,7 @@ class TtsSpeaker(private val synth: SpeechSynth) {
     }
 
     private fun playLoop(myGen: Long) {
+        var failsInRow = 0
         while (generation.get() == myGen) {
             val audio =
                 try {
@@ -136,10 +137,25 @@ class TtsSpeaker(private val synth: SpeechSynth) {
                     return
                 }
             if (generation.get() != myGen) return
-            try {
-                player.play(audio)
-            } catch (t: Throwable) {
-                Log.e(TAG, "воспроизведение упало: ${t.message}")
+            val played =
+                try {
+                    player.play(audio)
+                } catch (t: Throwable) {
+                    Log.e(TAG, "воспроизведение упало: ${t.message}", t)
+                    false
+                }
+            // Отказ раньше просто игнорировался: один упавший трек молча уводил в
+            // тишину всю очередь. После нескольких отказов подряд трек пересоздаём —
+            // иначе он и следующие куски не починятся сами.
+            if (played) {
+                failsInRow = 0
+            } else {
+                failsInRow++
+                Log.w(TAG, "отказ воспроизведения $failsInRow подряд")
+                if (failsInRow >= MAX_PLAY_FAILS) {
+                    player.release()
+                    failsInRow = 0
+                }
             }
         }
     }
@@ -147,5 +163,6 @@ class TtsSpeaker(private val synth: SpeechSynth) {
     private companion object {
         const val TAG = "TTS"
         const val MAX_PENDING = 16
+        const val MAX_PLAY_FAILS = 3
     }
 }

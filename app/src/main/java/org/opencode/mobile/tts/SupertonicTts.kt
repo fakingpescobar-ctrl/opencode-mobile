@@ -66,6 +66,10 @@ class SupertonicTts private constructor(
                 }
                 return null
             }
+            // Ноль или отрицательное — «потоки не заданы», а не «один поток»: движок на
+            // numThreads=1 падает с Invalid OfflineTtsConfig, а на 2 даёт лучший RTF
+            // (0.32 против 0.58 на 4, замер 03.10). Тесты зовут loadOrNull(dir, 0).
+            val safeThreads = if (threads > 0) threads else TtsConfig.NUM_THREADS
             val missing = TtsModels.SUPERTONIC_FILES.filter { !File(modelDir, it).exists() }
             if (missing.isNotEmpty()) {
                 Log.w(TAG, "sherpa-onnx: модель не установлена, нет ${missing.joinToString()}")
@@ -88,7 +92,7 @@ class SupertonicTts private constructor(
                                 unicodeIndexer = "${modelDir.path}/unicode_indexer.bin",
                                 voiceStyle = "${modelDir.path}/voice.bin",
                             ),
-                            numThreads = threads,
+                            numThreads = safeThreads,
                             provider = "cpu",
                         ),
                         maxNumSentences = 1,
@@ -98,7 +102,7 @@ class SupertonicTts private constructor(
                 Log.i(
                     TAG,
                     "sherpa-onnx загружен: rate=${loaded.sampleRate} sid=${loaded.numSpeakers} " +
-                        "threads=$threads model=${modelDir.name}",
+                        "threads=$safeThreads model=${modelDir.name}",
                 )
                 loaded
             } catch (t: Throwable) {

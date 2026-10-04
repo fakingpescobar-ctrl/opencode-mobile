@@ -33,8 +33,14 @@ class SentenceChunker(
         firstChunkDone = false
     }
 
-    /** Длина невы spokenного буфера — для диагностики и тестов. */
-    val pendingChars: Int get() = buffer.length
+    /**
+     * Длина невыданного буфера — для диагностики и тестов.
+     *
+     * Именно `getPendingChars()`, а не свойство: так вызывает androidTest
+     * `SmokeTtsTest`, написанный мобильным агентом против боевого DEX. Ломать его
+     * ради идиоматичности смысла нет — тест ловит главный дефект плеера.
+     */
+    fun getPendingChars(): Int = buffer.length
 
     private fun drain(force: Boolean): List<String> {
         val out = ArrayList<String>(2)
@@ -63,9 +69,13 @@ class SentenceChunker(
 
         if (boundary == null) return null
 
-        val chunk = text.substring(0, boundary).trim()
+        // Без trim(): пробел после знака конца предложения принадлежит разрыву
+        // и уезжает в начало следующего куска. Обрезка здесь роняла его, и склейка
+        // кусков переставала совпадать с исходным текстом («проверки.Второе»).
+        // Для синтеза ведущий пробел безобиден, для потока текста — потеря данных.
+        val chunk = text.substring(0, boundary)
         buffer = StringBuilder(text.substring(boundary))
-        if (chunk.isNotEmpty()) firstChunkDone = true
+        if (chunk.isNotBlank()) firstChunkDone = true
         return chunk
     }
 
