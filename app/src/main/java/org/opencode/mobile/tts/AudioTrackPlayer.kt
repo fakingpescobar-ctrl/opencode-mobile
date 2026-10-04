@@ -57,6 +57,25 @@ class AudioTrackPlayer(private val sampleRate: Int) {
         if (audio.isEmpty) return false
         return try {
             val t = ensureTrack(audio.sampleRate)
+            // Предохранитель от отставания. Синтез идёт с rtf ~0.2, то есть
+            // опережает речь вчетверо, а воспроизведение идёт ровно в 1x. На
+            // длинном ответе разрыв растёт сам и неукротимо: замечено 17с, 59с,
+            // 70с за полминуты, а дальше упирается в память. Ни pending с
+            // лимитом 16, ни audioQueue тут не спасали — ограничен был не тот.
+            val backlogSec = audioFramesLeftHint.toDouble() / audio.sampleRate
+            if (backlogSec > MAX_BACKLOG_SEC) {
+                // Накопленное выбрасываем целиком и продолжаем с текущей фразы.
+                // Догонять каждое накопленное слово нельзя — тогда озвучка
+                // только всё сильнее отстаёт. Лучше пропуск, чем минута отставания.
+                t.pause()
+                t.flush()
+                playUntil.set(0)
+                audioFramesLeftHint = 0
+                Log.w(
+                    TAG,
+                    "отставание ${"%.1f".format(backlogSec)}с > ${MAX_BACKLOG_SEC}с, буфер сброшен",
+                )
+            }
             // После stop() трек остаётся на паузе: без play() write() уйдёт в буфер,
             // но из него не прозвучит.
             if (t.playState != AudioTrack.PLAYSTATE_PLAYING) t.play()
@@ -217,8 +236,19 @@ private fun hardStop(t: AudioTrack) {
         if (track === t) track = null
     }
 
-    companion object {
-        const val TAG = "TTS"
+companion object {
+const val TAG = "TTS"
+
+        /**
+         * Сколько секунд непроигранного звука допускаем в буфере трека.
+         *
+         * Больше этого — озвучка уже настолько отстала от текста, что догонять
+         * бессмысленно: синтез всё равно успевает вперёд, и разрыв только растёт.
+         * При сбросе теряется начало сказанного, зато голос возвращается в
+         * реальное время. Порог намеренно большой — он страхует от патологии,
+         * а не режет нормальный разговор.
+         */
+        const val MAX_BACKLOG_SEC = 20.0
 
         /**
          * Дамп сырого PCM в файл — то, что реально ушло в динамик, float32 LE, без
