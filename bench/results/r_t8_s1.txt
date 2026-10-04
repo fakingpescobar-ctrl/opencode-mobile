@@ -1,0 +1,9 @@
+=== config threads=8 sid=1 runs=3 ===
+label	threads	sid	run	wall_ms	wav_bytes	peak_rss_kb	rc	rtf
+short	t8	s1	1	5390	663190	-	rc=0	RTF:4.085/7.519 = 0.543
+short	t8	s1	2	5570	663190	-	rc=0	RTF:4.191/7.519 = 0.557
+short	t8	s1	3	5760	663190	-	rc=0	RTF:4.457/7.519 = 0.593
+long	t8	s1	1	31020	6374592	-	rc=0	RTF:29.665/72.274 = 0.410
+long	t8	s1	2	38910	6374592	-	rc=0	RTF:37.589/72.274 = 0.520
+long	t8	s1	3	44540	6374592	-	rc=0	RTF:43.216/72.274 = 0.598
+=== done threads=8 sid=1 ===

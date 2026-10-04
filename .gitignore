@@ -58,6 +58,12 @@ local.properties
 /build-inst.err
 /opencode.jsonc.device
 
+# TTS bench: downloaded models (~1GB, regenerate via bench/fetch-tts-models.ps1)
+# and device-pulled native binaries. Scripts, logs and the markdown report are tracked.
+/bench/models/
+/bench/results/*.so
+/bench/results/sherpa-onnx-offline-tts
+
 # Release signing secrets (keystore itself lives outside the repo).
 # *.keystore / *.jks above cover the container; this covers the passwords.
 keystore.properties
