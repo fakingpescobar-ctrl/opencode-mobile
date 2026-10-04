@@ -1290,20 +1290,33 @@ fun ChatOverlay(
                         // tool call -> новый текст), и `lastOrNull` молча ронял
                         // предыдущие. Каждое новое сообщение доигрывает остаток
                         // предыдущего, а не гасит его.
+                        //
+                        // Последнее (растущее) сообщение отдаём нарратору на КАЖДОМ
+                        // снапшоте — именно по нему считается дельта. Оно летит даже
+                        // когда ничего не изменилось: пока thinking=true, isFinal=false
+                        // и чанкер держит текст до конца предложения; без повторной
+                        // передачи этот текст никогда не доигран (регрессия a2e85b9 —
+                        // озвучка молчала целиком).
                         val assistants = final.messages.filter { it.role == "assistant" && it.text.isNotEmpty() }
-                        val said = minOf(ttsSaidAssistants, assistants.size)
-                        if (said < assistants.size && ttsSaidAssistants > 0) {
-                            TtsNarrator.onNewAssistantMessage()
-                        }
-                        for (i in said until assistants.size) {
-                            val isLast = i == assistants.size - 1
+                        if (assistants.isNotEmpty()) {
+                            val lastIdx = assistants.size - 1
+                            if (lastIdx > ttsSaidAssistants) {
+                                // Сообщение на позиции ttsSaidAssistants уже частично
+                                // озвучено и больше не изменится — доигрываем остаток.
+                                // Сообщения между ним и последним — новые, их озвучиваем
+                                // целиком, ровно один раз.
+                                TtsNarrator.onNewAssistantMessage()
+                                for (i in ttsSaidAssistants + 1 until lastIdx) {
+                                    TtsNarrator.onAssistantText(context, assistants[i].text, isFinal = true)
+                                }
+                                ttsSaidAssistants = lastIdx
+                            }
                             TtsNarrator.onAssistantText(
                                 context,
-                                assistants[i].text,
-                                isFinal = if (isLast) !final.thinking else true,
+                                assistants.last().text,
+                                isFinal = !final.thinking,
                             )
                         }
-                        if (said < assistants.size) ttsSaidAssistants = assistants.size
                     }
                 }
                 if (completed > knownMsgs) {
