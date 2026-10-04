@@ -12,6 +12,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.opencode.mobile.tts.RuNumbers
 import org.opencode.mobile.tts.SentenceChunker
 import org.opencode.mobile.tts.SupertonicTts
 import org.opencode.mobile.tts.TtsModels
@@ -249,5 +250,39 @@ class SmokeTtsTest {
                 "проверяет, что озвучка не прерывается на границе между кусками. " +
                 "Третье предложение доводит ответ до конца, чтобы тест убедился, что " +
                 "произнесено действительно всё, а не только начало."
+    }
+
+    /**
+     * Числа должны попадать в движок словами, иначе «59 записей» читается
+     * по-английски (fifty-nine). Идентификаторы и версии при этом ломать нельзя.
+     */
+    @Test
+    fun numbersBecomeRussianWords() {
+        assertEquals(
+            "пятьдесят девять записей, из них двадцать семь",
+            RuNumbers.convert("59 записей, из них 27"),
+        )
+        assertEquals("двести шестьдесят четыре", RuNumbers.convert("264"))
+        assertEquals("тысяча двести тридцать четыре", RuNumbers.convert("1234"))
+        assertEquals(
+            "шесть миллионов семьсот тридцать три тысячи триста девяносто шесть",
+            RuNumbers.convert("6733396"),
+        )
+        assertEquals("восемьдесят пять процентов", RuNumbers.convert("85%"))
+        assertEquals("один процент", RuNumbers.convert("1%"))
+        assertEquals("сорок два процента", RuNumbers.convert("42%"))
+        assertEquals("семьдесят шесть целых три десятых с", RuNumbers.convert("76,3 с"))
+    }
+
+    @Test
+    fun identifiersAndVersionsStayIntact() {
+        assertEquals("AArch64", RuNumbers.convert("AArch64"))
+        assertEquals("gpt-4", RuNumbers.convert("gpt-4"))
+        assertEquals("utf-8", RuNumbers.convert("utf-8"))
+        assertEquals("Android \u0448\u0435\u0441\u0442\u043d\u0430\u0434\u0446\u0430\u0442\u044c", RuNumbers.convert("Android 16"))
+        // версия читается поразрядно, а не как дробь
+        assertEquals("два точка ноль точка пятнадцать", RuNumbers.convert("2.0.15"))
+        // текст без чисел не трогаем вообще
+        assertEquals("ни одного числа тут", RuNumbers.convert("ни одного числа тут"))
     }
 }

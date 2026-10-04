@@ -117,12 +117,15 @@ class TtsSpeaker(private val synth: SpeechSynth) {
                 } ?: continue
             if (generation.get() != myGen) return
 
-            val startedAt = System.currentTimeMillis()
+val startedAt = System.currentTimeMillis()
+            // Движок читает «59 записей» по-английски (fifty-nine), поэтому
+            // числа переводим в русские слова ДО синтеза.
+            val spoken = RuNumbers.convert(sentence)
             val audio =
                 try {
-                    synth.synthesize(sentence, sid, speed)
+                    synth.synthesize(spoken, sid, speed)
                 } catch (t: Throwable) {
-                    Log.e(TAG, "синтез упал на «${sentence.take(40)}»: ${t.message}")
+                    Log.e(TAG, "ᨭ⥧ 㯠� �� <${sentence.take(40)}>: ${t.message}")
                     null
                 }
             // Пока шёл синтез, юзер мог нажать стоп — результат больше не нужен.
