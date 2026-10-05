@@ -44,14 +44,40 @@ class OpencodeApp : Application() {
         lateinit var opencodeCache: File
             private set
 
+        /** [opencodeBase] лежит на внешнем хранилище (есть «Доступ ко всем файлам»). */
+        private var externalBase = false
+
         const val PORT = 4096
+
+        /** Имя файла конфига opencode. */
+        const val CONFIG_FILE = "opencode.jsonc"
+
+        /**
+         * Каталог эталона конфига. Имя сознательно НЕ `opencode-config` и без
+         * вложенного `opencode/` внутри — форма пути здесь условие
+         * работоспособности, а не стилистика.
+         *
+         * Зеркало раньше лежало по `opencode-config/opencode/opencode.jsonc`,
+         * то есть ровно по форме корня конфига opencode
+         * (`Global.Path.config = <base> + "/opencode"`). На sdcardfs opencode
+         * принимал наш эталон за свой каталог, создавал рядом `.gitignore`,
+         * запускал `bun install` и 18 раз за 30.09–01.10 падал на EACCES при
+         * создании symlink в `node_modules/.bin` (на sdcardfs симлинки невозможны),
+         * оставляя 37–49 МБ полуразобранных зависимостей после каждой попытки.
+         *
+         * Пока эталон лежит по пути, который opencode распознаёт как свой корень,
+         * фоновая установка зависимостей будет падать снова. Регрессия закрыта
+         * тестом ConfigMirrorPathTest.
+         */
+        const val MIRROR_DIR = "config-mirror"
 
         fun init(context: Context) {
             appFiles = context.filesDir
             // Есть «Доступ ко всем файлам»? Тогда HOME/XDG_DATA/CACHE — на внешнее
             // хранилище (Documents/OpencodeTerminal/opencode), рядом с workspace. Иначе
             // внутренний sandbox (app без прав — данные остаются в filesDir).
-            if (Workspace.usingExternal(context)) {
+            externalBase = Workspace.usingExternal(context)
+            if (externalBase) {
                 opencodeBase = File(Workspace.resolve(context), "opencode").apply { mkdirs() }
             } else {
                 opencodeBase = appFiles
@@ -79,6 +105,8 @@ class OpencodeApp : Application() {
             // правки, сделанные до разделения (миграция, не синхронизация: дальше
             // приложение пишет только сюда, иначе снова появились бы две копии).
             opencodeConfig = File(appFiles, "opencode-config").apply { mkdirs() }
+            // Источник миграции — СТАРОЕ расположение конфига, не путь эталона
+            // ([MIRROR_DIR]). Его больше не создаём: читаем оттуда только один раз.
             migrateConfigFrom(File(opencodeBase, "opencode-config"))
 
             listOf(opencodeHome, opencodeConfig, opencodeData, opencodeCache).forEach { it.mkdirs() }
@@ -100,10 +128,15 @@ class OpencodeApp : Application() {
          * хранилище) — тогда зеркало было бы записью файла в себя же.
          */
         fun mirroredConfigFile(): File? {
-            val mirror = File(opencodeBase, "opencode-config/opencode/opencode.jsonc")
-            if (mirror.absolutePath == File(opencodeConfig, "opencode/opencode.jsonc").absolutePath) return null
-            return mirror
+            if (!externalBase) return null
+            return mirrorFileFor(opencodeBase)
         }
+
+        /**
+         * Путь эталона под [base]. Именно эта функция, а не конкатенация на месте
+         * вызова, держит единственное правило формы пути (см. [mirrorFileFor]).
+         */
+        fun mirrorFileFor(base: File): File = File(base, "$MIRROR_DIR/$CONFIG_FILE")
 
         /**
          * Разовая миграция конфига с внешнего хранилища в приватный каталог.
