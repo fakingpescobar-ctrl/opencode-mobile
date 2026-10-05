@@ -4,6 +4,8 @@ import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.net.Uri
+import android.os.SystemClock
 import android.util.Log
 import org.json.JSONObject
 import java.io.File
@@ -41,6 +43,10 @@ import java.net.URL
  * [fallback] (обычно локальный Supertonic) — облако не должно быть единственной
  * причиной молчащей озвучки. Частота сэмплов у локального движка другая, но это
  * безопасно: AudioTrackPlayer.ensureTrack() пересоздаёт трек при смене частоты.
+ *
+ * Одна сетевая ошибка ставит облако на паузу [NETWORK_COOLDOWN_MS] — иначе каждая
+ * фраза оплачивала бы полный connectTimeout до локального движка, и озвучка
+ * систематически отставала от текста.
  */
 class ElevenLabsTts(
     private val context: Context,
@@ -70,8 +76,52 @@ class ElevenLabsTts(
     /** Формат, который прошёл в прошлый раз: на нём начинаем, чтобы не перебирать. */
     private var preferred: String? = readPrefs(PREF_PREFERRED).ifEmpty { null }
 
+    /**
+     * Момент, до которого облако считается недоступным (0 = доступно).
+     *
+     * Зачем: без VPN или при упавшей сети КАЖДАЯ фраза сначала честно ждала
+     * connectTimeout (8 с) и только потом уходила в локальный движок. Ответ
+     * длиной в целую фразу стыковался — озвучка вставала заметно позже текста.
+     * Одна неудача теперь выключает облако на [NETWORK_COOLDOWN_MS], и все
+     * следующие фразы идут в локальный движок сразу, без ожидания.
+     *
+     * Поле живёт в памяти, а не в prefs: перезапуск движка (смена голоса, модели
+     * или ключа — они входят в ключ пересоздания в TtsNarrator) честно даёт
+     * облаку новую попытку. Это ровно то поведение, которое нужно юзеру после
+     * того, как он включил VPN или вставил правильный ключ.
+     *
+     * Засекается по [SystemClock.elapsedRealtime], а не по wall clock: перевод
+     * часов телефона не должен вдруг включить или выключить паузу.
+     */
+    private var networkDownUntil = 0L
+
+    /** Облако не отвечало так недавно, что ждать снова бессмысленно. */
+    private fun networkDown(): Boolean = SystemClock.elapsedRealtime() < networkDownUntil
+
+    private fun markNetworkDown(cause: Throwable) {
+        networkDownUntil = SystemClock.elapsedRealtime() + NETWORK_COOLDOWN_MS
+        Log.w(
+            TAG,
+            "сеть/облако недоступно (${cause.javaClass.simpleName}: ${cause.message}) — " +
+                "локальный движок следующие ${NETWORK_COOLDOWN_MS / 1000}с без повторной попытки",
+        )
+    }
+
     override fun synthesize(text: String, sid: Int, speed: Float): TtsAudio? {
         if (text.isBlank()) return null
+
+        // Голос пустой — это настройка, а не сеть: ждать тут нечего, и пробовать
+        // нечего тоже. Иначе URL ушёл бы на корневую папку API и вернул бы JSON
+        // со списком голосов, который мы бы честно, но бесполезно декодировали.
+        if (voiceId.isBlank()) {
+            Log.w(TAG, "не задан Voice ID — ухожу в локальный движок")
+            return fallback?.synthesize(text, sid, speed)
+        }
+
+        if (networkDown()) {
+            Log.d(TAG, "облако на паузе после сетевой ошибки — беру локальный движок сразу")
+            return fallback?.synthesize(text, sid, speed)
+        }
 
         var lastError: Throwable? = null
         while (true) {
@@ -90,6 +140,7 @@ class ElevenLabsTts(
                     TAG,
                     "облако не ответило (${t.javaClass.simpleName}: ${t.message}) — ухожу в локальный движок",
                 )
+                markNetworkDown(t)
                 return fallback?.synthesize(text, sid, speed)
             }
 
@@ -157,8 +208,16 @@ class ElevenLabsTts(
         // output_format ЖИВЁТ В QUERY, а не в теле запроса. Отправленный в JSON
         // он молча игнорировался: сервер отвечал 200 дефолтным mp3_44100_128,
         // decodePcm16() разбирал mp3-байты как сэмплы — и юзер слышал шипение.
-        val conn =
-            URL("$BASE_URL/$voiceId?output_format=$outputFormat").openConnection() as HttpURLConnection
+        //
+        // Voice ID приходит из поля ввода, поэтому кодируется: незакодированный
+        // «?», «#» или «/» в значении разорвал бы путь и увёл бы запрос не туда
+        // — на другой эндпойнт, который ответит 200 JSON-ом, и мы бы честно
+        // сообщили «json вместо аудио» вместо правды про битый Voice ID.
+        // outputFormat приходит из нашего же списка констант, но кодируется
+        // тоже: правило «в URL только закодированное» не должно зависеть от того,
+        // кто именно подставил строку.
+        val url = "$BASE_URL/${Uri.encode(voiceId)}?output_format=${Uri.encode(outputFormat)}"
+        val conn = URL(url).openConnection() as HttpURLConnection
         try {
             conn.requestMethod = "POST"
             conn.connectTimeout = CONNECT_TIMEOUT_MS
@@ -450,6 +509,17 @@ class ElevenLabsTts(
         // Замеры 05.10.2026: до 2.7 с на 1035 символов. Отдаём запас, но не
         const val CONNECT_TIMEOUT_MS = 8000
         const val READ_TIMEOUT_MS = 25000
+
+        /**
+         * Пауза после сетевой ошибки, 60 с.
+         *
+         * 60 с — с запасом больше типичной паузы между фразами в чате: к тому
+         * моменту, когда юзер успел включить VPN или разобраться с сетью, пауза
+         * уже и так истекла сама. Намеренно НЕ длинная: движок переживает смену
+         * ключа, голоса и модели, так что восстановление связи не откладывается
+         * до перезапуска приложения.
+         */
+        const val NETWORK_COOLDOWN_MS = 60_000L
         const val STABILITY = 0.5f
         const val SIMILARITY_BOOST = 0.75f
         const val STYLE = 0.0f

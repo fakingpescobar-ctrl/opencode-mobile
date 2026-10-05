@@ -522,6 +522,10 @@ fun ChatOverlay(
     // движок из ElevenLabsSecret, и в UI он не показывается никогда.
     var elevenKeyDraft by remember { mutableStateOf("") }
     var elevenHasKey by remember { mutableStateOf(ElevenLabsSecret.hasKey(context)) }
+    // Причина, по которой последнее сохранение не вышло, или null. Само
+    // ElevenLabsSecret вернёт её в SaveResult.Failed — здесь она просто
+    // показывается под полем ввода ключа.
+    var elevenKeyError by remember { mutableStateOf<String?>(null) }
     // Сколько user-реплик уже было озвучено: рост счётчика означает новый вопрос.
 // -1 = «ещё не знаю, что было в ленте», первый снапшот только запомнит счётчик.
     var ttsSeenUserMsgs by remember { mutableIntStateOf(-1) }
@@ -1872,7 +1876,12 @@ fun ChatOverlay(
                                 )
                                 BasicTextField(
                                     value = elevenKeyDraft,
-                                    onValueChange = { elevenKeyDraft = it },
+                                    onValueChange = {
+                                        elevenKeyDraft = it
+                                        // Правка черновика — новая попытка, поэтому
+                                        // старая ошибка больше не про текущий текст.
+                                        elevenKeyError = null
+                                    },
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .background(Color(0xFF1C1C1C), RoundedCornerShape(8.dp))
@@ -1908,12 +1917,22 @@ fun ChatOverlay(
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold,
                                         modifier = Modifier.clickable(enabled = elevenKeyDraft.isNotBlank()) {
-                                            ElevenLabsSecret.save(context, elevenKeyDraft)
-                                            elevenKeyDraft = ""
-                                            elevenHasKey = true
-                                            // Ключ сменился — движок надо пересоздать,
-                                            // иначе он продолжит работать со старым.
-                                            TtsNarrator.stop()
+                                            when (val r = ElevenLabsSecret.save(context, elevenKeyDraft)) {
+                                                is ElevenLabsSecret.SaveResult.Ok -> {
+                                                    elevenKeyDraft = ""
+                                                    elevenHasKey = true
+                                                    elevenKeyError = null
+                                                    // Ключ сменился — движок надо пересоздать,
+                                                    // иначе он продолжит работать со старым.
+                                                    TtsNarrator.stop()
+                                                }
+                                                is ElevenLabsSecret.SaveResult.Failed -> {
+                                                    // Черновик НЕ чистим: ключ юзера остаётся
+                                                    // в поле, чтобы он не вводил его заново
+                                                    // из-за сбоя хранилища.
+                                                    elevenKeyError = r.reason
+                                                }
+                                            }
                                         }.padding(horizontal = 8.dp, vertical = 4.dp),
                                     )
                                     if (elevenHasKey) {
@@ -1924,10 +1943,21 @@ fun ChatOverlay(
                                             modifier = Modifier.clickable {
                                                 ElevenLabsSecret.clear(context)
                                                 elevenHasKey = false
+                                                elevenKeyError = null
                                                 TtsNarrator.stop()
                                             }.padding(horizontal = 8.dp, vertical = 4.dp),
                                         )
                                     }
+                                }
+                                // Причина отказа от сохранения — иначе юзер видит
+                                // неподвижную кнопку и гадает, куда делся ключ.
+                                elevenKeyError?.let { why ->
+                                    Text(
+                                        "не сохранено: $why",
+                                        color = Color(0xFFE57373),
+                                        fontSize = 11.sp,
+                                        modifier = Modifier.padding(top = 2.dp),
+                                    )
                                 }
                                 Text(
                                     "Voice ID:",

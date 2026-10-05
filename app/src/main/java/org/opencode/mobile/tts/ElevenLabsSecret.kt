@@ -114,28 +114,62 @@ object ElevenLabsSecret {
     }
 
     /**
+     * Итог сохранения ключа.
+     *
+     * Раньше [save] ничего не возвращала, и любая ошибка Keystore улетала в
+     * обработчик клика в UI — то есть в крэш приложения посреди настройки.
+     * Теперь вызывающий обязан отличить «сохранилось» от «не вышло» и показать
+     * это юзеру, не роняя экран.
+     */
+    sealed interface SaveResult {
+        /** Ключ зашифрован и лежит в хранилище. */
+        object Ok : SaveResult
+
+        /** Сохранить не вышло; [reason] — уже человеческим текстом для UI. */
+        data class Failed(val reason: String) : SaveResult
+    }
+
+    /**
      * Сохраняет ключ. [apiKey] с пробелами по краям обрезается: с телефона его
      * вставляют копипастом с переносом строки, и такой ключ ушёл бы в API как есть.
+     *
+     * Пустая строка означает «удалить ключ» — так удобнее, чем отдельный [clear]
+     * на пустом поле, и результат всё равно [SaveResult.Ok].
      */
-    fun save(context: Context, apiKey: String) {
+    fun save(context: Context, apiKey: String): SaveResult {
         val clean = apiKey.trim()
         if (clean.isEmpty()) {
             clear(context)
-            return
+            return SaveResult.Ok
         }
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-        val ct = cipher.doFinal(clean.toByteArray(Charsets.UTF_8))
-        val enc = Base64.encodeToString(cipher.iv, Base64.NO_WRAP) + ":" +
-            Base64.encodeToString(ct, Base64.NO_WRAP)
-        // commit, а не apply: смена движка озвучки идёт сразу после сохранения,
-        // ключ должен быть виден следующему чтению без гонки.
-        prefs(context).edit()
-            .putString(PREF_KEY, enc)
-            .putString(PREF_PREVIEW, clean.takeLast(4) + "|" + clean.length)
-            .putLong(PREF_REV, revision(context) + 1)
-            .commit()
-        Log.i(TAG, "ключ сохранён (${clean.length} симв.), расшифрованный вид не логируется")
+        return try {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+            val ct = cipher.doFinal(clean.toByteArray(Charsets.UTF_8))
+            val enc = Base64.encodeToString(cipher.iv, Base64.NO_WRAP) + ":" +
+                Base64.encodeToString(ct, Base64.NO_WRAP)
+            // commit, а не apply: смена движка озвучки идёт сразу после сохранения,
+            // ключ должен быть виден следующему чтению без гонки.
+            prefs(context).edit()
+                .putString(PREF_KEY, enc)
+                .putString(PREF_PREVIEW, clean.takeLast(4) + "|" + clean.length)
+                .putLong(PREF_REV, revision(context) + 1)
+                .commit()
+            Log.i(TAG, "ключ сохранён (${clean.length} симв.), расшифрованный вид не логируется")
+            SaveResult.Ok
+        } catch (e: GeneralSecurityException) {
+            // Keystore недоступен: нет аппаратного бэкенда, ключ не создан или
+            // устройство его не отдало. Ключ юзера при этом ещё в поле ввода —
+            // поэтому подробность уходит в лог, а в UI короткая причина.
+            Log.w(TAG, "Keystore отказал при сохранении (${e.javaClass.simpleName})", e)
+            SaveResult.Failed("Keystore не дал ключ: ${e.message ?: e.javaClass.simpleName}")
+        } catch (e: RuntimeException) {
+            // ProviderException из KeyGenerator, IllegalState от недоступного
+            // Keystore, OOM при Base64. Это всё ошибки настройки хранилища, а не
+            // повод закрыть приложение посреди ввода ключа.
+            Log.w(TAG, "не удалось зашифровать ключ (${e.javaClass.simpleName})", e)
+            SaveResult.Failed("не удалось зашифровать: ${e.message ?: e.javaClass.simpleName}")
+        }
     }
 
     fun clear(context: Context) {
