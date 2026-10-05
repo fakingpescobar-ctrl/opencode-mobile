@@ -14,6 +14,8 @@
          поверх других приложений. MediaSession-транспорт (/v1/media/*) работает и без него. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Иначе после перезагрузки будильник молтбук-тика молча пропадает. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Внешнее хранилище: чтобы рабочая директория модели указывала на настоящие
          файлы юзера (/storage/emulated/0/Documents). MANAGE_EXTERNAL_STORAGE — «Доступ
@@ -121,6 +123,20 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="org.opencode.mobile.INSTALL_STATUS" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Moltbook: будильник тика и его восстановление после перезагрузки. -->
+        <receiver
+            android:name=".social.MoltbookAlarmReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".social.MoltbookBootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
 

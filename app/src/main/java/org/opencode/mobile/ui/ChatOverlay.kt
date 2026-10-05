@@ -157,10 +157,15 @@ private const val CONTEXT_LIMIT = 200_000L
 // toggleHeaderPanel. Строками, а не enum: ключ нужен ровно в двух местах
 // (объявление и клик по иконке), а enum здесь стоил бы лишней печати.
 private const val PANEL_MCP = "mcp"
+private const val PANEL_MOLTBOOK = "moltbook"
 private const val PANEL_COLOR = "color"
 private const val PANEL_FONT = "font"
 private const val PANEL_SETTINGS = "settings"
 private const val PANEL_STT = "stt"
+
+// Как часто открытая панель Moltbook перечитывает ledger. Быстрее 10 секунд —
+// это долбить базу впустую, медленнее минуты — панель успевает соврать.
+private const val MOLTBOOK_PANEL_REFRESH_MS = 15_000L
 
 // testTag-метки для проверки геометрии по дампу uiautomator (resource-id).
 // Читать их в коде не нужно - это якоря для инструментов, а не логика.
@@ -601,10 +606,25 @@ fun ChatOverlay(
     }
 
     val showMcpList = activePanel == PANEL_MCP
+    val showMoltbookPanel = activePanel == PANEL_MOLTBOOK
     val showColorPicker = activePanel == PANEL_COLOR
     val showFontPicker = activePanel == PANEL_FONT
     val showSettings = activePanel == PANEL_SETTINGS
     val showSttSettings = activePanel == PANEL_STT
+
+    // Статистика Moltbook — из локального ledger, без сети. Ключ обновления растёт
+    // при открытии панели и по таймеру, пока она открыта: тик отвечает минуту, и
+    // иначе цифры «ждут ответа» застывали бы на весь сеанс.
+    var moltbookRefresh by remember { mutableIntStateOf(0) }
+    LaunchedEffect(showMoltbookPanel) {
+        if (!showMoltbookPanel) return@LaunchedEffect
+        moltbookRefresh++
+        while (true) {
+            delay(MOLTBOOK_PANEL_REFRESH_MS)
+            moltbookRefresh++
+        }
+    }
+    val moltbookStats = rememberMoltbookStats(moltbookRefresh)
 
     fun answerQuestion(
         q: ChatQuestion,
@@ -1482,6 +1502,14 @@ fun ChatOverlay(
                     onClick = { toggleHeaderPanel(PANEL_MCP) },
                     modifier = Modifier.padding(start = 4.dp),
                 )
+                // «М» — Moltbook: автономный агент. Буква с бейджем неотвеченных
+                // вместо иконки намеренно: это не сервис, а сам агент, и цифра на нём —
+                // не «сколько серверов сломано», а «кого мы ещё не ответили».
+                MoltbookIndicator(
+                    awaiting = moltbookStats.awaitingReply,
+                    active = showMoltbookPanel,
+                    onClick = { toggleHeaderPanel(PANEL_MOLTBOOK) },
+                )
                 // Цветовой пикер для ответов модели. ИКОНКА — готовая «капля»
                 // (Material Icons: Icons.Filled.InvertColors) — узнаваемая капля,
                 // тонируется ТЕКУЩИМ выбранным цветом ответов (modelColor).
@@ -1612,6 +1640,14 @@ fun ChatOverlay(
                             .fillMaxWidth()
                             .padding(top = 8.dp, bottom = 2.dp)
                             .testTag(TAG_PANEL_MCP),
+                )
+            }
+            // Сводка Moltbook: сколько комментов ждут ответа, сколько репостов на
+            // наши посты, кому именно мы не ответили. Тот же тёмный кард, что и MCP.
+            if (showMoltbookPanel) {
+                MoltbookPanel(
+                    stats = moltbookStats,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 2.dp),
                 )
             }
             // Цветовой пикер для ответов модели: квадрат-градиент (X — оттенок, Y — яркость), тап/драг точкой.

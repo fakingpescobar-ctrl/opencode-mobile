@@ -7,6 +7,7 @@ import kotlinx.coroutines.isActive
 import org.opencode.mobile.OpencodeApp
 import org.opencode.mobile.account.YandexAccountController
 import org.opencode.mobile.installer.AppInstallBridge
+import org.opencode.mobile.social.MoltbookScheduler
 import java.io.File
 import java.util.UUID
 
@@ -141,6 +142,11 @@ class RuntimeManager(
     suspend fun run() {
         running = true
         emit { copy(restartCount = 0) }
+
+        // Будильник молтбук-тика взводится здесь, а не в приёмнике: рестарт
+        // процесса, обновление APK или падение serve иначе оставляли бы расписание
+        // пустым до ближайшего BOOT_COMPLETED, и автономия тихо выключалась.
+        MoltbookScheduler.schedule(context)
 
         try {
             // Терминальная валидация: бинарь/лоадер обязаны быть, иначе рестарты
