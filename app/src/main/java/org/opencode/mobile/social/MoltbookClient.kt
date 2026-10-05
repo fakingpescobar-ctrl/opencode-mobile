@@ -300,8 +300,14 @@ internal class MoltbookClient(
         path: String,
         method: String,
         block: () -> T,
-    ): T =
-        try {
+    ): T {
+        // Проверка метода — до отправки в пул, а не внутри задачи. Внутри любое
+        // исключение приходит через ExecutionException, и нижний catch превращает
+        // его в IOException: запрет метода выглядел бы как обычная сетевая ошибка.
+        // Снаружи IllegalArgumentException остаётся собой, и вызывающий видит
+        // «запрещено», а не «сеть упала» — эти два случая чинить по-разному.
+        requireAllowedMethod(method)
+        return try {
             HTTP_POOL.submit(Callable { block() }).get(TOTAL_DEADLINE_MS, TimeUnit.MILLISECONDS)
         } catch (e: TimeoutException) {
             // Пул общий на весь процесс, и в этом весь смысл: зависший резолв не
@@ -314,6 +320,7 @@ internal class MoltbookClient(
         } catch (e: ExecutionException) {
             throw (e.cause ?: e) as? IOException ?: IOException("Moltbook $method $path: ${e.cause?.message}", e)
         }
+    }
 
     private fun requestBlocking(
         path: String,
@@ -384,10 +391,26 @@ internal class MoltbookClient(
         }
     }
 
+    /**
+     * Публиковать и читать можно, разрушать нельзя.
+     *
+     * Список методов, а не запрет конкретного: запрет перечисляет то, что мы знаем
+     * плохого, и молча пропускает всё новое. Белый список отсекает любой будущий
+     * метод, который не прошёл бы здесь.
+     */
+    private fun requireAllowedMethod(method: String) {
+        if (method.uppercase() !in ALLOWED_METHODS) {
+            throw IllegalArgumentException("Moltbook: метод $method запрещён, разрешено $ALLOWED_METHODS")
+        }
+    }
+
     companion object {
         const val DEFAULT_HOST = "https://www.moltbook.com"
         const val OWN_ACCOUNT = "opencodekz"
         val OWN_NAMES_LOWER = setOf(OWN_ACCOUNT.lowercase())
+
+        /** Единственные методы, которые клиент вправе отправить платформе. */
+        val ALLOWED_METHODS = setOf("GET", "POST")
         const val SORT_NEW = "new"
         const val CONNECT_TIMEOUT_MS = 10_000
         const val READ_TIMEOUT_MS = 20_000

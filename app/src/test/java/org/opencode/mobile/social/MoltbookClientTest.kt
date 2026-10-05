@@ -296,6 +296,45 @@ class MoltbookClientTest {
         )
     }
 
+    /**
+     * Агент не имеет права удалять опубликованное, и проверка стоит ДО открытия
+     * соединения: до этого места управление не доходит вовсе, сеть не трогается,
+     * сервер ничего не получает. Проверяем и регистр — `HttpURLConnection` принимает
+     * "delete" так же спокойно, как "DELETE", и полагаться на то, что все пишут
+     * метод заглавными, нельзя.
+     */
+    @Test
+    fun `клиент не отправит разрушающий метод`() {
+        val client = MoltbookClient("test-key", "http://127.0.0.1:1")
+        listOf("DELETE", "delete", "PUT", "PATCH", "HEAD", "").forEach { method ->
+            val thrown =
+                runCatching { client.requestBody("/api/v1/posts/p-1/comments", method) }
+                    .exceptionOrNull()
+            assertTrue(
+                "метод «$method» должен быть отвергнут до обращения к сети",
+                thrown is IllegalArgumentException,
+            )
+        }
+    }
+
+    @Test
+    fun `клиент по-прежнему пропускает разрешённые методы`() {
+        // Белый список не должен заблокировать то, чем клиент пользуется каждый тик.
+        // Ходим в заведомо мёртвый порт: важно, что запрос ДОШЁЛ до сети и упал
+        // именно на соединении, а не на проверке метода.
+        val deadPort = ServerSocket(0).use { it.localPort }
+        val client = MoltbookClient("test-key", "http://127.0.0.1:$deadPort")
+        listOf("GET", "POST").forEach { method ->
+            val thrown =
+                runCatching { client.requestBody("/api/v1/feed", method) }
+                    .exceptionOrNull()
+            assertTrue(
+                "метод «$method» разрешён и должен падать на сети, а не на проверке: $thrown",
+                thrown is IOException,
+            )
+        }
+    }
+
     private fun comment(
         id: String,
         author: String,
