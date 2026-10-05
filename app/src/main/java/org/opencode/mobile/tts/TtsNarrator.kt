@@ -73,13 +73,18 @@ object TtsNarrator {
         val current = TtsConfig.read(context)
         if (enabled == current.isEnabled) return
         val next = current.copy(
-            engine = if (enabled && current.modelInstalled(context)) {
+            engine = if (!enabled) {
+                TtsEngine.off
+            } else if (current.engine.isCloud) {
+                // Облако выбрано осознанно в панели: переключатель вкл/выкл не должен
+                // молча уводить юзера на локальный движок. Локальная модель облаку
+                // не нужна, проверять её тут нечего.
+                current.engine
+            } else if (current.modelInstalled(context)) {
                 TtsEngine.sherpa
-            } else if (enabled) {
+            } else {
                 Log.w(TAG, "модель не установлена, берём системный TTS")
                 TtsEngine.system
-            } else {
-                TtsEngine.off
             },
         )
         TtsConfig.save(context, next)
@@ -255,9 +260,32 @@ fun onNewAssistantMessage() {
         loadedFor = ""
     }
 
+    /**
+     * Локальный движок: Supertonic, если модель скачана, иначе системный TTS.
+     *
+     * Нужен и для выбора движка, и как страховка облака, поэтому вынесен в
+     * отдельный метод: раньше логика жила внутри when и её нельзя было
+     * переиспользовать второму месту.
+     */
+    private fun localSynth(context: Context, cfg: TtsConfig): SpeechSynth? {
+        SupertonicTts.loadOrNull(cfg.modelDir(context))?.let { engine ->
+            return object : SpeechSynth {
+                override val sampleRate: Int get() = engine.sampleRate
+                override fun synthesize(text: String, sid: Int, speed: Float) =
+                    engine.synthesize(text, sid, speed)
+            }
+        }
+        return SystemSpeechSynth(context)
+    }
+
     /** Движок и спикер живут между ответами: модель грузится один раз, не каждый ответ. */
     private fun ensureSpeaker(context: Context, cfg: TtsConfig): TtsSpeaker? {
-        val key = "${cfg.engine.prefValue}:${cfg.model}:${context.filesDir}"
+        // Голос и модель облака входят в ключ пересоздания: смена голоса в UI
+        // обязана поднимать новый движок, иначе озвучка продолжила бы старым.
+        // Плюс ревизия ключа ElevenLabs — иначе ввод нового ключа при том же
+        // голосе/модели оставил бы движок со старым ключом (или без него).
+        val key = "${cfg.engine.prefValue}:${cfg.model}:${cfg.elevenVoice}:" +
+            "${cfg.elevenModel}:${ElevenLabsSecret.revision(context)}:${context.filesDir}"
         if (key == loadedFor) return speaker
         // Ключ ставим ДО фоновой загрузки, чтобы два быстрых вызова подряд
         // не запустили две загрузки модели. Но если загрузка провалилась,
@@ -268,14 +296,29 @@ fun onNewAssistantMessage() {
                 when (cfg.engine) {
                     TtsEngine.off -> null
                     TtsEngine.system -> SystemSpeechSynth(context)
-                    TtsEngine.sherpa ->
-                        SupertonicTts.loadOrNull(cfg.modelDir(context))?.let { engine ->
-                            object : SpeechSynth {
-                                override val sampleRate: Int get() = engine.sampleRate
-                                override fun synthesize(text: String, sid: Int, speed: Float) =
-                                    engine.synthesize(text, sid, speed)
-                            }
+                    TtsEngine.sherpa -> localSynth(context, cfg)
+                    TtsEngine.elevenlabs -> {
+                        val key = ElevenLabsSecret.load(context)
+                        if (key == null) {
+                            // Ключ не введён — это ошибка настройки, а не повод
+                            // оставить юзера без озвучки: уходим на локальный движок
+                            // и говорим об этом в лог.
+                            Log.w(TAG, "у облака нет API-ключа, беру локальный движок")
+                            localSynth(context, cfg)
+                        } else {
+                            // Локальный движок — страховка на случай недоступности
+                            // сети: фраза не потеряется, а только прозвучит иначе.
+                            ElevenLabsTts(
+                                context = context,
+                                apiKey = key,
+                                voiceId = cfg.elevenVoice,
+                                modelId = cfg.elevenModel,
+                                // Фабрика, а не готовый движок: облако поднимает локальный
+                                // только если сеть реально не ответила.
+                                fallbackFactory = { localSynth(context, cfg) },
+                            )
                         }
+                    }
                 }
             if (synth == null) {
                 Log.w(TAG, "движок ${cfg.engine.label} недоступен, озвучка выключена")

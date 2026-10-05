@@ -111,6 +111,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -136,6 +138,7 @@ import org.opencode.mobile.server.YnisonMcp
 import org.opencode.mobile.stt.NcnnModelValidator
 import org.opencode.mobile.stt.WhisperTranscribeService
 import org.opencode.mobile.tts.TtsConfig
+import org.opencode.mobile.tts.ElevenLabsSecret
 import org.opencode.mobile.tts.TtsEngine
 import org.opencode.mobile.tts.TtsNarrator
 import java.io.File
@@ -514,6 +517,11 @@ fun ChatOverlay(
     // Настройки живут в том же prefs "chat_overlay": tts_engine/tts_model/tts_sid.
     var ttsConfig by remember { mutableStateOf(TtsConfig.read(context)) }
     var ttsOn by remember { mutableStateOf(TtsConfig.read(context).isEnabled) }
+    // Черновик ключа намеренно НЕ восстанавливается из хранилища: в поле
+    // лежит только то, что юзер вводит прямо сейчас. Сам ключ читает
+    // движок из ElevenLabsSecret, и в UI он не показывается никогда.
+    var elevenKeyDraft by remember { mutableStateOf("") }
+    var elevenHasKey by remember { mutableStateOf(ElevenLabsSecret.hasKey(context)) }
     // Сколько user-реплик уже было озвучено: рост счётчика означает новый вопрос.
 // -1 = «ещё не знаю, что было в ленте», первый снапшот только запомнит счётчик.
     var ttsSeenUserMsgs by remember { mutableIntStateOf(-1) }
@@ -1833,33 +1841,154 @@ fun ChatOverlay(
                             TtsConfig.save(context, ttsConfig)
                             TtsNarrator.stop()
                         }
-                        Text(
-                            "Голос:",
-                            color = Color(0xFF8A8A8A),
-                            fontSize = 11.sp,
-                            modifier = Modifier.padding(start = 20.dp, top = 4.dp),
-                        )
-                        /** Голоса в две строки по пять: на шапке телефона одна строка уже не помещалась. */
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            (0 until TtsConfig.MAX_SID + 1).chunked(5).forEach { row ->
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    row.forEach { sid ->
-                                        val active = ttsConfig.sid == sid
+                        TtsRadioRow("ElevenLabs (облако, нужен VPN)", ttsConfig.engine == TtsEngine.elevenlabs) {
+                            ttsConfig = ttsConfig.copy(engine = TtsEngine.elevenlabs)
+                            TtsConfig.save(context, ttsConfig)
+                            TtsNarrator.stop()
+                        }
+                        if (ttsConfig.engine.isCloud) {
+                            // Облако идёт в сеть, поэтому честно предупреждаем про VPN:
+                            // из России api.elevenlabs.io без него не отвечает, и юзер
+                            // иначе гадает, почему озвучка молчит.
+                            Text(
+                                "api.elevenlabs.io из РФ закрыт — нужен включённый VPN. Без сети " +
+                                    "фраза уйдёт в локальный движок.",
+                                color = Color(0xFF90A4AE),
+                                fontSize = 10.sp,
+                                modifier = Modifier.padding(start = 20.dp, top = 2.dp),
+                            )
+                            Column(
+                                modifier = Modifier.padding(start = 20.dp, top = 6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text(
+                                    when {
+                                        !elevenHasKey -> "API-ключ не задан"
+                                        else -> "API-ключ сохранён " +
+                                            (ElevenLabsSecret.preview(context) ?: "(зашифрован)")
+                                    },
+                                    color = if (elevenHasKey) Color(0xFF8A8A8A) else Color(0xFFE6A23C),
+                                    fontSize = 11.sp,
+                                )
+                                BasicTextField(
+                                    value = elevenKeyDraft,
+                                    onValueChange = { elevenKeyDraft = it },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color(0xFF1C1C1C), RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    textStyle = TextStyle(color = Color(0xFFF0F0F0), fontSize = 13.sp),
+                                    cursorBrush = SolidColor(Color(0xFF7BA6F8)),
+                                    singleLine = true,
+                                    // Маскируем: ключ — доступ к облачному синтезу за счёт
+                                    // юзера, и подсветка под телефоном его не защитит,
+                                    // а вот случайный скриншот или демо стрима — защитит.
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    keyboardOptions = KeyboardOptions(
+                                        keyboardType = KeyboardType.Password,
+                                        imeAction = ImeAction.Done,
+                                    ),
+                                    decorationBox = { inner ->
+                                        Box {
+                                            if (elevenKeyDraft.isEmpty()) {
+                                                Text(
+                                                    "sk_…",
+                                                    color = Color(0xFF777777),
+                                                    fontSize = 13.sp,
+                                                )
+                                            }
+                                            inner()
+                                        }
+                                    },
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(
+                                        "Сохранить",
+                                        color = if (elevenKeyDraft.isBlank()) Color(0xFF5A5A5A) else Color(0xFF7BA6F8),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.clickable(enabled = elevenKeyDraft.isNotBlank()) {
+                                            ElevenLabsSecret.save(context, elevenKeyDraft)
+                                            elevenKeyDraft = ""
+                                            elevenHasKey = true
+                                            // Ключ сменился — движок надо пересоздать,
+                                            // иначе он продолжит работать со старым.
+                                            TtsNarrator.stop()
+                                        }.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    )
+                                    if (elevenHasKey) {
                                         Text(
-                                            "${sid + 1}",
-                                            color = if (active) Color(0xFF1C1C1C) else Color(0xFFE6E6E6),
+                                            "Удалить",
+                                            color = Color(0xFFE57373),
                                             fontSize = 12.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            textAlign = TextAlign.Center,
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(6.dp))
-                                                .background(if (active) Color(0xFFBDBDBD) else Color(0xFF2A2A2A))
-                                                .clickable {
-                                                    ttsConfig = ttsConfig.copy(sid = sid)
-                                                    TtsConfig.save(context, ttsConfig)
-                                                    TtsNarrator.stop()
-                                                }.padding(horizontal = 12.dp, vertical = 5.dp),
+                                            modifier = Modifier.clickable {
+                                                ElevenLabsSecret.clear(context)
+                                                elevenHasKey = false
+                                                TtsNarrator.stop()
+                                            }.padding(horizontal = 8.dp, vertical = 4.dp),
                                         )
+                                    }
+                                }
+                                Text(
+                                    "Voice ID:",
+                                    color = Color(0xFF8A8A8A),
+                                    fontSize = 11.sp,
+                                )
+                                BasicTextField(
+                                    value = ttsConfig.elevenVoice,
+                                    onValueChange = {
+                                        ttsConfig = ttsConfig.copy(elevenVoice = it)
+                                        TtsConfig.save(context, ttsConfig)
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color(0xFF1C1C1C), RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    textStyle = TextStyle(color = Color(0xFFF0F0F0), fontSize = 12.sp),
+                                    cursorBrush = SolidColor(Color(0xFF7BA6F8)),
+                                    singleLine = true,
+                                )
+                                Text(
+                                    "Модель: ${ttsConfig.elevenModel}",
+                                    color = Color(0xFF8A8A8A),
+                                    fontSize = 11.sp,
+                                )
+                            }
+                        }
+                        // Локальный sid к облаку отношения не имеет: там голос выбирается
+                        // Voice ID выше. Показывать 1..10 при выбранном ElevenLabs — значит
+                        // предлагать юзеру переключатель, который ничего не делает.
+                        if (!ttsConfig.engine.isCloud) {
+                            Text(
+                                "Голос:",
+                                color = Color(0xFF8A8A8A),
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(start = 20.dp, top = 4.dp),
+                            )
+                            /** Голоса в две строки по пять: на шапке телефона одна строка уже не помещалась. */
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                (0 until TtsConfig.MAX_SID + 1).chunked(5).forEach { row ->
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        row.forEach { sid ->
+                                            val active = ttsConfig.sid == sid
+                                            Text(
+                                                "${sid + 1}",
+                                                color = if (active) Color(0xFF1C1C1C) else Color(0xFFE6E6E6),
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                textAlign = TextAlign.Center,
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(6.dp))
+                                                    .background(
+                                                        if (active) Color(0xFFBDBDBD) else Color(0xFF2A2A2A),
+                                                    )
+                                                    .clickable {
+                                                        ttsConfig = ttsConfig.copy(sid = sid)
+                                                        TtsConfig.save(context, ttsConfig)
+                                                        TtsNarrator.stop()
+                                                    }.padding(horizontal = 12.dp, vertical = 5.dp),
+                                            )
+                                        }
                                     }
                                 }
                             }

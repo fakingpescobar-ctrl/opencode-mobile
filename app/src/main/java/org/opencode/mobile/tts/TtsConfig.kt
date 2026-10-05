@@ -9,7 +9,16 @@ enum class TtsEngine(val prefValue: String, val label: String) {
     off("off", "Выключено"),
     system("system", "Системный"),
     sherpa("sherpa", "Supertonic (offline)"),
+
+    /**
+     * Облако. Требует API-ключа (ElevenLabsSecret) и работает только при
+     * доступном api.elevenlabs.io — из РФ хост закрыт, нужен VPN.
+     */
+    elevenlabs("elevenlabs", "ElevenLabs (облако)"),
     ;
+
+    /** Движок ходит в сеть — локальная модель ему не нужна. */
+    val isCloud: Boolean get() = this == elevenlabs
 
     companion object {
         fun fromPref(value: String?): TtsEngine = entries.firstOrNull { it.prefValue == value } ?: off
@@ -27,8 +36,15 @@ data class TtsConfig(
     val speechRate: Float,
     /** Писать сырой PCM в файл для проверки озвучки без ушей. */
     val dumpPcm: Boolean = false,
+    /** Voice ID облака ElevenLabs (не путать с локальным sid Supertonic). */
+    val elevenVoice: String = DEFAULT_ELEVEN_VOICE,
+    /** Model ID облака. */
+    val elevenModel: String = DEFAULT_ELEVEN_MODEL,
 ) {
     val isEnabled: Boolean get() = engine != TtsEngine.off
+
+    /** Нужен ли облаку ключ: без него движок сразу уйдёт в локальный откат. */
+    val needsCloudKey: Boolean get() = engine.isCloud
 
     /** Каталог модели внутри filesDir/models/tts/. */
     fun modelDir(context: Context): File = TtsModels.dir(context, model)
@@ -42,11 +58,20 @@ data class TtsConfig(
         const val KEY_MODEL = "tts_model"
         const val KEY_SID = "tts_sid"
         const val KEY_RATE = "tts_speech_rate"
+        const val KEY_ELEVEN_VOICE = "tts_eleven_voice"
+        const val KEY_ELEVEN_MODEL = "tts_eleven_model"
 
     /** Отладочный ключ: дамп PCM в filesDir/tts-dump.pcm для проверки озвучки. */
     const val KEY_DUMP = "tts_dump_pcm"
 
         const val DEFAULT_MODEL = "supertonic-3-tts-int8"
+
+        /**
+         * Голос и модель облака по умолчанию — те, что проверены живым запросом
+         * 05.10.2026 (HTTP 200, валидный PCM). Оба меняются из UI.
+         */
+        const val DEFAULT_ELEVEN_VOICE = "N2lVS1w4EtoT3dr4eOWO"
+        const val DEFAULT_ELEVEN_MODEL = "eleven_flash_v2_5"
 
         /** sid=0 выбрал юзер прослушиванием 03.10.2026, см. bench/2026-10-03-supertonic3-bench-sm8850.md */
         const val DEFAULT_SID = 0
@@ -69,6 +94,10 @@ data class TtsConfig(
                 sid = prefs.getInt(KEY_SID, DEFAULT_SID).coerceIn(0, MAX_SID),
 speechRate = prefs.getFloat(KEY_RATE, 1.0f).coerceIn(0.5f, 2.0f),
             dumpPcm = prefs.getBoolean(KEY_DUMP, false),
+            elevenVoice = prefs.getString(KEY_ELEVEN_VOICE, DEFAULT_ELEVEN_VOICE)
+                ?.takeIf { it.isNotBlank() } ?: DEFAULT_ELEVEN_VOICE,
+            elevenModel = prefs.getString(KEY_ELEVEN_MODEL, DEFAULT_ELEVEN_MODEL)
+                ?.takeIf { it.isNotBlank() } ?: DEFAULT_ELEVEN_MODEL,
         )
         }
 
@@ -80,6 +109,8 @@ speechRate = prefs.getFloat(KEY_RATE, 1.0f).coerceIn(0.5f, 2.0f),
                 .putInt(KEY_SID, config.sid)
                 .putFloat(KEY_RATE, config.speechRate)
                 .putBoolean(KEY_DUMP, config.dumpPcm)
+                .putString(KEY_ELEVEN_VOICE, config.elevenVoice)
+                .putString(KEY_ELEVEN_MODEL, config.elevenModel)
                 .apply()
             Log.d(
                 "TTS",
