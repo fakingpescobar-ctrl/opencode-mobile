@@ -1062,9 +1062,17 @@ private fun PlaybackState?.toWireState(): String =
 
 /** PlaybackState.isPlaying() скрыт в публичном SDK, поэтому состояние выводим из state и speed. */
 private fun PlaybackState?.toIsPlaying(): Boolean {
-    val current = this
-    return current != null &&
-        (current.state == PlaybackState.STATE_PLAYING || (current.isActive && current.playbackSpeed > 0f))
+    val current = this ?: return false
+    if (current.state == PlaybackState.STATE_PLAYING) return true
+    // isActive() существует только с API 31, а minSdk здесь 28: прямой вызов на
+    // старой прошивке — это NoSuchMethodError в рантайме, а не предупреждение.
+    // Тот же смысл без зависимости от API: состояние считается активным, если оно
+    // не «никогда не играло» — NONE, STOPPED и ERROR как раз неактивны.
+    val active =
+        current.state != PlaybackState.STATE_NONE &&
+            current.state != PlaybackState.STATE_STOPPED &&
+            current.state != PlaybackState.STATE_ERROR
+    return active && current.playbackSpeed > 0f
 }
 
 private fun MediaMetadata?.cleanText(key: String): String? = this?.getString(key)?.trim()?.takeIf(String::isNotEmpty)

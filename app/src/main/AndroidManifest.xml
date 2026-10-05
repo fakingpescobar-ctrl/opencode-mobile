@@ -137,6 +137,9 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <!-- Обновление APK снимает alarm'ы так же, как ребут. Без этого
+                     действия автономия умирала на каждой установке новой версии. -->
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 
