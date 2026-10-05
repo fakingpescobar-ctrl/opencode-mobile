@@ -97,12 +97,31 @@ internal class MoltbookClient(
                 challengeText = challenge.optString("challenge_text"),
             )
         }
-        val commentId = root.optJSONObject("comment")?.optString("id").orEmpty()
+val commentId = postedCommentId(root)
         if (commentId.isEmpty()) {
             return CommentOutcome.Rejected(root.optString("message", "без comment и без verification"))
         }
         return CommentOutcome.Posted(commentId)
     }
+
+    /**
+     * Наш ли ответ на [parentId] уже висит в посте — и какой у него id.
+     *
+     * Стоит перед каждой публикацией и единственный способ не задублировать чужой
+     * пост: запись в сокет уходит раньше, чем приходит ответ, поэтому таймаут на
+     * чтении означает «сервер, возможно, уже создал комментарий». Формально мы в
+     * этот момент ничего не знаем, а практически — перечитываем ветку и видим
+     * свой комментарий. Без этой проверки ретрай через 15 минут публиковал бы
+     * второй ответ на тот же вопрос, а отозвать его уже нельзя.
+     */
+    fun ourReplyTo(
+        postId: String,
+        parentId: String,
+    ): String? =
+        runCatching { comments(postId) }
+            .getOrNull()
+            ?.firstOrNull { it.isOurs && it.parentId == parentId }
+            ?.id
 
     /**
      * @param answer ровно `число.00` — формат задаёт платформа, и ответ с другим
@@ -112,9 +131,14 @@ internal class MoltbookClient(
         verificationCode: String,
         answer: String,
     ): Boolean {
-        val normalized = answer.trim()
-        check(VERIFICATION_ANSWER.matches(normalized)) {
-            "verification-ответ должен быть числом с двумя знаками, получено: $normalized"
+val normalized = answer.trim()
+        // IOException, а НЕ check(): check бросает IllegalStateException, который
+        // нигде в тике не ловится и улетает в общий catch приёмника — вместе с ним
+        // терялись остальные ответы, апвоуты и снятие счётчиков. Один ответ вида
+        // «48.0» вместо «48.00» молча заканчивал весь визит. Здесь формат — обычная
+        // сетевая ошибка: тикер её ловит и берёт следующую попытку со свежим кодом.
+        if (!VERIFICATION_ANSWER.matches(normalized)) {
+            throw IOException("verification-ответ должен быть числом с двумя знаками, получено: $normalized")
         }
         val root = postJsonObject(
             "/api/v1/verify",
@@ -173,13 +197,14 @@ internal class MoltbookClient(
                 body.trimStart().startsWith("[") -> org.json.JSONArray(body)
                 else ->
                     JSONObject(body).let { root ->
-                        val arrayKey =
-                            root.keys().asSequence().firstOrNull { root.opt(it) is org.json.JSONArray }
-                                ?: run {
-                                    Log.i(TAG, "feed: массив постов не найден, ключи ответа: ${root.keys().asSequence().toList()}")
-                                    return emptyList()
-                                }
-                        root.optJSONArray(arrayKey) ?: org.json.JSONArray()
+                        // Сначала известные ключи, и только потом «первый массив»:
+                        // при ответе вида {"related":[…],"posts":[…]} старая эвристика
+                        // брала related, ни один элемент не распарсивался, и лента
+                        // молча становилась пустой — вместе с репостами и апвоутами.
+                        feedArray(root) ?: run {
+                            Log.i(TAG, "feed: массив постов не найден, ключи ответа: ${root.keys().asSequence().toList()}")
+                            JSONArray()
+                        }
                     }
             }
         logUnknownKeysOnce(items)
@@ -201,11 +226,6 @@ internal class MoltbookClient(
         )
     }
 
-    private fun JSONObject.firstString(vararg keys: String): String? =
-        keys
-            .firstOrNull { opt(it) is String && (opt(it) as String).isNotBlank() }
-            ?.let { optString(it) }
-
     private fun JSONObject.firstInt(vararg keys: String): Int {
         for (key in keys) {
             val raw = opt(key)
@@ -213,14 +233,6 @@ internal class MoltbookClient(
             if (raw is String && raw.toIntOrNull() != null) return raw.toInt()
         }
         return 0
-    }
-
-    /** Автор приходит объектом (`author.name`) или строкой — Moltbook отдаёт оба вида. */
-    private fun JSONObject.authorName(): String {
-        optJSONObject("author")?.let { nested ->
-            nested.firstString("name", "username", "display_name")?.let { return it }
-        }
-        return firstString("author_name", "agent_name", "username") ?: ""
     }
 
     private fun logUnknownKeysOnce(items: org.json.JSONArray) {
@@ -251,27 +263,24 @@ internal class MoltbookClient(
      * встанет. Поэтому весь запрос едет в отдельном потоке под общим таймаутом,
      * который выкидывает и поток, а не только возвращает ошибку.
      */
-    private fun <T> bounded(
+private fun <T> bounded(
         path: String,
         method: String,
         block: () -> T,
     ): T {
-        val worker =
-            Executors.newSingleThreadExecutor { runnable ->
-                Thread(runnable, "moltbook-http").apply { isDaemon = true }
-            }
         return try {
-            worker.submit(Callable { block() }).get(TOTAL_DEADLINE_MS, TimeUnit.MILLISECONDS)
+            HTTP_POOL.submit(Callable { block() }).get(TOTAL_DEADLINE_MS, TimeUnit.MILLISECONDS)
         } catch (e: TimeoutException) {
-            worker.shutdownNow()
+            // Пул общий на весь процесс, и в этом весь смысл: зависший резолв не
+            // реагирует на interrupt, поэтому поток НЕ умирает. Раньше executor
+            // создавался на каждый вызов, и каждый зависший запрос навсегда занимал
+            // свой поток и свой сокет — утечка была безграничной и накапливалась от
+            // тика к тику. Теперь зависший забирает один слот из четырёх, а остальные
+            // запросы продолжают работать.
             throw IOException("Moltbook $method $path не ответил за ${TOTAL_DEADLINE_MS / 1000} с (завис резолв или TLS)")
         } catch (e: ExecutionException) {
-            worker.shutdownNow()
             throw (e.cause ?: e) as? IOException ?: IOException("Moltbook $method $path: ${e.cause?.message}", e)
-        } finally {
-            worker.shutdown()
         }
-
     }
 
     private fun requestBlocking(
@@ -359,14 +368,91 @@ internal class MoltbookClient(
         const val HTTP_UNAUTHORIZED = 401
         const val HTTP_FORBIDDEN = 403
 
-        /** Платформа требует ровно два знака после запятой: `48.00`, не `48` и не `48,00`. */
+/** Платформа требует ровно два знака после запятой: `48.00`, не `48` и не `48,00`. */
         val VERIFICATION_ANSWER = Regex("""^\d{1,6}\.\d{2}$""")
 
+        /** Ключи массива постов: пробуем их до эвристики «первый массив в ответе». */
+        val FEED_ARRAY_KEYS = arrayOf("posts", "items", "data", "results")
+
         /**
-         * Разбор живёт в компаньоне, а не в HTTP-методах, чтобы юнит-тесты гоняли
-         * настоящий JSON без сокета: формат ответа меняет платформа, а не сеть.
+         * Массив постов из объекта ответа либо null, если массива нет.
+         *
+         * Порядок именно такой: известные ключи, и только если их нет — первый
+         * попавшийся массив. Обратный порядок — тихая потеря ленты: ответ вида
+         * `{"related":[…],"posts":[…]}` давал related, ноль распарсенных постов и
+         * пустую ленту без единой ошибки, а вместе с ней молча пропадали репосты и
+         * апвоуты.
          */
-        internal fun parseHome(root: JSONObject): Home {
+        internal fun feedArray(root: JSONObject): JSONArray? {
+            for (key in FEED_ARRAY_KEYS) {
+                root.optJSONArray(key)?.let { return it }
+            }
+            val fallbackKey = root.keys().asSequence().firstOrNull { root.opt(it) is JSONArray } ?: return null
+            return root.optJSONArray(fallbackKey)
+        }
+
+        /** Ключи id опубликованного комментария — форма ответа у платформы гуляет. */
+        val SUCCESS_ID_KEYS = arrayOf("id", "comment_id", "commentId")
+
+        /**
+         * Пул HTTP на процесс, а не на вызов. Четыре потока: зависший резолв занимает
+         * один слот и не мешает остальным запросам, но и не копится с тиками.
+         */
+        private const val HTTP_POOL_THREADS = 4
+
+        private val HTTP_POOL: java.util.concurrent.ExecutorService =
+            Executors.newFixedThreadPool(HTTP_POOL_THREADS) { runnable ->
+                Thread(runnable, "moltbook-http").apply { isDaemon = true }
+            }
+
+        /**
+         * ID только что опубликованного комментария либо пустая строка.
+         *
+         * Раньше читалась ровно одна форма — `{"comment":{"id"}}`. Любая другая
+         * молча превращалась в «комментарий не создан»: `our_reply_id` не писался,
+         * и следующий тик видел вопрос неотвеченным и публиковал второй ответ на
+         * него. А отозвать уже опубликованное нельзя, поэтому цена ошибки здесь
+         * не «логическое уведомление», а дубль в чужой ленте.
+         */
+        internal fun postedCommentId(root: JSONObject): String {
+            var cursor: JSONObject? = root
+            repeat(3) {
+                val current = cursor ?: return ""
+                current.optJSONObject("comment")?.let { nested ->
+                    for (key in SUCCESS_ID_KEYS) {
+                        nested.optString(key).takeIf { it.isNotEmpty() }?.let { return it }
+                    }
+                }
+                for (key in SUCCESS_ID_KEYS) {
+                    current.optString(key).takeIf { it.isNotEmpty() }?.let { return it }
+                }
+                cursor = current.optJSONObject("data")
+            }
+            return ""
+        }
+
+/**
+     * Первый непустой строковый ключ из списка: названия полей у платформы гуляют,
+     * и вместо одной догадки перебираем известные варианты.
+     */
+    internal fun JSONObject.firstString(vararg keys: String): String? =
+        keys
+            .firstOrNull { opt(it) is String && (opt(it) as String).isNotBlank() }
+            ?.let { optString(it) }
+
+    /** Автор приходит объектом (`author.name`) или строкой — Moltbook отдаёт оба вида. */
+    internal fun JSONObject.authorName(): String {
+        optJSONObject("author")?.let { nested ->
+            nested.firstString("name", "username", "display_name")?.let { return it }
+        }
+        return firstString("author_name", "agent_name", "username", "author") ?: ""
+    }
+
+    /**
+     * Разбор живёт в компаньоне, а не в HTTP-методах, чтобы юнит-тесты гоняли
+     * настоящий JSON без сокета: формат ответа меняет платформа, а не сеть.
+     */
+    internal fun parseHome(root: JSONObject): Home {
             val account = root.optJSONObject("your_account")
                 ?: throw IOException("Moltbook /home без your_account — формат ответа изменилась")
             val posts = root.optJSONArray("activity_on_your_posts").mapObjects { entry ->
@@ -387,10 +473,14 @@ internal class MoltbookClient(
         internal fun parseComments(root: JSONObject): List<Comment> =
             root.optJSONArray("comments").mapObjects(::buildComment)
 
-        private fun buildComment(entry: JSONObject) =
+private fun buildComment(entry: JSONObject) =
             Comment(
                 id = entry.requireField("id", "comment"),
-                author = entry.optJSONObject("author")?.optString("name").orEmpty(),
+                // authorName(), а не optJSONObject("author")?.optString("name"):
+                // платформа отдаёт автора и объектом, и строкой. Строковый вариант
+                // молчно давал пустого автора, а пустой автор — это «не мы», то есть
+                // наш собственный ответ выглядел чужим и получал ответ ещё раз.
+                author = entry.authorName(),
                 content = entry.requireField("content", "comment"),
                 parentId = entry.optString("parent_id").takeIf { it.isNotEmpty() },
             )

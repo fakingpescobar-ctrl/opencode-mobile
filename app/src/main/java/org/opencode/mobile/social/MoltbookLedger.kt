@@ -228,6 +228,12 @@ internal class MoltbookLedger(
             ContentValues().apply {
                 put("status", status.name)
                 put("replied_at", now)
+                // FAILED означает «не вышло сейчас», а не «не нужно никогда»: без
+                // сдвига метки времени невозможно отличить свежую неудачу от той,
+                // что пять часов назад. Именно по seen_at считается кулдаун до
+                // следующей попытки. Для остальных статусов seen_at не трогаем —
+                // это время попадания комментария в очередь, и сдвигать его нельзя.
+                if (status == CommentStatus.FAILED) put("seen_at", now)
                 if (ourReplyId != null) put("our_reply_id", ourReplyId)
             }
         writableDatabase.update("comments", values, "id = ?", arrayOf(commentId))
@@ -307,17 +313,38 @@ internal class MoltbookLedger(
      * опубликовать агентом ответ самому себе. Автономный агент, пишущий в
      * публичную ленту, получает второй эшелон и на уровне выборки.
      */
-    fun pendingReplies(limit: Int): List<PendingReply> =
+    /**
+     * @param retryBefore снимает кулдаун с FAILED: в очередь вернутся те неудачи,
+     *   что старше этого момента. По умолчанию `0` — то есть FAILED не берутся
+     *   никогда, и это режим панели: показывать то, за что агент возьмётся сейчас.
+     *
+     * FAILED в обычной выборке НЕ участвует, и это была тихая потеря работы:
+     * `upsertComment` при повторном скане сохраняет прежний статус, `scanPosts`
+     * переводит в SKIPPED только NULL и NEW, поэтому помеченный FAILED комментарий
+     * не попадал в очередь больше НИКОГДА. Один ответ модели `null` — и вопрос
+     * человека исчезал навсегда, хотя комментарий в коде обещал «дождётся
+     * следующего тика».
+     */
+    fun pendingReplies(
+        limit: Int,
+        retryBefore: Long = 0L,
+    ): List<PendingReply> =
         readableDatabase
             .rawQuery(
                 """
                 SELECT c.id, c.post_id, p.title, c.author, c.body, c.summary_ru
                 FROM comments c JOIN posts p ON p.id = c.post_id
-                WHERE c.status = ? AND LOWER(c.author) != ?
+                WHERE (c.status = ? OR (c.status = ? AND c.seen_at <= ?)) AND LOWER(c.author) != ?
                 ORDER BY c.seen_at ASC, c.created_at ASC
                 LIMIT ?
                 """.trimIndent(),
-                arrayOf(CommentStatus.NEW.name, OUR_AGENT.lowercase(), limit.toString()),
+                arrayOf(
+                    CommentStatus.NEW.name,
+                    CommentStatus.FAILED.name,
+                    retryBefore.toString(),
+                    OUR_AGENT.lowercase(),
+                    limit.toString(),
+                ),
             ).use { c ->
                 buildList {
                     while (c.moveToNext()) {

@@ -44,11 +44,40 @@ internal object MoltbookScheduler {
         manager.cancel(pendingIntent(context))
     }
 
+    /**
+     * Взвести будильник, только если его ещё нет — в отличие от [schedule], который
+     * переносит следующий тик на `now + delayMs` безусловно.
+     *
+     * Именно эта разница была багом: старт serve вызывал `schedule()` с дефолтными
+     * двумя часами и затирал паузу, которую агент выбрал сам (30–720 минут по
+     * фактическому состоянию ленты). Если serve поднимается и падает часто, каждый
+     * его старт отодвигал тик всё дальше, и агент голодал, не показывая ни одной
+     * ошибки.
+     */
+    fun ensureScheduled(context: Context) {
+        val manager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+        val existing =
+            PendingIntent.getBroadcast(
+                context,
+                REQUEST_CODE,
+                tickIntent(context),
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
+            )
+        if (existing != null) {
+            Log.i(TAG, "будильник уже взведён — интервал, выбранный агентом, не трогаю")
+            return
+        }
+        schedule(context)
+    }
+
+    private fun tickIntent(context: Context): Intent =
+        Intent(context, MoltbookAlarmReceiver::class.java).setAction(ACTION_TICK)
+
     private fun pendingIntent(context: Context): PendingIntent =
         PendingIntent.getBroadcast(
             context,
             REQUEST_CODE,
-            Intent(context, MoltbookAlarmReceiver::class.java).setAction(ACTION_TICK),
+            tickIntent(context),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 

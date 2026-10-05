@@ -193,7 +193,7 @@ internal fun MoltbookPanel(
                     .heightIn(max = PENDING_LIST_MAX_HEIGHT)
                     .verticalScroll(rememberScrollState()),
             ) {
-                stats.pending.forEach { pending ->
+                stats.pending.take(MAX_PENDING_ROWS).forEach { pending ->
                     Column(Modifier.padding(vertical = 2.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(

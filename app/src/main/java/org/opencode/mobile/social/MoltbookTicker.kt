@@ -67,7 +67,9 @@ internal class MoltbookTicker(
 
         // ПРОХОД 2 (дорого, с моделью). Потолок — предохранитель: один проход без
         // него выдал 9 ответов за 11 минут, и в ленте это выглядит как спам-бот.
-        val pending = ledger.pendingReplies(MAX_REPLIES_PER_TICK)
+        // retryBefore отдаёт в очередь и FAILED, которым не меньше RETRY_COOLDOWN_MS:
+// раньше такие комментарии выпадали из выборки навсегда.
+        val pending = ledger.pendingReplies(MAX_REPLIES_PER_TICK, retryBefore = now - RETRY_COOLDOWN_MS)
         var replies = 0
         var verifications = 0
         for (target in pending) {
@@ -78,7 +80,18 @@ internal class MoltbookTicker(
                 ledger.markComment(target.commentId, MoltbookLedger.CommentStatus.FAILED, now = now)
                 continue
             }
-            when (val outcome = postWithVerification(client, target.postId, target.commentId, draft)) {
+            val outcome =
+                try {
+                    postWithVerification(client, target.postId, target.commentId, draft)
+                } catch (e: IOException) {
+                    // Сеть отвалилась на ЭТОМ ответе. Без catch IOException улетал из
+                    // runOnce в общий catch приёмника и уносил весь остаток визита:
+                    // остальные ответы, все апвоуты и снятие счётчиков. Ответ, который
+                    // не ушёл, — это FAILED, а не причина списать тик.
+                    Log.w(TAG, "сеть упала на ответе ${target.commentId}: ${e.message}")
+                    PostResult.Failed(e.message ?: "сеть недоступна")
+                }
+            when (outcome) {
                 is PostResult.Done -> {
                     replies++
                     // our_reply_id — ID нашего комментария, а не чужого: по нему
@@ -337,6 +350,14 @@ internal class MoltbookTicker(
         draft: String,
     ): PostResult {
         var solved = false
+        // Перед первой попыткой перечитываем ветку: прошлый тик мог опубликовать
+        // ответ и упасть на чтении ответа — сервер уже создал комментарий, а мы об
+        // этом не узнали. Найденный свой комментарий и есть доказательство, что
+        // публиковать второй раз нельзя.
+        client.ourReplyTo(postId, parentId)?.let { existing ->
+            Log.i(TAG, "ответ на $parentId уже есть ($existing), повтор не публикуем")
+            return PostResult.Done(existing)
+        }
         repeat(ATTEMPTS_WITH_VERIFICATION) { attempt ->
             when (val outcome = client.postComment(postId, capForWaf(draft), parentId = parentId)) {
                 is MoltbookClient.CommentOutcome.Posted ->
@@ -347,7 +368,17 @@ internal class MoltbookTicker(
                 is MoltbookClient.CommentOutcome.NeedsVerification -> {
                     val answer = askModel(verificationPrompt(outcome.challengeText))
                         ?: return PostResult.Failed("verification без ответа модели")
-                    if (client.verify(outcome.verificationCode, answer)) {
+                    val ok =
+                        try {
+                            client.verify(outcome.verificationCode, answer)
+                        } catch (e: IOException) {
+                            // Ответ не того формата или сеть упала. Код задачи после
+                            // этого использовать нельзя, поэтому просто берём новую
+                            // попытку — раньше здесь тик молча заканчивался целиком.
+                            Log.w(TAG, "verification не отправлен: ${e.message}")
+                            false
+                        }
+                    if (ok) {
                         solved = true
                     } else {
                         Log.w(TAG, "verification не пройден, попытка ${attempt + 1}/$ATTEMPTS_WITH_VERIFICATION")
@@ -672,6 +703,12 @@ internal class MoltbookTicker(
         const val MIN_UPVOTES_FOR_CANDIDATE = 5
 
         const val ATTEMPTS_WITH_VERIFICATION = 2
+
+    /**
+     * Пауза перед повтором неудачного ответа. Короче — начинаем долбить платформу
+     * тем же текстом; длиннее — человек, задавший вопрос, ждёт слишком долго.
+     */
+    const val RETRY_COOLDOWN_MS = 6 * 60 * 60 * 1000L
         const val MAX_COMMENT_CHARS = 900
         const val GENERATION_POLLS = 60
         const val GENERATION_POLL_MS = 3_000L    }

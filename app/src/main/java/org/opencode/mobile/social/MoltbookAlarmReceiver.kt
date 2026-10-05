@@ -73,7 +73,12 @@ class MoltbookAlarmReceiver : BroadcastReceiver() {
         stamp: File,
     ): String? {
         val since = System.currentTimeMillis() - lastTickAt(stamp)
-        if (since < MIN_GAP_MS) {
+        // Именно `in 0 until`, а не просто `< MIN_GAP_MS`: при откате стенных часов
+        // (NTP после ребута, ручная правка) since уходит в минус, и старая проверка
+        // возвращала «пропуск» на каждом тике — то есть до тех пор, пока часы не
+        // догонят, то есть навсегда, молча и без единой ошибки. Отрицательный
+        // since означает «прошло больше, чем мы думаем», и тик запускается.
+        if (since in 0 until MIN_GAP_MS) {
             return "пропуск: прошлый тик был ${since / 60000} мин назад"
         }
         if (!File(context.filesDir, KEY_PATH).isFile) {

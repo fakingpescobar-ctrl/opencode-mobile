@@ -121,6 +121,111 @@ class MoltbookClientTest {
         assertTrue("ожидался IOException, получено: $failure", failure is IOException)
     }
 
+    /**
+     * Страховка от возврата бага, который уже случился в проде: при `NeedsVerification`
+     * тикер вызывал `deleteComment(parentId)`, то есть отзывал чужой комментарий.
+     * Отзыв в публичной ленте необратим, поэтому запрет держится не на памяти,
+     * а тестом: как только в клиенте появится удаление, сборка падает.
+     * Если понадобится чистить свой мусор — сначала получи явное разрешение.
+     */
+    @Test
+    fun `клиент не умеет ничего удалять`() {
+        val names = MoltbookClient::class.java.declaredMethods.map { it.name }
+
+        // Сначала доказываем, что сканирование вообще что-то видит, иначе проверка
+        // выше прошла бы вхолостую и молча разрешила удаление в будущем.
+        val expected = listOf("postComment", "verify", "upvote", "markPostRead")
+        val missing = expected.filter { it !in names }
+        assertTrue("сканирование методов не видит клиент, нет: $missing (всего ${names.size})", missing.isEmpty())
+
+        val deleting =
+            names
+                .filter { it.contains("delete", true) || it.contains("remove", true) || it.contains("revoke", true) }
+                .sorted()
+
+        assertTrue(
+            "MoltbookClient не должен уметь удалять, а нашлись: $deleting",
+            deleting.isEmpty(),
+        )
+    }
+
+    @Test
+    fun `postComment узнаёт успех в любой форме ответа`() {
+        val shapes =
+            mapOf(
+                """{"comment":{"id":"c-1"}}""" to "c-1",
+                """{"id":"c-2"}""" to "c-2",
+                """{"comment_id":"c-3"}""" to "c-3",
+                """{"data":{"id":"c-4"}}""" to "c-4",
+                """{"data":{"comment":{"id":"c-5"}}}""" to "c-5",
+            )
+
+        for ((body, expected) in shapes) {
+            assertEquals(body, expected, MoltbookClient.postedCommentId(JSONObject(body)))
+        }
+    }
+
+    @Test
+    fun `пустой ответ без comment трактуется как неудача`() {
+        // Раньше это молча читалось как «комментарий не создан» → следующий тик
+        // публиковал второй ответ на тот же вопрос, а отозвать его нельзя.
+        assertEquals("", MoltbookClient.postedCommentId(JSONObject("""{"message":"спам"}""")))
+        assertEquals("", MoltbookClient.postedCommentId(JSONObject("""{}""")))
+    }
+
+    @Test
+    fun `автор-строка распознаётся как наш`() {
+        val comments =
+            MoltbookClient.parseComments(
+                JSONObject(
+                    """
+                    {"comments":[
+                      {"id":"c-1","author":"opencodekz","content":"мой ответ","parent_id":"c-0"}
+                    ]}
+                    """.trimIndent(),
+                ),
+            )
+
+        assertTrue("строка-автор не узнала себя — свой ответ сочтут чужим", comments[0].isOurs)
+        assertEquals("opencodekz", comments[0].author)
+    }
+
+    @Test
+    fun `verify с чужим форматом бросает IOException а не IllegalStateException`() {
+        // IllegalStateException не ловился в тике, улетал в общий catch приёмника и
+        // уносил весь остаток визита. IOException тикер ловит и берёт новую попытку.
+        for (bad in listOf("48.0", "48", "48,00", "спам", "")) {
+            val failure =
+                runCatching { MoltbookClient("test-key").verify("code", bad) }
+                    .exceptionOrNull()
+
+            assertTrue("ответ «$bad» дал $failure вместо IOException", failure is IOException)
+        }
+    }
+
+    @Test
+    fun `лента берёт posts а не первый попавшийся массив`() {
+        val root =
+            JSONObject(
+                """
+                {"related":[{"id":"wrong-1"}],"posts":[{"id":"p-1"},{"id":"p-2"}]}
+                """.trimIndent(),
+            )
+
+        val items = MoltbookClient.feedArray(root)
+
+        assertEquals(2, items?.length())
+        assertEquals("p-1", items?.optJSONObject(0)?.optString("id"))
+    }
+
+    @Test
+    fun `лента падает на неизвестный ключ а не на пустой молчаливый ответ`() {
+        assertEquals(null, MoltbookClient.feedArray(JSONObject("""{"meta":{"x":1}}""")))
+        // Запасная ветка: неизвестное имя массива, разобрать всё равно должны.
+        val odd = JSONObject("""{"whatever":[{"id":"p-9"}]}""")
+        assertEquals(1, MoltbookClient.feedArray(odd)?.length())
+    }
+
     @Test
     fun `verification-ответ требует ровно два знака`() {
         val matches = MoltbookClient.VERIFICATION_ANSWER
