@@ -36,7 +36,6 @@ import org.opencode.mobile.tts.TtsNarrator
  */
 @RunWith(AndroidJUnit4::class)
 class SmokeTtsTest {
-
     private val ctx: Context
         get() = InstrumentationRegistry.getInstrumentation().targetContext
 
@@ -45,7 +44,6 @@ class SmokeTtsTest {
         // Тесты идут в общем процессе приложения: спикер из прошлого теста должен умереть,
         // иначе isSpeaking() будет отвечать прошлым ходом.
         TtsNarrator.stop()
-        TtsNarrator.onNewResponse()
     }
 
     @After
@@ -215,7 +213,7 @@ class SmokeTtsTest {
         val wall = SystemClock.elapsedRealtime() - t0
 
         assertTrue(
-            "озвучка не закончилась за ${wall} мс при эталоне ${expectedMs.toLong()} мс " +
+            "озвучка не закончилась за $wall мс при эталоне ${expectedMs.toLong()} мс " +
                 "и бюджете $budget мс — вероятен таймаут drain() на кусок",
             finished,
         )
@@ -224,10 +222,13 @@ class SmokeTtsTest {
                 "playbackHeadPosition не идёт, куски копятся и ждут таймаут",
             wall <= expectedMs * 2 + SLACK_MS,
         )
-        Log.i(TAG, "озвучка ${wall} мс против эталонных ${expectedMs.toLong()} мс — ок")
+        Log.i(TAG, "озвучка $wall мс против эталонных ${expectedMs.toLong()} мс — ок")
     }
 
-    private fun waitUntil(timeoutMs: Long, cond: () -> Boolean): Boolean {
+    private fun waitUntil(
+        timeoutMs: Long,
+        cond: () -> Boolean,
+    ): Boolean {
         val deadline = SystemClock.elapsedRealtime() + timeoutMs
         while (SystemClock.elapsedRealtime() < deadline) {
             if (cond()) return true

@@ -108,11 +108,11 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -137,8 +137,8 @@ import org.opencode.mobile.server.PermissionDecision
 import org.opencode.mobile.server.YnisonMcp
 import org.opencode.mobile.stt.NcnnModelValidator
 import org.opencode.mobile.stt.WhisperTranscribeService
-import org.opencode.mobile.tts.TtsConfig
 import org.opencode.mobile.tts.ElevenLabsSecret
+import org.opencode.mobile.tts.TtsConfig
 import org.opencode.mobile.tts.TtsEngine
 import org.opencode.mobile.tts.TtsNarrator
 import java.io.File
@@ -179,6 +179,22 @@ private const val TAG_PANEL_TTS = "panel_tts"
 
 // Наносекунды в миллисекундах: замер пинга отдаёт наносекунды, в UI нужны мс.
 private const val NS_PER_MS = 1_000_000L
+
+// Цвета панели ключа ElevenLabs. Вынесены именами, потому что «серый — есть ключ,
+// оранжевый — ключа нет» и «красный — удалить/ошибка» это смысл, а не украшение:
+// по цвету видно состояние, не читая текст. Сами литералы подавлены — цвет задаёт
+// палитра тёмной темы, а не формула.
+@Suppress("MagicNumber")
+private object ElevenKeyPalette {
+    val HintOk = Color(0xFF8A8A8A)
+    val HintMissing = Color(0xFFE6A23C)
+    val SaveIdle = Color(0xFF5A5A5A)
+    val SaveReady = Color(0xFF7BA6F8)
+    val Danger = Color(0xFFE57373)
+}
+
+// Голоса в сетке: пять на строку — на шапке телефона шесть уже не помещались.
+private const val SID_CHUNK = 5
 
 // Пороги цвета полосы расхода Zen: с 60% жёлтый («прибереги квоту»), с 90% красный
 // («почти всё»). Ровно как у шкалы заполнения контекста.
@@ -535,6 +551,7 @@ fun ChatOverlay(
      * -1 = в этом обороте ещё ничего не отдано нарратору.
      */
     var ttsSaidAssistants by remember { mutableIntStateOf(-1) }
+
     /** Сессия, для которой считается состояние озвучки выше. */
     var ttsSessionId by remember { mutableStateOf<String?>(null) }
     // Озвучка включается лишь после первого нового вопроса: иначе при запуске
@@ -1295,7 +1312,6 @@ fun ChatOverlay(
                     if (ttsSessionId != final.activeId) {
                         if (ttsSessionId != null) {
                             TtsNarrator.stop()
-                            TtsNarrator.onNewResponse()
                         }
                         ttsSessionId = final.activeId
                         ttsArmed = false
@@ -1311,7 +1327,6 @@ fun ChatOverlay(
                         ttsArmed = true
                         ttsSaidAssistants = -1
                         TtsNarrator.stop()
-                        TtsNarrator.onNewResponse()
                     } else if (!ttsArmed && final.thinking) {
                         // Смена сессии и новый вопрос могут прийти ОДНИМ снапшотом
                         // (пользователь успевает отправить сообщение до следующего тика
@@ -1835,18 +1850,18 @@ fun ChatOverlay(
                         )
                     }
                     if (ttsOn) {
-                        TtsRadioRow("Supertonic (offline, русский)", ttsConfig.engine == TtsEngine.sherpa) {
-                            ttsConfig = ttsConfig.copy(engine = TtsEngine.sherpa)
+                        TtsRadioRow("Supertonic (offline, русский)", ttsConfig.engine == TtsEngine.Sherpa) {
+                            ttsConfig = ttsConfig.copy(engine = TtsEngine.Sherpa)
                             TtsConfig.save(context, ttsConfig)
                             TtsNarrator.stop()
                         }
-                        TtsRadioRow("Системный Android", ttsConfig.engine == TtsEngine.system) {
-                            ttsConfig = ttsConfig.copy(engine = TtsEngine.system)
+                        TtsRadioRow("Системный Android", ttsConfig.engine == TtsEngine.System) {
+                            ttsConfig = ttsConfig.copy(engine = TtsEngine.System)
                             TtsConfig.save(context, ttsConfig)
                             TtsNarrator.stop()
                         }
-                        TtsRadioRow("ElevenLabs (облако, нужен VPN)", ttsConfig.engine == TtsEngine.elevenlabs) {
-                            ttsConfig = ttsConfig.copy(engine = TtsEngine.elevenlabs)
+                        TtsRadioRow("ElevenLabs (облако, нужен VPN)", ttsConfig.engine == TtsEngine.ElevenLabs) {
+                            ttsConfig = ttsConfig.copy(engine = TtsEngine.ElevenLabs)
                             TtsConfig.save(context, ttsConfig)
                             TtsNarrator.stop()
                         }
@@ -1868,10 +1883,11 @@ fun ChatOverlay(
                                 Text(
                                     when {
                                         !elevenHasKey -> "API-ключ не задан"
-                                        else -> "API-ключ сохранён " +
-                                            (ElevenLabsSecret.preview(context) ?: "(зашифрован)")
+                                        else ->
+                                            "API-ключ сохранён " +
+                                                (ElevenLabsSecret.preview(context) ?: "(зашифрован)")
                                     },
-                                    color = if (elevenHasKey) Color(0xFF8A8A8A) else Color(0xFFE6A23C),
+                                    color = if (elevenHasKey) ElevenKeyPalette.HintOk else ElevenKeyPalette.HintMissing,
                                     fontSize = 11.sp,
                                 )
                                 BasicTextField(
@@ -1913,39 +1929,41 @@ fun ChatOverlay(
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Text(
                                         "Сохранить",
-                                        color = if (elevenKeyDraft.isBlank()) Color(0xFF5A5A5A) else Color(0xFF7BA6F8),
+                                        color = if (elevenKeyDraft.isBlank()) ElevenKeyPalette.SaveIdle else ElevenKeyPalette.SaveReady,
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.clickable(enabled = elevenKeyDraft.isNotBlank()) {
-                                            when (val r = ElevenLabsSecret.save(context, elevenKeyDraft)) {
-                                                is ElevenLabsSecret.SaveResult.Ok -> {
-                                                    elevenKeyDraft = ""
-                                                    elevenHasKey = true
-                                                    elevenKeyError = null
-                                                    // Ключ сменился — движок надо пересоздать,
-                                                    // иначе он продолжит работать со старым.
-                                                    TtsNarrator.stop()
+                                        modifier = Modifier
+                                            .clickable(enabled = elevenKeyDraft.isNotBlank()) {
+                                                when (val r = ElevenLabsSecret.save(context, elevenKeyDraft)) {
+                                                    is ElevenLabsSecret.SaveResult.Ok -> {
+                                                        elevenKeyDraft = ""
+                                                        elevenHasKey = true
+                                                        elevenKeyError = null
+                                                        // Ключ сменился — движок надо пересоздать,
+                                                        // иначе он продолжит работать со старым.
+                                                        TtsNarrator.stop()
+                                                    }
+                                                    is ElevenLabsSecret.SaveResult.Failed -> {
+                                                        // Черновик НЕ чистим: ключ юзера остаётся
+                                                        // в поле, чтобы он не вводил его заново
+                                                        // из-за сбоя хранилища.
+                                                        elevenKeyError = r.reason
+                                                    }
                                                 }
-                                                is ElevenLabsSecret.SaveResult.Failed -> {
-                                                    // Черновик НЕ чистим: ключ юзера остаётся
-                                                    // в поле, чтобы он не вводил его заново
-                                                    // из-за сбоя хранилища.
-                                                    elevenKeyError = r.reason
-                                                }
-                                            }
-                                        }.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            }.padding(horizontal = 8.dp, vertical = 4.dp),
                                     )
                                     if (elevenHasKey) {
                                         Text(
                                             "Удалить",
-                                            color = Color(0xFFE57373),
+                                            color = ElevenKeyPalette.Danger,
                                             fontSize = 12.sp,
-                                            modifier = Modifier.clickable {
-                                                ElevenLabsSecret.clear(context)
-                                                elevenHasKey = false
-                                                elevenKeyError = null
-                                                TtsNarrator.stop()
-                                            }.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            modifier = Modifier
+                                                .clickable {
+                                                    ElevenLabsSecret.clear(context)
+                                                    elevenHasKey = false
+                                                    elevenKeyError = null
+                                                    TtsNarrator.stop()
+                                                }.padding(horizontal = 8.dp, vertical = 4.dp),
                                         )
                                     }
                                 }
@@ -1954,7 +1972,7 @@ fun ChatOverlay(
                                 elevenKeyError?.let { why ->
                                     Text(
                                         "не сохранено: $why",
-                                        color = Color(0xFFE57373),
+                                        color = ElevenKeyPalette.Danger,
                                         fontSize = 11.sp,
                                         modifier = Modifier.padding(top = 2.dp),
                                     )
@@ -1997,9 +2015,9 @@ fun ChatOverlay(
                             )
                             /** Голоса в две строки по пять: на шапке телефона одна строка уже не помещалась. */
                             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                (0 until TtsConfig.MAX_SID + 1).chunked(5).forEach { row ->
+                                for (row in (0..TtsConfig.MAX_SID).chunked(SID_CHUNK)) {
                                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        row.forEach { sid ->
+                                        for (sid in row) {
                                             val active = ttsConfig.sid == sid
                                             Text(
                                                 "${sid + 1}",
@@ -2011,8 +2029,7 @@ fun ChatOverlay(
                                                     .clip(RoundedCornerShape(6.dp))
                                                     .background(
                                                         if (active) Color(0xFFBDBDBD) else Color(0xFF2A2A2A),
-                                                    )
-                                                    .clickable {
+                                                    ).clickable {
                                                         ttsConfig = ttsConfig.copy(sid = sid)
                                                         TtsConfig.save(context, ttsConfig)
                                                         TtsNarrator.stop()
@@ -2916,8 +2933,7 @@ private fun ZenMeter(
         }
     GaugeBars(
         ratio = if (exact) ratio else 0f,
-        active = active,
-        track = Color(palette.track),
+        colors = GaugeColors(active, Color(palette.track)),
         shape = shape,
         rowTag = TAG_ZEN_ROW,
         modifier = modifier.height(shape.height).fillMaxWidth(),
@@ -2942,8 +2958,7 @@ private fun ContextGauge(
         }
     GaugeBars(
         ratio = ratio,
-        active = active,
-        track = Color(palette.track),
+        colors = GaugeColors(active, Color(palette.track)),
         shape = shape,
         rowTag = TAG_CTX_ROW,
         modifier = modifier.height(shape.height).fillMaxWidth(),
@@ -2968,11 +2983,22 @@ private fun ContextGauge(
  * наклон получается нулевым. Лента решает это: наклон идёт по всей длине, а
  * ячейки остаются видимыми.
  */
+
+/**
+ * Активная заливка и подложка индикатора одной парой.
+ *
+ * Два цвета всегда приходят вместе — по одному полосу не нарисовать, — а держать
+ * их отдельными параметрами раздувало список аргументов [GaugeBars] до шести.
+ */
+private data class GaugeColors(
+    val active: Color,
+    val track: Color,
+)
+
 @Composable
 private fun GaugeBars(
     ratio: Float,
-    active: Color,
-    track: Color,
+    colors: GaugeColors,
     shape: GaugeShape,
     rowTag: String,
     modifier: Modifier = Modifier,
@@ -2992,9 +3018,9 @@ private fun GaugeBars(
         // Лента вписана в холст по диагонали: нижний левый угол у левого края,
         // верхний правый — у правого, поэтому ничего не обрезается.
         val bandW = (size.width - lean).coerceAtLeast(1f)
-        drawPath(leanBand(0f, bandW, lean, h), track)
+        drawPath(leanBand(0f, bandW, lean, h), colors.track)
         if (fill > 0f) {
-            drawPath(leanBand(0f, bandW * fill, lean, h), active)
+            drawPath(leanBand(0f, bandW * fill, lean, h), colors.active)
         }
         val step = bandW / cells
         val gap = gapDp.dp.toPx()
@@ -4094,7 +4120,7 @@ private fun TtsRadioRow(
                 .clickable(onClick = onClick)
                 .padding(vertical = 6.dp),
     ) {
-Text(
+        Text(
             if (active) "● " else "○ ",
             color = Color(0xFFFF6D00),
             fontSize = 13.sp,

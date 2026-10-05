@@ -10,7 +10,11 @@ interface SpeechSynth {
     val sampleRate: Int
 
     /** null — движок не смог (модель выгрузилась), озвучка молча выключается. */
-    fun synthesize(text: String, sid: Int, speed: Float): TtsAudio?
+    fun synthesize(
+        text: String,
+        sid: Int,
+        speed: Float,
+    ): TtsAudio?
 }
 
 /**
@@ -23,7 +27,9 @@ interface SpeechSynth {
  *
  * Отмена: поколение бампается, обе очереди чистятся, играющее гасится за 120 мс.
  */
-class TtsSpeaker(private val synth: SpeechSynth) {
+class TtsSpeaker(
+    private val synth: SpeechSynth,
+) {
     private val pending = LinkedBlockingQueue<String>()
     private val audioQueue = LinkedBlockingQueue<TtsAudio>()
     private val generation = AtomicLong(0)
@@ -36,11 +42,10 @@ class TtsSpeaker(private val synth: SpeechSynth) {
     @Volatile private var threadsGeneration = -1L
 
     @Volatile private var sid = 0
+
     @Volatile private var speed = 1.0f
 
     val isSpeaking: Boolean get() = pending.isNotEmpty() || audioQueue.isNotEmpty() || player.isActive
-
-    
 
     /**
      * Поднимает потоки под текущее поколение.
@@ -50,7 +55,10 @@ class TtsSpeaker(private val synth: SpeechSynth) {
      * доверял isAlive, он вернулся бы без новых потоков, старые увидели бы смену
      * поколения и вышли — и озвучка замолчала бы навсегда.
      */
-    fun start(sid: Int, speed: Float) {
+    fun start(
+        sid: Int,
+        speed: Float,
+    ) {
         this.sid = sid
         this.speed = speed
         val myGen = generation.get()
@@ -58,8 +66,14 @@ class TtsSpeaker(private val synth: SpeechSynth) {
         synthThread?.interrupt()
         playThread?.interrupt()
         threadsGeneration = myGen
-        synthThread = Thread({ synthLoop(myGen) }, "tts-synth").apply { isDaemon = true; start() }
-        playThread = Thread({ playLoop(myGen) }, "tts-play").apply { isDaemon = true; start() }
+        synthThread = Thread({ synthLoop(myGen) }, "tts-synth").apply {
+            isDaemon = true
+            start()
+        }
+        playThread = Thread({ playLoop(myGen) }, "tts-play").apply {
+            isDaemon = true
+            start()
+        }
         Log.i(TAG, "speaker started gen=$myGen sid=$sid speed=$speed rate=${synth.sampleRate}")
     }
 
@@ -117,7 +131,7 @@ class TtsSpeaker(private val synth: SpeechSynth) {
                 } ?: continue
             if (generation.get() != myGen) return
 
-val startedAt = System.currentTimeMillis()
+            val startedAt = System.currentTimeMillis()
             // Движок читает «59 записей» по-английски (fifty-nine), поэтому
             // числа переводим в русские слова ДО синтеза.
             val spoken = RuNumbers.convert(sentence)

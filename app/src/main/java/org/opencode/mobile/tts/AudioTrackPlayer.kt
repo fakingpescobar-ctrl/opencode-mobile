@@ -13,7 +13,9 @@ import java.io.File
  * в трек данные нельзя забрать назад, а громкость у Android гасится плавно —
  * ровно то, что нужно при отмене, чтобы не резать фразу на полуслове.
  */
-class AudioTrackPlayer(private val sampleRate: Int) {
+class AudioTrackPlayer(
+    private val sampleRate: Int,
+) {
     private var track: AudioTrack? = null
     private var volume: Float = 1.0f
 
@@ -116,12 +118,18 @@ class AudioTrackPlayer(private val sampleRate: Int) {
      * прямо в [play], а без него «играет» значило «трек создан» — и озвучка никогда
      * не выглядела завершённой.
      */
-    private val playUntil = java.util.concurrent.atomic.AtomicLong(0)
+    private val playUntil = java.util.concurrent.atomic
+        .AtomicLong(0)
     private var monitor: Thread? = null
 
-private fun writeDump(audio: TtsAudio, written: Int) {
+    private fun writeDump(
+        audio: TtsAudio,
+        written: Int,
+    ) {
         val out = dumpOut ?: return
-        val b = java.nio.ByteBuffer.allocate(written * 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        val b = java.nio.ByteBuffer
+            .allocate(written * 4)
+            .order(java.nio.ByteOrder.LITTLE_ENDIAN)
         for (i in 0 until written) b.putFloat(audio.samples[i])
         runCatching { out.write(b.array()) }
     }
@@ -179,15 +187,17 @@ private fun writeDump(audio: TtsAudio, written: Int) {
             AudioFormat.ENCODING_PCM_FLOAT,
         )
         if (minBuf <= 0) throw IllegalStateException("AudioTrack: getMinBufferSize вернул $minBuf")
-        val t = AudioTrack.Builder()
+        val t = AudioTrack
+            .Builder()
             .setAudioAttributes(
-                AudioAttributes.Builder()
+                AudioAttributes
+                    .Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build(),
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
+            ).setAudioFormat(
+                AudioFormat
+                    .Builder()
                     .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
                     .setSampleRate(rate)
                     .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
@@ -228,7 +238,7 @@ private fun writeDump(audio: TtsAudio, written: Int) {
         }
     }
 
-private fun hardStop(t: AudioTrack) {
+    private fun hardStop(t: AudioTrack) {
         runCatching { t.pause() }
         runCatching { t.flush() }
         runCatching { t.stop() }
@@ -236,8 +246,8 @@ private fun hardStop(t: AudioTrack) {
         if (track === t) track = null
     }
 
-companion object {
-const val TAG = "TTS"
+    companion object {
+        const val TAG = "TTS"
 
         /**
          * Сколько секунд непроигранного звука допускаем в буфере трека.

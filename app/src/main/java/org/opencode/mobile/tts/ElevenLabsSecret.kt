@@ -7,6 +7,7 @@ import android.util.Base64
 import android.util.Log
 import java.security.GeneralSecurityException
 import java.security.KeyStore
+import java.security.ProviderException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -31,8 +32,10 @@ object ElevenLabsSecret {
     private const val KEYSTORE = "AndroidKeyStore"
     private const val ALIAS = "elevenlabs_api_key"
 
-    /** Формат хранения: Base64(iv) + ":" + Base64(ciphertext). */
+    /** Формат хранения: Base64(iv) + PREF_SEP + Base64(ciphertext). */
     private const val PREF_KEY = "xi_api_key.enc"
+    private const val PREF_SEP = ":"
+    private const val COLON_PARTS = 2
 
     /**
      * Отпечаток для UI: "<последние 4 символа>|<длина>". Пишется открытым текстом,
@@ -53,38 +56,58 @@ object ElevenLabsSecret {
      * прежней. Сам ключ в строку сравнения не попадает — только номер ревизии.
      */
     private const val PREF_REV = "xi_api_key.rev"
-
-    /** Номер текущей ревизии ключа; растёт при каждом сохранении и очистке. */
-    fun revision(context: Context): Long =
-        prefs(context).getLong(PREF_REV, 0L)
+    private const val REV_STEP = 1L
 
     private const val AES_KEY_BITS = 256
     private const val GCM_TAG_BITS = 128
+    private const val CIPHER_TRANSFORM = "AES/GCM/NoPadding"
+
+    /** Номер текущей ревизии ключа; растёт при каждом сохранении и очистке. */
+    fun revision(context: Context): Long = prefs(context).getLong(PREF_REV, 0L)
 
     /** Есть ли ключ (без расшифровки — достаточно факта наличия). */
-    fun hasKey(context: Context): Boolean =
-        prefs(context).getString(PREF_KEY, null).isNullOrBlank().not()
+    fun hasKey(context: Context): Boolean = prefs(context).getString(PREF_KEY, null).isNullOrBlank().not()
 
     /**
      * Человекочитаемый вид ключа для настроек, например «•••• 5a29 (51 симв.)».
      * Расшифровку не трогает. null, если ключ не задан.
      */
     fun preview(context: Context): String? {
-        val cached = prefs(context).getString(PREF_PREVIEW, null)
-        if (cached != null) {
-            val parts = cached.split("|")
-            if (parts.size == 2) {
-                val len = parts[1].toIntOrNull()
-                if (len != null) return "•••• ${parts[0]} ($len симв.)"
+        val prefs = prefs(context)
+        return prefs.getString(PREF_PREVIEW, null)?.let(Preview::fromCache)
+            ?: load(context)?.let { key ->
+                // Ключ сохранён до того, как появился отпечаток: досчитываем один раз
+                // и кэшируем, чтобы пользователю не пришлось вводить ключ заново.
+                // В лог уходит только длина, сам ключ — нет.
+                prefs.edit().putString(PREF_PREVIEW, Preview.raw(key)).commit()
+                Preview.render(key)
             }
+    }
+
+    /**
+     * Отпечаток ключа: сырой вид для кэша и человеческий для UI.
+     *
+     * Отдельный класс, потому что это ровно два формата одного и того же
+     * значения, и держать их в [ElevenLabsSecret] было нечем — всё остальное там
+     * про криптографию.
+     */
+    private object Preview {
+        private const val TAIL = 4
+        private const val SEP = "|"
+        private const val PARTS = 2
+
+        /** Кэш: «5a29|51». */
+        fun raw(key: String): String = key.takeLast(TAIL) + SEP + key.length
+
+        /** UI: «•••• 5a29 (51 симв.)». */
+        fun render(key: String): String = "•••• ${key.takeLast(TAIL)} (${key.length} симв.)"
+
+        /** Кэш -> UI; мусорный кэш даёт null, чтобы досчитать по-настоящему. */
+        fun fromCache(cached: String): String? {
+            val parts = cached.split(SEP)
+            val len = parts.getOrNull(PARTS - 1)?.toIntOrNull()
+            return len?.let { "•••• ${parts.first()} ($len симв.)" }
         }
-        // Ключ сохранён до того, как появился отпечаток: досчитываем один раз и
-        // кэшируем, чтобы пользователю не пришлось вводить ключ заново. В лог
-        // уходит только длина, сам ключ — нет.
-        val key = load(context) ?: return null
-        val filled = key.takeLast(4) + "|" + key.length
-        prefs(context).edit().putString(PREF_PREVIEW, filled).commit()
-        return "•••• ${key.takeLast(4)} (${key.length} симв.)"
     }
 
     /**
@@ -93,16 +116,28 @@ object ElevenLabsSecret {
      * null — это не ошибка: движок сам решает, что делать (откатиться на локальный
      * синтез), поэтому читатель не обязан разбираться с криптографией.
      */
-    fun load(context: Context): String? {
-        val enc = prefs(context).getString(PREF_KEY, null) ?: return null
-        return try {
-            val parts = enc.split(":")
-            if (parts.size != 2) return null
-            val iv = Base64.decode(parts[0], Base64.NO_WRAP)
-            val ct = Base64.decode(parts[1], Base64.NO_WRAP)
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(GCM_TAG_BITS, iv))
-            String(cipher.doFinal(ct), Charsets.UTF_8).ifBlank { null }
+    fun load(context: Context): String? = prefs(context).getString(PREF_KEY, null)?.let(::decrypt)
+
+    /**
+     * Расшифровка [enc]. Любая неудача — это null, а не исключение наружу:
+     * недоступный Keystore или битые данные не должны ронять озвучку.
+     */
+    private fun decrypt(enc: String): String? =
+        try {
+            val parts = enc.split(PREF_SEP)
+            if (parts.size != COLON_PARTS) {
+                Log.w(TAG, "битый формат сохранённого ключа: ${parts.size} частей вместо $COLON_PARTS")
+                null
+            } else {
+                val cipher = Cipher.getInstance(CIPHER_TRANSFORM)
+                cipher.init(
+                    Cipher.DECRYPT_MODE,
+                    getOrCreateKey(),
+                    GCMParameterSpec(GCM_TAG_BITS, Base64.decode(parts[0], Base64.NO_WRAP)),
+                )
+                String(cipher.doFinal(Base64.decode(parts[1], Base64.NO_WRAP)), Charsets.UTF_8)
+                    .ifBlank { null }
+            }
         } catch (e: GeneralSecurityException) {
             // Ключ в Keystore переехал (смена профиля/устройства) или данные побиты.
             Log.w(TAG, "ключ не расшифровался (${e.javaClass.simpleName}) — нужен новый ввод")
@@ -111,7 +146,6 @@ object ElevenLabsSecret {
             Log.w(TAG, "битый формат сохранённого ключа: ${e.message}")
             null
         }
-    }
 
     /**
      * Итог сохранения ключа.
@@ -126,7 +160,9 @@ object ElevenLabsSecret {
         object Ok : SaveResult
 
         /** Сохранить не вышло; [reason] — уже человеческим текстом для UI. */
-        data class Failed(val reason: String) : SaveResult
+        data class Failed(
+            val reason: String,
+        ) : SaveResult
     }
 
     /**
@@ -136,24 +172,36 @@ object ElevenLabsSecret {
      * Пустая строка означает «удалить ключ» — так удобнее, чем отдельный [clear]
      * на пустом поле, и результат всё равно [SaveResult.Ok].
      */
-    fun save(context: Context, apiKey: String): SaveResult {
+    fun save(
+        context: Context,
+        apiKey: String,
+    ): SaveResult {
         val clean = apiKey.trim()
-        if (clean.isEmpty()) {
+        return if (clean.isEmpty()) {
             clear(context)
-            return SaveResult.Ok
+            SaveResult.Ok
+        } else {
+            encryptAndStore(context, clean)
         }
-        return try {
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+    }
+
+    private fun encryptAndStore(
+        context: Context,
+        clean: String,
+    ): SaveResult =
+        try {
+            val cipher = Cipher.getInstance(CIPHER_TRANSFORM)
             cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
             val ct = cipher.doFinal(clean.toByteArray(Charsets.UTF_8))
-            val enc = Base64.encodeToString(cipher.iv, Base64.NO_WRAP) + ":" +
+            val enc = Base64.encodeToString(cipher.iv, Base64.NO_WRAP) + PREF_SEP +
                 Base64.encodeToString(ct, Base64.NO_WRAP)
             // commit, а не apply: смена движка озвучки идёт сразу после сохранения,
             // ключ должен быть виден следующему чтению без гонки.
-            prefs(context).edit()
+            prefs(context)
+                .edit()
                 .putString(PREF_KEY, enc)
-                .putString(PREF_PREVIEW, clean.takeLast(4) + "|" + clean.length)
-                .putLong(PREF_REV, revision(context) + 1)
+                .putString(PREF_PREVIEW, Preview.raw(clean))
+                .putLong(PREF_REV, revision(context) + REV_STEP)
                 .commit()
             Log.i(TAG, "ключ сохранён (${clean.length} симв.), расшифрованный вид не логируется")
             SaveResult.Ok
@@ -163,26 +211,38 @@ object ElevenLabsSecret {
             // поэтому подробность уходит в лог, а в UI короткая причина.
             Log.w(TAG, "Keystore отказал при сохранении (${e.javaClass.simpleName})", e)
             SaveResult.Failed("Keystore не дал ключ: ${e.message ?: e.javaClass.simpleName}")
-        } catch (e: RuntimeException) {
-            // ProviderException из KeyGenerator, IllegalState от недоступного
-            // Keystore, OOM при Base64. Это всё ошибки настройки хранилища, а не
-            // повод закрыть приложение посреди ввода ключа.
-            Log.w(TAG, "не удалось зашифровать ключ (${e.javaClass.simpleName})", e)
+        } catch (e: ProviderException) {
+            // Штатный отказ провайдера Keystore: провайдер не зарегистрирован, ключ
+            // не создан или устройство его не отдало. Раньше это ловилось через
+            // RuntimeException и называлось «не удалось зашифровать», хотя дело было
+            // в хранилище.
+            Log.w(TAG, "провайдер Keystore отказал (${e.javaClass.simpleName})", e)
+            SaveResult.Failed("Keystore не дал ключ: ${e.message ?: e.javaClass.simpleName}")
+        } catch (e: IllegalStateException) {
+            // Устройство без Keystore вообще, либо он заблокирован в этот момент.
+            // OutOfMemory сюда НЕ попадает: это Error, а не RuntimeException. Ловить
+            // нехватку памяти здесь незачем — если её не хватило на Base64, то на
+            // восстановление приложения её не хватит тем более, и «мягкая» ошибка
+            // лишь спрятала бы настоящую причину.
+            Log.w(TAG, "Keystore недоступен (${e.javaClass.simpleName})", e)
+            SaveResult.Failed("Keystore недоступен: ${e.message ?: e.javaClass.simpleName}")
+        } catch (e: IllegalArgumentException) {
+            // Битый ключ или негодный padding — ошибка данных, а не хранилища.
+            Log.w(TAG, "не удалось зашифровать ключ (${e.message})", e)
             SaveResult.Failed("не удалось зашифровать: ${e.message ?: e.javaClass.simpleName}")
         }
-    }
 
     fun clear(context: Context) {
-        prefs(context).edit()
+        prefs(context)
+            .edit()
             .remove(PREF_KEY)
             .remove(PREF_PREVIEW)
-            .putLong(PREF_REV, revision(context) + 1)
+            .putLong(PREF_REV, revision(context) + REV_STEP)
             .commit()
         Log.i(TAG, "ключ удалён")
     }
 
-    private fun prefs(context: Context) =
-        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private fun prefs(context: Context) = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     /** AES-ключ в Keystore; создаётся лениво при первом сохранении. */
     private fun getOrCreateKey(): SecretKey {

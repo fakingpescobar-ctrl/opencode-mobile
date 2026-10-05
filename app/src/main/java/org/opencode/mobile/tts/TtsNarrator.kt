@@ -9,45 +9,21 @@ import java.util.concurrent.Executors
  * (наш чат приходит поллингом, не SSE) и раскладывает его в очередь синтеза.
  *
  * Наружу торчат три вызова: [onAssistantText], [stop] и [release]. Вся механика
- * — дифф по префиксу, чанкер, движок, плеер — внутри.
+ * — дифф по префиксу, чанкер, движок, плеер — внутри. Правила «что вообще
+ * можно озвучить» живут в [SpeechFilter], выбор движка — в [SpeechFactory].
  */
 object TtsNarrator {
     private const val TAG = "TTS"
 
-    /**
-     * Доля букв, ниже которой фраза считается неразговорной.
-     *
-     * Считается как `letters / text.length`, то есть в знаменатель входит ВСЁ:
-     * цифры, пробелы, знаки. Каждая цифра добавляет единицу к знаменателю и ноль
-     * к числителю, а разделители добавляют ещё. Фразы с числами из-за этого
-     * штрафуются дважды и обрываются на пороге: при 0.60 фраза «Промежуточный
-     * факт: WAV на полном тексте = 76.3 с, ровно как ожидалось (6733396 байт /
-     * 44100 / 16 бит)» давала 0.58 и молчала, хотя это нормальный русский текст.
-     *
-     * Замер на 309 реальных ответах агента (2071 фрагмент) показал: при 0.60
-     * терялось 1% обычной прозы, но 26% фраз с цифрами. Цифры — это как раз то,
-     * о чём агент говорит постоянно (rtf, кадры, байты, версии), то есть фильтр
-     * резал самое нужное. Порог снижен до 0.5: обычная проза идёт с запасом,
-     * цифровые фразы проходят, а строки логов и таблицы по-прежнему отсеиваются.
-     *
-     * Проверенная альтернатива — доля `alnum` по непробельным символам — на этих
-     * же данных хуже: спасала 17 фраз, но начинала терять осмысленные короткие
-     * вроде «Запомнила: я Ева».
-     */
-    private const val MIN_LETTER_RATIO = 0.5
+    /** Сколько символов очередного куска попадает в лог для разбора. */
+    private const val LOG_PREVIEW_CHARS = 40
 
-    /** Короче — одиночный символ, вслух нечего читать. */
-    private const val MIN_CHUNK_LEN = 2
+    /** Откат текста: глухое начало, чтобы не было щелчка на стыке предложений. */
+    private const val ROLLBACK_FADE_MS = 60
 
-    /**
-     * Меньше четырёх букв — осколки вроде «2.» или «Ищу.», а не фраза. На реальных
-     * данных правило срабатывало в основном на номерах списков; полноценных
-     * коротких ответов («Да.», «Нет.») в выборке не встретилось, поэтому порог
-     * оставлен как есть.
-     */
-    private const val MIN_LETTERS = 4
+    /** Явная остановка: пользователь нажал «стоп», гасим мягче отката. */
+    private const val STOP_FADE_MS = 120
 
-    private var config = TtsConfig(TtsEngine.off, TtsConfig.DEFAULT_MODEL, 0, 1.0f)
     private var speaker: TtsSpeaker? = null
     private var chunker = SentenceChunker()
     private var consumedPrefix = ""
@@ -69,22 +45,24 @@ object TtsNarrator {
     fun isEnabled(context: Context): Boolean = TtsConfig.read(context).isEnabled
 
     /** Переключатель из UI. */
-    fun setEnabled(context: Context, enabled: Boolean) {
+    fun setEnabled(
+        context: Context,
+        enabled: Boolean,
+    ) {
         val current = TtsConfig.read(context)
         if (enabled == current.isEnabled) return
         val next = current.copy(
-            engine = if (!enabled) {
-                TtsEngine.off
-            } else if (current.engine.isCloud) {
-                // Облако выбрано осознанно в панели: переключатель вкл/выкл не должен
-                // молча уводить юзера на локальный движок. Локальная модель облаку
-                // не нужна, проверять её тут нечего.
-                current.engine
-            } else if (current.modelInstalled(context)) {
-                TtsEngine.sherpa
-            } else {
-                Log.w(TAG, "модель не установлена, берём системный TTS")
-                TtsEngine.system
+            engine = when {
+                !enabled -> TtsEngine.Off
+                // Облако выбрано осознанно в панели: переключатель вкл/выкл не
+                // должен молча уводить юзера на локальный движок. Локальная
+                // модель облаку не нужна, проверять её тут нечего.
+                current.engine.isCloud -> current.engine
+                current.modelInstalled(context) -> TtsEngine.Sherpa
+                else -> {
+                    Log.w(TAG, "модель не установлена, берём системный TTS")
+                    TtsEngine.System
+                }
             },
         )
         TtsConfig.save(context, next)
@@ -95,19 +73,24 @@ object TtsNarrator {
     /**
      * Текст assistant-сообщения. [isFinal] — ответ дописан, можно отдавать остаток буфера.
      */
-    fun onAssistantText(context: Context, text: String, isFinal: Boolean) {
-        // Пустой снапшот — начало thinking-а или tool call. Озвучивать нечего, и это
-        // НЕ откат: раньше пустой текст доезжал до логики отката, сбрасывал чанкер
-        // и гасил речь на каждом таком шаге.
-        if (text.isEmpty()) return
+    fun onAssistantText(
+        context: Context,
+        text: String,
+        isFinal: Boolean,
+    ) {
+        // Настройки читаем всегда: пустой снапшот (начало thinking-а или tool call)
+        // тоже должен выйти молча, а не доезжать до логики отката — раньше он
+        // сбрасывал чанкер и гасил речь на каждом таком шаге.
         val cfg = TtsConfig.read(context)
-        if (!cfg.isEnabled) return
+        if (text.isEmpty() || !cfg.isEnabled) return
+
         val sp = ensureSpeaker(context, cfg)
         if (sp == null) {
             // Движок грузится в фоне (первый запуск грузит модель — около секунды).
-            // Раньше текст здесь просто проглатывался: включил озвучку, отправил вопрос —
-            // первый ответ молчал, озвучка начиналась только со второго. Откладываем
-            // последний куст текста и доигрываем его сразу после загрузки движка.
+            // Раньше текст здесь просто проглатывался: включил озвучку, отправил
+            // вопрос — первый ответ молчал, озвучка начиналась только со второго.
+            // Откладываем последний куст текста и доигрываем его сразу после
+            // загрузки движка.
             deferred = text to isFinal
             Log.i(TAG, "движок ещё грузится, текст отложен: ${text.length} симв., isFinal=$isFinal")
             return
@@ -115,111 +98,73 @@ object TtsNarrator {
         speak(sp, cfg, text, isFinal)
     }
 
-    /**
-     * Длина общего префикса двух строк.
-     *
-     * Нужна для случая, когда снапшот ответа перерисовывается целиком: если брать
-     * весь текст заново, уже поставленные в очередь куски теряются, а сброс
-     * чанкера поднимает поколение и гасит озвучку — на каждый апдейт опроса чата.
-     */
-    private fun commonPrefixLength(a: String, b: String): Int {
-        val n = minOf(a.length, b.length)
-        var i = 0
-        while (i < n && a[i] == b[i]) i++
-        return i
-    }
-
-    private fun speak(sp: TtsSpeaker, cfg: TtsConfig, text: String, isFinal: Boolean) {
+    private fun speak(
+        sp: TtsSpeaker,
+        cfg: TtsConfig,
+        text: String,
+        isFinal: Boolean,
+    ) {
         sp.start(cfg.sid, cfg.speechRate)
 
-        val delta =
-            when {
-                text.startsWith(consumedPrefix) -> text.substring(consumedPrefix.length)
-                // Перерисовка целиком: начало то же, отдаём только хвост. Раньше здесь
-                // был безусловный сброс — 46 раз за сессию, и 10 сыгранных кусков
-                // против 65 синтезированных.
-                text.length >= consumedPrefix.length -> {
-                    val common = commonPrefixLength(text, consumedPrefix)
-                    Log.i(TAG, "текст перезаписан, беру хвост с позиции $common")
-                    text.substring(common)
-                }
-                // Текст стал короче осмотренного — это настоящий откат (новый ответ
-                // или правка), сбрасываем чанкер целиком.
-                else -> {
-                    Log.i(TAG, "текст откатился, сбрасываю чанкер")
-                    chunker.reset()
-                    sp.stop(fadeOutMs = 60)
-                    sp.start(cfg.sid, cfg.speechRate)
-                    text
-                }
-            }
-        if (delta.isEmpty() && !isFinal) return
+        val delta = SpeechFilter.delta(text, consumedPrefix)
+        if (delta is SpeechFilter.Delta.Rollback) {
+            // Текст стал короче осмотренного: это новый ответ или правка, сбрасываем
+            // чанкер целиком.
+            Log.i(TAG, "текст откатился, сбрасываю чанкер")
+            chunker.reset()
+            sp.stop(fadeOutMs = ROLLBACK_FADE_MS)
+            sp.start(cfg.sid, cfg.speechRate)
+        }
+        if (delta is SpeechFilter.Delta.Rewritten) {
+            Log.i(TAG, "текст перезаписан, беру хвост с позиции ${delta.from}")
+        }
+        if (delta.text.isEmpty() && !isFinal) return
         consumedPrefix = text
 
-        val chunks = if (isFinal) chunker.push(delta) + chunker.flush() else chunker.push(delta)
-        val spoken = chunks.filter(::isSpeechable)
+        val chunks = if (isFinal) chunker.push(delta.text) + chunker.flush() else chunker.push(delta.text)
+        val spoken = chunks.filter(SpeechFilter::isSpeechable)
         spoken.forEach { sp.enqueue(it) }
         if (spoken.isNotEmpty()) {
-            Log.d(TAG, "в очередь ${spoken.size} из ${chunks.size}: ${spoken.first().take(40)}…")
+            val head = spoken.first().take(LOG_PREVIEW_CHARS)
+            Log.d(TAG, "в очередь ${spoken.size} из ${chunks.size}: $head…")
         }
     }
 
     /**
-     * Годятся ли для озвучки предложение.
+     * Агент прислал новое сообщение ответа, а не дополнил текущее.
      *
-     * Через ленту идёт не только ответ ассистента, но и текст мобильного агента —
-     * с markdown, таблицами и логами. Такое читать вслух не нужно, поэтому режем
-     * по трем признакам: разметка/код, почти нет букв, либо текст состоит в
-     * основном из не-буквенных символов (строки логов, таблицы).
+     * Если агент пишет несколько предложений подряд (обычная практика: рассуждал,
+     * вызвал tool, заговорил снова), UI раньше брал только последнее сообщение, а
+     * приход нового считался откатом: `sp.stop()` с fadeOut 60мс срезал уже начатое
+     * предложение, и на слух получались обрывки — с одного предложения на другое.
+     *
+     * Здесь остаток текущего сообщения доигрывается, чанкер сбрасывается, но
+     * играющее НЕ гасится: новое встаёт в очередь сразу после старого.
      */
-    private fun isSpeechable(text: String): Boolean {
-        if (text.length < MIN_CHUNK_LEN) return false
-        if (text.contains("```") || text.contains('`') || text.contains('|')) return false
-        val letters = text.count { it.isLetter() }
-        if (letters < MIN_LETTERS) return false
-return letters.toDouble() / text.length >= MIN_LETTER_RATIO
+    fun onNewAssistantMessage() {
+        val sp = speaker
+        val rest = if (sp == null) emptyList() else chunker.flush().filter(SpeechFilter::isSpeechable)
+        if (rest.isNotEmpty()) {
+            rest.forEach { sp?.enqueue(it) }
+            Log.d(TAG, "перед новым сообщением доигрываю остаток: ${rest.size}")
+        }
+        chunker.reset()
+        consumedPrefix = ""
     }
 
     /**
-     * Агент прислал новое сообщение ответа, а не дополнил текущее.
- *
- * Если агент пишет несколько предложений подряд (обычная практика: рассуждал,
- * вызвал tool, заговорил снова), UI раньше брал только последнее сообщение, а
- * приход нового считался откатом: `sp.stop()` с fadeOut 60мс срезал уже начатое
- * предложение, и на слух получались обрывки — с одного предложения на другое.
- *
- * Здесь остаток текущего сообщения доигрывается, чанкер сбрасывается, но
- * играющее НЕ гасится: новое встаёт в очередь сразу после старого.
- */
-fun onNewAssistantMessage() {
-    val sp = speaker
-    if (sp == null) {
-        consumedPrefix = ""
-        chunker.reset()
-        return
-    }
-    val rest = chunker.flush().filter(::isSpeechable)
-    if (rest.isNotEmpty()) {
-        rest.forEach { sp.enqueue(it) }
-        Log.d(TAG, "перед новым сообщением доигрываю остаток: ${rest.size}")
-    }
-    chunker.reset()
-    consumedPrefix = ""
-}
-
-/** Новый ответ: то, что было сказано, больше не актуально. */
-    fun onNewResponse() {
-        consumedPrefix = ""
-        chunker.reset()
-        deferred = null
-    }
-
-    /** Стоп озвучки: очередь чистим, играющее гасим. */
+     * Новый ответ или явная остановка: очередь чистим, играющее гасим.
+     *
+     * Раньше рядом стоял ещё [onNewResponse], который делал ровно то же, но без
+     * гашения. Оба вызова шли в паре `stop(); onNewResponse()` — то есть второй
+     * был пустым, и его легко было забыть, оставив фразу висеть. Один метод
+     * делает состояние очереди однозначным.
+     */
     fun stop() {
         consumedPrefix = ""
         chunker.reset()
         deferred = null
-        speaker?.stop(fadeOutMs = 120)
+        speaker?.stop(fadeOutMs = STOP_FADE_MS)
     }
 
     /**
@@ -231,8 +176,7 @@ fun onNewAssistantMessage() {
      * менял prefs, но файл продолжал писаться до перезапуска приложения.
      */
     fun applyDumpPref(context: Context) {
-        val on = TtsConfig.read(context).dumpPcm
-        if (on) {
+        if (TtsConfig.read(context).dumpPcm) {
             // Не открываем второй файл поверх уже открытого: startDump перезатирает
             // прежний буфер, и начало текущей записи потерялось бы.
             if (AudioTrackPlayer.isDumping()) return
@@ -260,26 +204,11 @@ fun onNewAssistantMessage() {
         loadedFor = ""
     }
 
-    /**
-     * Локальный движок: Supertonic, если модель скачана, иначе системный TTS.
-     *
-     * Нужен и для выбора движка, и как страховка облака, поэтому вынесен в
-     * отдельный метод: раньше логика жила внутри when и её нельзя было
-     * переиспользовать второму месту.
-     */
-    private fun localSynth(context: Context, cfg: TtsConfig): SpeechSynth? {
-        SupertonicTts.loadOrNull(cfg.modelDir(context))?.let { engine ->
-            return object : SpeechSynth {
-                override val sampleRate: Int get() = engine.sampleRate
-                override fun synthesize(text: String, sid: Int, speed: Float) =
-                    engine.synthesize(text, sid, speed)
-            }
-        }
-        return SystemSpeechSynth(context)
-    }
-
     /** Движок и спикер живут между ответами: модель грузится один раз, не каждый ответ. */
-    private fun ensureSpeaker(context: Context, cfg: TtsConfig): TtsSpeaker? {
+    private fun ensureSpeaker(
+        context: Context,
+        cfg: TtsConfig,
+    ): TtsSpeaker? {
         // Голос и модель облака входят в ключ пересоздания: смена голоса в UI
         // обязана поднимать новый движок, иначе озвучка продолжила бы старым.
         // Плюс ревизия ключа ElevenLabs — иначе ввод нового ключа при том же
@@ -287,39 +216,12 @@ fun onNewAssistantMessage() {
         val key = "${cfg.engine.prefValue}:${cfg.model}:${cfg.elevenVoice}:" +
             "${cfg.elevenModel}:${ElevenLabsSecret.revision(context)}:${context.filesDir}"
         if (key == loadedFor) return speaker
-        // Ключ ставим ДО фоновой загрузки, чтобы два быстрых вызова подряд
+        // Ключ ставим ДО фоновой загрузки, чтобы два быстрые вызова подряд
         // не запустили две загрузки модели. Но если загрузка провалилась,
         // ключ снимаем — иначе движок больше не попробует подняться.
         loadedFor = key
         loader.execute {
-            val synth: SpeechSynth? =
-                when (cfg.engine) {
-                    TtsEngine.off -> null
-                    TtsEngine.system -> SystemSpeechSynth(context)
-                    TtsEngine.sherpa -> localSynth(context, cfg)
-                    TtsEngine.elevenlabs -> {
-                        val key = ElevenLabsSecret.load(context)
-                        if (key == null) {
-                            // Ключ не введён — это ошибка настройки, а не повод
-                            // оставить юзера без озвучки: уходим на локальный движок
-                            // и говорим об этом в лог.
-                            Log.w(TAG, "у облака нет API-ключа, беру локальный движок")
-                            localSynth(context, cfg)
-                        } else {
-                            // Локальный движок — страховка на случай недоступности
-                            // сети: фраза не потеряется, а только прозвучит иначе.
-                            ElevenLabsTts(
-                                context = context,
-                                apiKey = key,
-                                voiceId = cfg.elevenVoice,
-                                modelId = cfg.elevenModel,
-                                // Фабрика, а не готовый движок: облако поднимает локальный
-                                // только если сеть реально не ответила.
-                                fallbackFactory = { localSynth(context, cfg) },
-                            )
-                        }
-                    }
-                }
+            val synth = SpeechFactory.build(context, cfg)
             if (synth == null) {
                 Log.w(TAG, "движок ${cfg.engine.label} недоступен, озвучка выключена")
                 // Снимаем ключ: следующий вызов попробует снова (пользователь мог
