@@ -23,6 +23,12 @@ class MoltbookBootReceiver : BroadcastReceiver() {
         val action = intent.action
         if (action != Intent.ACTION_BOOT_COMPLETED && action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         Log.i(TAG, "$action — тик возвращается в расписание")
+        // Сначала забываем метку взведения: и перезагрузка, и обновление APK
+        // сносят alarm силами системы, а SharedPreferences с меткой остаются.
+        // Без disarm ensureScheduled увидел бы «метка свежая» и вышел рано,
+        // решив, что будильник ещё жив, — и автономия осталась бы выключенной
+        // до позднего старта serve.
+        MoltbookScheduler.disarm(context.applicationContext)
         // ensureScheduled, а не schedule: снимает alarm только если его реально
         // нет, и не растягивает уже выбранный агентом интервал.
         MoltbookScheduler.ensureScheduled(context.applicationContext)

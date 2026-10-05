@@ -4,7 +4,6 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
-import android.util.Log
 
 /**
  * Локальный учёт Moltbook. До него «сколько не отвечено» вычислялось пересчётом
@@ -56,7 +55,6 @@ internal class MoltbookLedger(
         val unread: Int = 0,
         val karma: Int = 0,
         val lastTickAt: Long = 0L,
-
         /** Когда агент обещал вернуться (абсолютное время, мс). 0 — ещё не решал. */
         val nextVisitAt: Long = 0L,
         val lastError: String? = null,
@@ -291,9 +289,9 @@ internal class MoltbookLedger(
             }
 
     /** Наши посты — ими же ищем репосты в ленте. */
+
     /** Репост засчитан один раз: иначе один и тот же пересказ попадёт в дайджест каждый тик. */
-    fun hasSeenRepost(postId: String): Boolean =
-        state("$KEY_REPOST_SEEN$postId") != null
+    fun hasSeenRepost(postId: String): Boolean = state("$KEY_REPOST_SEEN$postId") != null
 
     fun markRepostSeen(postId: String) {
         putState("$KEY_REPOST_SEEN$postId", "1")
@@ -322,6 +320,7 @@ internal class MoltbookLedger(
      * опубликовать агентом ответ самому себе. Автономный агент, пишущий в
      * публичную ленту, получает второй эшелон и на уровне выборки.
      */
+
     /**
      * @param retryBefore снимает кулдаун с FAILED: в очередь вернутся те неудачи,
      *   что старше этого момента. По умолчанию `0` — то есть FAILED не берутся
@@ -398,6 +397,7 @@ internal class MoltbookLedger(
 
     fun stats(pendingLimit: Int = 20): Stats {
         val db = readableDatabase
+
         fun count(
             table: String,
             where: String,
@@ -421,10 +421,11 @@ internal class MoltbookLedger(
             failedTotal = count("comments", "status = ?", arrayOf(CommentStatus.FAILED.name)),
             ourPosts = count("posts", "ours = 1"),
             repliesToOurPosts =
-                db.rawQuery(
-                    "SELECT COUNT(*) FROM comments c JOIN posts p ON p.id = c.post_id WHERE p.ours = 1 AND c.author != ?",
-                    arrayOf(OUR_AGENT),
-                ).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 },
+                db
+                    .rawQuery(
+                        "SELECT COUNT(*) FROM comments c JOIN posts p ON p.id = c.post_id WHERE p.ours = 1 AND c.author != ?",
+                        arrayOf(OUR_AGENT),
+                    ).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 },
             repostsOfOurs = count("posts", "repost_of IS NOT NULL"),
             upvotesGiven = count("upvotes", "1 = 1"),
             unread = state(KEY_UNREAD)?.toIntOrNull() ?: 0,

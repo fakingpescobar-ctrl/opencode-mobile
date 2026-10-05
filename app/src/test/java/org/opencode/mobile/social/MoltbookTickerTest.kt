@@ -67,8 +67,10 @@ class MoltbookTickerTest {
      * `NaN` минут останавливает расписание, а лишний апвоут — это фарм, который мы
      * обещали не делать. Поэтому мусор обязан давать fallback, а не угадывание.
      */
-    private fun parse(answer: String?, vararg candidates: String) =
-        MoltbookTicker.parseHousekeepingAnswer(answer, candidates.toList(), FALLBACK)
+    private fun parse(
+        answer: String?,
+        vararg candidates: String,
+    ) = MoltbookTicker.parseHousekeepingAnswer(answer, candidates.toList(), FALLBACK)
 
     @Test
     fun `берёт апвоуты и ритм из строгих двух строк`() {

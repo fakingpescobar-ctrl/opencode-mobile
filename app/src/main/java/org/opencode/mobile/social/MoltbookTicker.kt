@@ -28,13 +28,11 @@ internal class MoltbookTicker(
     private var ledgerCache: MoltbookLedger? = null
 
     /**
- * Кэшированный ledger тика. Открыт наружу, потому что приёмник дописывает в него
- * итог тика: если бы он создавал свой MoltbookLedger, на каждый тик плодился бы
- * лишний SQLiteOpenHelper, который никто не закрывает.
- */
-internal fun ledger(): MoltbookLedger = ledgerCache ?: MoltbookLedger(context).also { ledgerCache = it }
-
-
+     * Кэшированный ledger тика. Открыт наружу, потому что приёмник дописывает в него
+     * итог тика: если бы он создавал свой MoltbookLedger, на каждый тик плодился бы
+     * лишний SQLiteOpenHelper, который никто не закрывает.
+     */
+    internal fun ledger(): MoltbookLedger = ledgerCache ?: MoltbookLedger(context).also { ledgerCache = it }
 
     /** Результат прохода — попадает в лог и в дайджест, чтобы «почему молчишь» отвечалось фактами. */
     data class TickReport(
@@ -308,7 +306,12 @@ internal fun ledger(): MoltbookLedger = ledgerCache ?: MoltbookLedger(context).a
                     ledger.markComment(comment.id, MoltbookLedger.CommentStatus.SKIPPED, now = now)
                 }
             }
-            Log.i(TAG, "пост ${post.postId.take(8)} «${post.title.take(40)}»: комментов ${comments.size}, ждут ответа ${comments.count { deservesReply(it, answeredByUs) }}")
+            Log.i(
+                TAG,
+                "пост ${post.postId.take(
+                    8
+                )} «${post.title.take(40)}»: комментов ${comments.size}, ждут ответа ${comments.count { deservesReply(it, answeredByUs) }}"
+            )
         }
         return scanned
     }
@@ -335,7 +338,16 @@ internal fun ledger(): MoltbookLedger = ledgerCache ?: MoltbookLedger(context).a
                 post.repostOf?.takeIf { it in ourIds }
                     ?: ourIds.firstOrNull { id -> post.body.contains(id) || post.title.contains(id) }
                     ?: continue
-            ledger.upsertPost(post.postId, post.title, post.author, ours = false, repostOf = repostOf, post.commentsTotal, post.upvotes, now)
+            ledger.upsertPost(
+                post.postId,
+                post.title,
+                post.author,
+                ours = false,
+                repostOf = repostOf,
+                post.commentsTotal,
+                post.upvotes,
+                now
+            )
             if (!ledger.hasSeenRepost(post.postId)) {
                 ledger.markRepostSeen(post.postId)
                 found += "репост нашего поста: ${post.author} «${post.title.take(40)}»"
@@ -349,11 +361,17 @@ internal fun ledger(): MoltbookLedger = ledgerCache ?: MoltbookLedger(context).a
     }
 
     private sealed interface PostResult {
-        data class Done(val commentId: String) : PostResult
+        data class Done(
+            val commentId: String,
+        ) : PostResult
 
-        data class Verified(val commentId: String) : PostResult
+        data class Verified(
+            val commentId: String,
+        ) : PostResult
 
-        data class Failed(val reason: String) : PostResult
+        data class Failed(
+            val reason: String,
+        ) : PostResult
     }
 
     /**
@@ -478,7 +496,9 @@ internal fun ledger(): MoltbookLedger = ledgerCache ?: MoltbookLedger(context).a
             // токены и минуты ожидания в фоне ради текста, который читает человек,
             // а не модель. Здесь мы всё равно уже читаем эти комменты.
             if (stats.pending.isNotEmpty()) {
-                appendLine("RU: переведи КАЖДЫЙ комментарий на русский — по одной строке `RU <номер>: <перевод>`. Это для панели, читает русский человек.")
+                appendLine(
+                    "RU: переведи КАЖДЫЙ комментарий на русский — по одной строке `RU <номер>: <перевод>`. Это для панели, читает русский человек."
+                )
             }
             appendLine("Больше ничего не пиши.")
         }
@@ -539,7 +559,9 @@ internal fun ledger(): MoltbookLedger = ledgerCache ?: MoltbookLedger(context).a
             buildString {
                 appendLine("Moltbook @ ${stamp / 1000}")
                 appendLine("karma=${report.karma} непрочитанных=${report.unread}")
-                appendLine("проверено постов=${report.postsChecked} ответов=${report.repliesPosted} verification=${report.verificationsSolved} апвоутов=${report.upvotesGiven}")
+                appendLine(
+                    "проверено постов=${report.postsChecked} ответов=${report.repliesPosted} verification=${report.verificationsSolved} апвоутов=${report.upvotesGiven}"
+                )
                 if (report.deferredReplies > 0) {
                     appendLine("отложено до следующего тика: ${report.deferredReplies}")
                 }
@@ -565,7 +587,8 @@ internal fun ledger(): MoltbookLedger = ledgerCache ?: MoltbookLedger(context).a
             JSONObject().apply {
                 put(
                     "parts",
-                    org.json.JSONArray()
+                    org.json
+                        .JSONArray()
                         .put(
                             JSONObject()
                                 .put("type", "text")
@@ -679,7 +702,6 @@ internal fun ledger(): MoltbookLedger = ledgerCache ?: MoltbookLedger(context).a
             )
         }
 
-
         /**
          * Форма сообщения opencode: роль и время лежат во вложенном `info`, а `parts` —
          * на верхнем уровне. Раньше роль читалась с верхнего уровня, всегда была пустой,
@@ -748,5 +770,6 @@ internal fun ledger(): MoltbookLedger = ledgerCache ?: MoltbookLedger(context).a
         const val RETRY_COOLDOWN_MS = 6 * 60 * 60 * 1000L
         const val MAX_COMMENT_CHARS = 900
         const val GENERATION_POLLS = 60
-        const val GENERATION_POLL_MS = 3_000L    }
+        const val GENERATION_POLL_MS = 3_000L
+    }
 }

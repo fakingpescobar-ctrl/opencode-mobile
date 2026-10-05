@@ -42,21 +42,17 @@ class MoltbookAlarmReceiver : BroadcastReceiver() {
     }
 
 /**
- * Последняя ошибка тика в ledger. Пишем в ledger самого тикера, а не создаём
- * свой MoltbookLedger: каждый такой экземпляр — это отдельный SQLiteOpenHelper,
- * который никто не закрывает, и тик идёт каждые 30-720 минут.
- * Всё под runCatching: если и этот сбой случился на записи, терять его молча
- * нельзя, но и тик из-за этого ронять тоже незачем.
- */
-private fun recordOutcome(
-    ticker: MoltbookTicker,
-    error: String?,
-) {
-    runCatching {
-        if (error == null) ticker.ledger().clearState(MoltbookLedger.KEY_LAST_ERROR)
-        else ticker.ledger().putState(MoltbookLedger.KEY_LAST_ERROR, error)
-    }.onFailure { Log.w(TAG, "не записал состояние тика: ${it.message}") }
-}
+     * Прошлый сбой больше не актуален — иначе панель вечно показывает ошибку вчерашнего
+     * тика. Ключ просто удаляется: панель ждёт именно null.
+     *
+     * Пишем в ledger самого тикера, а не создаём свой MoltbookLedger: каждый такой
+     * экземпляр — отдельный SQLiteOpenHelper, который никто не закрывает, а тик идёт
+     * каждые 30-720 минут.
+     */
+    private fun clearLastError(ticker: MoltbookTicker) {
+        runCatching { ticker.ledger().clearState(MoltbookLedger.KEY_LAST_ERROR) }
+            .onFailure { Log.w(TAG, "не записал состояние тика: ${it.message}") }
+    }
 
     private fun runTick(context: Context) {
         val stamp = stampFile(context)
@@ -76,9 +72,7 @@ private fun recordOutcome(
                     "ждёт=${report.deferredReplies} следующий визит через ${report.nextVisitMinutes} мин",
             )
             stamp.writeText(System.currentTimeMillis().toString())
-            // Прошлый сбой больше не актуален — иначе панель вечно показывает ошибку
-            // вчерашнего тика. Ключ просто удаляется: панель ждёт именно null.
-            recordOutcome(ticker, null)
+            clearLastError(ticker)
             // Паузу выбирает агент по фактическому состоянию ленты, а не расписание:
             // жёсткие 2 часа означали либо простой, либо очередь отложенных ответов.
             MoltbookScheduler.schedule(context, report.nextVisitMinutes * 60_000L)
@@ -86,7 +80,9 @@ private fun recordOutcome(
             Log.w(TAG, "тик упал: ${e.message}")
             // KEY_LAST_ERROR читался панелью, но не писался НИГДЕ — строка «последняя
             // ошибка» не могла появиться вообще, и сбой тика был виден только в logcat.
-            recordOutcome(ticker, "${e.javaClass.simpleName}: ${e.message}")
+            runCatching {
+                ticker.ledger().putState(MoltbookLedger.KEY_LAST_ERROR, "${e.javaClass.simpleName}: ${e.message}")
+            }.onFailure { Log.w(TAG, "не записал состояние тика: ${it.message}") }
             MoltbookScheduler.schedule(context, MoltbookScheduler.RETRY_MS)
         }
     }
@@ -125,8 +121,7 @@ private fun recordOutcome(
      * и есть 0. Битый (не число) тоже трактуем как «никогда», иначе после
      * прерванной записи тик молча блокировался бы навсегда.
      */
-    private fun lastTickAt(stamp: File): Long =
-        if (stamp.isFile) stamp.readText().trim().toLongOrNull() ?: 0L else 0L
+    private fun lastTickAt(stamp: File): Long = if (stamp.isFile) stamp.readText().trim().toLongOrNull() ?: 0L else 0L
 
     private companion object {
         const val TAG = "MoltbookAlarm"

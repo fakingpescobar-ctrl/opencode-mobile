@@ -5,13 +5,13 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.Callable
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
-import java.net.HttpURLConnection
-import java.net.URL
 
 /**
  * HTTP-клиент Moltbook. Сеть и разбор — здесь, проза — у модели.
@@ -33,7 +33,6 @@ internal class MoltbookClient(
     /** Один раз за процесс печатаем реальные ключи ленты — вместо догадок о схеме. */
     @Volatile
     private var loggedFeedKeys = false
-
 
     data class Home(
         val karma: Int,
@@ -62,7 +61,9 @@ internal class MoltbookClient(
 
     /** Ответ на комментарий: платформа либо приняла, либо потребовала verification. */
     sealed interface CommentOutcome {
-        data class Posted(val commentId: String) : CommentOutcome
+        data class Posted(
+            val commentId: String,
+        ) : CommentOutcome
 
         data class NeedsVerification(
             val verificationCode: String,
@@ -70,7 +71,9 @@ internal class MoltbookClient(
         ) : CommentOutcome
 
         /** Отказ платформы с её формулировкой — например «You already said this». */
-        data class Rejected(val reason: String) : CommentOutcome
+        data class Rejected(
+            val reason: String,
+        ) : CommentOutcome
     }
 
     fun home(): Home = parseHome(getJsonObject("/api/v1/home"))
@@ -97,7 +100,7 @@ internal class MoltbookClient(
                 challengeText = challenge.optString("challenge_text"),
             )
         }
-val commentId = postedCommentId(root)
+        val commentId = postedCommentId(root)
         if (commentId.isEmpty()) {
             return CommentOutcome.Rejected(root.optString("message", "без comment и без verification"))
         }
@@ -131,7 +134,7 @@ val commentId = postedCommentId(root)
         verificationCode: String,
         answer: String,
     ): Boolean {
-val normalized = answer.trim()
+        val normalized = answer.trim()
         // IOException, а НЕ check(): check бросает IllegalStateException, который
         // нигде в тике не ловится и улетает в общий catch приёмника — вместе с ним
         // терялись остальные ответы, апвоуты и снятие счётчиков. Один ответ вида
@@ -242,8 +245,6 @@ val normalized = answer.trim()
         Log.i(TAG, "feed: реальные ключи поста = ${first.keys().asSequence().toList()}")
     }
 
-
-
     private fun getJsonObject(path: String): JSONObject = request(path, "GET")
 
     private fun postJsonObject(
@@ -263,12 +264,12 @@ val normalized = answer.trim()
      * встанет. Поэтому весь запрос едет в отдельном потоке под общим таймаутом,
      * который выкидывает и поток, а не только возвращает ошибку.
      */
-private fun <T> bounded(
+    private fun <T> bounded(
         path: String,
         method: String,
         block: () -> T,
-    ): T {
-        return try {
+    ): T =
+        try {
             HTTP_POOL.submit(Callable { block() }).get(TOTAL_DEADLINE_MS, TimeUnit.MILLISECONDS)
         } catch (e: TimeoutException) {
             // Пул общий на весь процесс, и в этом весь смысл: зависший резолв не
@@ -281,7 +282,6 @@ private fun <T> bounded(
         } catch (e: ExecutionException) {
             throw (e.cause ?: e) as? IOException ?: IOException("Moltbook $method $path: ${e.cause?.message}", e)
         }
-    }
 
     private fun requestBlocking(
         path: String,
@@ -351,7 +351,6 @@ private fun <T> bounded(
             conn.disconnect()
         }
     }
-
 
     companion object {
         const val DEFAULT_HOST = "https://www.moltbook.com"
@@ -432,27 +431,27 @@ private fun <T> bounded(
         }
 
 /**
-     * Первый непустой строковый ключ из списка: названия полей у платформы гуляют,
-     * и вместо одной догадки перебираем известные варианты.
-     */
-    internal fun JSONObject.firstString(vararg keys: String): String? =
-        keys
-            .firstOrNull { opt(it) is String && (opt(it) as String).isNotBlank() }
-            ?.let { optString(it) }
+         * Первый непустой строковый ключ из списка: названия полей у платформы гуляют,
+         * и вместо одной догадки перебираем известные варианты.
+         */
+        internal fun JSONObject.firstString(vararg keys: String): String? =
+            keys
+                .firstOrNull { opt(it) is String && (opt(it) as String).isNotBlank() }
+                ?.let { optString(it) }
 
-    /** Автор приходит объектом (`author.name`) или строкой — Moltbook отдаёт оба вида. */
-    internal fun JSONObject.authorName(): String {
-        optJSONObject("author")?.let { nested ->
-            nested.firstString("name", "username", "display_name")?.let { return it }
+        /** Автор приходит объектом (`author.name`) или строкой — Moltbook отдаёт оба вида. */
+        internal fun JSONObject.authorName(): String {
+            optJSONObject("author")?.let { nested ->
+                nested.firstString("name", "username", "display_name")?.let { return it }
+            }
+            return firstString("author_name", "agent_name", "username", "author") ?: ""
         }
-        return firstString("author_name", "agent_name", "username", "author") ?: ""
-    }
 
-    /**
-     * Разбор живёт в компаньоне, а не в HTTP-методах, чтобы юнит-тесты гоняли
-     * настоящий JSON без сокета: формат ответа меняет платформа, а не сеть.
-     */
-    internal fun parseHome(root: JSONObject): Home {
+        /**
+         * Разбор живёт в компаньоне, а не в HTTP-методах, чтобы юнит-тесты гоняли
+         * настоящий JSON без сокета: формат ответа меняет платформа, а не сеть.
+         */
+        internal fun parseHome(root: JSONObject): Home {
             val account = root.optJSONObject("your_account")
                 ?: throw IOException("Moltbook /home без your_account — формат ответа изменилась")
             val posts = root.optJSONArray("activity_on_your_posts").mapObjects { entry ->
@@ -470,10 +469,9 @@ private fun <T> bounded(
             )
         }
 
-        internal fun parseComments(root: JSONObject): List<Comment> =
-            root.optJSONArray("comments").mapObjects(::buildComment)
+        internal fun parseComments(root: JSONObject): List<Comment> = root.optJSONArray("comments").mapObjects(::buildComment)
 
-private fun buildComment(entry: JSONObject) =
+        private fun buildComment(entry: JSONObject) =
             Comment(
                 id = entry.requireField("id", "comment"),
                 // authorName(), а не optJSONObject("author")?.optString("name"):

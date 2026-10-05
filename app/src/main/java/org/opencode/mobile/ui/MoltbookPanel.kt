@@ -22,7 +22,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -62,9 +61,7 @@ private val MoltCard = Color(0xFF14110C)
  * один раз получили с сетью в onReceive.
  */
 @Composable
-internal fun rememberMoltbookStats(
-    refreshKey: Int,
-): MoltbookLedger.Stats {
+internal fun rememberMoltbookStats(refreshKey: Int): MoltbookLedger.Stats {
     val context = LocalContext.current
     val ledger = remember { MoltbookLedger(context) }
     var stats by remember { mutableStateOf(MoltbookLedger.Stats()) }
@@ -75,7 +72,6 @@ internal fun rememberMoltbookStats(
     }
     return stats
 }
-
 
 /** Кнопка «М» в шапке: буква + счётчик неотвеченных. */
 @Composable
@@ -282,4 +278,3 @@ private fun cadenceHint(stats: MoltbookLedger.Stats): String {
         "был в " + stampFormat.format(Date(stats.lastTickAt))
     }
 }
-
