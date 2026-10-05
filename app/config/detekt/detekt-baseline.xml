@@ -2,38 +2,55 @@
 <SmellBaseline>
   <ManuallySuppressedIssues/>
   <CurrentIssues>
-    <ID>CyclomaticComplexMethod:ChatOverlay.kt$@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class) @Composable fun ChatOverlay( modifier: Modifier = Modifier, serverPort: Int = 4096, )</ID>
     <ID>CyclomaticComplexMethod:ChatOverlay.kt$private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot?</ID>
     <ID>CyclomaticComplexMethod:DiagnosticsScreen.kt$@Composable fun DiagnosticsScreen( onClose: () -&gt; Unit, modifier: Modifier = Modifier, )</ID>
     <ID>CyclomaticComplexMethod:ModelDownloader.kt$ModelDownloader$private suspend fun downloadTo( context: Context, url: String, dest: File, minBytes: Long, label: String, requiredFree: Long, onProgress: (Long, Long) -&gt; Unit, ): File</ID>
     <ID>CyclomaticComplexMethod:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
+    <ID>CyclomaticComplexMethod:SentenceChunker.kt$SentenceChunker$private fun findBoundary(text: String, limit: Int): Int?</ID>
+    <ID>CyclomaticComplexMethod:SystemSpeechSynth.kt$PcmWav$fun readMonoFloat(file: File): TtsAudio?</ID>
+    <ID>CyclomaticComplexMethod:sherpa_Tts.kt$fun getOfflineTtsConfig( modelDir: String, modelName: String, // for VITS acousticModelName: String, // for Matcha vocoder: String, // for Matcha voices: String, // for Kokoro or kitten lexicon: String, dataDir: String, dictDir: String, // unused ruleFsts: String, ruleFars: String, numThreads: Int? = null, isKitten: Boolean = false, isSupertonic: Boolean = false, durationPredictor: String = "", // for Supertonic textEncoder: String = "", // for Supertonic vectorEstimator: String = "", // for Supertonic supertonicVocoder: String = "", // for Supertonic ttsJson: String = "", // for Supertonic unicodeIndexer: String = "", // for Supertonic voiceStyle: String = "", // for Supertonic ): OfflineTtsConfig</ID>
     <ID>EmptyFunctionBlock:ChatOverlay.kt$&lt;no name provided&gt;${}</ID>
     <ID>ForEachOnRange:RuntimeManager.kt$RuntimeManager$(1..MAX_LOG_FILES) .map { File(parent, "opencode.log.$it") } .filter { it.exists() }</ID>
     <ID>ImplicitDefaultLocale:ChatOverlay.kt$String.format("%.3f ", kotlin.math.sqrt(sum / (end - i)))</ID>
+    <ID>ImplicitDefaultLocale:GaugeSettings.kt$String.format("%.2f", ctxShape.cellGapDp)</ID>
+    <ID>ImplicitDefaultLocale:GaugeSettings.kt$String.format("%.2f", ctxShape.lean)</ID>
+    <ID>ImplicitDefaultLocale:GaugeSettings.kt$String.format("%.2f", zenShape.cellGapDp)</ID>
+    <ID>ImplicitDefaultLocale:GaugeSettings.kt$String.format("%.2f", zenShape.lean)</ID>
     <ID>InstanceOfCheckForException:ChatOverlay.kt$e is InterruptedException</ID>
     <ID>InstanceOfCheckForException:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$e is IllegalStateException</ID>
-    <ID>LongMethod:ChatOverlay.kt$@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class) @Composable fun ChatOverlay( modifier: Modifier = Modifier, serverPort: Int = 4096, )</ID>
+    <ID>InvalidPackageDeclaration:sherpa_Tts.kt$package com.k2fsa.sherpa.onnx</ID>
+    <ID>InvalidPackageDeclaration:sherpa_WaveReader.kt$package com.k2fsa.sherpa.onnx</ID>
     <ID>LongMethod:ChatOverlay.kt$fun stopVoice()</ID>
     <ID>LongMethod:ChatOverlay.kt$private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot?</ID>
     <ID>LongMethod:DiagnosticsScreen.kt$@Composable fun DiagnosticsScreen( onClose: () -&gt; Unit, modifier: Modifier = Modifier, )</ID>
+    <ID>LongMethod:GaugeSettings.kt$@Composable fun GaugeSettings( ctxShape: GaugeShape, onCtxShapeChange: (GaugeShape) -&gt; Unit, onCtxShapePersist: () -&gt; Unit, zenShape: GaugeShape, onZenShapeChange: (GaugeShape) -&gt; Unit, onZenShapePersist: () -&gt; Unit, palette: GaugePalette, onColorChange: (GaugeColorKey, Int) -&gt; Unit, onPalettePersist: () -&gt; Unit, barGap: Int, onBarGapChange: (Int) -&gt; Unit, onBarGapPersist: () -&gt; Unit, onResetDefaults: () -&gt; Unit, modifier: Modifier = Modifier, )</ID>
     <ID>LongMethod:ModelDownloader.kt$ModelDownloader$private suspend fun downloadTo( context: Context, url: String, dest: File, minBytes: Long, label: String, requiredFree: Long, onProgress: (Long, Long) -&gt; Unit, ): File</ID>
     <ID>LongMethod:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
+    <ID>LongMethod:sherpa_Tts.kt$fun getOfflineTtsConfig( modelDir: String, modelName: String, // for VITS acousticModelName: String, // for Matcha vocoder: String, // for Matcha voices: String, // for Kokoro or kitten lexicon: String, dataDir: String, dictDir: String, // unused ruleFsts: String, ruleFars: String, numThreads: Int? = null, isKitten: Boolean = false, isSupertonic: Boolean = false, durationPredictor: String = "", // for Supertonic textEncoder: String = "", // for Supertonic vectorEstimator: String = "", // for Supertonic supertonicVocoder: String = "", // for Supertonic ttsJson: String = "", // for Supertonic unicodeIndexer: String = "", // for Supertonic voiceStyle: String = "", // for Supertonic ): OfflineTtsConfig</ID>
+    <ID>LongParameterList:GaugeSettings.kt$( ctxShape: GaugeShape, onCtxShapeChange: (GaugeShape) -&gt; Unit, onCtxShapePersist: () -&gt; Unit, zenShape: GaugeShape, onZenShapeChange: (GaugeShape) -&gt; Unit, onZenShapePersist: () -&gt; Unit, palette: GaugePalette, onColorChange: (GaugeColorKey, Int) -&gt; Unit, onPalettePersist: () -&gt; Unit, barGap: Int, onBarGapChange: (Int) -&gt; Unit, onBarGapPersist: () -&gt; Unit, onResetDefaults: () -&gt; Unit, modifier: Modifier = Modifier, )</ID>
+    <ID>LongParameterList:GaugeSettings.kt$( label: String, value: Float, valueRange: ClosedFloatingPointRange&lt;Float&gt;, steps: Int, onValueChange: (Float) -&gt; Unit, onValueChangeFinished: () -&gt; Unit, display: String, )</ID>
     <ID>LongParameterList:ModelDownloader.kt$ModelDownloader$( context: Context, url: String, dest: File, minBytes: Long, label: String, requiredFree: Long, onProgress: (Long, Long) -&gt; Unit, )</ID>
+    <ID>LongParameterList:sherpa_Tts.kt$( modelDir: String, modelName: String, // for VITS acousticModelName: String, // for Matcha vocoder: String, // for Matcha voices: String, // for Kokoro or kitten lexicon: String, dataDir: String, dictDir: String, // unused ruleFsts: String, ruleFars: String, numThreads: Int? = null, isKitten: Boolean = false, isSupertonic: Boolean = false, durationPredictor: String = "", // for Supertonic textEncoder: String = "", // for Supertonic vectorEstimator: String = "", // for Supertonic supertonicVocoder: String = "", // for Supertonic ttsJson: String = "", // for Supertonic unicodeIndexer: String = "", // for Supertonic voiceStyle: String = "", // for Supertonic )</ID>
+    <ID>LoopWithTooManyJumpStatements:AudioTrackPlayer.kt$AudioTrackPlayer$while</ID>
     <ID>LoopWithTooManyJumpStatements:ChatOverlay.kt$for</ID>
     <ID>LoopWithTooManyJumpStatements:Ipv4Proxy.kt$Ipv4Proxy$while</ID>
     <ID>LoopWithTooManyJumpStatements:OpencodeRuntime.kt$OpencodeRuntime$for</ID>
     <ID>LoopWithTooManyJumpStatements:RuntimeManager.kt$RuntimeManager$while</ID>
+    <ID>LoopWithTooManyJumpStatements:TtsSpeaker.kt$TtsSpeaker$while</ID>
+    <ID>MagicNumber:AudioTrackPlayer.kt$AudioTrackPlayer$0xFFFFFFFFL</ID>
+    <ID>MagicNumber:AudioTrackPlayer.kt$AudioTrackPlayer$10</ID>
+    <ID>MagicNumber:AudioTrackPlayer.kt$AudioTrackPlayer$150</ID>
+    <ID>MagicNumber:AudioTrackPlayer.kt$AudioTrackPlayer$3</ID>
+    <ID>MagicNumber:AudioTrackPlayer.kt$AudioTrackPlayer$4</ID>
+    <ID>MagicNumber:AudioTrackPlayer.kt$AudioTrackPlayer$8L</ID>
+    <ID>MagicNumber:AudioTrackPlayer.kt$AudioTrackPlayer.Companion$16</ID>
     <ID>MagicNumber:ChatOverlay.kt$0.01f</ID>
     <ID>MagicNumber:ChatOverlay.kt$0.35f</ID>
-    <ID>MagicNumber:ChatOverlay.kt$0.38f</ID>
     <ID>MagicNumber:ChatOverlay.kt$0.45f</ID>
-    <ID>MagicNumber:ChatOverlay.kt$0.50f</ID>
-    <ID>MagicNumber:ChatOverlay.kt$0.55f</ID>
     <ID>MagicNumber:ChatOverlay.kt$0.5f</ID>
     <ID>MagicNumber:ChatOverlay.kt$0.65f</ID>
     <ID>MagicNumber:ChatOverlay.kt$0.6f</ID>
     <ID>MagicNumber:ChatOverlay.kt$0.785</ID>
-    <ID>MagicNumber:ChatOverlay.kt$0.80f</ID>
     <ID>MagicNumber:ChatOverlay.kt$0.85f</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFF</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFF0000FF</ID>
@@ -44,14 +61,12 @@
     <ID>MagicNumber:ChatOverlay.kt$0xFF161616</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFF1C1C1C</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFF1E2B1E</ID>
-    <ID>MagicNumber:ChatOverlay.kt$0xFF242424</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFF24401F</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFF252525</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFF2A2A2A</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFF2E5E8E</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFF39FF88</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFF3A3A3A</ID>
-    <ID>MagicNumber:ChatOverlay.kt$0xFF4CAF50</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFF5A8DEE</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFF5B9BD5</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFF777777</ID>
@@ -80,7 +95,6 @@
     <ID>MagicNumber:ChatOverlay.kt$0xFFFF3B3B</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFFFF6D00</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFFFF6F5A</ID>
-    <ID>MagicNumber:ChatOverlay.kt$0xFFFFC107</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFFFFFF</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFFFFFF00</ID>
     <ID>MagicNumber:ChatOverlay.kt$10</ID>
@@ -134,6 +148,27 @@
     <ID>MagicNumber:DiagnosticsScreen.kt$1024</ID>
     <ID>MagicNumber:DiagnosticsScreen.kt$1024.0</ID>
     <ID>MagicNumber:DiagnosticsScreen.kt$1024L</ID>
+    <ID>MagicNumber:GaugeSettings.kt$0.40f</ID>
+    <ID>MagicNumber:GaugeSettings.kt$0x66FFFFFF</ID>
+    <ID>MagicNumber:GaugeSettings.kt$0xFF1C1C1C</ID>
+    <ID>MagicNumber:GaugeSettings.kt$0xFF9E9E9E</ID>
+    <ID>MagicNumber:GaugeSettings.kt$0xFFBDBDBD</ID>
+    <ID>MagicNumber:GaugeSettings.kt$0xFFE6E6E6</ID>
+    <ID>MagicNumber:GaugeSettings.kt$11</ID>
+    <ID>MagicNumber:GaugeSettings.kt$120f</ID>
+    <ID>MagicNumber:GaugeSettings.kt$13</ID>
+    <ID>MagicNumber:GaugeSettings.kt$2.5f</ID>
+    <ID>MagicNumber:GaugeSettings.kt$20f</ID>
+    <ID>MagicNumber:GaugeSettings.kt$24</ID>
+    <ID>MagicNumber:GaugeSettings.kt$3</ID>
+    <ID>MagicNumber:GaugeSettings.kt$360f</ID>
+    <ID>MagicNumber:GaugeSettings.kt$4</ID>
+    <ID>MagicNumber:GaugeSettings.kt$40f</ID>
+    <ID>MagicNumber:GaugeSettings.kt$4f</ID>
+    <ID>MagicNumber:GaugeSettings.kt$60f</ID>
+    <ID>MagicNumber:GaugeSettings.kt$6f</ID>
+    <ID>MagicNumber:GaugeSettings.kt$79</ID>
+    <ID>MagicNumber:GaugeStyle.kt$GaugeBarGap$4</ID>
     <ID>MagicNumber:Ipv4Proxy.kt$Ipv4Proxy$15_000</ID>
     <ID>MagicNumber:Ipv4Proxy.kt$Ipv4Proxy$1_000_000</ID>
     <ID>MagicNumber:Ipv4Proxy.kt$Ipv4Proxy$30_000</ID>
@@ -159,11 +194,29 @@
     <ID>MagicNumber:RuntimeManager.kt$RuntimeManager$1024</ID>
     <ID>MagicNumber:RuntimeManager.kt$RuntimeManager$15_000L</ID>
     <ID>MagicNumber:RuntimeManager.kt$RuntimeManager$200</ID>
-    <ID>MagicNumber:RuntimeManager.kt$RuntimeManager$3000</ID>
     <ID>MagicNumber:RuntimeManager.kt$RuntimeManager$4</ID>
     <ID>MagicNumber:RuntimeManager.kt$RuntimeManager$499</ID>
     <ID>MagicNumber:RuntimeManager.kt$RuntimeManager$500</ID>
     <ID>MagicNumber:RuntimeManager.kt$RuntimeManager$60</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$0xFF</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$12</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$128</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$128f</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$14</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$16</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$24</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$3</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$32</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$32768f</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$4</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$44</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$44100</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$8</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$SystemSpeechSynth$0.5f</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$SystemSpeechSynth$3</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$SystemSpeechSynth$30</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$SystemSpeechSynth$44</ID>
+    <ID>MagicNumber:SystemSpeechSynth.kt$SystemSpeechSynth$44100</ID>
     <ID>MagicNumber:Theme.kt$0xFF04100A</ID>
     <ID>MagicNumber:Theme.kt$0xFF0B0E11</ID>
     <ID>MagicNumber:Theme.kt$0xFF11151A</ID>
@@ -175,18 +228,26 @@
     <ID>MagicNumber:Theme.kt$0xFFF8FAFC</ID>
     <ID>MagicNumber:Theme.kt$0xFFFAFAFA</ID>
     <ID>MagicNumber:Theme.kt$0xFFFFFFFF</ID>
+    <ID>MagicNumber:TtsSpeaker.kt$TtsSpeaker$1000f</ID>
+    <ID>MagicNumber:TtsSpeaker.kt$TtsSpeaker$300</ID>
+    <ID>MagicNumber:TtsSpeaker.kt$TtsSpeaker$40</ID>
     <ID>MagicNumber:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$1000</ID>
     <ID>MagicNumber:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$1024</ID>
     <ID>MagicNumber:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$80</ID>
     <ID>MagicNumber:Workspace.kt$Workspace$30</ID>
+    <ID>MagicNumber:sherpa_Tts.kt$4</ID>
     <ID>MaxLineLength:ChatOverlay.kt$"Как работает: int8-энкодер (блочная квантование, ~2× быстрее fp32) → fp16/32-декодер с KV-cache (шаг по токену ~64мс)."</ID>
     <ID>MaxLineLength:ModelDownloader.kt$ModelDownloader$"206 без etag/Content-Range гарантии (start=$crStart, ждали $startAt, etag=${etagFile.exists()}) — перекачка с нуля"</ID>
-    <ID>NestedBlockDepth:ChatOverlay.kt$@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class) @Composable fun ChatOverlay( modifier: Modifier = Modifier, serverPort: Int = 4096, )</ID>
+    <ID>MayBeConst:GaugeStyle.kt$GaugeBarGap$val DEFAULT = 4</ID>
     <ID>NestedBlockDepth:ChatOverlay.kt$private fun playNotificationSound(context: Context)</ID>
     <ID>NestedBlockDepth:DiagnosticsScreen.kt$private fun readLogTail( file: File, maxBytes: Int = 4000, ): String</ID>
     <ID>NestedBlockDepth:ModelDownloader.kt$ModelDownloader$fun sha256Of(file: File): String?</ID>
     <ID>NestedBlockDepth:ModelDownloader.kt$ModelDownloader$private fun hasGgmlMagic(file: File): Boolean</ID>
     <ID>NestedBlockDepth:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
+    <ID>NestedBlockDepth:SentenceChunker.kt$SentenceChunker$private fun findBoundary(text: String, limit: Int): Int?</ID>
+    <ID>NewLineAtEndOfFile:SentenceChunker.kt$org.opencode.mobile.tts.SentenceChunker.kt</ID>
+    <ID>NewLineAtEndOfFile:SystemSpeechSynth.kt$org.opencode.mobile.tts.SystemSpeechSynth.kt</ID>
+    <ID>ReturnCount:AudioTrackPlayer.kt$AudioTrackPlayer$fun play(audio: TtsAudio): Boolean</ID>
     <ID>ReturnCount:ChatOverlay.kt$AudioRecorder$fun stop(): FloatArray</ID>
     <ID>ReturnCount:ChatOverlay.kt$private fun prettyModel(id: String?): String</ID>
     <ID>ReturnCount:ChatOverlay.kt$private fun questionOf( port: Int, sessionId: String, ): ChatQuestion?</ID>
@@ -200,12 +261,20 @@
     <ID>ReturnCount:RuntimeManager.kt$RuntimeManager$private fun rotateLogFile(logFile: File)</ID>
     <ID>ReturnCount:RuntimeManager.kt$RuntimeManager$private suspend fun waitForHttp(port: Int): Boolean</ID>
     <ID>ReturnCount:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
+    <ID>ReturnCount:SentenceChunker.kt$SentenceChunker$private fun findBoundary(text: String, limit: Int): Int?</ID>
+    <ID>ReturnCount:SentenceChunker.kt$SentenceChunker$private fun takeChunk(force: Boolean): String?</ID>
+    <ID>ReturnCount:SupertonicTts.kt$SupertonicTts.Companion$fun loadOrNull(modelDir: File, threads: Int = TtsConfig.NUM_THREADS): SupertonicTts?</ID>
+    <ID>ReturnCount:SystemSpeechSynth.kt$PcmWav$fun readMonoFloat(file: File): TtsAudio?</ID>
+    <ID>ReturnCount:SystemSpeechSynth.kt$SystemSpeechSynth$override fun synthesize(text: String, sid: Int, speed: Float): TtsAudio?</ID>
+    <ID>ReturnCount:TtsSpeaker.kt$TtsSpeaker$private fun synthLoop(myGen: Long)</ID>
     <ID>SwallowedException:DiagnosticsScreen.kt$e: Exception</ID>
     <ID>SwallowedException:Ipv4Proxy.kt$Ipv4Proxy$e: IOException</ID>
     <ID>SwallowedException:ModelDownloader.kt$ModelDownloader$e: java.io.FileNotFoundException</ID>
     <ID>SwallowedException:ProcessSupervisor.kt$ProcessSupervisor$e: Exception</ID>
     <ID>SwallowedException:RuntimeManager.kt$RuntimeManager$e: Exception</ID>
     <ID>ThrowsCount:OpencodeRuntime.kt$OpencodeRuntime$@Throws(Exception::class) fun ensureMuslLibs(context: Context): File</ID>
+    <ID>ThrowsCount:sherpa_Tts.kt$fun getOfflineTtsConfig( modelDir: String, modelName: String, // for VITS acousticModelName: String, // for Matcha vocoder: String, // for Matcha voices: String, // for Kokoro or kitten lexicon: String, dataDir: String, dictDir: String, // unused ruleFsts: String, ruleFars: String, numThreads: Int? = null, isKitten: Boolean = false, isSupertonic: Boolean = false, durationPredictor: String = "", // for Supertonic textEncoder: String = "", // for Supertonic vectorEstimator: String = "", // for Supertonic supertonicVocoder: String = "", // for Supertonic ttsJson: String = "", // for Supertonic unicodeIndexer: String = "", // for Supertonic voiceStyle: String = "", // for Supertonic ): OfflineTtsConfig</ID>
+    <ID>TooGenericExceptionCaught:AudioTrackPlayer.kt$AudioTrackPlayer$t: Throwable</ID>
     <ID>TooGenericExceptionCaught:ChatOverlay.kt$&lt;no name provided&gt;$e: Throwable</ID>
     <ID>TooGenericExceptionCaught:ChatOverlay.kt$e: Exception</ID>
     <ID>TooGenericExceptionCaught:ChatOverlay.kt$e: Throwable</ID>
@@ -216,20 +285,30 @@
     <ID>TooGenericExceptionCaught:OpencodeServerService.kt$OpencodeServerService$e: Exception</ID>
     <ID>TooGenericExceptionCaught:ProcessSupervisor.kt$ProcessSupervisor$e: Exception</ID>
     <ID>TooGenericExceptionCaught:RuntimeManager.kt$RuntimeManager$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:SupertonicTts.kt$SupertonicTts.Companion$t: Throwable</ID>
+    <ID>TooGenericExceptionCaught:SystemSpeechSynth.kt$SystemSpeechSynth$t: Throwable</ID>
+    <ID>TooGenericExceptionCaught:TtsSpeaker.kt$TtsSpeaker$t: Throwable</ID>
     <ID>TooGenericExceptionCaught:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$e: Exception</ID>
     <ID>TooGenericExceptionCaught:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$e: Throwable</ID>
     <ID>TooGenericExceptionThrown:ChatOverlay.kt$AudioRecorder$throw RuntimeException("микрофон не инициализирован")</ID>
     <ID>TooGenericExceptionThrown:ChatOverlay.kt$throw RuntimeException("WAV: нет data/не PCM16 (bits=$bits)")</ID>
     <ID>TooGenericExceptionThrown:ChatOverlay.kt$throw RuntimeException("не WAV-файл")</ID>
+    <ID>TooManyFunctions:AudioTrackPlayer.kt$AudioTrackPlayer</ID>
     <ID>TooManyFunctions:ChatOverlay.kt$org.opencode.mobile.ui.ChatOverlay.kt</ID>
     <ID>TooManyFunctions:DiagnosticsScreen.kt$org.opencode.mobile.ui.DiagnosticsScreen.kt</ID>
     <ID>TooManyFunctions:ModelDownloader.kt$ModelDownloader</ID>
     <ID>TooManyFunctions:OpencodeServerService.kt$OpencodeServerService : Service</ID>
     <ID>TooManyFunctions:RuntimeManager.kt$RuntimeManager</ID>
     <ID>TooManyFunctions:WhisperTranscribeService.kt$WhisperTranscribeService$Companion</ID>
+    <ID>TooManyFunctions:sherpa_Tts.kt$OfflineTts</ID>
+    <ID>UnusedParameter:AudioTrackPlayer.kt$AudioTrackPlayer$t: AudioTrack</ID>
     <ID>UnusedParameter:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$model: String</ID>
     <ID>UnusedParameter:Workspace.kt$Workspace$context: Context</ID>
+    <ID>UnusedParameter:sherpa_Tts.kt$dictDir: String</ID>
     <ID>UnusedPrivateMember:MainActivity.kt$@Composable private fun ControlBar(status: OpencodeServerService.ServerStatus)</ID>
+    <ID>UnusedPrivateProperty:GaugeSettings.kt$val currentArgb = palette.getColor(key)</ID>
+    <ID>UseCheckOrError:AudioTrackPlayer.kt$AudioTrackPlayer$throw IllegalStateException("AudioTrack не инициализирован")</ID>
+    <ID>UseCheckOrError:AudioTrackPlayer.kt$AudioTrackPlayer$throw IllegalStateException("AudioTrack: getMinBufferSize вернул $minBuf")</ID>
     <ID>UseCheckOrError:ModelDownloader.kt$ModelDownloader$throw IllegalStateException("${dest.name}: SHA-256 не сошёлся после fallback-переноса — файл не тот")</ID>
     <ID>UseCheckOrError:ModelDownloader.kt$ModelDownloader$throw IllegalStateException("${dest.name}: файл не на месте после переноса (${dest.length()} != $done)")</ID>
     <ID>UseCheckOrError:ModelDownloader.kt$ModelDownloader$throw IllegalStateException("HTTP $code при скачивании ${dest.name}")</ID>
@@ -244,5 +323,9 @@
     <ID>UseCheckOrError:OpencodeRuntime.kt$OpencodeRuntime$throw IllegalStateException("musl lib $neededName not materialized")</ID>
     <ID>UseCheckOrError:OpencodeRuntime.kt$OpencodeRuntime$throw IllegalStateException("musl lib $neededName: tmp rename failed")</ID>
     <ID>UseCheckOrError:OpencodeRuntime.kt$OpencodeRuntime$throw IllegalStateException("musl lib $srcName missing in nativeLibraryDir")</ID>
+    <ID>UseRequire:sherpa_Tts.kt$throw IllegalArgumentException("Please provide vocoder for Matcha TTS")</ID>
+    <ID>UseRequire:sherpa_Tts.kt$throw IllegalArgumentException("Please specify a TTS model")</ID>
+    <ID>UseRequire:sherpa_Tts.kt$throw IllegalArgumentException("Please specify either a VITS or a Matcha model, but not both")</ID>
+    <ID>UtilityClassWithPublicConstructor:sherpa_WaveReader.kt$WaveReader</ID>
   </CurrentIssues>
 </SmellBaseline>

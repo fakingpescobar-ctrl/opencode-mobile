@@ -420,6 +420,10 @@ internal data class ChatSnapshot(
  * сервера каждые 2с + отправка через POST /session/{id}/message.
  * Поле ввода внизу, лента наверху, клавиатура не перекрывает поле (imePadding).
  */
+// Подавление осознанное: экран-монолит покрыт только ручным тестом на устройстве,
+// и его тихая переделка без тестов опаснее, чем честная метка в коде.
+// Разбиение на подкомпозблы по секциям (лента/ввод/панель MCP/диалоги) — отдельная задача.
+@Suppress("LongMethod", "CyclomaticComplexMethod", "NestedBlockDepth")
 @OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 fun ChatOverlay(
