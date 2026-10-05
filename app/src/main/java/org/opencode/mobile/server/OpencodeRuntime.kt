@@ -597,9 +597,9 @@ object OpencodeRuntime {
             // Промежуточная форма: сервер управления телефоном назывался "mobile".
             text.contains(mobileAliasMcpObject()) ->
                 upgradeMcpSection(file, text.replace(mobileAliasMcpObject(), mcpBlock()))
-            // Уже актуальная двухсерверная форма — осталось только проверить auth
+            // Уже актуальная форма, с music или без неё — осталось только проверить auth
             // и дописать permission-ключи, если их ещё нет.
-            text.contains(mcpBlock()) &&
+            hasManagedMcpBlock(text) &&
                 text.contains(AUTH_HEADER) &&
                 text.contains(MEMORY_MCP_URL) -> ensureManagedLaunchPermission(file, text)
             else -> {
@@ -718,6 +718,21 @@ object OpencodeRuntime {
 
     private fun mcpBlock(): String = mcpObject(mcpEntries())
 
+    /**
+     * Управляемая форма в любой из двух разновидностей: с музыкой и без неё.
+     *
+     * Проверка «уже актуальная форма» обязана узнавать ОБЕ, а раньше искала только
+     * [mcpBlock] — без music, — хотя music дописывается следующим шагом, [syncMusicEntry].
+     * В итоге лестница перестала признавать собственный продукт: стоило music попасть в
+     * mcp-объект, как `contains(mcpBlock())` переставал срабатывать, и каждый запуск
+     * падал в ветку «не управляемый» с false.
+     *
+     * На устройстве это стоило четырёх дней тишины: конфиг не переписывался с 01.10,
+     * эталон для ПК-агента протух, новые permission-ключи не добавлялись — при живых
+     * MCP и рабочих симлинках, то есть внешне совершенно здоровый сервер.
+     */
+    internal fun hasManagedMcpBlock(text: String): Boolean = text.contains(mcpBlock()) || text.contains(mcpBlockWithMusic())
+
     /** Управляемая форма с музыкой. Только для записи, когда Яндекс подключён. */
     internal fun mcpBlockWithMusic(): String = mcpObject(mcpEntriesWithMusic())
 
@@ -739,6 +754,21 @@ object OpencodeRuntime {
     private fun managedConfigBlock(): String =
         buildString {
             append(mcpBlock())
+            append(
+                ",\n  \"permission\": {\n" +
+                    "    \"mobile_launch_app\": \"ask\"\n" +
+                    "  }",
+            )
+        }
+
+    /**
+     * То же для формы с музыкой. Без неё дозапись permission-ключей в конфиг с music
+     * сносила бы саму music: [mcpBlock] в таком файле не ищется, и подстановка
+     * без-музыкальной формы его бы не нашла — а нашлась бы замена, убирающая регистрацию.
+     */
+    private fun managedConfigBlockWithMusic(): String =
+        buildString {
+            append(mcpBlockWithMusic())
             append(
                 ",\n  \"permission\": {\n" +
                     "    \"mobile_launch_app\": \"ask\"\n" +
@@ -777,13 +807,16 @@ object OpencodeRuntime {
                 )
                 true
             }
-            !text.contains(mcpBlock()) -> {
+            !hasManagedMcpBlock(text) -> {
                 android.util.Log.w(
                     "OpencodeRuntime",
                     "Managed memory MCP block has unexpected formatting; cannot add launch permission safely",
                 )
                 false
             }
+            // Музыку сохраняем: замена формы без music убрала бы её регистрацию.
+            text.contains(mcpBlockWithMusic()) ->
+                writeMemoryConfigText(file, text.replace(mcpBlockWithMusic(), managedConfigBlockWithMusic()))
             else -> writeMemoryConfigText(file, text.replace(mcpBlock(), managedConfigBlock()))
         }
 

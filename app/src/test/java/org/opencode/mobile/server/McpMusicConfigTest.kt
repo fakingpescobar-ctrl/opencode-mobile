@@ -150,6 +150,45 @@ class McpMusicConfigTest {
         )
     }
 
+    /**
+     * Регрессия 05.10.2026: лестница перестала признавать конфиг, в который music
+     * уже дописана, и ensureMcpConfig возвращал false на каждом запуске.
+     *
+     * Симптом был безобидный снаружи: сервер поднимался, MCP работали, симлинки на
+     * месте. Не обновлялись только конфиг, эталон для ПК-агента и новые permission-ключи.
+     */
+    @Test
+    fun `форма с music тоже считается управляемой`() {
+        val withMusic = config(OpencodeRuntime.mcpBlockWithMusic())
+
+        assertTrue(OpencodeRuntime.hasManagedMcpBlock(withMusic))
+    }
+
+    @Test
+    fun `форма без music остаётся управляемой`() {
+        assertTrue(OpencodeRuntime.hasManagedMcpBlock(config(withoutMusic)))
+    }
+
+    /**
+     * Почему проверке нужны обе формы, а не одна.
+     *
+     * music дописан внутрь mcp-объекта, поэтому без-музыкальная форма в такой строке
+     * уже не ищется — ровно тот случай, который 4 дня ломал запуск.
+     */
+    @Test
+    fun `форма с music не содержит форму без music`() {
+        assertFalse(config(OpencodeRuntime.mcpBlockWithMusic()).contains(withoutMusic))
+    }
+
+    @Test
+    fun `чужой mcp-блок не считается управляемым`() {
+        val foreign =
+            "{\n  \"mcp\": {\n    \"other\": {\n      \"type\": \"remote\",\n" +
+                "      \"url\": \"http://127.0.0.1:1/mcp\"\n    }\n  }\n}"
+
+        assertFalse(OpencodeRuntime.hasManagedMcpBlock(foreign))
+    }
+
     private companion object {
         const val MUSIC_KEY = "\"${YnisonMcp.NAME}\""
     }
