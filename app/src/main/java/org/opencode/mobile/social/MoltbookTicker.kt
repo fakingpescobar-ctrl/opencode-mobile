@@ -394,9 +394,22 @@ internal class MoltbookTicker(
         // ответ и упасть на чтении ответа — сервер уже создал комментарий, а мы об
         // этом не узнали. Найденный свой комментарий и есть доказательство, что
         // публиковать второй раз нельзя.
-        client.ourReplyTo(postId, parentId)?.let { existing ->
-            Log.i(TAG, "ответ на $parentId уже есть ($existing), повтор не публикуем")
-            return PostResult.Done(existing)
+        //
+        // Три исхода, а не два: Found = дубль запрещён, Absent = можно публиковать,
+        // Unknown = «не знаю». На Unknown публикацию не выполняем — иначе упавшая
+        // сеть прочиталась бы как «ответа нет» и мы опубликовали бы второй ответ на
+        // тот же вопрос. Ответ при этом не теряется: PostResult.Failed ставит комменту
+        // FAILED, он дождётся следующего тика.
+        when (val probe = client.ourReplyTo(postId, parentId)) {
+            is MoltbookClient.ReplyProbe.Found -> {
+                Log.i(TAG, "ответ на $parentId уже есть (${probe.commentId}), повтор не публикуем")
+                return PostResult.Done(probe.commentId)
+            }
+            is MoltbookClient.ReplyProbe.Unknown -> {
+                Log.w(TAG, "проверка дубля не удалась: ${probe.reason} — не публикую")
+                return PostResult.Failed("проверка дубля не удалась: ${probe.reason}")
+            }
+            MoltbookClient.ReplyProbe.Absent -> Unit
         }
         repeat(ATTEMPTS_WITH_VERIFICATION) { attempt ->
             when (val outcome = client.postComment(postId, capForWaf(draft), parentId = parentId)) {

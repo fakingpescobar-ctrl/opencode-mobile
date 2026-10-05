@@ -117,14 +117,46 @@ internal class MoltbookClient(
      * свой комментарий. Без этой проверки ретрай через 15 минут публиковал бы
      * второй ответ на тот же вопрос, а отозвать его уже нельзя.
      */
+
+    /** Ответ платформы на «мы уже отвечали на это?» — три разных исхода, а не два. */
+    sealed interface ReplyProbe {
+        /** Наш ответ найден: повторная публикация создаст дубль. */
+        data class Found(
+            val commentId: String,
+        ) : ReplyProbe
+
+        /** Ответа точно нет: ветку прочитали, своего комментария в ней не нашлось. */
+        object Absent : ReplyProbe
+
+        /**
+         * Разобраться не удалось: сеть, не-200, битый JSON.
+         *
+         * Отдельный случай не для красоты, а ради дублей. Раньше здесь стоял
+         * `runCatching { comments() }.getOrNull()`, и ошибка сети давала тот же null,
+         * что и «ответа нет». Тикер читал null как «можно публиковать» и публиковал
+         * второй ответ на тот же вопрос — ровно то, ради чего проверка и написана.
+         * Теперь Unknown означает «не знаю», и публикация на нём не выполняется.
+         */
+        data class Unknown(
+            val reason: String,
+        ) : ReplyProbe
+    }
+
     fun ourReplyTo(
         postId: String,
         parentId: String,
-    ): String? =
-        runCatching { comments(postId) }
-            .getOrNull()
-            ?.firstOrNull { it.isOurs && it.parentId == parentId }
-            ?.id
+    ): ReplyProbe {
+        val comments =
+            try {
+                comments(postId)
+            } catch (e: Exception) {
+                // Ловим Exception, а не IOException: getJsonObject внутри бросает и
+                // JSONException на неожиданном теле, и IllegalStateException на пустой
+                // JSONObject. Все они означают одно — «мы не знаем», а не «ответа нет».
+                return ReplyProbe.Unknown("${e.javaClass.simpleName}: ${e.message}")
+            }
+        return probeIn(comments, parentId)
+    }
 
     /**
      * @param answer ровно `число.00` — формат задаёт платформа, и ответ с другим
@@ -470,6 +502,21 @@ internal class MoltbookClient(
         }
 
         internal fun parseComments(root: JSONObject): List<Comment> = root.optJSONArray("comments").mapObjects(::buildComment)
+
+        /**
+         * Разбор уже прочитанной ветки в ответ «мы уже отвечали?».
+         *
+         * Вынесено отдельно от сети не ради тестовой подтасовки, а потому что это
+         * единственное место, где принимается решение «публиковать или молчать».
+         * Проверять его можно на списке комментариев, без сервера и без ключа.
+         */
+        fun probeIn(
+            comments: List<Comment>,
+            parentId: String,
+        ): ReplyProbe {
+            val existing = comments.firstOrNull { it.isOurs && it.parentId == parentId }
+            return if (existing == null) ReplyProbe.Absent else ReplyProbe.Found(existing.id)
+        }
 
         private fun buildComment(entry: JSONObject) =
             Comment(

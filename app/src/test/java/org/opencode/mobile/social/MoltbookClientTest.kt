@@ -4,9 +4,11 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
+import java.net.ServerSocket
 
 /**
  * Формат ответов Moltbook задаёт платформа и меняется без предупреждения, поэтому
@@ -235,5 +237,78 @@ class MoltbookClientTest {
         assertFalse("48 без знаков тратит код впустую", matches.matches("48"))
         assertFalse("запятая не принимается", matches.matches("48,00"))
         assertFalse("лишний знак не принимается", matches.matches("48.000"))
+    }
+
+/**
+     * Проверка дублей обязана различать «ответа нет» и «не смог проверить».
+     *
+     * Раньше это был `runCatching { comments() }.getOrNull()`, где ошибка сети давала
+     * тот же null, что и пустая ветка. Тикер читал null как «можно публиковать» и
+     * публиковал второй ответ на тот же вопрос — при том, что прошлый ответ сервер
+     * уже создал, мы просто о нём не узнали. Отзыв опубликованного запрещён, дубль
+     * остаётся навсегда.
+     */
+    @Test
+    fun `probeIn находит наш ответ именно в этой ветке`() {
+        val branch =
+            listOf(
+                comment("c-1", OWN, "наш ответ", "p-0"),
+                comment("c-2", "someone", "чужой ответ", "p-0"),
+                comment("c-3", OWN, "ответ на другой вопрос", "p-9"),
+            )
+        val probe = MoltbookClient.probeIn(branch, "p-0")
+        assertTrue("ответ на p-0 найден, а не потерян", probe is MoltbookClient.ReplyProbe.Found)
+        assertEquals("c-1", (probe as MoltbookClient.ReplyProbe.Found).commentId)
+    }
+
+    @Test
+    fun `probeIn не путает чужой комментарий и наш ответ на другом вопрос`() {
+        val branch =
+            listOf(
+                comment("c-1", OWN, "наш ответ на другой вопрос", "p-9"),
+                comment("c-2", "someone", "чужой ответ", "p-0"),
+            )
+        assertSame(
+            "наш комментарий на другом parent и чужой на нашем — это не наш ответ",
+            MoltbookClient.ReplyProbe.Absent,
+            MoltbookClient.probeIn(branch, "p-0"),
+        )
+    }
+
+    @Test
+    fun `probeIn на пустой ветке честно говорит что ответа нет`() {
+        assertSame(
+            MoltbookClient.ReplyProbe.Absent,
+            MoltbookClient.probeIn(emptyList(), "p-0"),
+        )
+    }
+
+    @Test
+    fun `ourReplyTo при недоступной сети говорит незнание а не отсутствие`() {
+        // Порт, который никто не слушает: соединение падает на connect.
+        // Никакого сервера не нужно — тесту достаточно, чтобы сеть не удалась.
+        val deadPort = ServerSocket(0).use { it.localPort }
+        val client = MoltbookClient("test-key", "http://127.0.0.1:$deadPort")
+        val probe = client.ourReplyTo("p-1", "p-0")
+        assertTrue(
+            "упавшая сеть не должна читаться как «ответа нет» — иначе получим дубль",
+            probe is MoltbookClient.ReplyProbe.Unknown,
+        )
+    }
+
+    private fun comment(
+        id: String,
+        author: String,
+        content: String,
+        parentId: String,
+    ) = MoltbookClient.Comment(
+        id = id,
+        author = author,
+        content = content,
+        parentId = parentId,
+    )
+
+    private companion object {
+        const val OWN = "opencodekz"
     }
 }
