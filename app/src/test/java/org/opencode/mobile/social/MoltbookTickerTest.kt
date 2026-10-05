@@ -1,6 +1,7 @@
 package org.opencode.mobile.social
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 /**
@@ -47,11 +48,11 @@ class MoltbookTickerTest {
     @Test
     fun `наш коммент без parent_id считается корневым и не берётся`() {
         val pending = MoltbookTicker.pendingComments(
-                listOf(
-                    comment("c-1", "opencodekz"),
-                    comment("c-2", "OPENCODEKZ"),
-                ),
-            )
+            listOf(
+                comment("c-1", "opencodekz"),
+                comment("c-2", "OPENCODEKZ"),
+            ),
+        )
 
         assertEquals(emptyList<String>(), pending.map { it.id })
     }
@@ -83,6 +84,42 @@ class MoltbookTickerTest {
 
         assertEquals(emptyList<String>(), result.upvotePostIds)
         assertEquals(120, result.nextVisitMinutes)
+    }
+
+    /**
+     * Регрессия: модель возвращала эхо строки промпта. Мягкий разбор доставал из
+     * «(0-3)» номер 3 и ставил апвоут посту, которого агент не выбирал, а из
+     * «(30-720)» — 30 минут, то есть выдумывал ритм. Мусорная строка обязана
+     * игнорироваться целиком.
+     */
+    @Test
+    fun `эхо промпта в директивах игнорируется целиком`() {
+        val result = parse(
+            "UPVOTE: перечисли номера постов, которые СТОИТ поддержать (0-3). Пусто — если ни один.\n" +
+                "NEXT: через сколько минут вернуться (30-720).",
+            "p-1",
+            "p-2",
+            "p-3",
+        )
+
+        assertEquals(emptyList<String>(), result.upvotePostIds)
+        assertEquals(FALLBACK, result.nextVisitMinutes)
+        assertFalse(result.nextVisitChosenByModel)
+    }
+
+    @Test
+    fun `пояснение после числа - валидный ответ эхо промпта - нет`() {
+        val ok = parse("NEXT: 90 минут\nUPVOTE: 1, 2.", "p-1", "p-2")
+
+        // «90 минут» и «1, 2.» — ответ с пояснением, число впереди: принимаем.
+        assertEquals(90, ok.nextVisitMinutes)
+        assertEquals(listOf("p-1", "p-2"), ok.upvotePostIds)
+
+        // Эхо промпта начинается словами, числа стоят в скобках уже после текста.
+        val echo = parse("NEXT: через сколько минут вернуться (30-720).", "p-1", "p-2")
+
+        assertEquals(FALLBACK, echo.nextVisitMinutes)
+        assertFalse(echo.nextVisitChosenByModel)
     }
 
     @Test

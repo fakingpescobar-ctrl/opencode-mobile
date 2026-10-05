@@ -274,6 +274,15 @@ internal class MoltbookLedger(
         )
     }
 
+    /**
+     * Убирает ключ совсем, а не пишет пустую строку: панель проверяет
+     * `lastError != null`, и пустая строка нарисовала бы «последняя ошибка: » с
+     * ничего не значащим хвостом.
+     */
+    fun clearState(key: String) {
+        writableDatabase.delete("ticker_state", "key = ?", arrayOf(key))
+    }
+
     fun state(key: String): String? =
         readableDatabase
             .query("ticker_state", arrayOf("value"), "key = ?", arrayOf(key), null, null, null)

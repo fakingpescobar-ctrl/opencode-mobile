@@ -27,7 +27,12 @@ internal class MoltbookTicker(
     /** Ledger держим один на тик: SQLiteOpenHelper уже открыл файл БД и соединение. */
     private var ledgerCache: MoltbookLedger? = null
 
-    private fun ledger(): MoltbookLedger = ledgerCache ?: MoltbookLedger(context).also { ledgerCache = it }
+    /**
+ * Кэшированный ledger тика. Открыт наружу, потому что приёмник дописывает в него
+ * итог тика: если бы он создавал свой MoltbookLedger, на каждый тик плодился бы
+ * лишний SQLiteOpenHelper, который никто не закрывает.
+ */
+internal fun ledger(): MoltbookLedger = ledgerCache ?: MoltbookLedger(context).also { ledgerCache = it }
 
 
 
@@ -46,7 +51,6 @@ internal class MoltbookTicker(
         val nextVisitMinutes: Int = fallbackMinutes(),
         /** Агент реально ответил, а не сработал fallback. Разница видна только тут. */
         val nextVisitChosenByModel: Boolean = false,
-        val error: String? = null,
     )
 
     fun runOnce(): TickReport {
@@ -60,7 +64,9 @@ internal class MoltbookTicker(
         val home = client.home()
         ledger.putState(MoltbookLedger.KEY_KARMA, home.karma.toString())
         ledger.putState(MoltbookLedger.KEY_UNREAD, home.unreadNotifications.toString())
-        val postsChecked = scanPostsIntoLedger(ledger, client, home, now)
+        // Скан возвращает id РЕАЛЬНО просмотренных постов: по нему же ниже решается,
+        // кому можно гасить счётчик непрочитанного.
+        val scannedPosts = scanPostsIntoLedger(ledger, client, home, now)
         // Репосты ищем ПОСЛЕ скана постов: список наших id наполняется именно там, и
         // обратный порядок молча давал пустой результат весь первый тик.
         facts += scanFeedForReposts(ledger, client, now)
@@ -124,18 +130,26 @@ internal class MoltbookTicker(
             }
         }
 
-        // Счётчик непрочитанного снимаем только там, где NEW не осталось. Иначе мы
-        // сами стираем указатель «что новое» и теряем комменты, до которых не дошли.
-        home.awaitingReply.forEach { post ->
-
-            if (!ledger.postHasNoPending(post.postId)) return@forEach
+// Счётчик непрочитанного снимаем только у постов, которые мы РЕАЛЬНО просканировали
+        // в этом тике, и только там, где NEW не осталось.
+        //
+        // Раньше цикл шёл по ВСЕМ home.awaitingReply, а скан берёт только
+        // POSTS_PER_TICK постов. У непросканированного поста в comments нет строк,
+        // поэтому postHasNoPending истинно вакуумно — markPostRead гасил серверный
+        // счётчик у поста, чьи комменты мы даже не выгрузили. Сервер обнулял
+        // new_notification_count, пост навсегда выпадал из awaitingReply
+        // (там фильтр newNotifications > 0), и его комменты уже никогда не попадали
+        // в ledger и не получали ответа, при том что глобальный unread уже обнулён.
+        // Ровно та потеря, ради которой этот блок и написан.
+        for (postId in scannedPosts) {
+            if (!ledger.postHasNoPending(postId)) continue
             try {
-                client.markPostRead(post.postId)
+                client.markPostRead(postId)
             } catch (e: IOException) {
                 // Ответы к этому моменту уже в ленте: терять из-за бейджа весь итог
                 // тика (дайджест + метку времени) — заметно хуже, чем просроченный
                 // счётчик непрочитанного. Пишем в лог и идём дальше.
-                Log.w(TAG, "не снял счётчик непрочитанного по ${post.postId}: ${e.message}")
+                Log.w(TAG, "не снял счётчик непрочитанного по $postId: ${e.message}")
             }
         }
 
@@ -155,14 +169,18 @@ internal class MoltbookTicker(
 
         val report =
             TickReport(
-                postsChecked = postsChecked,
+                postsChecked = scannedPosts.size,
                 repliesPosted = replies,
                 verificationsSolved = verifications,
                 karma = home.karma,
                 unread = home.unreadNotifications,
                 facts = facts,
                 upvotesGiven = upvotes,
-                deferredReplies = (stats.awaitingReply - replies).coerceAtLeast(0),
+                // stats читается ПОСЛЕ цикла ответов, поэтому repliedTotal уже учитывает свежие
+// POSTED. Вычитать replies второй раз нельзя: было 3 NEW, отвечено 2, осталось 1,
+// а формула давала 1 - 2 и coerceAtLeast(0) показывала 0 — строка «отложено» из
+                // дайджеста исчезала. awaitingReply уже и есть «сколько ждёт сейчас».
+                deferredReplies = stats.awaitingReply,
                 nextVisitMinutes = housekeeping.nextVisitMinutes,
                 nextVisitChosenByModel = housekeeping.nextVisitChosenByModel,
             )
@@ -244,16 +262,20 @@ internal class MoltbookTicker(
         val glosses: Map<Int, String> = emptyMap(),
     )
 
-    /** Комменты постов активности раскладываем в ledger: NEW — работа, остальное SKIPPED. */
+    /**
+     * Комменты постов активности раскладываем в ledger: NEW — работа, остальное SKIPPED.
+     * Возвращает id постов, которые действительно просмотрены, — снятие счётчика
+     * непрочитанного разрешено только для них.
+     */
     private fun scanPostsIntoLedger(
         ledger: MoltbookLedger,
         client: MoltbookClient,
         home: MoltbookClient.Home,
         now: Long,
-    ): Int {
-        var checked = 0
+    ): Set<String> {
+        val scanned = LinkedHashSet<String>()
         for (post in home.awaitingReply.take(POSTS_PER_TICK)) {
-            checked++
+            scanned += post.postId
             ledger.upsertPost(
                 postId = post.postId,
                 title = post.title,
@@ -288,7 +310,7 @@ internal class MoltbookTicker(
             }
             Log.i(TAG, "пост ${post.postId.take(8)} «${post.title.take(40)}»: комментов ${comments.size}, ждут ответа ${comments.count { deservesReply(it, answeredByUs) }}")
         }
-        return checked
+        return scanned
     }
 
     /**
@@ -396,9 +418,13 @@ internal class MoltbookTicker(
     private fun capForWaf(text: String): String {
         val trimmed = text.trim()
         if (trimmed.length <= MAX_COMMENT_CHARS) return trimmed
-        val cut = trimmed.take(MAX_COMMENT_CHARS)
+        // Режем до MAX_COMMENT_CHARS - 1: многоточие тоже символ, и take(MAX) плюс
+        // «…» давали 901 символ при MAX_COMMENT_CHARS = 900 — то есть кламп был слабее
+        // собственной константы и обещания в промпте модели.
+        val budget = MAX_COMMENT_CHARS - 1
+        val cut = trimmed.take(budget)
         val lastSpace = cut.lastIndexOf(' ')
-        return cut.take(if (lastSpace > MAX_COMMENT_CHARS / 2) lastSpace else MAX_COMMENT_CHARS).trimEnd() + "…"
+        return cut.take(if (lastSpace > budget / 2) lastSpace else budget).trimEnd() + "…"
     }
 
     private fun draftPrompt(target: MoltbookLedger.PendingReply): String =
@@ -604,12 +630,22 @@ internal class MoltbookTicker(
             if (answer.isNullOrBlank()) return Housekeeping(nextVisitMinutes = fallbackMinutes)
 
             val lines = answer.lineSequence().map { it.trim() }.toList()
+            // Хвост директивы обязан НАЧИНАться с числа, а не состоять только из чисел.
+            // «NEXT: 90 минут» и «UPVOTE: 1, 2.» — валидные ответы с пояснением, их
+            // надо принять. А «NEXT: через сколько минут вернуться (30-720)» начинается
+            // со слова — это эхо промпта, а не решение агента, и такой строке мы обязаны
+            // отказать. Раньше здесь стоял разбор на «любые цифры где есть», и эхо
+            // промпта подставляло апвоут посту №3, которого агент не выбирал, и темп
+            // 30 минут вместо выбранного.
+            val strictNumbers = { after: String ->
+                val head = Regex("^\\d[^\\n]*").find(after.trim())?.value
+                head?.split(Regex("[^0-9]+"))?.mapNotNull { it.toIntOrNull() }
+            }
             val picked =
                 lines
                     .firstOrNull { it.startsWith("UPVOTE", ignoreCase = true) }
                     ?.substringAfter(':')
-                    ?.split(Regex("[^0-9]+"))
-                    ?.mapNotNull { it.toIntOrNull() }
+                    ?.let { strictNumbers(it) }
                     ?.filter { it in 1..candidatePostIds.size }
                     ?.distinct()
                     ?.take(MAX_UPVOTES_PER_TICK)
@@ -618,7 +654,8 @@ internal class MoltbookTicker(
             val nextMinutes =
                 nextLine
                     ?.substringAfter(':')
-                    ?.let { Regex("\\d+").find(it)?.value?.toIntOrNull() }
+                    ?.let { strictNumbers(it) }
+                    ?.firstOrNull()
             // Переводы: строка вида `RU 3: текст`. Номер обязан быть в границах
             // показанного списка — иначе это не «перевод», а выдумка, и мы бы
             // подписали чужой вопрос нашим текстом. Номер вне диапазона — пропуск.
@@ -704,11 +741,11 @@ internal class MoltbookTicker(
 
         const val ATTEMPTS_WITH_VERIFICATION = 2
 
-    /**
-     * Пауза перед повтором неудачного ответа. Короче — начинаем долбить платформу
-     * тем же текстом; длиннее — человек, задавший вопрос, ждёт слишком долго.
-     */
-    const val RETRY_COOLDOWN_MS = 6 * 60 * 60 * 1000L
+        /**
+         * Пауза перед повтором неудачного ответа. Короче — начинаем долбить платформу
+         * тем же текстом; длиннее — человек, задавший вопрос, ждёт слишком долго.
+         */
+        const val RETRY_COOLDOWN_MS = 6 * 60 * 60 * 1000L
         const val MAX_COMMENT_CHARS = 900
         const val GENERATION_POLLS = 60
         const val GENERATION_POLL_MS = 3_000L    }
