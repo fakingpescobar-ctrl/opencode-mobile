@@ -11,56 +11,177 @@ package org.opencode.mobile.tts
  * Что НЕ трогаем:
  *  - куски, где цифры сидят вплотную в латинице (AArch64, utf8, base64) — это
  *    идентификаторы, и читать их словами бессмысленно;
- *  - номера версий вида 2.0.15 — их читают поразрядно, «два ноль пятнадцать»;
+ *  - номера версий вида 2.0.15 — их читают поразрядно, «два точка ноль точка
+ *    пятнадцать»;
  *  - числа неразобранные (длиннее [MAX_DIGITS]) — чтобы не зависнуть на мусоре.
  *
  * Функция чистая и детерминированная: один и тот же текст всегда даёт один и
  * тот же результат, поэтому её можно тестировать без движка.
+ *
+ * Подавление [TooManyFunctions] честное: это одна замкнутая грамматика — таблицы
+ * разрядов, правила склонений и разбор токена. Разносить её по файлам ради
+ * счётчика нельзя, читать её как единое целое полезнее, чем соблюдать лимит.
  */
+@Suppress("TooManyFunctions")
 object RuNumbers {
-
     /** Длиннее — считаем мусором и оставляем как есть. */
     private const val MAX_DIGITS = 15
 
+    /** Больше трёх знаков после запятой — уже не «три десятых», а точность прибора. */
+    private const val MAX_FRACTION_DIGITS = 3
+
+    // ---- Правила склонений. Числа здесь не «магические», а грамматические:
+    // русская форма выбирается по двум последним цифрам, и «11»/«12» — особые.
+
+    /** Делим на него, чтобы взять последнюю цифру. */
+    private const val LAST_DIGIT_BASE = 10L
+
+    /** Делим на него, чтобы взять последние две цифры. */
+    private const val LAST_TWO_BASE = 100L
+
+    private const val LAST_DIGIT_ONE = 1L
+    private const val FEW_FIRST = 2L
+    private const val FEW_LAST = 4L
+    private const val TEENS_LOW = 11L
+    private const val TEENS_FEW_LOW = 12L
+    private const val TEENS_FEW_HIGH = 14L
+
+    // ---- Разряды самого числа.
+
+    private const val HUNDRED = 100
+    private const val TEN = 10
+    private const val TEEN_LOW = 10
+    private const val TEEN_HIGH = 19
+    private const val THOUSAND = 1_000L
+    private const val MILLION = 1_000_000L
+    private const val BILLION = 1_000_000_000L
+    private const val TRILLION = 1_000_000_000_000L
+
+    /** Индекс тысяч в [SCALES] — там нужна женская форма. */
+    private const val THOUSAND_INDEX = 3
+
+    /** Сколько кусков максимум набирается в одной группе: сотни + десятки + единицы. */
+    private const val GROUP_PARTS = 3
+
+    /** Сколько разрядов входит в название числа вместе с хвостом. */
+    private const val SCALE_PARTS = 5
+
+    /** Запас в StringBuilder, чтобы не расти в геометрической прогрессии. */
+    private const val OUTPUT_SLACK = 32
+
+    /** Длина дробной части, по ней выбирается знаменатель. */
+    private const val FIRST_DIGIT = 1
+    private const val SECOND_DIGIT = 2
+    private const val THIRD_DIGIT = 3
+
+    /** Сколько точек делают токен версией: 2.0.15 — две. */
+    private const val VERSION_DOTS = 2
+
+    /** Символ, которым склеены цифры в идентификаторе: AArch64, utf-8. */
+    private const val GLUE_CHARS = ".-_"
+
+    private const val DOT = '.'
+    private const val COMMA = ','
+    private const val PERCENT_SIGN = '%'
+    private const val VERSION_SEPARATOR = " точка "
+
     private val ONES = arrayOf(
-        "", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять",
-        "десять", "одиннадцать", "двенадцать", "тринадцать", "четырнадцать", "пятнадцать",
-        "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать",
+        "",
+        "один",
+        "два",
+        "три",
+        "четыре",
+        "пять",
+        "шесть",
+        "семь",
+        "восемь",
+        "девять",
+        "десять",
+        "одиннадцать",
+        "двенадцать",
+        "тринадцать",
+        "четырнадцать",
+        "пятнадцать",
+        "шестнадцать",
+        "семнадцать",
+        "восемнадцать",
+        "девятнадцать",
     )
 
     private val TEENS = arrayOf("", "", "двадцать", "тридцать", "сорок", "пятьдесят", "шестьдесят", "семьдесят", "восемьдесят", "девяносто")
     private val HUNDREDS = arrayOf("", "сто", "двести", "триста", "четыреста", "пятьсот", "шестьсот", "семьсот", "восемьсот", "девятьсот")
 
-    /** Множественные формы: [1 записей] нельзя — нужно «1 запись». */
-    private fun plural(n: Long, one: String, few: String, many: String): String = when {
-        n % 10L == 1L && n % 100L != 11L -> one
-        n % 10L in 2L..4L && n % 100L !in 12L..14L -> few
-        else -> many
+    /** «Две тысячи», а не «два тысячи»: тысячи — женского рода. */
+    private val FEMININE_ONES = mapOf(1 to "одна", 2 to "две")
+
+    /** Знаменатель дробной части выбирается по числу знаков: 3 → «десятых». */
+    private val FRACTION_DENOMINATORS = mapOf(FIRST_DIGIT to "десятых", SECOND_DIGIT to "сотых", THIRD_DIGIT to "тысячных")
+
+    private val SCALES = longArrayOf(TRILLION, BILLION, MILLION, THOUSAND)
+
+    private val SCALE_NAMES =
+        arrayOf(
+            arrayOf("триллион", "триллиона", "триллионов"),
+            arrayOf("миллиард", "миллиарда", "миллиардов"),
+            arrayOf("миллион", "миллиона", "миллионов"),
+            arrayOf("тысяча", "тысячи", "тысяч"),
+        )
+
+    private fun isDigits(s: String): Boolean = s.isNotEmpty() && s.all { it.isDigit() }
+
+    /** Цифра или разделитель внутри числа: так набирается токен «76,3». */
+    private fun isNumberChar(c: Char): Boolean = c.isDigit() || c == DOT || c == COMMA
+
+    /**
+     * Множественные формы: [1 записей] нельзя — нужно «1 запись».
+     *
+     * Смотрим на две последние цифры, а не на одну: 11 записей — это «одиннадцать
+     * записей», а не «одиннадцать запись».
+     */
+    private fun plural(
+        n: Long,
+        one: String,
+        few: String,
+        many: String,
+    ): String {
+        val last = n % LAST_DIGIT_BASE
+        val lastTwo = n % LAST_TWO_BASE
+        return when {
+            last == LAST_DIGIT_ONE && lastTwo != TEENS_LOW -> one
+            last in FEW_FIRST..FEW_LAST && lastTwo !in TEENS_FEW_LOW..TEENS_FEW_HIGH -> few
+            else -> many
+        }
     }
 
     /** 0..999. [feminine] — женская форма («две тысячи», а не «два тысячи»). */
-    private fun underThousand(n: Int, feminine: Boolean = false): String {
+    private fun underThousand(
+        n: Int,
+        feminine: Boolean = false,
+    ): String {
         if (n == 0) return "ноль"
-        val h = n / 100
-        val rest = n % 100
-        val parts = ArrayList<String>(3)
-        if (h > 0) parts.add(HUNDREDS[h])
-        if (rest in 11..19) {
-            parts.add(ONES[rest])
-        } else {
-            val t = rest / 10
-            val u = rest % 10
-            if (t > 0) parts.add(TEENS[t])
-            if (u > 0) {
-                parts.add(
-                    when {
-                        feminine && u == 1 -> "одна"
-                        feminine && u == 2 -> "две"
-                        else -> ONES[u]
-                    },
-                )
-            }
-        }
+        val parts = ArrayList<String>(GROUP_PARTS)
+        val hundreds = n / HUNDRED
+        if (hundreds > 0) parts.add(HUNDREDS[hundreds])
+        // Хвост может быть пустым («сто», «двести пятьдесят»), и пустую часть
+        // добавлять нельзя: в склейке появятся лишние пробелы.
+        val rest = tail(n % HUNDRED, feminine)
+        if (rest.isNotEmpty()) parts.add(rest)
+        return parts.joinToString(" ")
+    }
+
+    /** Две младшие цифры: 15 → «пятнадцать», 42 → «сорок два». */
+    private fun tail(
+        rest: Int,
+        feminine: Boolean,
+    ): String {
+        // 10..19 одним словом. Раньше здесь стояло 11..19, и «десять» проваливалось
+        // в ветку десятков, где для него нет слова: integer(10) давал пустую строку.
+        if (rest in TEEN_LOW..TEEN_HIGH) return ONES[rest]
+        val parts = ArrayList<String>(GROUP_PARTS - 1)
+        val tens = rest / TEN
+        if (tens > 0) parts.add(TEENS[tens])
+        val ones = rest % TEN
+        if (ones > 0) parts.add(if (feminine) FEMININE_ONES[ones] ?: ONES[ones] else ONES[ones])
         return parts.joinToString(" ")
     }
 
@@ -68,50 +189,51 @@ object RuNumbers {
      * Целое число до триллионов. [thousands] — женская форма для тысяч
      * («две тысячи», «одна тысяча»), потому что дальше идёт «запись/записи».
      */
-    fun integer(n: Long): String? {
-        if (n < 0) return null
-        if (n == 0L) return "ноль"
-        val scales = longArrayOf(1_000_000_000_000L, 1_000_000_000L, 1_000_000L, 1_000L)
-        val scaleNames = arrayOf(
-            arrayOf("триллион", "триллиона", "триллионов"),
-            arrayOf("миллиард", "миллиарда", "миллиардов"),
-            arrayOf("миллион", "миллиона", "миллионов"),
-            arrayOf("тысяча", "тысячи", "тысяч"),
-        )
-        val out = ArrayList<String>(6)
+    fun integer(n: Long): String? =
+        when {
+            n < 0L -> null
+            n == 0L -> "ноль"
+            else -> readScales(n)
+        }
+
+    private fun readScales(n: Long): String {
+        val out = ArrayList<String>(SCALE_PARTS)
         var rest = n
-        for (i in scales.indices) {
-            val part = rest / scales[i]
+        for (i in SCALES.indices) {
+            val part = rest / SCALES[i]
             if (part == 0L) continue
-            rest %= scales[i]
-            val names = scaleNames[i]
-            // «тысяча» — женского рода и в единственном числе звучит сама по
-            // себе: 1000 = «тысяча», а не «один тысяча».
-            val isThousand = i == scales.lastIndex
-            if (isThousand && part == 1L) {
-                out.add(names[0])
-            } else {
-                out.add(underThousand(part.toInt(), isThousand))
-                out.add(plural(part, names[0], names[1], names[2]))
-            }
+            rest %= SCALES[i]
+            out.addAll(scaleWords(i, part))
         }
         // хвост до 999
         if (rest > 0L) out.add(underThousand(rest.toInt()))
         return out.joinToString(" ")
     }
 
-    /** Десятичная дробь: 76,3 → «семьдесят шесть целых три десятых». */
-    private fun fraction(fracDigits: String): String? {
-        val n = fracDigits.toIntOrNull() ?: return null
-        if (n == 0) return "ноль"
-        val denom = when (fracDigits.length) {
-            1 -> "десятых"
-            2 -> "сотых"
-            3 -> "тысячных"
-            else -> return null
-        }
-        return underThousand(n) + " " + denom
+    private fun scaleWords(
+        index: Int,
+        part: Long,
+    ): List<String> {
+        val names = SCALE_NAMES[index]
+        val isThousand = index == THOUSAND_INDEX
+        // «тысяча» — женского рода и в единственном числе звучит сама по
+        // себе: 1000 = «тысяча», а не «один тысяча».
+        if (isThousand && part == 1L) return listOf(names[0])
+        val words = ArrayList<String>(GROUP_PARTS)
+        words.add(underThousand(part.toInt(), isThousand))
+        words.add(plural(part, names[0], names[1], names[2]))
+        return words
     }
+
+    /** Десятичная дробь: 76,3 → «семьдесят шесть целых три десятых». */
+    private fun fraction(fracDigits: String): String? =
+        fracDigits.toIntOrNull()?.let { n ->
+            if (n == 0) {
+                "ноль"
+            } else {
+                FRACTION_DENOMINATORS[fracDigits.length]?.let { denom -> "${underThousand(n)} $denom" }
+            }
+        }
 
     /**
      * Цифра приклеена к идентификатору? Смотрим влево сквозь «.», «-», «_».
@@ -121,11 +243,14 @@ object RuNumbers {
      * и «76,3 с» начинаются после пробела или открывающей скобки и остаются
      * числами.
      */
-    private fun gluedToLetters(s: String, i: Int): Boolean {
+    private fun gluedToLetters(
+        s: String,
+        i: Int,
+    ): Boolean {
         var k = i - 1
         // Через ВСЮ идущую подряд группу цифр: иначе в «AArch64» первая
         // шестёрка отскочила бы как буква, а четвёрку мы бы превратили.
-        while (k >= 0 && (s[k].isDigit() || s[k] == '.' || s[k] == '-' || s[k] == '_')) k--
+        while (k >= 0 && (s[k].isDigit() || s[k] in GLUE_CHARS)) k--
         return k >= 0 && s[k].isLetter()
     }
 
@@ -133,39 +258,55 @@ object RuNumbers {
      * Разбирает один числовой токен (без окружающего текста).
      * null — токен трогать нельзя: версия, идентификатор или слишком длинное число.
      */
-    private fun token(word: String): String? {
-        val isVersion = word.count { it == '.' } >= 2
-        if (isVersion) {
-            // 2.0.15 → «два ноль точка пятнадцать»: поразрядно, без «целых».
-            val spoken = word.split('.').map { group ->
-                if (group.isEmpty() || !group.all { it.isDigit() }) return null
-                integer(group.toLongOrNull() ?: return null) ?: return null
-            }
-            return spoken.joinToString(" точка ")
-        }
+    private fun token(word: String): String? = if (word.count { it == DOT } >= VERSION_DOTS) versionToken(word) else plainToken(word)
 
-        val dotIdx = word.indexOf('.')
-        val commaIdx = word.indexOf(',')
-        if (dotIdx >= 0 && commaIdx >= 0) return null // «1,234.56» — не наш случай
-        val sepIdx = if (dotIdx >= 0) dotIdx else commaIdx
-
-        if (sepIdx < 0) {
-            if (!word.all { it.isDigit() }) return null
-            if (word.length > MAX_DIGITS) return null
-            return integer(word.toLongOrNull() ?: return null)
-        }
-
-        val whole = word.substring(0, sepIdx)
-        val frac = word.substring(sepIdx + 1)
-        if (whole.isEmpty() || frac.isEmpty()) return null
-        if (!whole.all { it.isDigit() } || !frac.all { it.isDigit() }) return null
-        if (whole.length > MAX_DIGITS || frac.length > 3) return null
-
-        val w = whole.toLongOrNull() ?: return null
-        val wholePart = integer(w) ?: return null
-        val fracPart = fraction(frac) ?: return null
-        return "$wholePart целых $fracPart"
+    /** 2.0.15 → «два точка ноль точка пятнадцать»: поразрядно, без «целых». */
+    private fun versionToken(word: String): String? {
+        val spoken = word.split(DOT).map { group -> versionGroup(group) }
+        if (spoken.any { it == null }) return null
+        return spoken.filterNotNull().joinToString(VERSION_SEPARATOR)
     }
+
+    private fun versionGroup(group: String): String? = if (isDigits(group)) group.toLongOrNull()?.let { integer(it) } else null
+
+    private fun plainToken(word: String): String? {
+        val dot = word.indexOf(DOT)
+        val comma = word.indexOf(COMMA)
+        // «1,234.56» — не наш случай: непонятно, где запятая, где точка.
+        if (dot >= 0 && comma >= 0) return null
+        val sep = if (dot >= 0) dot else comma
+        return if (sep < 0) wholeToken(word) else decimalToken(word, sep)
+    }
+
+    private fun wholeToken(word: String): String? =
+        if (isDigits(word) && word.length <= MAX_DIGITS) {
+            word.toLongOrNull()?.let { integer(it) }
+        } else {
+            null
+        }
+
+    private fun decimalToken(
+        word: String,
+        sep: Int,
+    ): String? {
+        val whole = word.substring(0, sep)
+        val frac = word.substring(sep + 1)
+        if (!isWholePart(whole) || !isFractionPart(frac)) return null
+        return whole
+            .toLongOrNull()
+            ?.let { integer(it) }
+            ?.let { spoken -> fraction(frac)?.let { tail -> "$spoken целых $tail" } }
+    }
+
+    private fun isWholePart(s: String): Boolean = isDigits(s) && s.length <= MAX_DIGITS
+
+    private fun isFractionPart(s: String): Boolean = isDigits(s) && s.length <= MAX_FRACTION_DIGITS
+
+    /** Один кусок разбора: что вставить в вывод и сколько символов исходника съесть. */
+    private data class Step(
+        val text: String,
+        val consumed: Int,
+    )
 
     /**
      * Основная точка входа: прогоняет весь текст и заменяет числа словами.
@@ -176,47 +317,49 @@ object RuNumbers {
      */
     fun convert(input: String): String {
         if (input.none { it.isDigit() }) return input
-        val out = StringBuilder(input.length + 32)
+        val out = StringBuilder(input.length + OUTPUT_SLACK)
         var i = 0
         while (i < input.length) {
-            val c = input[i]
-
-            // Границы слова: цифра начинается только на стыке не-буквы.
-            // Цифры могут быть приклеены к буквам (AArch64, H.264) — тогда не трогаем.
-            if (c.isDigit() && !gluedToLetters(input, i)) {
-                var j = i
-                while (j < input.length && (input[j].isDigit() || input[j] == '.' || input[j] == ',')) j++
-                // если сразу после цифр идёт буква — это идентификатор вроде utf8
-                val gluedRight = j < input.length && input[j].isLetter()
-                val raw = input.substring(i, j)
-                // хвостовые точки/запятые не входят в число
-                val trimmed = raw.trimEnd('.', ',')
-                if (!gluedRight && trimmed.isNotEmpty()) {
-                    val percentPos = i + trimmed.length
-                    val isPercent = input.getOrNull(percentPos) == '%'
-                    val spoken = if (isPercent) withPercent(trimmed) else token(trimmed)
-                    if (spoken != null) {
-                        out.append(spoken)
-                        // пропускаем и сам знак «%», иначе он останется в тексте
-                        i = if (isPercent) percentPos + 1 else percentPos
-                        continue
-                    }
-                }
-                out.append(trimmed)
-                i += trimmed.length
-                continue
-            }
-            out.append(c)
-            i++
+            val step = step(input, i)
+            out.append(step.text)
+            i += step.consumed
         }
         return out.toString()
     }
 
-    /** «85%» → «восемьдесят пять процентов», но «1%» → «один процент». */
-    private fun withPercent(word: String): String? {
-        val spoken = token(word) ?: return null
-        val value = word.split('.', ',').firstOrNull()?.toLongOrNull() ?: return null
-        val noun = plural(value, "процент", "процента", "процентов")
-        return "$spoken $noun"
+    /** Цифра начинается только на стыке не-буквы: AArch64 и H.264 остаются как есть. */
+    private fun step(
+        input: String,
+        at: Int,
+    ): Step = if (input[at].isDigit() && !gluedToLetters(input, at)) numericStep(input, at) else Step(input[at].toString(), 1)
+
+    private fun numericStep(
+        input: String,
+        at: Int,
+    ): Step {
+        var end = at
+        while (end < input.length && isNumberChar(input[end])) end++
+        // хвостовые точки/запятые не входят в число
+        val trimmed = input.substring(at, end).trimEnd(DOT, COMMA)
+        // если сразу после цифр идёт буква — это идентификатор вроде utf8
+        if (trimmed.isEmpty() || (end < input.length && input[end].isLetter())) {
+            return Step(trimmed, trimmed.length)
+        }
+        val percentAt = at + trimmed.length
+        val isPercent = input.getOrNull(percentAt) == PERCENT_SIGN
+        val spoken = if (isPercent) withPercent(trimmed) else token(trimmed)
+        // пропускаем и сам знак «%», иначе он останется в тексте
+        val consumed = if (spoken != null && isPercent) percentAt + 1 - at else trimmed.length
+        return Step(spoken ?: trimmed, consumed)
     }
+
+    /** «85%» → «восемьдесят пять процентов», но «1%» → «один процент». */
+    private fun withPercent(word: String): String? =
+        token(word)?.let { spoken ->
+            word
+                .split(DOT, COMMA)
+                .first()
+                .toLongOrNull()
+                ?.let { value -> "$spoken ${plural(value, "процент", "процента", "процентов")}" }
+        }
 }
