@@ -124,19 +124,24 @@ class MoltbookClientTest {
     }
 
     /**
-     * Страховка от возврата бага, который уже случился в проде: при `NeedsVerification`
-     * тикер вызывал `deleteComment(parentId)`, то есть отзывал чужой комментарий.
-     * Отзыв в публичной ленте необратим, поэтому запрет держится не на памяти,
-     * а тестом: как только в клиенте появится удаление, сборка падает.
-     * Если понадобится чистить свой мусор — сначала получи явное разрешение.
+     * Единственный разрушающий метод клиента — `deleteComment`, и решение владельца
+     * от 07.10.2026 его разрешило: код задачи выдают только в момент создания комментария,
+     * поэтому непроверенный ответ нельзя ни решить, ни перезаписать (`already_existed`),
+     * ни пропустить — ветка остаётся заблокированной навсегда. Выход один: удалить свой.
+     *
+     * Тест теперь сторожит не сам факт удаления, а его границы. Удалять можно только то,
+     * что опубликовал сам агент, поэтому клиент обязан уметь ровно `deleteComment` —
+     * никаких `remove`/`revoke`/«удалить пост». Второе, что он обязан уметь: назвать
+     * своё удаление словом, которое понимает `requireAllowedMethod`, иначе свип мёртвых
+     * ответов тикает, а комментарии висят.
      */
     @Test
-    fun `клиент не умеет ничего удалять`() {
+    fun `единственное разрушающее действие клиента это удалить свой комментарий`() {
         val names = MoltbookClient::class.java.declaredMethods.map { it.name }
 
         // Сначала доказываем, что сканирование вообще что-то видит, иначе проверка
-        // выше прошла бы вхолостую и молча разрешила удаление в будущем.
-        val expected = listOf("postComment", "verify", "upvote", "markPostRead")
+        // ниже прошла бы вхолостую и молча разрешила бы что-нибудь ещё.
+        val expected = listOf("postComment", "verify", "upvote", "markPostRead", "deleteComment")
         val missing = expected.filter { it !in names }
         assertTrue("сканирование методов не видит клиент, нет: $missing (всего ${names.size})", missing.isEmpty())
 
@@ -145,10 +150,7 @@ class MoltbookClientTest {
                 .filter { it.contains("delete", true) || it.contains("remove", true) || it.contains("revoke", true) }
                 .sorted()
 
-        assertTrue(
-            "MoltbookClient не должен уметь удалять, а нашлись: $deleting",
-            deleting.isEmpty(),
-        )
+        assertEquals("в клиенте должно быть ровно одно разрушающее действие, а нашлись: $deleting", listOf("deleteComment"), deleting)
     }
 
     @Test
@@ -297,22 +299,38 @@ class MoltbookClientTest {
     }
 
     /**
-     * Агент не имеет права удалять опубликованное, и проверка стоит ДО открытия
+     * Удаление разрешено ровно для одного метода — `DELETE`, и в любом регистре:
+     * `HttpURLConnection` принимает "delete" так же спокойно, как "DELETE", а
+     * `requireAllowedMethod` сравнивает регистронезависимо, поэтому чужой код не сможет
+     * протолкнуть разрушающий метод через другой регистр. Проверка стоит ДО открытия
      * соединения: до этого места управление не доходит вовсе, сеть не трогается,
-     * сервер ничего не получает. Проверяем и регистр — `HttpURLConnection` принимает
-     * "delete" так же спокойно, как "DELETE", и полагаться на то, что все пишут
-     * метод заглавными, нельзя.
+     * сервер ничего не получает. `PUT`/`PATCH`/`HEAD`/пустая строка остаются вне
+     * белого списка — клиенту они не нужны, а молча пропустить их нельзя.
      */
     @Test
-    fun `клиент не отправит разрушающий метод`() {
+    fun `клиент пропускает удаление и по-прежнему отвергает остальное разрушающее`() {
         val client = MoltbookClient("test-key", "http://127.0.0.1:1")
-        listOf("DELETE", "delete", "PUT", "PATCH", "HEAD", "").forEach { method ->
+        listOf("PUT", "PATCH", "HEAD", "").forEach { method ->
             val thrown =
                 runCatching { client.requestBody("/api/v1/posts/p-1/comments", method) }
                     .exceptionOrNull()
             assertTrue(
                 "метод «$method» должен быть отвергнут до обращения к сети",
                 thrown is IllegalArgumentException,
+            )
+        }
+
+        // DELETE обязан дойти до сети: запрет на разрушающий метод снят, значит
+        // отказ теперь ровно один — соединение с мёртвым портом.
+        val deadPort = ServerSocket(0).use { it.localPort }
+        val deleting = MoltbookClient("test-key", "http://127.0.0.1:$deadPort")
+        listOf("DELETE", "delete").forEach { method ->
+            val thrown =
+                runCatching { deleting.requestBody("/api/v1/comments/c-1", method) }
+                    .exceptionOrNull()
+            assertTrue(
+                "метод «$method» разрешён и должен падать на сети, а не на проверке: $thrown",
+                thrown is IOException,
             )
         }
     }
@@ -335,16 +353,512 @@ class MoltbookClientTest {
         }
     }
 
+/**
+     * Обход replies[] — не «полнота данных», а условие работы префлита против дублей.
+     *
+     * Замерено на живом API 06.10.2026: в треде 29 комментариев при 8 корневых, наш
+     * ответ лежал на depth=3. Разбор брал только корневой массив, поэтому наш ответ
+     * был не виден никогда: probeIn возвращал Absent при опубликованном ответе,
+     * и тик отвечал повторно. Ниже — тот же по форме JSON, что отдаёт платформа.
+     */
+    @Test
+    fun `разбор доходит до ответа на глубине`() {
+        val parsed =
+            MoltbookClient.parseComments(
+                JSONObject(
+                    """
+                    {
+                      "comments": [
+                        {
+                          "id": "root-1", "author": {"name": "doctor_memory"},
+                          "content": "спросил", "parent_id": "",
+                          "replies": [
+                            {
+                              "id": "our-1", "author": {"name": "opencodekz"},
+                              "content": "наш ответ", "parent_id": "root-1",
+                              "replies": [
+                                {
+                                  "id": "root-1-1", "author": {"name": "doctor_memory"},
+                                  "content": "уточнил", "parent_id": "our-1",
+                                  "replies": [
+                                    {
+                                      "id": "our-2", "author": {"name": "opencodekz"},
+                                      "content": "ответ на глубине 3", "parent_id": "root-1-1"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                    """.trimIndent(),
+                ),
+            )
+        assertEquals("все четыре уровня должны попасть в список", 4, parsed.size)
+        assertEquals(
+            "содержимое на глубине 3 должно читаться, а не теряться",
+            "ответ на глубине 3",
+            parsed.first { it.id == "our-2" }.content
+        )
+        // Родительство не теряется: наш ответ на глубине 3 всё ещё указывает на
+        // комментарий, на который отвечает. Иначе probeIn не сматчит пару.
+        assertEquals("root-1-1", parsed.first { it.id == "our-2" }.parentId)
+        assertEquals("our-1", parsed.first { it.id == "root-1-1" }.parentId)
+    }
+
+    @Test
+    fun `разбор не путает наш глубокий ответ с чужим на том же треде`() {
+        val parsed =
+            MoltbookClient.parseComments(
+                JSONObject(
+                    """
+                    {
+                      "comments": [
+                        {
+                          "id": "root-1", "author": {"name": "doctor_memory"},
+                          "content": "спросил", "parent_id": "",
+                          "replies": [
+                            { "id": "our-1", "author": {"name": "opencodekz"},
+                              "content": "ответ на root-1", "parent_id": "root-1" }
+                          ]
+                        }
+                      ]
+                    }
+                    """.trimIndent(),
+                ),
+            )
+        assertSame(
+            "ответ был на root-1, а спрашиваем другой комментарий",
+            MoltbookClient.ReplyProbe.Absent,
+            MoltbookClient.probeIn(parsed, "some-other"),
+        )
+        val probe = MoltbookClient.probeIn(parsed, "root-1")
+        assertTrue("ответ на root-1 обязан найтись, иначе тик ответит повторно", probe is MoltbookClient.ReplyProbe.Found)
+        assertEquals("our-1", (probe as MoltbookClient.ReplyProbe.Found).commentId)
+    }
+
+    /**
+     * `pending` — это ответ, который сервер создал, но ещё не опубликовал.
+     *
+     * Замерено на живом API: комментарий появляется сразу, сразу `pending`, а
+     * `/verify` лишь публикует его («Your comment is now published»). Повторно
+     * постить нельзя. Поэтому `pending` обязан читаться как «мы уже ответили, ждём
+     * проверки» с id — иначе тикер либо повторно ответит, либо потеряет id.
+     */
+    @Test
+    fun `pending это неопубликованный наш ответ а не отсутствие ответа`() {
+        val parsed =
+            MoltbookClient.parseComments(
+                JSONObject(
+                    """
+                    {
+                      "comments": [
+                        { "id": "root-1", "author": {"name": "doctor_memory"},
+                          "content": "спросил", "parent_id": "",
+                          "replies": [
+                            { "id": "our-1", "author": {"name": "opencodekz"},
+                              "content": "ответ", "parent_id": "root-1",
+                              "verification_status": "pending", "is_deleted": false }
+                          ]
+                        }
+                      ]
+                    }
+                    """.trimIndent(),
+                ),
+            )
+        val probe = MoltbookClient.probeIn(parsed, "root-1")
+        assertTrue(
+            "pending — это наш ответ, который ждёт проверки, а не отсутствие ответа",
+            probe is MoltbookClient.ReplyProbe.Unpublished,
+        )
+        val pending = probe as MoltbookClient.ReplyProbe.Unpublished
+        assertEquals("id pending-коммента нужен, чтобы отличить его от прочих", "our-1", pending.commentId)
+        assertEquals("статус берётся из ответа платформы", "pending", probe.status)
+    }
+
+    @Test
+    fun `verified и без статуса считаются опубликованным ответом`() {
+        val branch =
+            listOf(
+                comment("c-verified", OWN, "опубликован", "p-0", "verified"),
+                comment("c-nostatus", OWN, "без статуса", "p-0"),
+            )
+        assertTrue(
+            "verified — опубликован",
+            MoltbookClient.probeIn(branch, "p-0") is MoltbookClient.ReplyProbe.Found,
+        )
+    }
+
+    @Test
+    fun `удалённый и failed ответ не закрывают ветку`() {
+        val parsed =
+            MoltbookClient.parseComments(
+                JSONObject(
+                    """
+                    {
+                      "comments": [
+                        { "id": "root-1", "author": {"name": "doctor_memory"},
+                          "content": "спросил", "parent_id": "",
+                          "replies": [
+                            { "id": "deleted-1", "author": {"name": "opencodekz"},
+                              "content": "удалённый", "parent_id": "root-1",
+                              "verification_status": "pending", "is_deleted": true },
+                            { "id": "failed-1", "author": {"name": "opencodekz"},
+                              "content": "не прошёл", "parent_id": "root-1",
+                              "verification_status": "failed", "is_deleted": false }
+                          ]
+                        }
+                      ]
+                    }
+                    """.trimIndent(),
+                ),
+            )
+        assertSame(
+            "ни удалённый, ни failed не считаются ответом — ветка остаётся открытой",
+            MoltbookClient.ReplyProbe.Absent,
+            MoltbookClient.probeIn(parsed, "root-1"),
+        )
+        assertEquals(
+            "мёртвые ответы не должны попадать в список вообще",
+            1,
+            parsed.size,
+        )
+    }
+
+    /**
+     * Родитель удалён, наш ответ жив — ответ должен остаться в списке.
+     *
+     * Распространять `is_deleted` вниз по дереву нельзя: тогда живой ответ
+     * исчез бы из разбора вместе с удалённым родителем, и мы бы решили, что
+     * не отвечали, хотя ответ висит.
+     */
+    @Test
+    fun `удалённый родитель не выбрасывает наш живой ответ`() {
+        val parsed =
+            MoltbookClient.parseComments(
+                JSONObject(
+                    """
+                    {
+                      "comments": [
+                        { "id": "root-1", "author": {"name": "vina"},
+                          "content": "спросила", "parent_id": "", "is_deleted": true,
+                          "replies": [
+                            { "id": "our-1", "author": {"name": "opencodekz"},
+                              "content": "ответ", "parent_id": "root-1",
+                              "verification_status": "pending", "is_deleted": false }
+                          ]
+                        }
+                      ]
+                    }
+                    """.trimIndent(),
+                ),
+            )
+        val probe = MoltbookClient.probeIn(parsed, "root-1")
+        assertTrue(
+            "наш ответ под удалённым родителем всё равно виден и отвечает на root-1",
+            probe is MoltbookClient.ReplyProbe.Unpublished,
+        )
+        val alive = probe as MoltbookClient.ReplyProbe.Unpublished
+        assertEquals("id живого ответа под удалённым родителем обязан сохраниться", "our-1", alive.commentId)
+    }
+
+    /**
+     * Явный JSON null в next_cursor не должен превращаться в курсор "null".
+     *
+     * Android-овский `optString` на JSON null возвращает строку "null" — непустую, то
+     * есть «курсор есть». Такой курсор уходит в запрос как `cursor=null` и получает
+     * 400, а comments() зовётся без try: тик падал целиком, а ourReplyTo получала
+     * вечный Unknown и блокировала ответы навсегда. Условие продолжения — has_more.
+     */
+    @Test
+    fun `курсор null на последней странице не рождает лишнего запроса`() {
+        val explicitNull = JSONObject("""{ "has_more": true, "next_cursor": null }""")
+        assertNull(
+            "JSON null — это отсутствие курсора, а не курсор \"null\"",
+            explicitNull.cursor(),
+        )
+        val missing = JSONObject("""{ "has_more": false }""")
+        assertNull("нет поля — нет курсора", missing.cursor())
+        val real = JSONObject("""{ "has_more": true, "next_cursor": "eyJjcmVhdGVkQXQiOiIyMDI2In0=" }""")
+        assertEquals("настоящий курсор должен читаться как есть", "eyJjcmVhdGVkQXQiOiIyMDI2In0=", real.cursor())
+    }
+
+    /**
+     * Одна битая вложенка не должна стоить нам всего треда.
+     *
+     * Обход идёт по всему дереву, а `requireField` на content бросает IOException.
+     * Раньше он смотрел только на корневые комментарии, и одна пустая вложенка
+     * роняла бы разбор всего треда — вместе с нашим ответом в нём.
+     */
+    @Test
+    fun `битая вложенка не роняет остальной тред`() {
+        val parsed =
+            MoltbookClient.parseComments(
+                JSONObject(
+                    """
+                    {
+                      "comments": [
+                        {
+                          "id": "root-1", "author": {"name": "doctor_memory"},
+                          "content": "спросил", "parent_id": "",
+                          "replies": [
+                            { "id": "broken", "author": {"name": "x"}, "content": "" },
+                            { "id": "our-1", "author": {"name": "opencodekz"},
+                              "content": "ответ", "parent_id": "root-1" }
+                          ]
+                        }
+                      ]
+                    }
+                    """.trimIndent(),
+                ),
+            )
+        assertTrue(
+            "наш ответ после битой вложенки обязан остаться в списке",
+            parsed.any { it.id == "our-1" },
+        )
+        assertTrue("битый узел пропущен, а не превращён в пустой комментарий", parsed.none { it.id == "broken" })
+    }
+
+    /**
+     * Пагинация идёт по курсору, а не по флагу has_more.
+     *
+     * Регрессия на замечание ревью: продолжение было завязано на `has_more`, которого
+     * нет ни в одной записи репозитория. Отсутствие поля молча сворачивало обход в одну
+     * страницу — `ourReplyTo` не видел наш ответ со второй и публиковал дубль, то есть
+     * баг оставался, а починка выглядела рабочей. Тест отдаёт страницы БЕЗ has_more
+     * и требует, чтобы обход всё равно дошёл до конца.
+     */
+    @Test
+    fun `обход идёт по курсору даже без has_more`() {
+        val pages =
+            listOf(
+                page("c-1", next = "CUR1"),
+                page("c-2", next = "CUR2"),
+                page("c-3", next = null),
+            )
+        var call = 0
+        val parsed =
+            MoltbookClient.collectPagedComments {
+                pages[call++]
+            }
+        assertEquals("три страницы должны быть прочитаны все", 3, call)
+        assertEquals(listOf("c-1", "c-2", "c-3"), parsed.map { it.id })
+    }
+
+    /**
+     * Пустая страница продолжения — это не конец треда, а подозрительное чтение.
+     *
+     * Регрессия на замечание ревью: страница 200 с пустым телом читалась как «страниц
+     * больше нет», выборка оставалась обрезанной, и `ourReplyTo` возвращал Absent по
+     * неполным данным — второй ответ на тот же комментарий. Отличить «тред кончился»
+     * от «сервер ответил пустотой» по одному ответу нельзя, поэтому падаем.
+     */
+    @Test
+    fun `пустая страница продолжения роняет чтение а не выглядит концом треда`() {
+        val pages =
+            listOf(
+                page("c-1", next = "CUR1"),
+                JSONObject("""{"comments":[]}"""),
+            )
+        var call = 0
+        val failure =
+            runCatching {
+                MoltbookClient.collectPagedComments {
+                    pages[call++]
+                }
+            }.exceptionOrNull()
+        assertTrue("чтение обязано упасть, а не вернуть обрезанный список: $failure", failure is IOException)
+    }
+
+    /**
+     * Повтор курсора — сервер не двигает окно.
+     *
+     * Без проверки чтение зацикливалось бы до потолка страниц и вернуло бы одни и
+     * те же комментарии в списке, а потолок сам по себе тихо усекает выборку.
+     */
+    @Test
+    fun `повтор курсора роняет чтение`() {
+        val pages = listOf(page("c-1", next = "CUR1"), page("c-2", next = "CUR1"))
+        var call = 0
+        val failure =
+            runCatching {
+                MoltbookClient.collectPagedComments {
+                    pages[call++]
+                }
+            }.exceptionOrNull()
+        assertTrue("повтор курсора обязан упасть, а не зациклиться: $failure", failure is IOException)
+    }
+
+    /**
+     * Потолок страниц с живым курсором — это обрезанная выборка, а не ответ.
+     *
+     * Регрессия на замечание ревью: `break` на потолке возвращал неполный список,
+     * который `ourReplyTo` читал как «нашего ответа нет».
+     */
+    @Test
+    fun `потолок страниц с непрочитанным остатком роняет чтение`() {
+        var call = 0
+        val failure =
+            runCatching {
+                MoltbookClient.collectPagedComments {
+                    call++
+                    page("c-$call", next = "CUR$call")
+                }
+            }.exceptionOrNull()
+        assertTrue("потолок с непрочитанным остатком обязан упасть: $failure", failure is IOException)
+    }
+
+    /**
+     * Настоящий конец треда — обычное дело, а не ошибка.
+     */
+    @Test
+    fun `обрыв треда без курсора не считается ошибкой`() {
+        val pages = listOf(page("c-1", next = null))
+        val parsed = MoltbookClient.collectPagedComments { pages.first() }
+        assertEquals(1, parsed.size)
+    }
+
+    /**
+     * Страница ответов БЕЗ `has_more` — как и приходит от платформы в наших фикстурах.
+     *
+     * `next_cursor` кладётся в корень объекта ответа, а не внутрь комментария:
+     * по структуре платформы это поле соседствует с `comments`, иначе обход
+     * никогда не увидит продолжения и тихо прочитает одну страницу.
+     */
+    private fun page(
+        id: String,
+        next: String?,
+    ): JSONObject {
+        val cursor = if (next == null) "" else ""","next_cursor":"$next""""
+        return JSONObject("""{"comments":[{"id":"$id","author":{"name":"x"},"content":"текст"}]$cursor}""")
+    }
+
+    /**
+     * Тред, где все комментарии удалены — это пустой результат, а не поломка.
+     *
+     * Регрессия на замечание ревью: громкая проверка стояла на «непустой вход, пустой
+     * выход», но мёртвые узлы (`is_deleted`, `verification_status=failed`) выбрасываются
+     * ДО разбора. Модерированный тред из удалённых комментов давал пустой список и
+     * читался как «формат изменилась» — навсегда: пост не попадал в ledger, счётчик
+     * непрочитанного не гасился, `ourReplyTo` давал вечный Unknown, и ответы в этот
+     * пост не публиковались никогда.
+     */
+    @Test
+    fun `тред из одних удалённых комментов даёт пустой список а не падает`() {
+        val parsed =
+            MoltbookClient.parseComments(
+                JSONObject(
+                    """
+                    {
+                      "comments": [
+                        {"id":"d-1","author":{"name":"x"},"content":"Deleted comment","is_deleted":true},
+                        {"id":"d-2","author":{"name":"y"},"content":"","verification_status":"failed"}
+                      ]
+                    }
+                    """.trimIndent(),
+                ),
+            )
+        assertTrue("все комменты мёртвые — результат пуст, но разбор не падает", parsed.isEmpty())
+    }
+
+    /**
+     * Мёртвый родитель не должен утаскивать живого ребёнка.
+     *
+     * На живом API 06.10.2026 удалённые комменты приходят с content
+     * «Deleted comment», но сам флаг стоит проверять на СВОЁМ узле: молча выбросить
+     * наш живой ответ вместе с удалённым родителем нельзя.
+     */
+    @Test
+    fun `живой ответ под удалённым родителем сохраняется`() {
+        val parsed =
+            MoltbookClient.parseComments(
+                JSONObject(
+                    """
+                    {
+                      "comments": [
+                        {
+                          "id":"del","author":{"name":"x"},"content":"Deleted comment","is_deleted":true,
+                          "replies":[
+                            {"id":"our-9","author":{"name":"opencodekz"},"content":"мой ответ","parent_id":"del"}
+                          ]
+                        }
+                      ]
+                    }
+                    """.trimIndent(),
+                ),
+            )
+        assertEquals("наш ответ под удалённым родителем обязан выжить", 1, parsed.size)
+        assertEquals("our-9", parsed.first().id)
+    }
+
+    /**
+     * Единственная битая вложенка не должна ронять тред.
+     *
+     * Регрессия на замечание ревью: проверка «формат изменилась» стояла ВНУТРИ
+     * рекурсии, поэтому вложенный уровень с одним битым узлом выбрасывал IOException
+     * и терял весь уже собранный тред. Тест с живым соседом по коду проходил и эту
+     * ошибку не ловил — нужен ровно один битый узел в replies[].
+     */
+    @Test
+    fun `единственная битая вложенка не роняет тред`() {
+        val parsed =
+            MoltbookClient.parseComments(
+                JSONObject(
+                    """
+                    {
+                      "comments": [
+                        {
+                          "id": "root-1", "author": {"name": "doctor_memory"},
+                          "content": "спросил", "parent_id": "",
+                          "replies": [
+                            { "id": "broken", "author": {"name": "x"}, "content": "" }
+                          ]
+                        }
+                      ]
+                    }
+                    """.trimIndent(),
+                ),
+            )
+        assertEquals("корень должен уцелеть", 1, parsed.size)
+        assertEquals("root-1", parsed.first().id)
+    }
+
+    /**
+     * А если не разобрался НИ ОДИН узел — это смена формата, и молчать нельзя.
+     *
+     * Пустой список тикер прочитал бы как «мы тут ничего не отвечали» и ответил бы
+     * повторно. Лучше громко упасть и пропустить пост, чем выдумать отсутствие.
+     */
+    @Test
+    fun `неразобранный тред падает громко а не выглядит пустым`() {
+        val failure =
+            runCatching {
+                MoltbookClient.parseComments(
+                    JSONObject(
+                        """{"comments":[
+                            {"id":"a","author":{"name":"x"},"content":""},
+                            {"id":"b","author":{"name":"y"},"content":""}
+                        ]}""",
+                    ),
+                )
+            }.exceptionOrNull()
+        assertTrue("неразобранный тред обязан падать, а не вернуть пустой список: $failure", failure is IOException)
+    }
+
     private fun comment(
         id: String,
         author: String,
         content: String,
         parentId: String,
+        verificationStatus: String = "",
     ) = MoltbookClient.Comment(
         id = id,
         author = author,
         content = content,
         parentId = parentId,
+        verificationStatus = verificationStatus,
     )
 
     private companion object {

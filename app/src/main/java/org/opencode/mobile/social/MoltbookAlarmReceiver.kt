@@ -75,7 +75,9 @@ class MoltbookAlarmReceiver : BroadcastReceiver() {
             clearLastError(ticker)
             // Паузу выбирает агент по фактическому состоянию ленты, а не расписание:
             // жёсткие 2 часа означали либо простой, либо очередь отложенных ответов.
-            MoltbookScheduler.schedule(context, report.nextVisitMinutes * 60_000L)
+            // Но если периодичность задал юзер, его выбор главнее — иначе карточка в UI
+            // была бы враньём. Приоритет и его цена описаны в scheduleAfterVisit.
+            MoltbookScheduler.scheduleAfterVisit(context, report.nextVisitMinutes * 60_000L)
         } catch (e: Exception) {
             Log.w(TAG, "тик упал: ${e.message}")
             // KEY_LAST_ERROR читался панелью, но не писался НИГДЕ — строка «последняя

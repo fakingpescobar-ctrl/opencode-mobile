@@ -1,5 +1,6 @@
 package org.opencode.mobile.ui
 
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -37,7 +39,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.opencode.mobile.social.MoltbookClient
 import org.opencode.mobile.social.MoltbookLedger
+import org.opencode.mobile.social.MoltbookScheduler
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -47,31 +52,118 @@ import java.util.Locale
  *
  * Отдельный файл, а не ещё 200 строк в [ChatOverlay]: он уже на 4000+ строк, и
  * наползающая шапка — ровно та причина, по которой его потом невозможно читать.
- *
- * Панель читает локальный ledger и НЕ ходит в сеть: счётчики должны быть видны
- * мгновенно и без будильника, иначе «сколько не отвечено» приходится угадывать.
  */
 private val MoltAccent = Color(0xFFFFB020)
 private val MoltIdle = Color(0xFF8A8A8A)
 private val MoltCard = Color(0xFF14110C)
+private val MoltChipOff = Color(0xFF1E1B15)
+private val MoltValue = Color(0xFFE8E8E8)
 
 /**
- * Снимок статистики. SQLite трогаем только в [Dispatchers.IO]: база общая с тиком,
- * и чтение на главном потоке — это ровно тот способ получить ANR, который мы уже
- * один раз получили с сетью в onReceive.
+ * Панель целиком нарисована с ЗАДАННЫМ lineHeight — без него Compose берёт
+ * межстрочный интервал от шрифта и раздувает строку почти вдвое.
+ *
+ * Замер на реальном устройстве (OPPO CPH2747, 3.5 px/dp) показал 219 dp карточки
+ * на 85 dp текста: 61% высоты уходило в воздух между строками сетки. Уплотнение
+ * до 10-11 sp / lineHeight 13-15 sp съело эту пустоту, и в неё же влезла
+ * настройка периодичности — без неё карточка всё равно была бы короче.
+ */
+private val TINY = 9.sp
+private val TINY_LINE = 11.sp
+private val SMALL = 10.sp
+private val SMALL_LINE = 13.sp
+private val BODY = 11.sp
+private val BODY_LINE = 14.sp
+
+/** Снимок статистики для панели: локальный снимок ledger плюс признак свежести. */
+internal data class MoltbookSnapshot(
+    val stats: MoltbookLedger.Stats,
+    /** true — карма и непрочитанные пришли из сети, а не из базы. */
+    val live: Boolean = false,
+)
+
+/**
+ * Статистика Moltbook для панели: сначала мгновенный локальный снимок, поверх него —
+ * одна попытка сети при открытии панели.
+ *
+ * Раньше читался ТОЛЬКО ledger, и цифры на карточке отставали на минуты: тик ходил
+ * на Moltbook раз в полчаса, а счётчик «не прочитано» ждал следующего тика. Один
+ * сетевой запрос при открытии панели дешевле, чем объяснение пользователю, что
+ * агент «ещё не видел».
+ *
+ * Сеть — по [openToken], а не по [refreshKey]. Ключ обновляется по таймеру каждые
+ * [org.opencode.mobile.ui.ChatOverlay] MOLTBOOK_PANEL_REFRESH_MS (15 секунд), и
+ * замерено 08.10.2026: панель, открытая на час, ходила на `/api/v1/home` 240 раз —
+ * при том что тикер на той же платформе между ними ограничен. Поэтому таймер
+ * перечитывает только ledger (там цифры уже обновлены тиком), а сеть поднимает
+ * [openToken], который [ChatOverlay] поднимает один раз на каждое открытие.
+ *
+ * Ключ читается заново на каждой попытке и нигде не кэшируется: файл ключа меняется
+ * только вручную, а держать секрет в поле класса — плохая привычка, которая однажды
+ * утечёт в дамп.
+ *
+ * SQLite и сеть — только в [Dispatchers.IO]: база общая с тиком, а сеть на
+ * главном потоке в Android даёт NetworkOnMainThreadException.
  */
 @Composable
-internal fun rememberMoltbookStats(refreshKey: Int): MoltbookLedger.Stats {
+internal fun rememberMoltbookSnapshot(
+    refreshKey: Int,
+    openToken: Int,
+): MoltbookSnapshot {
     val context = LocalContext.current
     val ledger = remember { MoltbookLedger(context) }
-    var stats by remember { mutableStateOf(MoltbookLedger.Stats()) }
+    var snapshot by remember { mutableStateOf(MoltbookSnapshot(MoltbookLedger.Stats())) }
+    // Равный на старте openToken — иначе первый же таймер-рефреш (а он приходит
+    // раньше открытия панели) сходил бы в сеть без причины.
+    var polledAt by remember { mutableIntStateOf(openToken) }
     LaunchedEffect(refreshKey) {
-        // Упавший ledger гасим тихо и пробуем на следующей перечитке: панель —
-        // украшение, а не прибор, и бросать на неё экран ошибки незачем.
-        stats = runCatching { withContext(Dispatchers.IO) { ledger.stats() } }.getOrElse { stats }
+        // Упавший ledger гасим тихо: панель — украшение, а не прибор, и бросать
+        // на неё экран ошибки незачем. Сеть ниже попробует достроить картину.
+        val local = runCatching { withContext(Dispatchers.IO) { ledger.stats() } }.getOrNull()
+        if (local != null) snapshot = MoltbookSnapshot(stats = local, live = snapshot.live)
+
+        // Уже опросили при этом открытии — тик только что обновил ledger, идти в
+        // сеть повторно незачем.
+        if (polledAt == openToken) return@LaunchedEffect
+        polledAt = openToken
+
+        val fresh = runCatching { withContext(Dispatchers.IO) { fetchLiveCounts(context) } }.getOrNull()
+        // Нет ключа, нет сети, 401 — молча оставляем то, что показали из ledger.
+        // Рамка ошибки тут превращала бы украшение в прибор, который «не работает».
+        if (fresh == null) return@LaunchedEffect
+        // Свежие значения возвращаем в ledger: иначе «не прочитано» откатывалось бы
+        // к старому через минуту, когда следующая перечитка перезапишет снимок.
+        runCatching {
+            withContext(Dispatchers.IO) {
+                if (fresh.karma != local?.karma) ledger.putState(MoltbookLedger.KEY_KARMA, fresh.karma.toString())
+                if (fresh.unread != local?.unread) ledger.putState(MoltbookLedger.KEY_UNREAD, fresh.unread.toString())
+            }
+        }
+        val merged = (local ?: snapshot.stats).copy(karma = fresh.karma, unread = fresh.unread)
+        snapshot = MoltbookSnapshot(stats = merged, live = true)
     }
-    return stats
+    return snapshot
 }
+
+/**
+ * Карма и непрочитанные прямо с сервера.
+ *
+ * [MoltbookClient.readKey] сам бросает [java.io.IOException], если файла ключа нет
+ * или он пуст — это норма (ключ заводят вручную), и вызывающий гасит это молча.
+ */
+private fun fetchLiveCounts(context: Context): LiveCounts {
+    val key = MoltbookClient.readKey(File(context.filesDir, KEY_FILE_PATH))
+    val home = MoltbookClient(key).home()
+    return LiveCounts(karma = home.karma, unread = home.unreadNotifications)
+}
+
+private data class LiveCounts(
+    val karma: Int,
+    val unread: Int,
+)
+
+/** Относительный путь файла ключа внутри приватного хранилища приложения. */
+private const val KEY_FILE_PATH = "moltbook/moltkey"
 
 /** Кнопка «М» в шапке: буква + счётчик неотвеченных. */
 @Composable
@@ -98,6 +190,7 @@ internal fun MoltbookIndicator(
             fontSize = 15.sp,
             fontWeight = FontWeight.Black,
             letterSpacing = 1.sp,
+            lineHeight = 16.sp,
         )
         if (awaiting > 0) {
             Spacer(Modifier.width(3.dp))
@@ -111,6 +204,7 @@ internal fun MoltbookIndicator(
                     text = awaiting.toString(),
                     color = Color(0xFF14110C),
                     fontSize = 9.sp,
+                    lineHeight = 10.sp,
                     fontWeight = FontWeight.Bold,
                 )
             }
@@ -118,10 +212,18 @@ internal fun MoltbookIndicator(
     }
 }
 
+/**
+ * Карточка Moltbook: сводка по ленте, кому именно мы не ответили, настройка
+ * периодичности тика и последняя ошибка тика.
+ *
+ * [live] — метка «цифры пришли из сети», а не из базы: без неё юзер не может
+ * отличить «не прочитано 0» от «мы не спросили сервер и не знаем».
+ */
 @Composable
 internal fun MoltbookPanel(
     stats: MoltbookLedger.Stats,
     modifier: Modifier = Modifier,
+    live: Boolean = false,
 ) {
     Column(
         modifier =
@@ -134,15 +236,37 @@ internal fun MoltbookPanel(
                 .testTag(TAG_PANEL_MOLTBOOK)
                 // Внешний Column намеренно НЕ скроллится: иначе вложенный список
                 // вопросов нельзя прокрутить отдельно — колесо уходит в панель целиком.
-                .padding(horizontal = 10.dp, vertical = 6.dp),
+                .padding(horizontal = 10.dp, vertical = 5.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("MOLTBOOK", color = MoltAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+            Text(
+                text = "MOLTBOOK",
+                color = MoltAccent,
+                fontSize = SMALL,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.5.sp,
+                lineHeight = SMALL_LINE,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
             Spacer(Modifier.weight(1f))
-            Text(text = cadenceHint(stats), color = MoltIdle, fontSize = 9.sp)
+            if (live) {
+                // Точка, а не слово: на 339 dp «сеть» съело бы место у времени визита,
+                // а смысл («цифры только что из сети») читается по цвету и форме.
+                Box(Modifier.size(4.dp).clip(CircleShape).background(MoltAccent))
+                Spacer(Modifier.width(4.dp))
+            }
+            Text(
+                text = cadenceHint(stats),
+                color = MoltIdle,
+                fontSize = TINY,
+                lineHeight = TINY_LINE,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
 
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(3.dp))
 
         // Главная цифра очереди — то, ради чего панель и открывают. Крупная, но не
         // во всю высоту: раньше она съедала треть экрана ради одного числа.
@@ -150,15 +274,29 @@ internal fun MoltbookPanel(
             Text(
                 text = stats.awaitingReply.toString(),
                 color = if (stats.awaitingReply > 0) MoltAccent else Color(0xFF39FF88),
-                fontSize = 20.sp,
+                fontSize = 22.sp,
                 fontWeight = FontWeight.Black,
+                lineHeight = 24.sp,
+                maxLines = 1,
             )
             Spacer(Modifier.width(6.dp))
-            Text("ждут ответа", color = MoltIdle, fontSize = 10.sp, modifier = Modifier.padding(bottom = 3.dp))
+            Text(
+                text = "ждут ответа",
+                color = MoltIdle,
+                fontSize = SMALL,
+                lineHeight = SMALL_LINE,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(bottom = 2.dp),
+            )
         }
 
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(5.dp))
 
+        // 4×2, а не 3×3: восемь показателей заполняют сетку без пустой ячейки, а
+        // лишний ряд — это ровно 25 dp высоты, ради которых карточка и была вдвое
+        // выше нужного. Раскладка колонок при ширине 319 dp внутри карточки:
+        // 4 × 76 + 3 × 5 = 319, подпись в 76 dp («ответов на них» ≈ 58 dp) влезает.
         StatGrid(
             listOf(
                 stats.repliedTotal to "отвечено",
@@ -166,11 +304,15 @@ internal fun MoltbookPanel(
                 stats.repliesToOurPosts to "ответов на них",
                 stats.repostsOfOurs to "репостов",
                 stats.upvotesGiven to "апвоутов",
+                stats.failedTotal to "сорвалось",
                 stats.unread to "не прочитано",
                 stats.karma to "карма",
-                stats.failedTotal to "сорвалось",
             ),
         )
+
+        Spacer(Modifier.height(6.dp))
+        Divider()
+        IntervalPicker()
 
         if (stats.pending.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
@@ -178,9 +320,12 @@ internal fun MoltbookPanel(
             Text(
                 text = "ЖДУТ ОТВЕТА · ${stats.pending.size}",
                 color = MoltIdle,
-                fontSize = 9.sp,
+                fontSize = TINY,
                 letterSpacing = 1.sp,
-                modifier = Modifier.padding(top = 5.dp, bottom = 3.dp),
+                lineHeight = TINY_LINE,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 4.dp, bottom = 3.dp),
             )
             // Список ограничен по высоте и прокручивается: вопросы бывают длинные, а
             // панель открывают посмотреть счётчик, а не утонуть в стенке текста.
@@ -195,17 +340,21 @@ internal fun MoltbookPanel(
                             Text(
                                 text = pending.author,
                                 color = MoltAccent,
-                                fontSize = 10.sp,
+                                fontSize = SMALL,
+                                lineHeight = SMALL_LINE,
                                 fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.width(88.dp),
                             )
-                            Spacer(Modifier.weight(1f))
                             Text(
                                 text = "«${pending.postTitle.take(40)}»",
                                 color = MoltIdle,
-                                fontSize = 9.sp,
+                                fontSize = TINY,
+                                lineHeight = TINY_LINE,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.padding(start = 6.dp),
+                                modifier = Modifier.weight(1f).padding(start = 5.dp),
                             )
                         }
                         Text(
@@ -213,7 +362,8 @@ internal fun MoltbookPanel(
                             // Пока перевода нет — показываем оригинал, а не пустую строку.
                             text = pending.summaryRu.ifBlank { pending.body.replace('\n', ' ') },
                             color = Color(0xFFBDBDBD),
-                            fontSize = 10.sp,
+                            fontSize = SMALL,
+                            lineHeight = SMALL_LINE,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -226,7 +376,10 @@ internal fun MoltbookPanel(
             Text(
                 text = "последняя ошибка: ${stats.lastError}",
                 color = Color(0xFFFF6B6B),
-                fontSize = 9.sp,
+                fontSize = TINY,
+                lineHeight = TINY_LINE,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 5.dp),
             )
         }
@@ -234,23 +387,141 @@ internal fun MoltbookPanel(
 }
 
 /** Список вопросов не выше этого: панель не должна занимать весь экран ради ленты. */
-private val PENDING_LIST_MAX_HEIGHT = 128.dp
+private val PENDING_LIST_MAX_HEIGHT = 112.dp
 
 private const val MAX_PENDING_ROWS = 6
 const val TAG_PANEL_MOLTBOOK = "panel_moltbook"
 
+/** Колонок в сетке показателей: 8 / 4 = 2 ряда без хвоста. */
+private const val STAT_COLUMNS = 4
+
+/** Чипов в ряду: 5 вариантов / 3 = два ряда, третий чип третьего ряда не бывает. */
+private const val INTERVAL_CHIPS_PER_ROW = 3
+
+/** Ширина одного чипа: (319 - 2 × 6) / 3 = 102 dp — текст «30 мин» влезает с запасом. */
+private val INTERVAL_CHIP_WIDTH = 102.dp
+
+/** Зазор между чипами: ряд из трёх даёт 3 × 102 + 2 × 6 = 318 dp при 319 доступных. */
+private val INTERVAL_CHIP_GAP = 6.dp
+
+/**
+ * Периодичность тика: как часто агент ходит на Moltbook.
+ *
+ * Ряды собираем вручную из [Row], а не через FlowRow: FlowRow в этой версии
+ * Compose помечен ExperimentalLayoutApi, и карточка в шапке — не то место, где
+ * стоит тащить opt-in предупреждение ради пяти кнопок.
+ *
+ * Значение перечитывается из prefs ПОСЛЕ [MoltbookScheduler.setUserIntervalMinutes],
+ * а не берётся из нажатого чипа: prefs — единственный источник правды, там же
+ * мусор из ручной правки сводится к 0, и показывать юзеру нужно ровно то, что
+ * агент потом реально применит.
+ */
 @Composable
-private fun StatGrid(cells: List<Pair<Int, String>>) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        cells.chunked(3).forEach { row ->
-            Row(Modifier.fillMaxWidth()) {
-                row.forEach { (value, label) ->
-                    Column(Modifier.weight(1f)) {
-                        Text("$value", color = Color(0xFFE8E8E8), fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                        Text(label, color = MoltIdle, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+private fun IntervalPicker() {
+    val context = LocalContext.current
+    var chosen by remember { mutableIntStateOf(MoltbookScheduler.userIntervalMinutes(context)) }
+    Column(Modifier.padding(top = 6.dp)) {
+        Text(
+            text = "ПЕРИОД ТИКА · 0 = авто, паузу выбирает агент",
+            color = MoltIdle,
+            fontSize = TINY,
+            letterSpacing = 0.5.sp,
+            lineHeight = TINY_LINE,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(4.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(INTERVAL_CHIP_GAP)) {
+            MoltbookScheduler.INTERVAL_CHOICES_MINUTES.chunked(INTERVAL_CHIPS_PER_ROW).forEach { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(INTERVAL_CHIP_GAP)) {
+                    row.forEach { minutes ->
+                        IntervalChip(
+                            minutes = minutes,
+                            selected = minutes == chosen,
+                            onClick = {
+                                MoltbookScheduler.setUserIntervalMinutes(context, minutes)
+                                chosen = MoltbookScheduler.userIntervalMinutes(context)
+                            },
+                            modifier = Modifier.width(INTERVAL_CHIP_WIDTH),
+                        )
                     }
                 }
-                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun IntervalChip(
+    minutes: Int,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    // Цвет обводки — отдельно, иначе цепочка модификаторов разъезжается на две строки
+    // и ktlint требует переносить точку в конец предыдущей, ломая порядок рисования.
+    val borderColor = if (selected) MoltAccent.copy(alpha = 0.7f) else Color.Transparent
+    Box(
+        modifier =
+            modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(if (selected) MoltAccent.copy(alpha = 0.14f) else MoltChipOff)
+                .border(1.dp, borderColor, RoundedCornerShape(6.dp))
+                .clickable { onClick() }
+                .padding(vertical = 5.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = intervalLabel(minutes),
+            color = if (selected) MoltAccent else MoltIdle,
+            fontSize = BODY,
+            lineHeight = BODY_LINE,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
+ * Подпись варианта периодичности. Ноль показываем как «авто», а не «0 мин»:
+ * это не «каждую нулевую минуту», а «агент сам выбирает паузу» — и юзер должен
+ * видеть разницу, а не гадать, что список начинается с нуля.
+ */
+private fun intervalLabel(minutes: Int): String =
+    when {
+        minutes <= 0 -> "авто"
+        minutes % 60 == 0 -> "${minutes / 60} ч"
+        else -> "$minutes мин"
+    }
+
+@Composable
+private fun StatGrid(cells: List<Pair<Int, String>>) {
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        cells.chunked(STAT_COLUMNS).forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                row.forEach { (value, label) ->
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = "$value",
+                            color = MoltValue,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            lineHeight = BODY_LINE,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = label,
+                            color = MoltIdle,
+                            fontSize = TINY,
+                            lineHeight = TINY_LINE,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                repeat(STAT_COLUMNS - row.size) { Spacer(Modifier.weight(1f)) }
             }
         }
     }

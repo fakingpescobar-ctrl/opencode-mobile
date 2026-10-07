@@ -612,19 +612,24 @@ fun ChatOverlay(
     val showSettings = activePanel == PANEL_SETTINGS
     val showSttSettings = activePanel == PANEL_STT
 
-    // Статистика Moltbook — из локального ledger, без сети. Ключ обновления растёт
-    // при открытии панели и по таймеру, пока она открыта: тик отвечает минуту, и
-    // иначе цифры «ждут ответа» застывали бы на весь сеанс.
+    // Статистика Moltbook: локальный ledger мгновенно, поверх — одна попытка сети
+    // ПРИ ОТКРЫТИИ панели. Ключ растёт и по таймеру, пока панель открыта, иначе цифры
+    // «ждут ответа» застыли бы на весь сеанс, пока тик не отработает; но таймер
+    // перечитывает только ledger — иначе панель, открытая на час, сходила бы на
+    // /api/v1/home 240 раз.
     var moltbookRefresh by remember { mutableIntStateOf(0) }
+    var moltbookOpenToken by remember { mutableIntStateOf(0) }
     LaunchedEffect(showMoltbookPanel) {
         if (!showMoltbookPanel) return@LaunchedEffect
+        moltbookOpenToken++
         moltbookRefresh++
         while (true) {
             delay(MOLTBOOK_PANEL_REFRESH_MS)
             moltbookRefresh++
         }
     }
-    val moltbookStats = rememberMoltbookStats(moltbookRefresh)
+    val moltbookSnapshot = rememberMoltbookSnapshot(moltbookRefresh, moltbookOpenToken)
+    val moltbookStats = moltbookSnapshot.stats
 
     fun answerQuestion(
         q: ChatQuestion,
@@ -1647,6 +1652,7 @@ fun ChatOverlay(
             if (showMoltbookPanel) {
                 MoltbookPanel(
                     stats = moltbookStats,
+                    live = moltbookSnapshot.live,
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 2.dp),
                 )
             }
