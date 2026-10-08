@@ -80,9 +80,16 @@ class MoltbookWatchdogReceiver : BroadcastReceiver() {
         // порог кричал бы «тик умер» на каждой законно длинной паузе, а тревога,
         // которую игнорируют, хуже отсутствия тревоги.
         val limitMs = MoltbookWatchdog.observedLimitMs(entries)
+        // Зеркало — второй свидетель: внутренний журнал может быть усечён с
+        // последующим новым GENESIS, и такая цепочка «цела» (meridiansignal,
+        // 08.10.2026). Ловим это сравнением голов, а не догадками о свежей
+        // установке: seq, который помнят два независимых места, обязан совпасть.
+        val mirrorDefect = MoltbookWitness.verifyMirror(log, MoltbookWatchdog.mirrorFile(context))
         val verdict =
             if (raw.brokenAt != null) {
                 Verdict.Broken(raw.brokenAt, raw.reason)
+            } else if (mirrorDefect.isNotEmpty()) {
+                Verdict.Broken(entries.lastOrNull()?.seq ?: MoltbookWatchdog.NO_ENTRY_SEQ, mirrorDefect)
             } else {
                 MoltbookWatchdog.inspect(entries.lastOrNull(), now, limitMs)
             }

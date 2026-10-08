@@ -175,4 +175,51 @@ class MoltbookIntegrityFixTest {
         assertFalse(MoltbookHttpException(409, "already answered").isTransient)
         assertFalse(MoltbookHttpException(422, "unprocessable").isTransient)
     }
+
+    /**
+     * Усечение журнала с новым GENESIS неотличимо от свежей установки — если
+     * нет второго свидетеля. Зеркало им и является (meridiansignal, 08.10.2026).
+     *
+     * Три случая, и каждый обязан читаться однозначно: зеркало впереди = порча;
+     * зеркало позади = нормальная гонка, тревоги быть не должно; одинаковые
+     * головы = тишина.
+     */
+    @Test
+    fun `усечение внутреннего журнала ловится сверкой с зеркалом`() {
+        val log = folder.newFile("witness.log")
+        val mirror = folder.newFile("mirror.log")
+        val now = 1_700_000_000_000L
+        repeat(5) { i ->
+            MoltbookWitness.append(log, null, MoltbookWitness.KIND_WAKE, "wake $i", now + i)
+        }
+        MoltbookWitness.mirrorSafely(log, mirror)
+
+        // тишина: головы совпадают
+        assertEquals("", MoltbookWitness.verifyMirror(log, mirror))
+
+        // кто-то вырезал хвост и дописал новый GENESIS
+        val truncated = log.readLines(Charsets.UTF_8).take(2).joinToString("\n", postfix = "\n")
+        log.writeText(truncated, Charsets.UTF_8)
+        MoltbookWitness.append(log, null, MoltbookWitness.KIND_WAKE, "новый genesis", now + 100)
+
+        val defect = MoltbookWitness.verifyMirror(log, mirror)
+        assertTrue("усечение должно ловиться сверкой голов, а не оставаться тишиной: $defect", defect.isNotEmpty())
+        assertTrue("в сообщении должно быть названо расхождение seq: $defect", defect.contains("зеркало"))
+        // локальная цепочка при этом «цела» — ради этого примера всё и затевалось
+        assertNull(MoltbookWitness.verify(log).brokenAt)
+    }
+
+    /** Зеркало отстаёт — это гонка записи, а не порча. Тревога здесь была бы шумом. */
+    @Test
+    fun `отставшее зеркало не считается порчей`() {
+        val log = folder.newFile("witness2.log")
+        val mirror = folder.newFile("mirror2.log")
+        val now = 1_700_000_000_000L
+        repeat(3) { i ->
+            MoltbookWitness.append(log, mirror, MoltbookWitness.KIND_WAKE, "wake $i", now + i)
+        }
+        // последняя запись в журнал ушла, а зеркало обновиться не успело
+        MoltbookWitness.append(log, null, MoltbookWitness.KIND_WAKE, "ещё", now + 10)
+        assertEquals("", MoltbookWitness.verifyMirror(log, mirror))
+    }
 }

@@ -1,5 +1,6 @@
 package org.opencode.mobile.social
 
+import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -152,13 +153,25 @@ internal object MoltbookWitness {
         // операции уничтожило бы весь предыдущий журнал. Хвост записи — и есть
         // доказательство, поэтому он должен пережить смерть процесса.
         //
-        // fd.sync() здесь НЕ зовётся сознательно: он гарантирует устойчивость к
-        // отключению питания, а не к убийству процесса, и платит за это десятки
-        // миллисекунд fsync на каждой записи. От OOM-kill и снятия с wake-lock
-        // запись в page cache переживает и без него.
+        // fsync вызывается СОЗНАТЕЛЬНО (meridiansignal, 08.10.2026): rename и
+        // flush дают атомарность и видимость, но не долговечность. Без fsync
+        // запись лежит в page cache, и при отключении питания (а на телефоне это
+        // ещё и выключение из-за разряда, спящий экран с агрессивным
+        // энергосбережением) хвост журнала исчезает целиком — а хвост и есть
+        // доказательство.
+        //
+        // Раньше здесь стоял обратный размен («устойчивость к OOM-kill важнее,
+        // fsync стоит десятки мс на записи»). Он был неверен по существу:
+        // OOM-kill переживается и без fsync (запись уже в кэше ядра), а обесточивание
+        // без него — нет. Цена вопроса: 3–5 записей за тик, то есть единицы
+        // миллисекунд на тик раз в два часа.
         FileOutputStream(logFile, true).use { stream ->
             stream.write((format(stamped) + NEWLINE).toByteArray(Charsets.UTF_8))
             stream.flush()
+            // И каталог тоже: без fsync директории переименование в shrinkIfNeeded
+            // может пережить перезагрузку «наполовину» — имя новое, а данных нет.
+            runCatching { stream.fd.sync() }
+                .onFailure { Log.w(TAG, "fsync журнала не удался: ${it.message}") }
         }
 
         shrinkIfNeeded(logFile)
@@ -230,6 +243,42 @@ internal object MoltbookWitness {
             previous = entry
         }
         return VerifyResult(checked, null, "")
+    }
+
+    /**
+     * Сверка головы журнала с зеркалом — второй свидетель (meridiansignal,
+     * 08.10.2026).
+     *
+     * Проблема, которую это закрывает: усечение журнала с последующей записью
+     * нового GENESIS неотличимо от легитимной свежей установки приложения. В
+     * обоих случаях цепочка «цела» — просто начинается заново, а доказать, что
+     * кто-то вырезал хвост, нечем. Если голова хранится ещё и в другом месте,
+     * куда усечение внутреннего файла не дотягивается, расхождение видно сразу.
+     *
+     * Зеркало у нас и так есть — [MIRROR_RELATIVE] во внешнем хранилище, куда
+     * журнал пишется целиком после каждой записи. Оно и было off-device копией;
+     * не хватало только СВЕРКИ, без которой копия — просто мёртвый файл.
+     *
+     * Направление проверки одностороннее: ловим только `mirror.seq > log.seq`.
+     * Зеркало впереди — значит внутренний журнал отстал, то есть его урезали или
+     * подменили. Зеркало позади — нормальная гонка: запись в зеркало идёт
+     * последним и может не успеть при сбое, а свежая установка вообще удаляет
+     * внутренний файл, оставляя зеркало. Наказание за отставание зеркала было бы
+     * тревогой на ровном месте.
+     *
+     * Нечитаемая строка в зеркале или отсутствие головы — тоже не выносим вердикт:
+     * зеркало пишется best effort, обрыв на его середине ничего не доказывает
+     * про журнал.
+     */
+    fun verifyMirror(
+        logFile: File,
+        mirrorFile: File?,
+    ): String {
+        if (mirrorFile == null || !mirrorFile.isFile) return ""
+        val mirrorHead = runCatching { head(mirrorFile) }.getOrNull() ?: return ""
+        val logHead = runCatching { head(logFile) }.getOrNull() ?: return ""
+        if (mirrorHead.seq <= logHead.seq) return ""
+        return "зеркало впереди журнала: зеркало=${mirrorHead.seq}, журнал=${logHead.seq} — журнал усечён или подменён"
     }
 
     /**
@@ -388,6 +437,9 @@ internal object MoltbookWitness {
     /** Разделитель строк — всегда LF, как в .editorconfig и как в `adb pull`. */
     private const val NEWLINE: String = "\n"
 
+    /** Тег для отладочных сообщений о durability — [android.util.Log]. */
+    private const val TAG: String = "MoltbookWitness"
+
     /** Труб в строке записи: `seq|at|kind|payload|prevHash|hash`. */
     private const val FIELDS: Int = 6
 
@@ -494,7 +546,31 @@ internal object MoltbookWitness {
         // остаться в пределах одного раздела, иначе оно не атомарно.
         val scratch = File("${logFile.absolutePath}.shrinking")
         scratch.writeText(kept.joinToString(NEWLINE, postfix = NEWLINE), Charsets.UTF_8)
-        scratch.renameTo(logFile)
+        if (scratch.renameTo(logFile)) {
+            // fsync каталога после переименования: иначе после обесточивания имя
+            // может указывать на файл, содержимое которого не записано (meridiansignal).
+            fsyncDir(logFile.parentFile)
+        }
+    }
+
+    /**
+     * Принудительно сбросить метаданные каталога на диск.
+     *
+     * Переименование атомарно для ВИДИМОСТИ, но запись имени в каталоге — это
+     * тоже изменение, и без fsync каталога оно может не пережить отключение
+     * питания: имя новое, а данных за ним нет. Каталог нельзя открыть как файл
+     * обычным потоком, поэтому идём через [android.system.Os].
+     */
+    private fun fsyncDir(dir: File?) {
+        if (dir == null) return
+        runCatching {
+            val fd = android.system.Os.open(dir.absolutePath, android.system.OsConstants.O_RDONLY, 0)
+            try {
+                android.system.Os.fsync(fd)
+            } finally {
+                android.system.Os.close(fd)
+            }
+        }.onFailure { Log.w(TAG, "fsync каталога не удался: ${it.message}") }
     }
 
     /** sha256 одной строки. Общий digest для строки и для файла — реализация одна. */
