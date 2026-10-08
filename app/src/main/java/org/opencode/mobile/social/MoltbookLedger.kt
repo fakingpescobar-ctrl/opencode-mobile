@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import java.security.MessageDigest
 
 /**
  * Локальный учёт Moltbook. До него «сколько не отвечено» вычислялось пересчётом
@@ -109,8 +110,11 @@ internal class MoltbookLedger(
             )
             """.trimIndent(),
         )
+        db.execSQL(CREATE_SEEN_TABLE)
         db.execSQL("CREATE INDEX idx_comments_status ON comments(status)")
         db.execSQL("CREATE INDEX idx_comments_post ON comments(post_id)")
+        db.execSQL(CREATE_SEEN_INDEX_POST)
+        db.execSQL(CREATE_SEEN_INDEX_AT)
     }
 
     override fun onUpgrade(
@@ -128,7 +132,31 @@ internal class MoltbookLedger(
         if (oldVersion < 2) {
             db.execSQL("ALTER TABLE comments ADD COLUMN summary_ru TEXT NOT NULL DEFAULT ''")
         }
-        // Дальше — по одному шагу на версию: if (oldVersion < 3) { ... }
+        // Дальше — по одному шагу на версию.
+        //
+        // v3: журнал прочитанного. Таблица новая и пустая по смыслу (что мы уже
+        // видели — известно только из ленты, восстановить нечего), поэтому
+        // наполнять её нечем и не нужно: первый же скан запишет текущее состояние
+        // как «новое», и это честно — прошлого наблюдения у нас не было.
+        if (oldVersion < 3) {
+            db.execSQL(CREATE_SEEN_TABLE_V3)
+            db.execSQL(CREATE_SEEN_INDEX_POST)
+            db.execSQL(CREATE_SEEN_INDEX_AT)
+        }
+        // v4: счётчик наблюдений. Без него «пережил скан» приходилось выводить
+        // из времени последнего прочтения, а порог в часах меньше интервала
+        // тика (2-12 ч) срабатывал на первом же пропуске, то есть мигание
+        // пагинации объявлялось исчезновением. Накопленное наблюдение — прямой
+        // признак «пережил», и он не зависит от того, как часто тикает тикер.
+        //
+        // Колонка добавляется ОТДЕЛЬНОЙ веткой по той же причине, по какой
+        // ветка v3 создаёт таблицу БЕЗ `hits`: обе строки проходят подряд при
+        // обновлении с версии 2, и создание уже с колонкой сделало бы следующий
+        // ALTER дубликатом — `SQLiteException: duplicate column name` на первом
+        // же обращении к базе, то есть у всех, кто обновляется с текущей версии.
+        if (oldVersion < 4) {
+            db.execSQL("ALTER TABLE seen ADD COLUMN hits INTEGER NOT NULL DEFAULT 1")
+        }
     }
 
     /** Наш пост или чужой — как есть с сервера. [repostOf] заполняется сканом ленты. */
@@ -513,6 +541,340 @@ internal class MoltbookLedger(
         )
     }
 
+    /**
+     * Комментарий, который мы уже прочитали в ленте — «слепой зоне памяти» между
+     * сканами, у которой теперь есть доказательство прочтения.
+     *
+     * До 08.10.2026 (разбор therecordkeeper, ответ `a2708b49`) скан писал только
+     * текущее состояние: между двумя проходами лента могла и порасти, и потерять
+     * комментарии, и мы об этом не знали — а в журнал шёл только снимок «сейчас».
+     * Эта строка и есть то, чем «сейчас» можно сверить с «тогда».
+     *
+     * @param status статус комментария на момент прочтения: смена статуса между
+     *   сканами — самостоятельный факт для дайджеста, а не шум.
+     * @param ours наш ли это комментарий: свои в очередь не берутся, и их появление
+     *   тоже стоит показать («агент заговорил»).
+     * @param at когда прочитали в ЭТОМ проходе. Время первого появления хранится
+     *   отдельно, в `comments.seen_at`; здесь нужно время последнего прочтения,
+     *   потому что по нему идёт усечение таблицы.
+     */
+    data class SeenComment(
+        val postId: String,
+        val commentId: String,
+        val status: String,
+        val ours: Boolean,
+        val at: Long,
+        /**
+         * Сколько сканов подряд наблюдение было живым. Первое прочтение — 1.
+         *
+         * Существует ради одного вопроса, на который время отвечает неверно:
+         * «комментарий пережил скан или мигнул и пропал». Порог в часах здесь
+         * бесполезен — интервал тика (2-12 ч) больше любого разумного часового
+         * окна, и исчезновение объявлялось на первом же пропуске. Накопленное
+         * наблюдение отвечает прямо: видели дважды — пережил, видели один раз —
+         * нет.
+         */
+        val hits: Int = 1,
+    )
+
+    /**
+     * Что изменилось между прошлым сканом и этим.
+     *
+     * Отдельная структура, а не три счётчика, потому что дайджесту нужно не «сколько
+     * изменилось», а ЧТО: «новых=3, один из них — наш ответ, один пропал» —
+     * это факт, а «счётчик дельты равен 4» — нет.
+     */
+    data class ScanDelta(
+        /** Комментариев не было в `seen`, а теперь есть. */
+        val added: List<SeenComment> = emptyList(),
+        /** Комментарий и наш, и прежний статус: `(было, стало)`. */
+        val statusChanged: List<Pair<SeenComment, String>> = emptyList(),
+        /** Были в `seen`, в этом проходе их не пришло. Только по полностью просканированным постам. */
+        val vanished: List<SeenComment> = emptyList(),
+    ) {
+        /** Ничего не изменилось — это нормальный тик, а не повод для строки в дайджесте. */
+        val isEmpty: Boolean get() = added.isEmpty() && statusChanged.isEmpty() && vanished.isEmpty()
+
+        /**
+         * Сводка для фактов дайджеста, на русском: «новых=3 сменило статус=1 исчезло=2».
+         *
+         * Формат «=» выбран не случайно: значения должны читаться как числа и
+         * сразу после слова-подписи, иначе в тексте агента они становятся частью
+         * прозы и модель начинает их пересказывать своими словами.
+         */
+        val summary: String
+            get() = "новых=${added.size} сменило статус=${statusChanged.size} исчезло=${vanished.size}"
+    }
+
+    /**
+     * Сверить прочитанное с журналом прочтений, ЗАТЕМ записать новое состояние.
+     *
+     * Одна операция, а не две, потому что разорванные «посчитал / записали» дают
+     * ложную дельту при любом сбое между ними: процесс убили после чтения — и на
+     * следующем тике весь пост выглядит «новым» целиком. Запись и усечение идут в
+     * одной транзакции, чтобы усечение не видело промежуточного состояния.
+     *
+     * Исчезнувшие записи удаляются — см. разбор в [recordSeen]: пока строка лежала,
+     * «исчезло» повторялось в каждой дельте и не могло потухнуть. Отличать
+     * «пережил скан» от «мигнул» теперь не по часам, а по [SURVIVED_SCANS] —
+     * часовой порог короче интервала тика и срабатывал на первом же пропуске.
+     *
+     * @param batch что тикер только что прочитал по одному или нескольким постам.
+     *   ВАЖНО для исчезновений: пост считается просканированным только если в [batch]
+     *   есть хоть бы один его комментарий, поэтому частичный обход (лимит страниц)
+     *   не может объявить «исчезло» то, что просто не влезло в выборку.
+     * @param now время прохода, единое для всей пачки: разные `at` внутри одного
+     *   вызова означали бы, что на усечение влияет порядок обхода, и одинаковое
+     *   состояние давало бы разный результат.
+     */
+    fun recordSeen(
+        batch: List<SeenComment>,
+        now: Long,
+    ): ScanDelta {
+        val scannedPosts = batch.map { it.postId }.toSet()
+        if (scannedPosts.isEmpty()) return ScanDelta()
+
+        val previous = seenOfPosts(scannedPosts)
+        val delta = computeDelta(previous, batch, now)
+
+        writableDatabase.beginTransaction()
+        try {
+            batch.forEach { upsertSeen(it, now) }
+            // Исчезнувшие сносятся из журнала, и это ровно то, что делает
+            // исчезновение ОДНОВРЕМЕННЫМ фактом. Пока запись лежала, она
+            // попадала в `vanished` дельты КАЖДОГО следующего тика: «исчезло=3»
+            // в дайджесте не тухло, а `ScanDelta.isEmpty` не мог стать истинным
+            // никогда — то есть агент получал «что-то изменилось» без единого
+            // изменения. Цена сноса — вернувшийся комментарий придёт как новый,
+            // и агент ответит на него заново; зато «исчезло» означает ровно то,
+            // что написано, и повторный проход такого комментария — уже не
+            // повтор, а новая работа.
+            delta.vanished.forEach { row ->
+                writableDatabase.delete("seen", "comment_id = ?", arrayOf(row.commentId))
+            }
+            pruneSeen(now)
+            writableDatabase.setTransactionSuccessful()
+        } finally {
+            writableDatabase.endTransaction()
+        }
+        return delta
+    }
+
+    /** Всё, что журнал помнит по указанным постам: одна выборка, а не запрос на пост. */
+    private fun seenOfPosts(postIds: Set<String>): List<SeenComment> =
+        readableDatabase
+            .rawQuery(
+                "SELECT post_id, comment_id, status, ours, at, hits FROM seen WHERE post_id IN (${placeholders(postIds.size)})",
+                postIds.toList().toTypedArray(),
+            ).use { c ->
+                buildList {
+                    while (c.moveToNext()) {
+                        add(
+                            SeenComment(
+                                postId = c.getString(0),
+                                commentId = c.getString(1),
+                                status = c.getString(2),
+                                ours = c.getInt(3) != 0,
+                                at = c.getLong(4),
+                                hits = c.getInt(5),
+                            ),
+                        )
+                    }
+                }
+            }
+
+    private fun upsertSeen(
+        row: SeenComment,
+        now: Long,
+    ) {
+        // Счётчик наблюдений растёт, а не заменяется: `CONFLICT_REPLACE` обнулял
+        // его при каждом прочтении, и «пережил скан» не наступало НИКОГДА.
+        // Поэтому сначала UPDATE (он же признак «запись уже была»), и только
+        // если он не задел ни строки — INSERT новой.
+        //
+        // `hits = hits + 1` считает БАЗУ, а не поле батча. Поле `hits` в
+        // [SeenComment] приходит из скана, который эту запись не читал, и там
+        // оно всегда 1: прибавлять его — значит застрять на 2 навсегда и тихо
+        // сломать любой будущий порог больше двух сканов.
+        val updated =
+            writableDatabase.run {
+                execSQL(
+                    "UPDATE seen SET post_id = ?, status = ?, ours = ?, at = ?, hits = hits + 1 WHERE comment_id = ? AND post_id = ?",
+                    arrayOf<Any>(
+                        row.postId,
+                        row.status,
+                        if (row.ours) 1 else 0,
+                        now,
+                        row.commentId,
+                        row.postId,
+                    ),
+                )
+                compileStatement("SELECT changes()").use { st ->
+                    st.simpleQueryForLong()
+                }
+            }
+        if (updated > 0L) return
+        writableDatabase.insertWithOnConflict(
+            "seen",
+            null,
+            ContentValues().apply {
+                put("post_id", row.postId)
+                put("comment_id", row.commentId)
+                put("status", row.status)
+                put("ours", if (row.ours) 1 else 0)
+                put("at", now)
+                put("hits", 1)
+            },
+            SQLiteDatabase.CONFLICT_REPLACE,
+        )
+    }
+
+    /**
+     * Усечение базы `seen` после записи батча.
+     *
+     * Два шага, а не один `DELETE` по объединённому условию: сначала срок жизни,
+     * потом потолок по числу. Порядок значим — при одном запросе по объединённому
+     * условию нельзя объяснить, КАКОЕ из двух правил сработало, а в дампе на
+     * телефоне причина усечения читается только через неё.
+     *
+     * Порог по числу считается запросом, а не `LIMIT` со смещением: смещение между
+     * двумя вызовами на одной и той же базе разные вещи (одна запись успела
+     * прийти), а порог обязан быть воспроизводимым. Режется по `at <= edge` —
+     * вместе с записью на границе, иначе таблица осталась бы на одну строну выше
+     * потолка навсегда.
+     */
+    private fun pruneSeen(now: Long) {
+        val cutoff = now - SEEN_KEEP_MS
+        writableDatabase.delete("seen", "at < ?", arrayOf(cutoff.toString()))
+        val total =
+            readableDatabase.rawQuery("SELECT COUNT(*) FROM seen", null).use { c ->
+                if (c.moveToFirst()) c.getInt(0) else 0
+            }
+        if (total <= MAX_SEEN) return
+        // Граница — ПАРА (время, id), а не одно время: весь батч пишется одним
+        // `now`, поэтому `at <= edge` на равных временах вычищал за раз весь тик,
+        // а не одну лишнюю строку. Продовый `pruneSeen` обязан оставлять ровно
+        // столько, сколько оставляет тестируемый `prunePlan`, иначе проверка
+        // чинит не тот код, который работает на телефоне.
+        //
+        // Знак по `comment_id` — `>`: граница берётся сортировкой ПО УБЫВАНИЮ
+        // времени, то есть выживает «не меньше границы» в этом порядке, и при
+        // равных временах выживает всё, что ПОЗЖЕ границы по id.
+        var edgeAt = cutoff
+        var edgeId = ""
+        readableDatabase
+            .rawQuery(
+                "SELECT at, comment_id FROM seen ORDER BY at DESC, comment_id ASC LIMIT 1 OFFSET ?",
+                arrayOf((MAX_SEEN - 1).toString()),
+            ).use { c ->
+                if (c.moveToFirst()) {
+                    edgeAt = c.getLong(0)
+                    edgeId = c.getString(1)
+                }
+            }
+        writableDatabase.delete(
+            "seen",
+            "(at < ? OR (at = ? AND comment_id > ?))",
+            arrayOf(edgeAt.toString(), edgeAt.toString(), edgeId),
+        )
+    }
+
+    /**
+     * Отпечаток состояния базы: доказательство «что было записано в конце тика».
+     *
+     * Тикер пишет его в журнал-свидетель в конце тика и в начале СЛЕДУЮЩЕГО
+     * сверяет. Расхождение означает, что между тиками кто-то писал в базу мимо
+     * тикера — руками, откатом, другим кодом. Объявить это порчей обязан сам
+     * тикер: журнал, который молчит о расхождении, хуже отсутствия журнала,
+     * потому что выглядит доказательством («всё сходится») при отсутствии
+     * доказательства. Формулировка oomjo3 от 08.10.2026: «startup-diff,
+     * доказывающий лог против диска — lest the liar become the memory».
+     *
+     * Детерминированность здесь не косметика, а условие работоспособности: в
+     * preimage нет ни времени, ни unordered-обходов, иначе один и тот же проход
+     * дал бы два разных хэша и каждое расхождение было бы ложной тревогой —
+     * а ложная тревога обучает тикера игнорировать настоящую.
+     *
+     * Исключение НЕ пробрасывается: `"err:" + класс` позволяет тикеру записать в
+     * журнал «порча» и продолжить работу, тогда как упавший тик не пишет ничего и
+     * следующий тик увидит расхождение уже без причины.
+     */
+    fun ledgerDigest(): String =
+        try {
+            digestOf(snapshot())
+        } catch (e: Exception) {
+            // Ловим Exception, а не Throwable: OOM из хэширования — это падение
+            // процесса, а не «база в непонятном состоянии», и подменять его строкой
+            // нельзя: упавший тик не напишет ничего, и следующий тик увидит
+            // расхождение уже без причины.
+            "err:" + e.javaClass.simpleName
+        }
+
+    /**
+     * Снимок состояния базы для [digestOf] — единственное место, где отпечаток
+     * соприкасается с SQL.
+     *
+     * ЧТО НЕ ПОПАДАЕТ и почему. [KEY_LAST_TICK], [KEY_NEXT_VISIT_AT], [KEY_KARMA]
+     * и [KEY_UNREAD] — это РЕЗУЛЬТАТ работы, а не состояние: их значения обязаны
+     * отличаться от того, что было в конце прошлого тика, иначе тик не сделал бы
+     * свою работу. Включать их в отпечаток нельзя — тогда расхождение стало бы
+     * нормой, а не признаком порчи, и сверка в следующем тике превратилась бы в
+     * гарантированно ложное «база менялась мимо нас».
+     *
+     * `ticker_state` читается выборочно: только ключи `repost_seen:*` (см.
+     * [markRepostSeen]) и только счётчиком — они уже отражают решение
+     * («репост учтён»), а не сырьё.
+     *
+     * Порядок строк задаётся запросами (`ORDER BY`), а не порядком обхода
+     * результата: план SQLite для одного и того же текста может отличаться между
+     * версиями движка, и тогда один и тот же проход дал бы два разных хэша.
+     */
+    private fun snapshot(): Map<String, String> {
+        val db = readableDatabase
+        val parts = linkedMapOf<String, String>()
+
+        // Счётчики по статусам: без сортировки SQLite не гарантирует порядок
+        // строк, а порядок в preimage обязан быть один и тот же при любом плане
+        // запроса. Ключ приводится к строке явно — он идёт в подпись префикса.
+        db.rawQuery("SELECT status, COUNT(*) FROM comments GROUP BY status ORDER BY status ASC", null).use { c ->
+            while (c.moveToNext()) {
+                parts["comments[" + c.getString(0) + "]"] = c.getInt(1).toString()
+            }
+        }
+
+        fun count(
+            sql: String,
+            args: Array<String> = emptyArray(),
+        ): Int = db.rawQuery(sql, args).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+
+        parts["ourPosts"] = count("SELECT COUNT(*) FROM posts WHERE ours = 1").toString()
+        parts["reposts"] = count("SELECT COUNT(*) FROM posts WHERE repost_of IS NOT NULL").toString()
+        parts["upvotes"] = count("SELECT COUNT(*) FROM upvotes").toString()
+        parts["seen"] = count("SELECT COUNT(*) FROM seen").toString()
+        parts["repostSeen"] =
+            count(
+                "SELECT COUNT(*) FROM ticker_state WHERE key LIKE ?",
+                arrayOf("$KEY_REPOST_SEEN%"),
+            ).toString()
+
+        // Наши ответы — ключ `our_reply_id`, по которому свип чинит публичные
+        // ветки. Забытая строка здесь означала бы «считать, что ответа не было»,
+        // то есть потенциальный дубль ответа в живой ленте, а дубль на Moltbook
+        // удалить нельзя. Поэтому ответы входят в отпечаток целиком и поштучно, а не
+        // счётчиком: два наших ответа и три дают разные базы, и по счётчику это
+        // не различить.
+        db
+            .rawQuery(
+                "SELECT our_reply_id FROM comments WHERE our_reply_id IS NOT NULL AND our_reply_id != '' ORDER BY our_reply_id ASC",
+                null,
+            ).use { c ->
+                while (c.moveToNext()) {
+                    parts["ourReply:" + c.getString(0)] = "1"
+                }
+            }
+        return parts
+    }
+
     companion object {
         const val TAG = "MoltbookLedger"
         const val KEY_KARMA = "karma"
@@ -525,6 +887,262 @@ internal class MoltbookLedger(
         private const val KEY_REPOST_SEEN = "repost_seen:"
         const val OUR_AGENT = "opencodekz"
         private const val DB_NAME = "moltbook.db"
-        private const val DB_VERSION = 2
+        private const val DB_VERSION = 4
+
+        /**
+         * Ключ под отпечаток последнего тика. Пишет и сверяет его ИНТЕГРАЦИЯ
+         * (тикер), сам ledger только выдаёт значение — иначе доказательство
+         * оказывается в том же файле, который оно охраняет, и теряет смысл.
+         */
+        const val KEY_LAST_DIGEST = "last_digest"
+
+    /**
+     * Время тика, который начал работу и не дописал её до конца.
+     *
+     * Нужен, чтобы отличать чужую правку базы от своего же оборванного тика.
+     * Отпечаток [KEY_LAST_DIGEST] писался только на успешном пути, а база менялась
+     * намного раньше (карма, скан, `markComment`, `forgetOurReply`), поэтому любой
+     * сбой после первой записи гарантировал ложное «отпечаток базы не совпал» на
+     * следующем тике — и запись `KIND_TAMPER` в журнал свидетеля о порче, которой
+     * не было. Маркер ставится ДО первой записи и снимается в конце: оставшийся
+     * маркер означает «тик не дописал сам», а не «прав был кто-то ещё».
+     */
+    const val KEY_TICK_OPENED = "tick_opened"
+
+        /**
+         * Схема таблицы прочитанного. `IF NOT EXISTS` — не формальность: `onCreate`
+         * и `onUpgrade` вызывают один и тот же SQL, а миграция обязана переживать
+         * повторный запуск (установка поверх, откат версии, частичный апгрейд).
+         *
+         * Ключ — `comment_id`, а не пара `(post_id, comment_id)`: идентификатор
+         * комментария на Moltbook сквозной, и пара была бы второй истиной о том же
+         * самом. Первичный ключ здесь не «украшение», а условие идемпотентности
+         * `CONFLICT_REPLACE`: без него двойной прогон скана оставил бы две строки
+         * об одном комментарии, и вторая с бо́льшим `at` жила бы в таблице неделю.
+         *
+         * `at` — время ПОСЛЕДНЕГО прочтения, а не первого появления: по нему идёт
+         * и усечение, и решение «исчезновение настоящее или это мигание пагинации».
+         * Время попадания в очередь хранится отдельно, в `comments.seen_at`.
+         */
+        const val CREATE_SEEN_TABLE =
+            """
+            CREATE TABLE IF NOT EXISTS seen (
+                comment_id TEXT PRIMARY KEY,
+                post_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT '',
+                ours INTEGER NOT NULL DEFAULT 0,
+                at INTEGER NOT NULL,
+                hits INTEGER NOT NULL DEFAULT 1
+            )
+            """
+
+        /**
+         * Индекс по посту обязателен: `recordSeen` читает журнал по постам батчем,
+         * и без него каждый скан делал полный проход по всей таблице прочитанного.
+         */
+        const val CREATE_SEEN_INDEX_POST =
+            "CREATE INDEX IF NOT EXISTS idx_seen_post ON seen(post_id)"
+
+        /** Индекс по времени — им же усекается таблица (см. [pruneSeen]). */
+        const val CREATE_SEEN_INDEX_AT =
+            "CREATE INDEX IF NOT EXISTS idx_seen_at ON seen(at)"
+
+        /**
+         * Таблица прочитанного в РОВНО том виде, в котором её завела версия 3:
+         * без `hits`.
+         *
+         * Существует только для ветки миграции `oldVersion < 3`. Обновление с
+         * версии 2 проходит подряд две ветки — создание таблицы и добавление
+         * колонки, — поэтому таблица обязана создаваться БЕЗ колонки, иначе
+         * `ALTER TABLE ... ADD COLUMN hits` падает с «duplicate column name» на
+         * первом же обращении к базе. Чистая установка (onCreate) колонку
+         * получает сразу, через [CREATE_SEEN_TABLE].
+         */
+        const val CREATE_SEEN_TABLE_V3 =
+            """
+            CREATE TABLE IF NOT EXISTS seen (
+                comment_id TEXT PRIMARY KEY,
+                post_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT '',
+                ours INTEGER NOT NULL DEFAULT 0,
+                at INTEGER NOT NULL
+            )
+            """
+
+        /**
+         * Потолок таблицы `seen`.
+         *
+         * 5000 записей — это не «сколько поместится», а сколько нужно: тик ходит
+         * примерно раз в 30 минут и читает до [pendingLimit] комментов, а лента
+         * молтбука на обход даёт сотни строк. 5000 покрывает несколько суток
+         * работы тикера с запасом.
+         *
+         * Почему не «сколько угодно» и не «помнить всё»: таблица `seen` — ПАМЯТЬ
+         * О НАБЛЮДЕНИИ, а не архив ленты. Её единственная работа — сравнить соседние
+         * сканы. Данные старше [SEEN_KEEP_MS] физически не могут участвовать в
+         * сравнении «прошлый скан против текущего», поэтому хранить их — платить
+         * размером базы за информацию, которую никто не прочитает.
+         *
+         * 5000, а не 1000: обрезание слишком частое означает, что коммент успевает
+         * выпасть из памяти между соседними сканами и вернувшись будет назван
+         * «новым». Дешевле дер��жать лишнее, чем скармливать агенту ложную дельту.
+         */
+        const val MAX_SEEN = 5000
+
+        /**
+         * Сколько живёт запись прочитанного, независимо от [MAX_SEEN].
+         *
+         * 7 суток — длиннее максимального интервала между тиками (панель даёт до
+         * 6 часов) с запасом на выключенный телефон и пропущенные визиты. Если
+         * запись пережила неделю, она уже не «прошлый скан», а часть истории,
+         * для которой дельта всё равно не вычисляется.
+         *
+         * Истечение по времени, а не только по числу: иначе таблица на посте с
+         * тысячей комментов вытесняла бы записи других постов, и слепая зона
+         * появлялась бы не там, где лента реально менялась.
+         */
+        const val SEEN_KEEP_MS = 7L * 24 * 60 * 60 * 1000
+
+        /**
+         * Пережил ли пропавший комментарий один скан — иначе «вернулся» будет
+         * неотличимо от «нового».
+         *
+         * Запись не удаляется сразу: [recordSeen] её только ПЕРЕЧИТЫВАет. Снос
+         * моментально означал бы, что комментарий, мигнувший на секунду из-за
+         * пагинации ленты, на следующем скане вернулся бы как `added` и агент
+         * ответил бы на него второй раз. Одно переживание — минимум, при котором
+         * возврат читается как `vanished + снова тот же статус`, а не как новая
+         * работа.
+         *
+         * Почему порог «пережил скан», а не «пережил N часов»: срок в часах лёг бы
+         * на тот же `at`, что и время прочтения, и две разные политики
+         * (срок жизни и защита от повторного появления) делили бы одну метку.
+         */
+        const val VANISHED_GRACE_MS = 60L * 60 * 1000
+
+        /**
+         * Сколько раз комментарий должен быть замечен, чтобы его пропажу можно
+         * было назвать исчезновением, а не миганием пагинации.
+         *
+         * Порог в часах ([VANISHED_GRACE_MS]) для этого НЕ годится: он короче
+         * интервала тика, и `at` обновляется при каждом прочтении, поэтому запись,
+         * добавленная сканом N, на скане N+1 уже считалась «старой» — мигание
+         * объявлялось исчезновением, а настоящее исчезновение ждало следующего
+         * тика наравне с миганием. Накопленное наблюдение отвечает прямо: видели
+         * дважды — пережил скан, видели один раз — нет.
+         */
+        const val SURVIVED_SCANS = 2
+
+        /**
+         * Чистая дельта между прошлым журналом и только что прочитанным.
+         *
+         * Порядок результата — по `commentId`, чтобы два одинаковых по смыслу скана
+         * дали одинаковый список: иначе агент увидит «те же три новых комментария» в
+         * другом порядке, и это уже выглядит как другой тик.
+         */
+        fun computeDelta(
+            previous: List<SeenComment>,
+            batch: List<SeenComment>,
+            now: Long,
+        ): ScanDelta {
+            val previousByComment = previous.associateBy { it.commentId }
+            // Посты, которые скан реально прошёл: без этого фильтра частичный
+            // обход (лимит страниц) объявил бы исчезнувшим всё, что не влезло в
+            // первую страницу, — тревога без причины, после которой настоящим
+            // исчезновениям уже не верят.
+            val scannedPosts = batch.map { it.postId }.toSet()
+            val added = mutableListOf<SeenComment>()
+            val statusChanged = mutableListOf<Pair<SeenComment, String>>()
+            val freshIds = mutableSetOf<String>()
+
+            for (row in batch) {
+                // Двойной прогон по одному посту (обрыв сети на середине скана,
+                // повтор тика) не должен двоить `added`: идемпотентность записи
+                // гарантирует только одна строка в базе, значит и в дельте одна.
+                if (!freshIds.add(row.commentId)) continue
+                val before = previousByComment[row.commentId]
+                when {
+                    before == null -> added += row
+                    before.status != row.status -> statusChanged += before to row.status
+                    else -> Unit
+                }
+            }
+
+            val vanished =
+                previous.filter {
+                    it.commentId !in freshIds &&
+                        it.postId in scannedPosts &&
+                        it.hits >= SURVIVED_SCANS &&
+                        now - it.at >= VANISHED_GRACE_MS
+                }
+            return ScanDelta(
+                added = added.sortedBy { it.commentId },
+                statusChanged = statusChanged.sortedBy { (before, _) -> before.commentId },
+                vanished = vanished.sortedBy { it.commentId },
+            )
+        }
+
+        /**
+         * Какие записи `seen` убрать на этом проходе. Чистая функция, чтобы решение
+         * об усечении проверялось тестом без БД. Возвращает то, что надо УДАЛИТЬ.
+         *
+         * Порог выводится из [now] и [SEEN_KEEP_MS], а не из «последних N по времени
+         * сортировки»: сортировка по `at` зависит от того, какие посты сканировали в
+         * этом тике, и при частичном обходе выкинула бы записи сканящихся постов, то
+         * есть сломала бы ровно ту дельту, ради которой таблица и нужна.
+         *
+         * Известная и принятая цена усечения: запись, вытесненная по [MAX_SEEN],
+         * при возврате будет названа новой (`added`). Это ложь в ту сторону, где
+         * ошибка безопасна — «новый вопрос» стоит лишнего прочтения, а «пропавший
+         * ответ на свой же вопрос» стоил бы повторной публикации.
+         */
+        fun prunePlan(
+            rows: List<SeenComment>,
+            now: Long,
+        ): List<SeenComment> {
+            if (rows.isEmpty()) return emptyList()
+            val cutoff = now - SEEN_KEEP_MS
+            val expired = rows.filter { it.at < cutoff }
+            val survivors = rows.filter { it.at >= cutoff }
+            if (survivors.size <= MAX_SEEN) return expired
+            val overflow =
+                survivors
+                    .sortedWith(compareByDescending<SeenComment> { it.at }.thenBy { it.commentId })
+                    .drop(MAX_SEEN)
+            return expired + overflow
+        }
+
+        /**
+         * SHA-256 от канонического снимка, hex в нижнем регистре.
+         *
+         * Ключи сортируются здесь, а не полагаются на порядок вставки [snapshot]:
+         * сортировка в preimage — единственное место, где гарантируется, что
+         * одинаковое состояние даёт одинаковый хэш. Нарушение здесь не «другое
+         * значение», а ложное расхождение на каждом тике, после которого сверка
+         * перестаёт означать что бы то ни было.
+         *
+         * Разделитель `\n` и формат `ключ=значение` выбраны так, чтобы перенос
+         * разделителя из значения в соседний ключ был невозможен: ключи — имена
+         * таблиц, статусы и id, `=` и перевод строки в них не встречаются.
+         *
+         * Отдельная приватная функция, а не вызов `MoltbookWitness.hashOf`: тот
+         * хэширует запись журнала-свидетеля, у него своё разбиение preimage
+         * (`seq|at|kind|payload|prevHash`), и подстановка сюда сделала бы отпечаток
+         * базы зависящим от формата чужого журнала. Связь «порча базы ↔ порча
+         * журнала» должна быть логической, а не через общий вызов.
+         */
+        fun digestOf(parts: Map<String, String>): String {
+            val canonical =
+                parts.entries
+                    .sortedBy { it.key }
+                    .joinToString("\n") { (key, value) -> "$key=$value" }
+            return MessageDigest
+                .getInstance("SHA-256")
+                .digest(canonical.toByteArray(Charsets.UTF_8))
+                .joinToString("") { byte -> "%02x".format(byte) }
+        }
+
+        /** Заполнитель `IN (...)`: n вопросительных знаков для n постов. */
+        private fun placeholders(count: Int): String = List(count) { "?" }.joinToString(", ")
     }
 }

@@ -143,6 +143,13 @@
             </intent-filter>
         </receiver>
 
+        <!-- Сторож тика: будильник, который сам себя перевзводит и пишет в журнал
+             молчание. Без intent-filter — до него доходит только PendingIntent
+             AlarmManager, и exported=false: руками его дёргать нечего. -->
+        <receiver
+            android:name=".social.MoltbookWatchdogReceiver"
+            android:exported="false" />
+
         <service
             android:name=".media.MediaUiAutomationService"
             android:exported="true"

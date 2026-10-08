@@ -1,5 +1,6 @@
 package org.opencode.mobile.social
 
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -412,6 +413,105 @@ class MoltbookTickerTest {
         assertEquals(emptyList<String>(), empty.delete)
         assertEquals(emptyList<String>(), empty.forget)
         assertEquals(emptyList<String>(), MoltbookTicker.replySweep(emptyList(), listOf(known("r-1"))).delete)
+    }
+
+    /**
+     * Регрессия на весь путь «проверка провалилась → ветка разблокирована → ответ ушёл».
+     *
+     * Живой замер 08.10.2026, который всё это сломал:
+     *
+     * ```
+     * POST /posts/2e7ee554.../comments -> comment=213f89f6 status=failed already_existed=true
+     * публикация в ... не выполняется: Blocked(pendingCommentId=213f89f6-..., status=failed)
+     * ```
+     *
+     * `already_existed` — это блокировка, у которой id известен только из ответа на
+     * POST, то есть ПОСЛЕ первой попытки. Старый код на нём возвращался, коммент
+     * оставался, и каждый следующий тик получал тот же `already_existed`: ветка
+     * закрывалась навсегда, при этом ни одной ошибки в логе — тик отчитывался о
+     * нормальной работе.
+     *
+     * Путь проверяется тремя чистыми решениями подряд, потому что каждый шаг можно
+     * проверить без сервера, а ошибка любого из них даёт тот же самый тихий клин:
+     *
+     *  1. проба видит наш `failed` как неопубликованный, а не как «ответа нет»
+     *     — иначе следующий шаг был бы вторым POST с тем же дублем;
+     *  2. решение после успешного удаления возвращает null, то есть «публикуй»;
+     *  3. решение после неудачного удаления возвращает блокировку, а не «пробуй
+     *     ещё раз» — без комментария сервер продолжит отдавать тот же дубль.
+     */
+    @Test
+    fun `провалившийся ответ разблокирует ветку и ответ уходит заново`() {
+        val dead = MoltbookTicker.PostResult.Blocked("213f89f6", MoltbookClient.STATUS_FAILED)
+
+        // 1. Проба на живой фикстуре того же замера: наш коммент в статусе failed —
+        //    он виден и его надо снести, а не считать ветку отвеченной.
+        val fixture =
+            JSONObject(
+                """
+                {
+                  "comments": [
+                    { "id": "2e7ee554", "author": {"name": "opencodekz"},
+                      "content": "пост агента", "parent_id": "", "replies": [
+                        { "id": "213f89f6", "author": {"name": "opencodekz"},
+                          "content": "наш ответ", "parent_id": "2e7ee554",
+                          "verification_status": "failed", "is_deleted": false }
+                      ]
+                    }
+                  ]
+                }
+                """.trimIndent(),
+            )
+        val branch = MoltbookClient.parseComments(fixture)
+        val probe = MoltbookClient.probeIn(branch, "2e7ee554")
+        assertTrue("наш failed обязан быть виден пробе как неопубликованный", probe is MoltbookClient.ReplyProbe.Unpublished)
+        assertEquals("213f89f6", (probe as MoltbookClient.ReplyProbe.Unpublished).commentId)
+        assertEquals(
+            "проба обязана превратить провал в блокировку, а не разрешить публикацию",
+            dead,
+            MoltbookTicker.probeDecision(probe),
+        )
+
+        // 2. Удаление прошло, ветка перечитана и наших комментов в ней нет — публикуем.
+        assertNull(
+            "после успешного удаления ветка свободна — повторная публикация обязана состояться",
+            MoltbookTicker.afterPurge(
+                purged = true,
+                reProbe = MoltbookClient.ReplyProbe.Absent,
+                blocked = dead,
+            ),
+        )
+
+        // 3. Удаление не прошло — блокировка остаётся, второй POST не делаем.
+        assertEquals(
+            "без удалённого коммента сервер вернёт тот же already_existed — повтор бессмыслен",
+            dead,
+            MoltbookTicker.afterPurge(
+                purged = false,
+                reProbe = MoltbookClient.ReplyProbe.Absent,
+                blocked = dead,
+            ),
+        )
+    }
+
+    /**
+     * Удалённый, но всё ещё видимый платформой коммент на том же вопросе — это
+     * [MoltbookClient.ReplyProbe.Found]: ветка закрыта, повторный ответ был бы дублем.
+     * Сценарий не из живого замера, но ровно тот, что закрывает `afterPurge` с двух
+     * сторон: успешное удаление не обязано открывать ветку, если сервер считает её
+     * занятой по другому признаку.
+     */
+    @Test
+    fun `после удаления чужой ответ всё равно закрывает ветку`() {
+        assertEquals(
+            "наш живой ответ после удаления мёртвого — дубль не публикуем",
+            MoltbookTicker.PostResult.Done("c-live"),
+            MoltbookTicker.afterPurge(
+                purged = true,
+                reProbe = MoltbookClient.ReplyProbe.Found("c-live"),
+                blocked = MoltbookTicker.PostResult.Blocked("213f89f6", MoltbookClient.STATUS_FAILED),
+            ),
+        )
     }
 
     private companion object {

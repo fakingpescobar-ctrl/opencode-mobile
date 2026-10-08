@@ -57,6 +57,17 @@ internal class MoltbookTicker(
         val now = clock()
         val facts = mutableListOf<String>()
 
+        // Маркер «тик открыт» — ДО сверки и до любой записи. Стоит он тут по той же
+        // причине, по которой платит witness-свидетель: отпечаток базы обновляется
+        // только на успешном пути, а меняет базу уже первый проход. Без маркера
+        // оборванный тик выглядит на следующем тике как чужая правка базы.
+        ledger.putState(MoltbookLedger.KEY_TICK_OPENED, now.toString())
+
+        // Сверка ДО любой записи: база, которую правили мимо нас, видна только в
+        // этот момент. После первого же upsert отпечаток закономерно перестал бы
+        // совпадать, и порча выглядела бы как обычная работа тика.
+        checkLedgerUntouched(ledger, facts)
+
         // Проход 1 (дёшево, без модели). Обновляем учёт: карма, непрочитанные и все
         // новые комменты. Только сеть — это секунды, а не минуты.
         val home = client.home()
@@ -64,7 +75,9 @@ internal class MoltbookTicker(
         ledger.putState(MoltbookLedger.KEY_UNREAD, home.unreadNotifications.toString())
         // Скан возвращает id РЕАЛЬНО просмотренных постов: по нему же ниже решается,
         // кому можно гасить счётчик непрочитанного.
-        val scannedPosts = scanPostsIntoLedger(ledger, client, home, now)
+        val scan = scanPostsIntoLedger(ledger, client, home, now)
+        val scannedPosts = scan.scanned
+        if (!scan.delta.isEmpty) facts += "лента изменилась: ${scan.delta.summary}"
         // Репосты ищем ПОСЛЕ скана постов: список наших id наполняется именно там, и
         // обратный порядок молча давал пустой результат весь первый тик.
         facts += scanFeedForReposts(ledger, client, now)
@@ -203,12 +216,96 @@ internal class MoltbookTicker(
         ledger.putState(MoltbookLedger.KEY_LAST_TICK, now.toString())
         // Абсолютное время, а не минуты: панель показывает «вернётся в 22:10», и это
         // правда даже если телефон с тех пор перезагружали или будильник сдвинулся.
+        //
+        // Время считается ТЕМ ЖЕ, каким тик реально взвёл будильник, а не модельным
+        // NEXT: если юзер задал периодичность, будильник стоит на ней, и показывать
+        // «вернётся через 120 мин» при живом взводе на 30 — просто враньё в UI.
+        // Решение о фактическом взводе принимает MoltbookScheduler.scheduleAfterVisit,
+        // повторяем здесь, чтобы цифра и будильник не разошлись.
         ledger.putState(
             MoltbookLedger.KEY_NEXT_VISIT_AT,
-            (now + housekeeping.nextVisitMinutes * 60_000L).toString(),
+            (now + actualDelayMinutes(context, housekeeping.nextVisitMinutes) * 60_000L).toString(),
         )
         persist(report)
+        // Отпечаток — последним: он обязан описывать состояние ПОСЛЕ всей работы
+        // тика, иначе следующий тик увидит расхождение там, где ничего не менялось.
+        // Маркер снимается после отпечатка, а не раньше: пока он стоит, сверка
+        // считает расхождение ожидаемым.
+        runCatching { ledger.putState(MoltbookLedger.KEY_LAST_DIGEST, ledger.ledgerDigest()) }
+            .onFailure { Log.w(TAG, "не сохранил отпечаток базы: ${it.message}") }
+        runCatching { ledger.clearState(MoltbookLedger.KEY_TICK_OPENED) }
+            .onFailure { Log.w(TAG, "не снял маркер открытого тика: ${it.message}") }
         return report
+    }
+
+    /**
+     * Сверка отпечатка: база менялась между тиками помимо нас — или нет.
+     *
+     * Отпечаток конца прошлого тика лежит в самой базе, поэтому доказательство
+     * не внешнее и порчу отдельной правки строк не видит: это ограничение
+     * осознанное (см. [MoltbookLedger.KEY_LAST_DIGEST]) — внешнюю цепочку
+     * ведёт [MoltbookWitness]. Здесь ловится ровно то, ради чего и делалось:
+     * «мы считали одно, а в базе другое».
+     *
+     * Отсутствие отпечатка — не порча: это первый тик, откат БД или запись,
+     * которая не дошла. Такое трогать нельзя, иначе первое же обновление
+     * приложения дало бы крик «база подменена».
+     */
+    private fun checkLedgerUntouched(
+        ledger: MoltbookLedger,
+        facts: MutableList<String>,
+    ) {
+        val stored = ledger.state(MoltbookLedger.KEY_LAST_DIGEST)
+        val actual = ledger.ledgerDigest()
+        if (stored == null) {
+            Log.i(TAG, "отпечатка прошлого тика нет — сверка невозможна")
+            return
+        }
+        if (stored == actual) return
+        // Прошлый тик не дописал работу (см. [MoltbookLedger.KEY_TICK_OPENED]):
+        // база менялась мимо сверки закономерно, и объявлять это порчей нельзя —
+        // иначе каждый оборванный тик писал бы в журнал-свидетель ложное
+        // доказательство порчи. Факт «тик оборвался» полезен, но тихий: в
+        // дайджест он попадает как причина, а не как тревога.
+        val openedAt = ledger.state(MoltbookLedger.KEY_TICK_OPENED)
+        if (openedAt != null) {
+            Log.w(TAG, "прошлый тик оборвался на середине (открыт в $openedAt) — отпечаток не сходится, порчи нет")
+            return
+        }
+        // Порча НЕ останавливает тик: работать надо, а факт обязан попасть и в
+        // дайджест, и в журнал свидетеля — иначе расхождение всплывёт через сутки.
+        val message = "отпечаток базы не совпал с прошлым тиком: было ${stored.take(12)}, стало ${actual.take(12)}"
+        Log.w(TAG, message)
+        facts += message
+        runCatching {
+            MoltbookWitness.append(
+                logFile = MoltbookWatchdog.logFile(context),
+                mirrorFile = MoltbookWatchdog.mirrorFile(context),
+                kind = MoltbookWitness.KIND_TAMPER,
+                payload = message,
+                now = clock(),
+            )
+        }.onFailure { Log.w(TAG, "не записал свидетельство о порче: ${it.message}") }
+    }
+
+    /**
+     * На сколько минут тик РЕАЛЬНО отложен, а не на сколько модель попросила.
+     *
+     * Совпадает с решением [MoltbookScheduler.scheduleAfterVisit]: если юзер задал
+     * периодичность, будильник встаёт на неё, и пауза модели не применяется ни вниз,
+     * ни вверх. Раньше панель показывала модельные 120 минут при живом взводе на 30,
+     * и это было просто враньё в интерфейсе.
+     *
+     * Отдельно от [MoltbookScheduler], потому что повторять здесь решение нельзя:
+     * prefs читаются в другом классе с другим контрактом. Общая тут только логика
+     * «юзер главнее модели».
+     */
+    private fun actualDelayMinutes(
+        context: Context,
+        modelMinutes: Int,
+    ): Int {
+        val user = MoltbookScheduler.userIntervalMinutes(context)
+        return if (user > 0) user else modelMinutes
     }
 
     /**
@@ -278,6 +375,12 @@ internal class MoltbookTicker(
         val glosses: Map<Int, String> = emptyMap(),
     )
 
+    /** Что дал скан: посты, реально просмотренные (только их можно гасить), и дельта. */
+    private data class Scan(
+        val scanned: Set<String>,
+        val delta: MoltbookLedger.ScanDelta,
+    )
+
     /**
      * Комменты постов активности раскладываем в ledger: NEW — работа, остальное SKIPPED.
      * Возвращает id постов, которые действительно просмотрены, — снятие счётчика
@@ -288,8 +391,9 @@ internal class MoltbookTicker(
         client: MoltbookClient,
         home: MoltbookClient.Home,
         now: Long,
-    ): Set<String> {
+    ): Scan {
         val scanned = LinkedHashSet<String>()
+        val batch = mutableListOf<MoltbookLedger.SeenComment>()
         // Срез берётся ДО чтения, поэтому упавший пост остаётся в awaitingReply и
         // снова занимает один из трёх слотов следующего тика: один заведомо мёртвый
         // пост съедал треть бюджета, а три таких останавливали сканирование целиком.
@@ -349,13 +453,27 @@ internal class MoltbookTicker(
                 // нельзя, иначе repliedTotal тает на каждом тике. Чистим только NEW —
                 // он по определению «ещё не решён», и в нём могут осесть ошибочно
                 // оставленные записи (в том числе наши, засевшие до этого фикса).
-                if (!deservesReply(comment, answeredByUs) &&
+                val deserves = deservesReply(comment, answeredByUs)
+                if (!deserves &&
                     (statusBefore == null || statusBefore == MoltbookLedger.CommentStatus.NEW)
                 ) {
                     // Свой коммент и реплику в подветке не выбрасываем, а помечаем
                     // SKIPPED: они остаются видимыми в панели как «ответили».
                     ledger.markComment(comment.id, MoltbookLedger.CommentStatus.SKIPPED, now = now)
                 }
+                // Статус в журнале — ИТОГОВЫЙ, а не тот, что был до обработки: иначе
+                // «новый коммент сразу помечен SKIPPED» выглядел бы в дельте как
+                // изменение статуса на каждом тике, и реальные перемены в нём
+                // перестали бы читаться.
+                batch +=
+                    MoltbookLedger.SeenComment(
+                        postId = post.postId,
+                        commentId = comment.id,
+                        status = (if (deserves) statusBefore else MoltbookLedger.CommentStatus.SKIPPED)
+                            ?.name ?: MoltbookLedger.CommentStatus.NEW.name,
+                        ours = comment.isOurs,
+                        at = now,
+                    )
             }
             Log.i(
                 TAG,
@@ -364,7 +482,10 @@ internal class MoltbookTicker(
                 )} «${post.title.take(40)}»: комментов ${comments.size}, ждут ответа ${comments.count { deservesReply(it, answeredByUs) }}"
             )
         }
-        return scanned
+        // Журнал прочтений заполняется здесь, а не по факту обработки каждого
+        // коммента: пакетное сравнение с прошлым сканом даёт дельту, а поштучная
+        // запись не даёт ничего — «новым» считается то, чего не было в пакете.
+        return Scan(scanned = scanned, delta = ledger.recordSeen(batch, now))
     }
 
     /**
@@ -462,17 +583,24 @@ internal class MoltbookTicker(
         // «не знаю»: на нём публикацию НЕ выполняем, иначе упавшая сеть прочиталась бы
         // как «ответа нет» и мы опубликовали бы второй ответ на тот же вопрос.
         var stop = probeDecision(client.ourReplyTo(postId, parentId))
-        if (stop is PostResult.Blocked && purgeDeadPending(client, stop)) {
-            // Ветка разблокирована, но верить этому без нового чтения нельзя: сервер
-            // мог не принять удаление, а второй POST вернул бы тот же already_existed.
-            stop = probeDecision(client.ourReplyTo(postId, parentId))
-        }
-        if (stop != null) {
-            Log.i(TAG, "публикация в $postId на $parentId не выполняется: $stop")
-            return stop
+        if (stop is PostResult.Blocked) stop = unblockBranch(client, postId, parentId, stop)
+        if (stop != null) return logStop(postId, parentId, stop)
+
+        var outcome = client.postComment(postId, capForWaf(draft), parentId = parentId)
+        if (outcome is MoltbookClient.CommentOutcome.Duplicate) {
+            // `already_existed` — тот же класс блокировки, что и Unpublished, только
+            // узнали мы о нём уже после POST. Чистить его раньше не могли: id
+            // возвращается только в этом ответе. Прежний код возвращал Blocked и
+            // уходил, а коммент оставался — ветка закрывалась навсегда. Замерено
+            // 08.10.2026 вживую: модель решила задачу неверно, коммент стал `failed`,
+            // и каждый следующий тик получал тот же `already_existed`.
+            val blocked = PostResult.Blocked(outcome.existingCommentId, outcome.status)
+            val after = unblockBranch(client, postId, parentId, blocked)
+            if (after != null) return logStop(postId, parentId, after)
+            outcome = client.postComment(postId, capForWaf(draft), parentId = parentId)
         }
 
-        return when (val outcome = client.postComment(postId, capForWaf(draft), parentId = parentId)) {
+        return when (outcome) {
             is MoltbookClient.CommentOutcome.NeedsVerification -> solveChallenge(client, outcome)
             // Всё остальное решается чистой функцией, чтобы решение проверялось тестом
             // без сервера и без ключа.
@@ -480,6 +608,32 @@ internal class MoltbookTicker(
                 outcomeDecision(outcome)
                     ?: PostResult.Failed("платформа ответила неизвестным исходом: $outcome")
         }
+    }
+
+    /**
+     * Убирает мёртвый комментарий и перечитывает ветку, чтобы узнать, свободна ли она.
+     *
+     * @return чем закончилась попытка, либо null если ветка свободна и можно публиковать.
+     */
+    private fun unblockBranch(
+        client: MoltbookClient,
+        postId: String,
+        parentId: String,
+        blocked: PostResult.Blocked,
+    ): PostResult? {
+        // Ветка разблокирована, но верить этому без нового чтения нельзя: сервер
+        // мог не принять удаление, а второй POST вернул бы тот же already_existed.
+        val purged = purgeDeadPending(client, blocked)
+        return afterPurge(purged, client.ourReplyTo(postId, parentId), blocked)
+    }
+
+    private fun logStop(
+        postId: String,
+        parentId: String,
+        stop: PostResult,
+    ): PostResult {
+        Log.i(TAG, "публикация в $postId на $parentId не выполняется: $stop")
+        return stop
     }
 
     /**
@@ -589,9 +743,20 @@ internal class MoltbookTicker(
      * успешного verify уходил на следующую итерацию цикла и постил тот же текст
      * заново — то есть на каждую неудачу заводил ещё один непроверенный коммент.
      *
-     * Повторяется только verify: код задачи выдают исключительно в момент создания,
-     * поэтому новый код без нового комментария получить нельзя, а вот послать ответ
-     * ещё раз — можно и нужно.
+     * Повторяется только verify, и только когда ответ до платформы НЕ дошёл. Код
+     * задачи выдают исключительно в момент создания, поэтому новый код без нового
+     * комментария получить нельзя, а вот послать ответ ещё раз — можно.
+     *
+     * Отказ платформы повтором НЕ ловится: код одноразовый. Замерено 08.10.2026
+     * вживую — неверный ответ дал 400 «Incorrect answer», а немедленный повтор того
+     * же кода 409 «Already answered». Прежний код считал их одной ошибкой и
+     * повторял verify три раза, то есть два из трёх были 409 впустую. Теперь отказ
+     * отличен от обрыва сети типом [MoltbookHttpException] и уходит сразу.
+     *
+     * Удалять комментарий здесь не нужно: его статус станет `failed`, он перестанет
+     * отвечать ([MoltbookClient.Comment.isPublished]) и следующий тик увидит его
+     * пробой, удалит и ответит заново с новым кодом. Удалять и постить в том же тике
+     * нельзя — платформа отдаёт 429 «You can only post once every 2.5 minutes».
      */
     private fun solveChallenge(
         client: MoltbookClient,
@@ -615,9 +780,19 @@ internal class MoltbookTicker(
             val ok =
                 try {
                     client.verify(challenge.verificationCode, answer)
+} catch (e: MoltbookHttpException) {
+                    if (e.isTransient) {
+                        // Сервер не рассмотрел запрос по существу: код проверки
+                        // жив, повтор осмыслен. Раньше любой не-2xx переводил
+                        // комментарий в FAILED, и 429 на ровном месте сжигал его.
+                        Log.w(TAG, "проверка отложена сервером (${e.status}), код жив, пробуем снова: ${e.message}")
+                        false
+                    } else {
+                        Log.w(TAG, "проверка отклонена сервером (${e.status}), код мёртв, повтор бессмыслен: ${e.message}")
+                        return PostResult.Failed("проверка отклонена (${e.status}) - код мёртв, отвечать позже")
+                    }
                 } catch (e: IOException) {
-                    // Ответ не того формата или сеть упала. Коммент при этом уже создан,
-                    // поэтому новый POST вернул бы already_existed — повторяем только verify.
+                    // Сеть упала ДО ответа платформы: код ещё жив, повтор уместен.
                     Log.w(TAG, "verification не отправлен: ${e.message}")
                     false
                 }
@@ -951,6 +1126,25 @@ internal class MoltbookTicker(
                 MoltbookClient.ReplyProbe.Absent -> null
             }
 
+        /**
+         * Что делать после попытки снести мёртвый комментарий.
+         *
+         * Вынесено в companion и без сети, потому что весь баг был именно в этом
+         * решении, а проверить его иначе нечем: [MoltbookClient.CommentOutcome.Duplicate]
+         * приходит уже после POST, его id известен только из ответа, и проверить путь
+         * «отказ платформы → снос → повторная публикация» можно было лишь на живом API.
+         * Замер 08.10.2026 показал ровно этот клин — тик отчитывался о нормальной
+         * работе, а ветка оставалась закрытой навсегда.
+         *
+         * Неудачное удаление возвращает исходную блокировку, а не «попробуем ещё раз»:
+         * без снесённого коммента сервер продолжит отдавать тот же `already_existed`.
+         */
+        internal fun afterPurge(
+            purged: Boolean,
+            reProbe: MoltbookClient.ReplyProbe,
+            blocked: PostResult.Blocked,
+        ): PostResult? = if (purged) probeDecision(reProbe) else blocked
+
         /** Разбор ветки для свипа: что удалить, а что только забыть. */
         data class ReplySweep(
             val delete: List<String>,
@@ -1062,13 +1256,17 @@ internal class MoltbookTicker(
         const val MIN_UPVOTES_FOR_CANDIDATE = 5
 
         /**
-         * Сколько раз пробуем решить задачу платформы на ОДНОМ коде.
+         * Сколько раз пробуем доставить ОДИН и тот же ответ на задачу платформы.
          *
          * Повторяется именно verify, а не публикация: код выдают только в момент
-         * создания комментария, а комментарий уже создан. Три попытки — потому что
-         * единственная причина неудачи не в нас (задача арифметическая), а в том, что
-         * модель ответила не в том формате или сеть качнулась; обе причины исчезают при
-         * повторе сами.
+         * создания комментария, а комментарий уже создан.
+         *
+         * Повтор спасает ровно от одной причины — сеть не донесла ответ. Отказ
+         * платформы повтор не спасает, и на это есть замер: 08.10.2026 неверный ответ
+         * дал 400 «Incorrect answer», а следующий вызов с тем же кодом — 409
+         * «Already answered». Код одноразовый, поэтому второй и третий вызов были
+         * пустым шумом в логе, который к тому же маскировал настоящую причину.
+         * Отказ отличен от обрыва сети типом [MoltbookHttpException] и уходит сразу.
          */
         const val VERIFY_ATTEMPTS = 3
 

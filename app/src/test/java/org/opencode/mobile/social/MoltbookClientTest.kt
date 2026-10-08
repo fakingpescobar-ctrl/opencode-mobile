@@ -491,8 +491,14 @@ class MoltbookClientTest {
         )
     }
 
+    /**
+     * Удалённый наш ответ не отвечает — его не видно и удалять нечего.
+     *
+     * `is_deleted` отсекается в разборе, поэтому в пробе его просто нет, и мы
+     * честно отвечаем «ответа нет»: на удалённый комментарий можно ответить заново.
+     */
     @Test
-    fun `удалённый и failed ответ не закрывают ветку`() {
+    fun `удалённый ответ не закрывает ветку`() {
         val parsed =
             MoltbookClient.parseComments(
                 JSONObject(
@@ -504,7 +510,48 @@ class MoltbookClientTest {
                           "replies": [
                             { "id": "deleted-1", "author": {"name": "opencodekz"},
                               "content": "удалённый", "parent_id": "root-1",
-                              "verification_status": "pending", "is_deleted": true },
+                              "verification_status": "pending", "is_deleted": true }
+                          ]
+                        }
+                      ]
+                    }
+                    """.trimIndent(),
+                ),
+            )
+        assertSame(
+            "удалённый ответ не считается ответом — ветка остаётся открытой",
+            MoltbookClient.ReplyProbe.Absent,
+            MoltbookClient.probeIn(parsed, "root-1"),
+        )
+        assertEquals("удалённый ответ не должен попадать в список", 1, parsed.size)
+    }
+
+    /**
+     * Наш проваленный ответ обязан остаться в списке — иначе он неотличим от его отсутствия.
+     *
+     * Это баг, найденный вживую 08.10.2026. Модель решила задачу платформы неверно,
+     * `POST /verify` вернул 400, код израсходовался, коммент стал `failed`. Разбор
+     * выкидывал `failed` из списка, и дальше:
+     *
+     *  - [MoltbookClient.probeIn] видела «мы не отвечали» и публиковала второй ответ,
+     *    а сервер отдавал тот же `already_existed` — то есть дубль вместо ответа;
+     *  - свип не видел комментарий и не удалял его — ветка закрывалась навсегда,
+     *    и ни один последующий тик до неё не доходил.
+     *
+     * Теперь он в списке и в пробе виден как `Unpublished` со статусом `failed`:
+     * тикер знает его id, удаляет и отвечает заново с новым кодом.
+     */
+    @Test
+    fun `наш проваленный ответ виден чтобы его удалить а не спрятан от пробы`() {
+        val parsed =
+            MoltbookClient.parseComments(
+                JSONObject(
+                    """
+                    {
+                      "comments": [
+                        { "id": "root-1", "author": {"name": "doctor_memory"},
+                          "content": "спросил", "parent_id": "",
+                          "replies": [
                             { "id": "failed-1", "author": {"name": "opencodekz"},
                               "content": "не прошёл", "parent_id": "root-1",
                               "verification_status": "failed", "is_deleted": false }
@@ -515,16 +562,51 @@ class MoltbookClientTest {
                     """.trimIndent(),
                 ),
             )
+        assertEquals("наш проваленный ответ обязан остаться в разборе — иначе его не удалить", 2, parsed.size)
+        val probe = MoltbookClient.probeIn(parsed, "root-1")
+        assertTrue(
+            "наш failed виден пробе как неопубликованный, а не как отсутствие ответа",
+            probe is MoltbookClient.ReplyProbe.Unpublished,
+        )
+        val dead = probe as MoltbookClient.ReplyProbe.Unpublished
+        assertEquals("без id проваленного коммента тикер не сможет его удалить", "failed-1", dead.commentId)
+        assertEquals(
+            "статус провала доходит до тикера: он решает, чистить ли ветку",
+            MoltbookClient.STATUS_FAILED,
+            dead.status,
+        )
+    }
+
+    /**
+     * Чужой проваленный ответ — это мусор, а не наш затылок: его не ждут и удалять нельзя.
+     */
+    @Test
+    fun `чужой проваленный ответ не отвечает на вопрос`() {
+        val parsed =
+            MoltbookClient.parseComments(
+                JSONObject(
+                    """
+                    {
+                      "comments": [
+                        { "id": "root-1", "author": {"name": "doctor_memory"},
+                          "content": "спросил", "parent_id": "",
+                          "replies": [
+                            { "id": "their-1", "author": {"name": "vina"},
+                              "content": "не прошёл", "parent_id": "root-1",
+                              "verification_status": "failed", "is_deleted": false }
+                          ]
+                        }
+                      ]
+                    }
+                    """.trimIndent(),
+                ),
+            )
         assertSame(
-            "ни удалённый, ни failed не считаются ответом — ветка остаётся открытой",
+            "чужой провал не наш ответ — ветка открыта",
             MoltbookClient.ReplyProbe.Absent,
             MoltbookClient.probeIn(parsed, "root-1"),
         )
-        assertEquals(
-            "мёртвые ответы не должны попадать в список вообще",
-            1,
-            parsed.size,
-        )
+        assertEquals("чужой проваленный ответ в ленте — шум, его выкидываем", 1, parsed.size)
     }
 
     /**

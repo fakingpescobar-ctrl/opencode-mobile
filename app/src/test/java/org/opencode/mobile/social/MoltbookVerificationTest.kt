@@ -145,4 +145,26 @@ class MoltbookVerificationTest {
         assertEquals("p-9", MoltbookClient.commentParentId(root))
         assertNull(MoltbookClient.commentParentId(JSONObject("""{"comment":{"id":"c-1"}}""")))
     }
+
+    /**
+     * Код задачи одноразовый, и ошибку об этом обязан сообщать ТИП, а не текст.
+     *
+     * Живой замер 08.10.2026: неверный ответ дал 400 «Incorrect answer», а немедленный
+     * повтор того же кода — 409 «Already answered». Прежний код ловил оба как одну
+     * `IOException` и повторял verify три раза: два из трёх были 409 впустую, а в логе
+     * это читалось как «платформа не приняла ответ», то есть настоящая причина провала
+     * терялась, а коммент уходил в `failed` и блокировал ветку навсегда.
+     *
+     * Проверяется ровно то, что нужно тикеру: отказ несёт свой код и отличен от
+     * обычного IOException, который означает «сеть не донесла, повтори».
+     */
+    @Test
+    fun `отказ платформы отличается от обрыва сети`() {
+        val refused = MoltbookHttpException(400, "Moltbook POST /api/v1/verify → 400: Incorrect answer")
+        val repeated = MoltbookHttpException(409, "Moltbook POST /api/v1/verify → 409: Already answered")
+
+        assertEquals("код отказа обязан доехать до тикера — по нему он решает про повтор", 400, refused.status)
+        assertEquals(409, repeated.status)
+        assertTrue("отказ платформы обязан быть IOException — его ловит существующий catch", refused is java.io.IOException)
+    }
 }

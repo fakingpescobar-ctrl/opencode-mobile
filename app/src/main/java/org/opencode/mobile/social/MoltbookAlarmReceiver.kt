@@ -54,7 +54,80 @@ class MoltbookAlarmReceiver : BroadcastReceiver() {
             .onFailure { Log.w(TAG, "не записал состояние тика: ${it.message}") }
     }
 
+    /**
+     * Запись в журнал-свидетель. Best effort, и это обязательное свойство:
+     * журнал — это наблюдение за тиком, а не условие его существования. Если
+     * падение записи уводит тик в ретрай, то битый диск отключает автономию
+     * целиком, и никакой сторож этого уже не заметит — он тоже пишет туда.
+     */
+    private fun recordWitness(
+        context: Context,
+        kind: String,
+        payload: String,
+    ) {
+        runCatching {
+            MoltbookWitness.append(
+                logFile = MoltbookWatchdog.logFile(context),
+                mirrorFile = MoltbookWatchdog.mirrorFile(context),
+                kind = kind,
+                payload = payload,
+                now = System.currentTimeMillis(),
+            )
+        }.onFailure { Log.w(TAG, "не записал свидетельство ($kind): ${it.message}") }
+    }
+
+    /**
+     * Receipt ДО работы тика.
+     *
+     * Ставит host (этот файл), а не сам тикер, и именно поэтому он бесполезен
+     * после `ticker.runOnce()`: то, что пишет сам проверяемый код после своей
+     * работы, может отсутствовать из-за того же сбоя, который мы проверяем.
+     *
+     * Монотонный номер записи — это `Entry.seq`, отдельное поле журнала, и в
+     * payload он НЕ дублируется намеренно: чтобы подставить его в payload,
+     * пришлось бы заранее прочитать голову цепочки (`head()` читает журнал
+     * целиком), то есть завести гонку со сторожем и лишнее полное чтение файла
+     * на каждом тике ради числа, которое уже лежит в поле. Платить за это
+     * точностью доказательства нельзя.
+     */
+    private fun recordWake(context: Context) {
+        recordWitness(context, MoltbookWitness.KIND_WAKE, "tick started")
+    }
+
+    /**
+     * Отпечаток того, что тик оставил на диске — side-effect hash после работы.
+     *
+     * Отпечаток берётся у базы тикера, а не «считается тут же», и разница
+     * принципиальна: хэш должен быть тем, что лежит на диске после тика, иначе
+     * он ничего не доказывает. Само вычисление обёрнуто: база может быть
+     * недоступна, и тогда отсутствие отпечатка — тоже факт, который обязан
+     * попасть в журнал строкой `err:...`, а не молчанием.
+     */
+    private fun recordEffect(
+        context: Context,
+        ticker: MoltbookTicker,
+    ) {
+        val digest =
+            runCatching { ticker.ledger().ledgerDigest() }
+                .getOrElse { "err:" + it.javaClass.simpleName }
+        recordWitness(context, MoltbookWitness.KIND_EFFECT, digest)
+    }
+
+    /**
+     * Один тик целиком. Обёртка нужна ради одной строки в `finally`: сторож
+     * обязан быть взведён после ЛЮБОГО исхода, включая отказ по готовности
+     * (тик отложен, потому что сервер ещё не поднят) — иначе единственный
+     * способ взвести сторож зависел бы от того, что он сам и должен проверять.
+     */
     private fun runTick(context: Context) {
+        try {
+            runTickWork(context)
+        } finally {
+            MoltbookWatchdog.ensureArmed(context)
+        }
+    }
+
+    private fun runTickWork(context: Context) {
         val stamp = stampFile(context)
         val blocker = readinessBlocker(context, stamp)
         if (blocker != null) {
@@ -62,6 +135,10 @@ class MoltbookAlarmReceiver : BroadcastReceiver() {
             MoltbookScheduler.schedule(context, MoltbookScheduler.RETRY_MS)
             return
         }
+        // Receipt ДО любой работы тика: будильник сработал, тик пошёл. Стоит он
+        // после проверки готовности, потому что «тик пошёл» обязано означать
+        // «тик действительно начал работу», а не «мы что-то попробовали».
+        recordWake(context)
         val ticker = MoltbookTicker(context)
         try {
             val report = ticker.runOnce()
@@ -73,6 +150,11 @@ class MoltbookAlarmReceiver : BroadcastReceiver() {
             )
             stamp.writeText(System.currentTimeMillis().toString())
             clearLastError(ticker)
+            // Отпечаток ПОСЛЕ работы: он и есть side-effect hash тика. Именно
+            // поэтому он здесь, а не в finally: тик, начатый и не законченный,
+            // обязан остаться в журнале парой wake без effect — это и есть
+            // «начался и не дошёл», и замазывать её нельзя.
+            recordEffect(context, ticker)
             // Паузу выбирает агент по фактическому состоянию ленты, а не расписание:
             // жёсткие 2 часа означали либо простой, либо очередь отложенных ответов.
             // Но если периодичность задал юзер, его выбор главнее — иначе карточка в UI
@@ -85,6 +167,9 @@ class MoltbookAlarmReceiver : BroadcastReceiver() {
             runCatching {
                 ticker.ledger().putState(MoltbookLedger.KEY_LAST_ERROR, "${e.javaClass.simpleName}: ${e.message}")
             }.onFailure { Log.w(TAG, "не записал состояние тика: ${it.message}") }
+            // Сбой тоже оставляет след: молчание и порча должны выглядеть
+            // по-разному, и упавший тик обязан отличаться от не наступившего.
+            recordWitness(context, MoltbookWitness.KIND_EFFECT, "err: ${e.javaClass.simpleName}: ${e.message}")
             MoltbookScheduler.schedule(context, MoltbookScheduler.RETRY_MS)
         }
     }

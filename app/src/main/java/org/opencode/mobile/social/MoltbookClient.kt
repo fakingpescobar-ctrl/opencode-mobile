@@ -39,6 +39,40 @@ import java.util.concurrent.TimeoutException
  */
 internal fun JSONObject.cursor(): String? = optString("next_cursor").takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
 
+/**
+ * Платформа ответила кодом, который мы не считаем успехом.
+ *
+ * Отдельный тип, а не текст в IOException, потому что из кода ответа выводится
+ * решение, которое текстом вывести нельзя: «сервер сказал 400 на задачу» и «сеть
+ * оборвалась» — это противоположные вещи. Первое требует удалить комментарий и
+ * ответить заново, второе — просто повторить тот же запрос.
+ *
+ * Замерено 08.10.2026 вживую: неверный ответ на задачу дал 400, а немедленный
+ * повтор того же кода — 409 «Already answered». Прежний код ловил оба как одну
+ * ошибку и повторял verify три раза подряд, то есть два из трёх были 409 впустую,
+ * а коммент в итоге уходил в `failed` и блокировал ветку навсегда.
+ */
+internal class MoltbookHttpException(
+    val status: Int,
+    message: String,
+) : IOException(message) {
+    /**
+     * Ошибка, при которой запрос не был рассмотрен сервером по существу.
+     *
+     * Ключ проверки при этом НЕ расходуется: 429 и 5xx означают «попробуй
+     * позже», а не «этот код мёртв». Различение обязательно, иначе одна
+     * транзиентная ошибка переводит комментарий в `FAILED`, `replySweep`
+     * удаляет его вместе с кодом, и агент теряет возможность ответить вообще.
+     *
+     * Перманентные 4xx (400/401/403/404/409/422) - наоборот: код израсходован,
+     * повтор бессмысленен.
+     */
+    val isTransient: Boolean
+        get() =
+            status == MoltbookClient.HTTP_TOO_MANY_REQUESTS ||
+                status in MoltbookClient.HTTP_SERVER_ERROR_MIN..MoltbookClient.HTTP_SERVER_ERROR_MAX
+}
+
 internal class MoltbookClient(
     private val apiKey: String,
     private val host: String = DEFAULT_HOST,
@@ -93,8 +127,15 @@ internal class MoltbookClient(
          * ленте. Считать такой коммент ответом — значит писать в лог «ответил» при
          * полном молчании: ровно тот баг, из-за которого 27 наших комментов висели
          * вечно непрочитанными, а тик об этом не знал.
+         *
+         * `failed` тоже не ответ: такого коммента нет ни в чьей ленте, и он блокирует
+         * ветку так же надёжно, как `pending`. Отличить надо не «опубликован он или нет»,
+         * а «можно ли что-то с ним сделать» — и здесь нельзя ничего.
          */
-        val isPublished: Boolean get() = !verificationStatus.equals(STATUS_PENDING, ignoreCase = true)
+        val isPublished: Boolean
+            get() =
+                !verificationStatus.equals(STATUS_PENDING, ignoreCase = true) &&
+                    !verificationStatus.equals(STATUS_FAILED, ignoreCase = true)
     }
 
     /**
@@ -546,7 +587,7 @@ internal class MoltbookClient(
                 throw IOException("Moltbook зарезал запрос WAF (403) — сократить текст комментария")
             }
             if (status !in HTTP_OK_MIN..HTTP_OK_MAX) {
-                throw IOException("Moltbook $method $path → $status: ${text.take(ERROR_BODY_CHARS)}")
+                throw MoltbookHttpException(status, "Moltbook $method $path → $status: ${text.take(ERROR_BODY_CHARS)}")
             }
             return text
         } finally {
@@ -610,6 +651,9 @@ internal class MoltbookClient(
         const val HTTP_OK_MAX = 299
         const val HTTP_UNAUTHORIZED = 401
         const val HTTP_FORBIDDEN = 403
+        const val HTTP_TOO_MANY_REQUESTS = 429
+        const val HTTP_SERVER_ERROR_MIN = 500
+        const val HTTP_SERVER_ERROR_MAX = 599
 
 /** Платформа требует ровно два знака после запятой: `48.00`, не `48` и не `48,00`. */
         val VERIFICATION_ANSWER = Regex("""^\d{1,6}\.\d{2}$""")
@@ -706,6 +750,14 @@ internal class MoltbookClient(
 
         /** Статус «создан, но не опубликован» — единственный, кого нельзя считать ответом. */
         const val STATUS_PENDING = "pending"
+
+        /**
+         * Статус «платформа отклонила наш ответ». Хуже `pending`: код задачи уже
+         * израсходован (замерено 08.10.2026 — после 400 идёт 409 «Already answered»),
+         * так что опубликовать этот коммент уже нечем и не кем. Единственный выход —
+         * удалить его и ответить заново, с новым комментом и новым кодом.
+         */
+        const val STATUS_FAILED = "failed"
 
         /** Длина префикса id в логе: целиком он не нужен, а код задачи засоряет вывод. */
         const val ID_LOG_CHARS = 8
@@ -947,22 +999,28 @@ internal class MoltbookClient(
         /**
          * Что ответу нельзя делать: он не отвечает, сколько бы ни провисел.
          *
-         * Отсечка здесь, в разборе, а не в проверках. Удалённый и не прошедший
-         * verification комментарий — это не ответ на вопрос, и ветка после него
-         * должна оставаться открытой. Оставив их в списке, мы однажды получали
-         * «мы уже отвечали» на комментарий, которого публично нет вообще, и
-         * больше не отвечали никогда.
+         * Отсечка здесь, в разборе, а не в проверках. Удалённый комментарий — это не
+         * ответ на вопрос, и ветка после него должна остаться открытой.
+         *
+         * Проваливший проверку выкидываем ТОЛЬКО если он чужой: его никто не ждёт,
+         * и в ленте он шум. Свой оставляем намеренно — иначе он становится неотличим
+         * от отсутствия: проба видит «мы не отвечали» и публикует второй ответ, а
+         * свип не видит его и не удаляет, то есть наш собственный провал блокирует
+         * ветку навсегда. Замерено 08.10.2026 вживую: модель решила задачу неверно,
+         * `POST /verify` вернул 400, код израсходовался, коммент стал `failed`, и
+         * `already_existed` намертво закрыл вопрос — без единой ошибки в логе.
          *
          * `pending` в список ОСТАЁТСЯ, хотя он тоже не отвечает. Причина в том, что
          * о нём надо сообщить, а не сделать вид, что его нет: он блокирует новые ответы
          * на посте (замерено 07.10.2026 — сервер отдал `already_existed`), и его id
          * нужен в дайджесте, чтобы человек почистил тред. Выкинуть его молча нельзя —
-         * тогда ветка выглядит нетронутой и залипает навсегда. Публикацию при этом
+         * тогда ветка выглядит нетронутой и залипает вечно. Публикацию при этом
          * блокирует `probeIn`, а не разбор: `pending` даёт `Unpublished`, а не `Found`.
          */
         private fun isDeadComment(entry: JSONObject): Boolean {
             if (entry.optBoolean("is_deleted")) return true
-            return entry.optString("verification_status").equals("failed", ignoreCase = true)
+            val failed = entry.optString("verification_status").equals(STATUS_FAILED, ignoreCase = true)
+            return failed && !entry.authorName().equals(MoltbookLedger.OUR_AGENT, ignoreCase = true)
         }
 
         /**
