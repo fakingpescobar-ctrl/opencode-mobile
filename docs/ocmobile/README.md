@@ -17,11 +17,22 @@
 | `openapi-spec.json` | Полная OpenAPI-спецификация `opencode serve` (467 KB), снята с живого сервера v1.18.18 | Контракт API. Сверяться при правках `LocalOpenCodeClient` / SSE-клиента |
 | `api-notes.md` | Рукописные заметки по API: `prompt_async` → 204 + SSE, блокирующий `POST /session/:id/message` как fallback, **`effort` = поле `variant`**, порядок SSE-событий, два сигнала завершения | Самое ценное. Неочевидные грабли, уже оплаченные экспериментом |
 | `PLAN-ocmobile.md` | Дизайн- план клиента (248 строк): maximum primitive, две кнопки (модель + effort low/med/high) | Историческая справка по UX-идеям, которые ещё не реализованы здесь |
-| `fixtures/*.json` | Реальные ответы сервера, снятые живьём: `agent.json` (88 KB), `command.json` (69 KB), `sessions-list.json` (63 KB), `config_providers.json` (31 KB), `file-content.json`, `find-text.json`, `session-messages.json` и др. | Фикстуры для юнит-тестов парсинга DTO и SSE без обращения к сети |
-| `fixtures/sse-events.log.txt` | 63 KB живой SSE-поток событий (`/event`) | Эталон порядка и формы событий |
 
-**Внимание:** фикстуры отражают API на 28.08.2026 (serve v1.18.18). При изменении
-моделей DTO сверять сначала с `openapi-spec.json`, потом обновлять фикстуры.
+## Удалено 08.10.2026
+
+`fixtures/` — 14 сырых JSON-ответов сервера, снятых живьём 28.08.2026
+(`agent.json` 88 KB, `command.json` 69 KB, `sessions-list.json` 63 KB,
+`config_providers.json` 31 KB, `sse-events.log.txt` 63 KB и др., ~340 KB).
+
+Причина: **ни один файл кода их не использовал** — `git grep` по `app/`,
+`tools/`, `bench/` и скриптам не даёт ни одного совпадения. `api-notes.md`
+описывает те же особенности API текстом и остаётся актуальным. Дополнительно
+`config_providers.json` содержал живые API-ключи трёх провайдеров.
+
+Файлы доступны в истории git: `git show f36c957:docs/ocmobile/fixtures/`.
+
+**Внимание:** `openapi-spec.json` отражает API на 28.08.2026 (serve v1.18.18).
+При изменении моделей DTO сверяться с ним.
 
 Связанный инструмент — `tools/mobile-bridge/` (мост с ПК на `opencode serve`
 внутри телефона через `adb forward`, порт 4096 — тот же, что у этого приложения).
