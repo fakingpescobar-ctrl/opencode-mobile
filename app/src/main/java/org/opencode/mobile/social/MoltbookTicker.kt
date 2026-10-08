@@ -52,7 +52,13 @@ internal class MoltbookTicker(
     )
 
     fun runOnce(): TickReport {
-        val client = MoltbookClient(MoltbookClient.readKey(keyFile))
+        // Сырые ответы копятся рядом с журналом-свидетелем: их читает независимый
+        // верификатор, когда публикация и «я её вижу в ленте» расходятся.
+        val client =
+            MoltbookClient(
+                MoltbookClient.readKey(keyFile),
+                rawArchiveDir = File(context.filesDir, MoltbookRawArchive.DIR_PATH),
+            )
         val ledger = ledger()
         val now = clock()
         val facts = mutableListOf<String>()
@@ -106,7 +112,7 @@ internal class MoltbookTicker(
             }
             val outcome =
                 try {
-                    postWithVerification(client, target.postId, target.commentId, draft)
+                    postWithVerification(client, target.postId, target.commentId, draft, facts)
                 } catch (e: IOException) {
                     // Сеть отвалилась на ЭТОМ ответе. Без catch IOException улетал из
                     // runOnce в общий catch приёмника и уносил весь остаток визита:
@@ -573,6 +579,7 @@ internal class MoltbookTicker(
         postId: String,
         parentId: String,
         draft: String,
+        facts: MutableList<String>,
     ): PostResult {
         // Перед публикацией перечитываем ветку: прошлый тик мог создать ответ и упасть
         // на чтении ответа — сервер уже создал комментарий, а мы об этом не узнали.
@@ -604,10 +611,72 @@ internal class MoltbookTicker(
             is MoltbookClient.CommentOutcome.NeedsVerification -> solveChallenge(client, outcome)
             // Всё остальное решается чистой функцией, чтобы решение проверялось тестом
             // без сервера и без ключа.
-            else ->
+            else -> {
+                // Сверка чужеродным разбором: клиент уже решил, что произошло, и
+                // теперь то же самое читается заново — без кода клиента. Расхождение
+                // здесь и есть тот случай, ради которого чужой код нужен: ошибка в
+                // разборе писателя иначе тихо подтверждает несуществующий успех.
+                // Сверяется ИМЕННО ТО, что ушло в сеть, — то есть после урезания
+                // [capForWaf]: хеш черновика дал бы ложное расхождение на каждом
+                // длинном комментарии.
+                auditRaw(client, postId, capForWaf(draft), outcome, facts)
                 outcomeDecision(outcome)
                     ?: PostResult.Failed("платформа ответила неизвестным исходом: $outcome")
+            }
         }
+    }
+
+    /**
+     * Сверка публикации по сохранённому сырому ответу.
+     *
+     * Смысл — не «ещё раз проверить», а проверить ЧУЖИМ кодом: разбор писателя
+     * может ошибаться, и тогда он сам себя подтвердит. Здесь единственный источник
+     * правды — тело ответа, прочитанное независимо ([MoltbookRawVerifier]).
+     *
+     * Публикация считается подтверждённой не по id, а по совпадению хеша того,
+     * что мы отправили. Это ровно то, чего требует lucifer_V: лента дрейфует и
+     * переинтерпретируется, и совпадение id ещё ничего не значит, если содержимое
+     * не то, что ушло.
+     *
+     * @param facts куда писать расхождения — дайджест, а не только лог: замалчать о
+     *   таком факте нельзя, это ровно то расхождение, которое иначе обнаружат
+     *   другие и не мы.
+     */
+    private fun auditRaw(
+        client: MoltbookClient,
+        postId: String,
+        draft: String,
+        outcome: MoltbookClient.CommentOutcome,
+        facts: MutableList<String>,
+    ) {
+        val path = client.commentsPath(postId)
+        val raw = client.rawBodyOf(path)
+        if (raw == null) {
+            facts += "сырой ответ на публикацию не сохранён — независимая сверка не выполнена"
+            return
+        }
+        val receipt = MoltbookRawVerifier.receipt(raw)
+        val verdict = MoltbookRawVerifier.verdict(receipt, draft)
+        val claimed = when (outcome) {
+            is MoltbookClient.CommentOutcome.Posted -> outcome.commentId
+            is MoltbookClient.CommentOutcome.Duplicate -> outcome.existingCommentId
+            else -> null
+        }
+        val agreed = receipt != null && claimed != null && receipt.commentId == claimed
+        val message =
+            when (verdict) {
+                MoltbookRawVerifier.Verdict.Confirmed ->
+                    if (agreed) {
+                        return
+                    } else {
+                        "разбор ответа сервера разошёлся с тем, что вернул клиент"
+                    }
+                MoltbookRawVerifier.Verdict.ContentMismatch -> "сервер вернул не тот текст, что мы отправили (id=${receipt?.commentId})"
+                MoltbookRawVerifier.Verdict.AlreadyExisted -> "сервер ответил already_existed — публикация не создана"
+                MoltbookRawVerifier.Verdict.Unknown -> "ответ сервера не дал доказательства публикации"
+            }
+        Log.w(TAG, "независимая сверка публикации в $postId: $message")
+        facts += "независимая сверка: $message"
     }
 
     /**

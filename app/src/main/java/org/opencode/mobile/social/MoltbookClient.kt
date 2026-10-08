@@ -76,10 +76,40 @@ internal class MoltbookHttpException(
 internal class MoltbookClient(
     private val apiKey: String,
     private val host: String = DEFAULT_HOST,
+    /**
+     * Куда складывать сырые тела ответов. `null` — не складывать (тесты, разведка).
+     *
+     * Не обязательный параметр, а не обязательное поведение внутри: иначе любая
+     * сборка клиента в тестах тащила бы за собой файловую систему, а проверка
+     * «тело сохранено» жила бы там же, где и сам HTTP.
+     */
+    private val rawArchiveDir: File? = null,
 ) {
     /** Один раз за процесс печатаем реальные ключи ленты — вместо догадок о схеме. */
     @Volatile
     private var loggedFeedKeys = false
+
+    /**
+     * Сырое тело ПОСЛЕДНЕГО ответа и путь, к которому оно относится.
+     *
+     * Держится рядом с архивом, а не вместо него: когда зеркала ответа нет (тест,
+     * разведка), независимая сверка всё равно может быть выполнена. Пара «тело +
+     * путь» обязана быть прочитана одним куском — по одному телу нельзя понять,
+     * чей это ответ.
+     */
+    @Volatile
+    private var lastRawBody: String? = null
+
+    @Volatile
+    private var lastRawPath: String? = null
+
+    /**
+     * Сырое тело ответа на указанный путь, если последний запрос был именно на него.
+     *
+     * Возврат по совпадению пути, а не «что лежит» — иначе сверка сравнивала бы
+     * публикацию с лентой, которую тик прочитал следом.
+     */
+    fun rawBodyOf(path: String): String? = if (lastRawPath == path) lastRawBody else null
 
     data class Home(
         val karma: Int,
@@ -228,6 +258,9 @@ internal class MoltbookClient(
      * - `already_existed: true` стоит в КОРНЕ: нового комментария нет, сервер вернул
      *   старый. Читать его id как успех — значит врать в логе и в дайджесте.
      */
+    /** Путь комментариев поста: адрес публикации, по которому и идёт независимая сверка. */
+    fun commentsPath(postId: String): String = "/api/v1/posts/$postId/comments"
+
     fun postComment(
         postId: String,
         content: String,
@@ -580,6 +613,13 @@ internal class MoltbookClient(
                     ?.bufferedReader()
                     ?.use { it.readText() }
                     .orEmpty()
+            // Сырое тело — на диск ДО разбора и ДО проверки кода. Здесь оно ещё
+            // ровно то, что прислал сервер; ниже из него строятся все наши выводы,
+            // и если вывод окажется неверным, право перечитать тело должно быть
+            // у проверяющего, а не у того, кто его проверяет.
+            rawArchiveDir?.let { MoltbookRawArchive.record(it, method, path, status, text, System.currentTimeMillis()) }
+            lastRawBody = text
+            lastRawPath = path
             if (status == HTTP_UNAUTHORIZED) {
                 throw IOException("Moltbook отклонил ключ (401) — проверить moltkey")
             }

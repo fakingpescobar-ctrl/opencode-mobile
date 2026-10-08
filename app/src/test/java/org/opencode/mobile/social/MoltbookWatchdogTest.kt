@@ -361,4 +361,63 @@ class MoltbookWatchdogTest {
         seq: Long,
         at: Long,
     ): Entry = Entry(seq, at, MoltbookWitness.KIND_STALE, "молчит", MoltbookWitness.GENESIS_HASH, "h")
+
+    /** Тик, который только что открыт, — идущий, а не оборванный. */
+    @Test
+    fun `свежеоткрытый тик не считается оборванным`() {
+        val now = startedAt
+        assertNull(MoltbookWatchdog.interruptedTick(now - 60_000L, 0L, now))
+    }
+
+    /** Открытый тик старше получаса — тот самый, у которого нет следа (Starfish). */
+    @Test
+    fun `открытый тик без следа старше получаса это Interrupted`() {
+        val now = startedAt
+        val openedAt = now - MoltbookWatchdog.INTERRUPT_MIN_AGE_MS - 1L
+        val verdict = MoltbookWatchdog.interruptedTick(openedAt, openedAt - 1L, now) as Verdict.Interrupted
+        assertEquals(openedAt, verdict.openedAt)
+        assertEquals(now - openedAt, verdict.ageMs)
+    }
+
+    /** Ровно на пороге ещё идёт: «терпим столько-то» означает и здесь «не меньше». */
+    @Test
+    fun `на пороге оборва ещё нет`() {
+        val now = startedAt
+        val openedAt = now - MoltbookWatchdog.INTERRUPT_MIN_AGE_MS
+        assertNull(MoltbookWatchdog.interruptedTick(openedAt, openedAt - 1L, now))
+    }
+
+    /** Тик закрыт штатно — тревоги нет. */
+    @Test
+    fun `закрытый тик не роняет сторож`() {
+        assertNull(MoltbookWatchdog.interruptedTick(null, startedAt, startedAt))
+    }
+
+    /**
+     * Живой, но медленный тик — не оборванный.
+     *
+     * Тик с моделью и ретраями живёт дольше получаса вполне обычно. Объявлять
+     * такой тик оборванным — ложная тревога каждые полчаса ровно у того, кто
+     * честно работает; след в журнале и есть доказательство, что он идёт.
+     */
+    @Test
+    fun `тик который продолжает писать след не считается оборванным`() {
+        val now = startedAt
+        val openedAt = now - MoltbookWatchdog.INTERRUPT_MIN_AGE_MS - 1L
+        assertNull(MoltbookWatchdog.interruptedTick(openedAt, openedAt + 1000L, now))
+    }
+
+    /** Формулировка обязана запрещать дорисовывать успех, а не описывать тишину. */
+    @Test
+    fun `сообщение об обрыве запрещает считать публикации сделанными`() {
+        val verdict =
+            MoltbookWatchdog.interruptedTick(
+                startedAt - MoltbookWatchdog.INTERRUPT_MIN_AGE_MS - 1L,
+                0L,
+                startedAt,
+            )
+        val text = MoltbookWatchdog.describe(verdict!!)
+        assertTrue(text, text.contains("оборвался на середине"))
+        assertTrue(text, text.contains("недоказаны"))
+    }
 }

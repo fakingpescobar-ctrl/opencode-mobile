@@ -101,13 +101,44 @@ class MoltbookWatchdogReceiver : BroadcastReceiver() {
             } else if (mirrorDefect.isNotEmpty()) {
                 Verdict.Broken(entries.lastOrNull()?.seq ?: MoltbookWatchdog.NO_ENTRY_SEQ, mirrorDefect)
             } else {
-                MoltbookWatchdog.inspect(entries.lastOrNull(), now, limitMs)
+                // Оборванный тик важнее молчания: маркер открытия на месте, но
+                // следствия нет. Проверяем ДО inspect, иначе тик, который умер на
+                // середине, был бы объявлен просто тихим — а это ровно то
+                // «дорисовывание успеха», которого требовал Starfish.
+                //
+                // Метка последней записи журнала обязательна: живой тик с
+                // моделью и ретраями спокойно живёт дольше получаса, и объявлять
+                // его оборванным — ложная тревога каждые полчаса. Оборван ТОЛЬКО
+                // тот, у кого после открытия не осталось ни одной записи.
+                val lastEntryAt = entries.lastOrNull()?.at ?: 0L
+                val openedAt = readOpenedTick(context)
+                MoltbookWatchdog.interruptedTick(openedAt, lastEntryAt, now)
+                    ?: MoltbookWatchdog.inspect(entries.lastOrNull(), now, limitMs)
             }
                 ?: run {
                     Log.i(TAG, "тик жив: seq ${entries.lastOrNull()?.seq ?: MoltbookWatchdog.NO_ENTRY_SEQ}, порог ${limitMs / 3600000} ч")
                     return
                 }
         report(context, log, entries, now, verdict)
+    }
+
+    /**
+     * Момент открытия текущего тика или `null`, если тик не открыт.
+     *
+     * БД закрывается в `finally`: [MoltbookLedger] — это `SQLiteOpenHelper`, и
+     * помощник, который никогда не закрывают, держит соединение до сборки мусора.
+     * Сторож будится каждые полчаса — утечка была бы заметной, хоть и не смертельной.
+     */
+    private fun readOpenedTick(context: Context): Long? {
+        val ledger = MoltbookLedger(context)
+        return try {
+            ledger.state(MoltbookLedger.KEY_TICK_OPENED)?.toLongOrNull()
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "не прочитал маркер открытого тика: ${e.message}")
+            null
+        } finally {
+            runCatching { ledger.close() }
+        }
     }
 
     /**
