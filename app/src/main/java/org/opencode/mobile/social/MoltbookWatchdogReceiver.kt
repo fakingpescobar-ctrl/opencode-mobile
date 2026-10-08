@@ -84,7 +84,17 @@ class MoltbookWatchdogReceiver : BroadcastReceiver() {
         // последующим новым GENESIS, и такая цепочка «цела» (meridiansignal,
         // 08.10.2026). Ловим это сравнением голов, а не догадками о свежей
         // установке: seq, который помнят два независимых места, обязан совпасть.
-        val mirrorDefect = MoltbookWitness.verifyMirror(log, MoltbookWatchdog.mirrorFile(context))
+        val mirror = MoltbookWatchdog.mirrorFile(context)
+        val mirrorDefect = MoltbookWitness.verifyMirror(log, mirror)
+        if (mirror == null || !mirror.isFile) {
+            // Зеркала нет — это не «всё хорошо», это слепое пятно сторожа:
+            // без него усечение журнала с новым GENESIS неотличимо от свежей
+            // установки. Молчание тут стоило месяцы работы второго свидетеля,
+            // поэтому отсутствие зеркала говорится вслух.
+            MoltbookWatchdog.noteMirrorUnavailable(
+                if (mirror == null) "нет файла зеркала" else "зеркало есть, но ещё не записано: $mirror",
+            )
+        }
         val verdict =
             if (raw.brokenAt != null) {
                 Verdict.Broken(raw.brokenAt, raw.reason)

@@ -69,6 +69,18 @@ internal object MoltbookWatchdog {
     const val TICK_STALE_PATH: String = "moltbook/witness.log"
 
     /**
+     * Тот же журнал, но относительно `getExternalFilesDir`.
+     *
+     * Свой каталог приложения на внешнем хранилище — единственное место, куда
+     * можно писать на Android 11+ без `MANAGE_EXTERNAL_STORAGE` (см.
+     * [mirrorFile]). Плюс к доступности: он переживает очистку данных
+     * приложения, а `filesDir` — нет, то есть второй свидетель видит ровно тот
+     * случай, ради которого и написан: внутренний журнал стёрт, а отметки «тик
+     * жив» ещё есть.
+     */
+    const val MIRROR_RELATIVE_IN_APP: String = "moltbook/witness.log"
+
+    /**
      * Граница «тик умер» по умолчанию: три часа молчания.
      *
      * Это ФОЛБЭК, а не истина, и разница принципиальна. Паузу между тиками
@@ -279,20 +291,48 @@ internal object MoltbookWatchdog {
     /**
      * Файл зеркала снаружи или `null`, если зеркалить некуда.
      *
-     * `null` — штатный ответ, а не ошибка: нет «Доступа ко всем файлам», или
-     * внешнее хранилище не смонтировано. Отдельная функция обязана возвращать
-     * именно `null`, потому что [MoltbookWitness.mirrorSafely] на `null`
-     * молча делает правильную вещь, а вот падение на `SecurityException` внутри
-     * тика уводило бы тик в ретрай вместо того, чтобы он отработал.
+     * Порядок проб такой, а не «сначала Documents» как раньше: на Android 11+
+     * (а `targetSdk` у нас 36) объявленный `MANAGE_EXTERNAL_STORAGE` НЕ даёт
+     * приложению доступа к `/sdcard/Documents` и `/sdcard/Downloads` — там
+     * работают только файловые менеджеры и shell. Замерено 10.10.2026 на CPH2747:
+     * `appops` показывал `Uid mode: allow`, а `mkdir` из приложения в
+     * `Documents/OpencodeTerminal/...` возвращал `Permission denied`. Старый путь
+     * давал живой `File`, который не мог создаться, — то есть зеркало не
+     * работало, но и не признавалось отсутствующим: второй свидетель молчал
+     * месяцами.
      *
-     * Проверка доступности — ровно та же, что у внешнего workspace
-     * ([Workspace.hasAllFilesAccess]), чтобы «есть ли зеркало» и «где вообще
-     * работает приложение» не расходились.
+     * Поэтому сначала `getExternalFilesDir` — свой каталог на внешнем
+     * хранилище, доступный без всяких разрешений и переживающий очистку данных
+     * приложения (в отличие от `filesDir`, где живёт основной журнал). Только
+     * если его нет — публичное хранилище как раньше, на случай старой прошивки.
      */
     fun mirrorFile(context: Context): File? {
-        if (!Workspace.hasAllFilesAccess()) return null
-        if (Environment.MEDIA_MOUNTED != Environment.getExternalStorageState()) return null
+        val state = Environment.getExternalStorageState()
+        if (state != Environment.MEDIA_MOUNTED && state != Environment.MEDIA_MOUNTED_READ_ONLY) {
+            Log.w(TAG, "зеркала не будет: внешнее хранилище в состоянии $state")
+            return null
+        }
+        val appExternal = context.getExternalFilesDir(null)
+        if (appExternal != null) {
+            return File(appExternal, MIRROR_RELATIVE_IN_APP)
+        }
+        if (!Workspace.hasAllFilesAccess()) {
+            Log.w(TAG, "зеркала не будет: нет доступа ко всем файлам и своему внешнему каталогу")
+            return null
+        }
         return File(Environment.getExternalStorageDirectory(), MoltbookWitness.MIRROR_RELATIVE)
+    }
+
+    /**
+     * Зеркало недоступно, и это надо сказать вслух ровно один раз за тик.
+     *
+     * Молчание здесь было не «аккуратностью», а слепым пятном: отказ
+     * `mirrorSafely` не всплывал нигде, и два месяца второй свидетель не работал,
+     * а все проверки проходили. Сторож, который не может сказать «я слепой»,
+     * хуже отсутствующего сторожа — о его отсутствии никто не узнаёт.
+     */
+    fun noteMirrorUnavailable(cause: String) {
+        Log.w(TAG, "зеркало журнала недоступно, второй свидетель молчит: $cause")
     }
 
     /**

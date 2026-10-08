@@ -177,7 +177,9 @@ internal object MoltbookWitness {
         shrinkIfNeeded(logFile)
         // Зеркало — best effort и последним: его провал не имеет права ронять тик
         // (см. [mirrorSafely]), а вот тик без основной записи не существует вовсе.
-        mirrorSafely(logFile, mirrorFile)
+        if (!mirrorSafely(logFile, mirrorFile)) {
+            Log.w(TAG, "второй свидетель молчит: зеркало не записано")
+        }
         return stamped
     }
 
@@ -511,11 +513,15 @@ internal object MoltbookWitness {
             mirrorFile.parentFile?.mkdirs()
             mirrorFile.writeText(logFile.readText(Charsets.UTF_8), Charsets.UTF_8)
             true
-        } catch (_: IOException) {
+        } catch (e: IOException) {
+            // Отказ НЕ молчит: именно этот catch два месяца прятал причину —
+            // зеркало указывало на каталог в /sdcard/Documents, куда на Android 11+
+            // писать нельзя, и второй свидетель был выключен при зелёных тестах.
+            // Тик от этого не пострадает, а диагностика — обязана.
+            Log.w(TAG, "не записал зеркало журнала в $mirrorFile: ${e.message}")
             false
-        } catch (_: SecurityException) {
-            // Ровно этот случай на Android без MANAGE_EXTERNAL_STORAGE, и он
-            // штатный: зеркала нет, журнал есть.
+        } catch (e: SecurityException) {
+            Log.w(TAG, "зеркало журнала запрещено правами ($mirrorFile): ${e.message}")
             false
         }
     }
