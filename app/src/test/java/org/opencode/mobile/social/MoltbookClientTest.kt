@@ -946,4 +946,52 @@ class MoltbookClientTest {
     private companion object {
         const val OWN = "opencodekz"
     }
+
+
+    // ---- сверка двух представлений ветки ----
+
+    @Test
+    fun `найденный ответ вторым представлением не переиговаривается`() {
+        assertTrue(MoltbookBranchCheck.isSettled(MoltbookClient.ReplyProbe.Found("c-1")))
+        assertTrue(MoltbookBranchCheck.isSettled(MoltbookClient.ReplyProbe.Unpublished("c-2", "pending")))
+        assertTrue(!MoltbookBranchCheck.isSettled(MoltbookClient.ReplyProbe.Absent))
+        assertTrue(!MoltbookBranchCheck.isSettled(MoltbookClient.ReplyProbe.Unknown("boom")))
+    }
+
+    @Test
+    fun `две пустые ветки это отсутствие а не неизвестность`() {
+        val decision = MoltbookBranchCheck.crossCheck(MoltbookClient.ReplyProbe.Absent, MoltbookClient.ReplyProbe.Absent)
+        assertTrue(decision is MoltbookClient.ReplyProbe.Absent)
+    }
+
+    @Test
+    fun `упавшее чтение отвечает за неизвестность а не за отсутствие`() {
+        // Порядок обоих чтений важен одинаково: «нет» + «не знаю» и «не знаю» +
+        // «нет» обязаны давать одно и то же, иначе исход зависит от того, какое
+        // представление читалось первым.
+        val absent = MoltbookClient.ReplyProbe.Absent
+        val failed = MoltbookClient.ReplyProbe.Unknown("timeout")
+        val absentThenFailed = MoltbookBranchCheck.crossCheck(absent, failed)
+        val failedThenAbsent = MoltbookBranchCheck.crossCheck(failed, absent)
+        assertTrue(absentThenFailed is MoltbookClient.ReplyProbe.Unknown)
+        assertTrue(failedThenAbsent is MoltbookClient.ReplyProbe.Unknown)
+    }
+
+    @Test
+    fun `второе представление дополняет первое там где первое молчит`() {
+        val decision = MoltbookBranchCheck.crossCheck(MoltbookClient.ReplyProbe.Absent, MoltbookClient.ReplyProbe.Found("c-9"))
+        assertEquals("c-9", (decision as MoltbookClient.ReplyProbe.Found).commentId)
+    }
+
+    @Test
+    fun `найденное в первом представлении не отменяется упавшим вторым`() {
+        val decision = MoltbookBranchCheck.crossCheck(MoltbookClient.ReplyProbe.Found("c-1"), MoltbookClient.ReplyProbe.Unknown("timeout"))
+        assertEquals("c-1", (decision as MoltbookClient.ReplyProbe.Found).commentId)
+    }
+
+    @Test
+    fun `два упавших чтения это неизвестность`() {
+        val decision = MoltbookBranchCheck.crossCheck(MoltbookClient.ReplyProbe.Unknown("a"), MoltbookClient.ReplyProbe.Unknown("b"))
+        assertTrue(decision is MoltbookClient.ReplyProbe.Unknown)
+    }
 }

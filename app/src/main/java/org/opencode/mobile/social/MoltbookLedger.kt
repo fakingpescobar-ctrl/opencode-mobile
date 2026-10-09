@@ -34,6 +34,31 @@ internal class MoltbookLedger(
         FAILED,
     }
 
+    /**
+     * Чем закончился ответ: не «какой статус», а ЧТО мы умеем утверждать.
+     *
+     * Статус [CommentStatus.POSTED] одинаков у ответа, который мы создали и прочитали
+     * обратно, и у ответа, который сервер вернул как уже существующий. Считать по
+     * статусу — значит отчитаться «ответили» там, где мы ничего не создали (дефект 2).
+     * Разводить их отдельной колонкой, а счётчик получать пересчётом по журналу —
+     * ровно то, чего требует сообщество (MOLTBOOK_ADVICE 3.13: «счётчик должен быть
+     * проекцией журнала, не отдельным хранилищем») и 3.2 (`REUSED_OBJECT_ID` — ноль
+     * новых подтверждённых фактов).
+     *
+     * Пустое значение в базе (строки, записанные до v5) = «не знаем» и в счётчик не
+     * попадает: пересчёт должен быть консервативным, иначе он врёт на старой базе.
+     */
+    enum class ReplyOutcome(val wire: String) {
+        /** Создали новый комментарий, id получили. Ждёт verification или уже verified. */
+        CREATED("created"),
+
+        /** Создали и подтвердили проверкой. */
+        VERIFIED("verified"),
+
+        /** Ничего не создано: наш прошлый ответ вернулся как уже существующий. */
+        REUSED("reused"),
+    }
+
     data class PendingReply(
         val commentId: String,
         val postId: String,
@@ -90,7 +115,8 @@ internal class MoltbookLedger(
                 our_reply_id TEXT,
                 summary_ru TEXT NOT NULL DEFAULT '',
                 seen_at INTEGER NOT NULL,
-                replied_at INTEGER NOT NULL DEFAULT 0
+                replied_at INTEGER NOT NULL DEFAULT 0,
+                reply_outcome TEXT NOT NULL DEFAULT ''
             )
             """.trimIndent(),
         )
@@ -138,7 +164,7 @@ internal class MoltbookLedger(
         // видели — известно только из ленты, восстановить нечего), поэтому
         // наполнять её нечем и не нужно: первый же скан запишет текущее состояние
         // как «новое», и это честно — прошлого наблюдения у нас не было.
-        if (oldVersion < 3) {
+        if (oldVersion < SCHEMA_V3) {
             db.execSQL(CREATE_SEEN_TABLE_V3)
             db.execSQL(CREATE_SEEN_INDEX_POST)
             db.execSQL(CREATE_SEEN_INDEX_AT)
@@ -154,8 +180,15 @@ internal class MoltbookLedger(
         // обновлении с версии 2, и создание уже с колонкой сделало бы следующий
         // ALTER дубликатом — `SQLiteException: duplicate column name` на первом
         // же обращении к базе, то есть у всех, кто обновляется с текущей версии.
-        if (oldVersion < 4) {
-            db.execSQL("ALTER TABLE seen ADD COLUMN hits INTEGER NOT NULL DEFAULT 1")
+        if (oldVersion < SCHEMA_V4) {
+            db.execSQL(ADD_HITS_COLUMN_V4)
+        }
+        // v5: чем закончился ответ. Статус POSTED одинаков у созданного нами
+        // комментария и у уже существующего, который вернул сервер, — а тик обязан
+        // различать их хотя бы в счётчике. Пустое значение у старых строк означает
+        // «не знаем» и в пересчёт не попадает: консервативно.
+        if (oldVersion < SCHEMA_V5) {
+            db.execSQL(ADD_REPLY_OUTCOME_COLUMN_V5)
         }
     }
 
@@ -249,6 +282,7 @@ internal class MoltbookLedger(
         status: CommentStatus,
         ourReplyId: String? = null,
         now: Long,
+        outcome: ReplyOutcome? = null,
     ) {
         val values =
             ContentValues().apply {
@@ -261,9 +295,43 @@ internal class MoltbookLedger(
                 // это время попадания комментария в очередь, и сдвигать его нельзя.
                 if (status == CommentStatus.FAILED) put("seen_at", now)
                 if (ourReplyId != null) put("our_reply_id", ourReplyId)
+                // Исход пишется ТОЛЬКО когда его утверждаем (Created/Verified/Reused).
+                // Для остальных статусов колонка не трогается: пустое значит «не знаем»,
+                // и пересчёт по журналу такие строки пропускает.
+                if (outcome != null) put("reply_outcome", outcome.wire)
             }
         writableDatabase.update("comments", values, "id = ?", arrayOf(commentId))
     }
+
+    /**
+     * Сколько ответов тик [since] реально создал и записал как подтверждённые.
+     *
+     * Не счётчик в памяти, а пересчёт по журналу — по требованию MOLTBOOK_ADVICE 3.13
+     * («счётчик должен быть проекцией журнала, не отдельным хранилищем») и 3.2:
+     * [ReplyOutcome.REUSED] в подсчёт не входит, потому что это ноль новых фактов.
+     * Ветку, где исход потерян, пересчёт исправить не может — она и не должна его
+     * чинить, она обязана быть заметной в тике.
+     *
+     * Окно — по `replied_at` тика, а не по времени записи строки: два прохода
+     * с одним и тем же `now` не должны разъезжаться.
+     */
+    fun createdRepliesSince(since: Long): Int =
+        readableDatabase.rawQuery(
+            CREATED_SQL,
+            arrayOf(
+                CommentStatus.POSTED.name,
+                ReplyOutcome.CREATED.wire,
+                ReplyOutcome.VERIFIED.wire,
+                since.toString(),
+            ),
+        ).use { rows -> if (rows.moveToFirst()) rows.getInt(0) else 0 }
+
+    /** Ответов, прошедших проверку. Считается так же, как [createdRepliesSince]. */
+    fun verifiedRepliesSince(since: Long): Int =
+        readableDatabase.rawQuery(
+            VERIFIED_SQL,
+            arrayOf(CommentStatus.POSTED.name, ReplyOutcome.VERIFIED.wire, since.toString()),
+        ).use { rows -> if (rows.moveToFirst()) rows.getInt(0) else 0 }
 
     fun recordUpvote(
         postId: String,
@@ -887,7 +955,30 @@ internal class MoltbookLedger(
         private const val KEY_REPOST_SEEN = "repost_seen:"
         const val OUR_AGENT = "opencodekz"
         private const val DB_NAME = "moltbook.db"
-        private const val DB_VERSION = 4
+        /** Счётчик наблюдений: отдельная ветка миграции, см. [onUpgrade]. */
+    private const val ADD_HITS_COLUMN_V4 =
+        "ALTER TABLE seen ADD COLUMN hits INTEGER NOT NULL DEFAULT 1"
+
+    /** Чем закончился ответ: created/verified/reused, см. [ReplyOutcome]. */
+    private const val ADD_REPLY_OUTCOME_COLUMN_V5 =
+        "ALTER TABLE comments ADD COLUMN reply_outcome TEXT NOT NULL DEFAULT ''"
+
+    /** Схема v3: журнал прочитанного, [CREATE_SEEN_TABLE_V3]. */
+    private const val SCHEMA_V3 = 3
+
+    /** Схема v4: счётчик наблюдений, [ADD_HITS_COLUMN_V4]. */
+    private const val SCHEMA_V4 = 4
+
+    /**
+     * Схема v5: чем закончился ответ, [ADD_REPLY_OUTCOME_COLUMN_V5].
+     *
+     * Ровно то же число, что [DB_VERSION]: последняя ветка миграции обязана
+     * срабатывать при обновлении на текущую версию, иначе новая колонка
+     * появится только у тех, кто перескочит через две версии сразу.
+     */
+    private const val SCHEMA_V5 = 5
+
+    private const val DB_VERSION = 5
 
         /**
          * Ключ под отпечаток последнего тика. Пишет и сверяет его ИНТЕГРАЦИЯ
@@ -968,6 +1059,24 @@ internal class MoltbookLedger(
                 at INTEGER NOT NULL
             )
             """
+
+        /**
+         * Пересчёт счётчика ответов по журналу — [createdRepliesSince].
+         *
+         * Пишется SQL, а не собирается из куска в функции: `count` в классе живёт
+         * внутри [stats] и в companion, и ни один из них не виден снаружи так, как
+         * нужно здесь. Константа честнее, чем третий вариант подсчёта в том же файле.
+         *
+         * Порядок аргументов: статус POSTED, исходы CREATED и VERIFIED, метка времени.
+         */
+        const val CREATED_SQL =
+            "SELECT COUNT(*) FROM comments " +
+                "WHERE status = ? AND reply_outcome IN (?, ?) AND replied_at >= ?"
+
+        /** Пересчёт проверок по журналу — [verifiedRepliesSince]. Аргументы те же, кроме исхода. */
+        const val VERIFIED_SQL =
+            "SELECT COUNT(*) FROM comments " +
+                "WHERE status = ? AND reply_outcome = ? AND replied_at >= ?"
 
         /**
          * Потолок таблицы `seen`.

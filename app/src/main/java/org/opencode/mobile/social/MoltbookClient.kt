@@ -163,9 +163,7 @@ internal class MoltbookClient(
          * а «можно ли что-то с ним сделать» — и здесь нельзя ничего.
          */
         val isPublished: Boolean
-            get() =
-                !verificationStatus.equals(STATUS_PENDING, ignoreCase = true) &&
-                    !verificationStatus.equals(STATUS_FAILED, ignoreCase = true)
+            get() = isPublishedStatus(verificationStatus)
     }
 
     /**
@@ -355,16 +353,41 @@ internal class MoltbookClient(
         postId: String,
         parentId: String,
     ): ReplyProbe {
-        val comments =
+        val first = readProbe(postId, parentId, SORT_NEW)
+        // Найденный ответ вторым чтением не переиговаривается: Found и Unpublished
+        // решают исход сами, и спорное чтение не имеет права отменить доказанное.
+        if (MoltbookBranchCheck.isSettled(first)) return first
+        val second = readProbe(postId, parentId, SORT_BEST)
+        val decision = MoltbookBranchCheck.crossCheck(first, second)
+        if (MoltbookBranchCheck.isSettled(decision) && !MoltbookBranchCheck.isSettled(first)) {
+            // Представления разошлись: одно читает ветку как «нашего ответа нет»,
+            // другое — «вот он». Это ровно тот случай, который нельзя гасить и
+            // продолжать: решение принимает доказательство, а расхождение остаётся
+            // в логе, потому что следующий тик прочтёт ветку иначе.
+            Log.w(TAG, "представления ветки $postId разошлись: $first / $second")
+        }
+        return decision
+    }
+
+    /**
+     * Одно чтение ветки одним представлением.
+     *
+     * Ловится Exception, а не IOException: [getJsonObject] внутри бросает и
+     * JSONException на неожиданном теле, и IllegalStateException на пустом
+     * JSONObject. Все они означают одно — «мы не знаем», а не «ответа нет».
+     */
+    private fun readProbe(
+        postId: String,
+        parentId: String,
+        sort: String,
+    ): ReplyProbe {
+        val loaded =
             try {
-                comments(postId)
+                comments(postId, sort)
             } catch (e: Exception) {
-                // Ловим Exception, а не IOException: getJsonObject внутри бросает и
-                // JSONException на неожиданном теле, и IllegalStateException на пустой
-                // JSONObject. Все они означают одно — «мы не знаем», а не «ответа нет».
                 return ReplyProbe.Unknown("${e.javaClass.simpleName}: ${e.message}")
             }
-        return probeIn(comments, parentId)
+return probeIn(loaded, parentId)
     }
 
     /**
@@ -661,7 +684,17 @@ internal class MoltbookClient(
         val ALLOWED_METHODS = setOf("GET", "POST", "DELETE")
         const val SORT_NEW = "new"
 
-        /** Корневых комментариев за страницу. Вложенные приезжают вместе с родителями. */
+        /**
+         * Второе представление того же треда для сверки.
+         *
+         * Замерено вживую 09.10.2026 на посте `a695c6a4`: все три сортировки отдают
+         * по 64 комментария, но первыми идут РАЗНЫЕ — `new` → `4796d701`, `old` →
+         * `453b1d10`, `best` → `df94c076`. То есть представления действительно
+         * разные, а не одно и то же тело с проигнорированным параметром, и второе
+         * чтение видит то, чего не видит первое.
+         */
+        const val SORT_BEST = "best"
+
         const val COMMENTS_PAGE_LIMIT = 100
 
         /**
@@ -798,6 +831,17 @@ internal class MoltbookClient(
          * удалить его и ответить заново, с новым комментом и новым кодом.
          */
         const val STATUS_FAILED = "failed"
+
+        /**
+         * Опубликован ли комментарий по его статусу проверки.
+         *
+         * Всё, что не `pending` и не `failed`, платформа показывает читателям: `verified`
+         * и пустой статус — ответ, остальное — нет. Вынесено в companion, чтобы чистые
+         * решения тикера могли спрашивать то же самое, не собирая объект [Comment].
+         */
+        internal fun isPublishedStatus(status: String): Boolean =
+            !status.equals(STATUS_PENDING, ignoreCase = true) &&
+                !status.equals(STATUS_FAILED, ignoreCase = true)
 
         /** Длина префикса id в логе: целиком он не нужен, а код задачи засоряет вывод. */
         const val ID_LOG_CHARS = 8

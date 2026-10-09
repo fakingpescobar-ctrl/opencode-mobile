@@ -373,4 +373,51 @@ class MoltbookLedgerDeltaTest {
                 .last()
         assertEquals(lastInOrder.commentId, dropped[0].commentId)
     }
+
+    /**
+     * Контракт между писателем и пересчётом: enum пишет `wire`, SQL читает `wire`.
+     *
+     * Счётчик ответов теперь проекция журнала (MOLTBOOK_ADVICE 3.13), а проекция — это
+     * SQL-запрос, где исходы зашиты строкой. Опечатка в `wire` или в запросе не падает:
+     * SQLite просто не находит строк и тик честно отчитается «ноль ответов», то есть
+     * молча перестанет считать вообще. Robolectric в проекте нет, базу в unit-тесте не
+     * поднять, поэтому тест фиксирует обе стороны — писателя и читателя — плюс форму
+     * запроса.
+     */
+    @Test
+    fun `wire исходов совпадает с тем что читает пересчёт`() {
+        assertEquals("created", MoltbookLedger.ReplyOutcome.CREATED.wire)
+        assertEquals("verified", MoltbookLedger.ReplyOutcome.VERIFIED.wire)
+        assertEquals("reused", MoltbookLedger.ReplyOutcome.REUSED.wire)
+
+        // REUSED обязан быть в пересчёте, а CREATED — обязаны оба. Проверяем
+        // строками запроса, а не фактом выполнения: единственное, что мы можем
+        // проверить без базы, это сам текст запроса.
+        assertTrue(
+            "REUSED не должен попадать в счётчик созданных",
+            MoltbookLedger.CREATED_SQL.contains("?") && !MoltbookLedger.CREATED_SQL.contains(MoltbookLedger.ReplyOutcome.REUSED.wire),
+        )
+        assertTrue(
+            "пересчёт должен фильтровать по статусу POSTED",
+            MoltbookLedger.CREATED_SQL.contains("status = ?") && MoltbookLedger.CREATED_SQL.contains("replied_at >= ?"),
+        )
+        assertTrue(
+            "пересчёт проверок должен фильтровать по reply_outcome",
+            MoltbookLedger.VERIFIED_SQL.contains("reply_outcome = ?"),
+        )
+    }
+
+    /**
+     * Плейсхолдеров в запросе ровно столько же, сколько аргументов передаёт вызов.
+     *
+     * SQLite не жалуется на лишний или недостающий аргумент при `rawQuery` — он
+     * подставляет NULL, и запрос возвращает 0 строк. То есть опечатка в количестве
+     * плейсхолдеров даёт ровно то молчание, ради которого этот счётчик и выносили в
+     * пересчёт. Считаем `?` и сверяем с числом плейсхолдеров в каждом запросе.
+     */
+    @Test
+    fun `в запросах пересчёта столько же плейсхолдеров сколько условий`() {
+        assertEquals(4, MoltbookLedger.CREATED_SQL.count { it == '?' })
+        assertEquals(3, MoltbookLedger.VERIFIED_SQL.count { it == '?' })
+    }
 }

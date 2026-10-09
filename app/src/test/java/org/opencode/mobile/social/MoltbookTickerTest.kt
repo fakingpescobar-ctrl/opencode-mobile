@@ -242,8 +242,10 @@ class MoltbookTickerTest {
     @Test
     fun `опубликованный наш ответ это нечего делать`() {
         val decision = MoltbookTicker.probeDecision(MoltbookClient.ReplyProbe.Found("c-1"))
-        assertTrue(decision is MoltbookTicker.PostResult.Done)
-        assertEquals("c-1", (decision as MoltbookTicker.PostResult.Done).commentId)
+        // Reused, а не Done: коммент уже виден читателям, нового ответа не создаём и
+        // счётчик не инкрементим — иначе снова «ответил» там, где ответ лежит давно.
+        assertTrue(decision is MoltbookTicker.PostResult.Reused)
+        assertEquals("c-1", (decision as MoltbookTicker.PostResult.Reused).commentId)
     }
 
     @Test
@@ -269,12 +271,13 @@ class MoltbookTickerTest {
     }
 
     @Test
-    fun `созданный ответ это готово а дубль это блокировка`() {
+    fun `созданный ответ это готово а дубль разводится по статусу`() {
         val posted = MoltbookTicker.outcomeDecision(MoltbookClient.CommentOutcome.Posted("c-3"))
         assertTrue(posted is MoltbookTicker.PostResult.Done)
         assertEquals("c-3", (posted as MoltbookTicker.PostResult.Done).commentId)
 
-        val duplicate =
+        // Дубль в статусе pending/failed — блокировка: коммент не виден, ветку надо чистить.
+        val blockedDuplicate =
             MoltbookTicker.outcomeDecision(
                 MoltbookClient.CommentOutcome.Duplicate(
                     existingCommentId = "c-old",
@@ -282,8 +285,98 @@ class MoltbookTickerTest {
                     status = "pending",
                 ),
             )
-        assertTrue("already_existed - это не новый ответ", duplicate is MoltbookTicker.PostResult.Blocked)
-        assertEquals("c-old", (duplicate as MoltbookTicker.PostResult.Blocked).pendingCommentId)
+        assertTrue("already_existed с pending - это блокировка", blockedDuplicate is MoltbookTicker.PostResult.Blocked)
+        assertEquals("c-old", (blockedDuplicate as MoltbookTicker.PostResult.Blocked).pendingCommentId)
+
+        // Дубль в статусе verified — это НЕ блокировка, а живой ответ (баг 09.10.2026):
+        // раньше он уходил в Blocked и его удаляли из ленты.
+        val reusedDuplicate =
+            MoltbookTicker.outcomeDecision(
+                MoltbookClient.CommentOutcome.Duplicate(
+                    existingCommentId = "0a359f36",
+                    existingParentId = "",
+                    status = "verified",
+                ),
+            )
+        assertTrue("verified-дубль обязан быть Reused, а не Blocked", reusedDuplicate is MoltbookTicker.PostResult.Reused)
+        assertEquals("0a359f36", (reusedDuplicate as MoltbookTicker.PostResult.Reused).commentId)
+    }
+
+    /**
+     * Дедуп вернул наш коммент из ДРУГОГО треда.
+     *
+     * Молтбук дедуплицирует по тексту и автору БЕЗ родителя, поэтому публикация в треде
+     * B может вернуть наш же id из треда A (MOLTBOOK_ADVICE 1.5/3.3). Раньше
+     * `existingParentId` разбирался и не использовался: ветка получала Reused с
+     * чужим-parent id, и в дайджест уходило «уже отвечено ранее» про вопрос, на который
+     * мы не ответили. Живой коммент при этом удалять нельзя ни в коем случае.
+     */
+    @Test
+    fun `дубль из чужого треда это не наш ответ на этот вопрос`() {
+        val crossParent =
+            MoltbookClient.CommentOutcome.Duplicate(
+                existingCommentId = "0a359f36",
+                existingParentId = "parent-b",
+                status = "verified",
+            )
+        val decision = MoltbookDedupCheck.reuseOrMisparent(crossParent, "parent-a")
+
+        assertTrue(
+            "дубль из чужого треда обязан стать Misparented, а не закрывать ветку",
+            decision is MoltbookTicker.PostResult.Misparented,
+        )
+        decision as MoltbookTicker.PostResult.Misparented
+        assertEquals("0a359f36", decision.existingCommentId)
+        assertEquals("parent-a", decision.expectedParentId)
+        assertEquals("parent-b", decision.actualParentId)
+    }
+
+    /**
+     * Тот же родитель — это честный Reused, ветку можно закрывать.
+     *
+     * Зеркало предыдущего теста: разводить исходы имеет смысл только когда родители
+     * действительно различаются. Иначе мы бы ломали рабочий сценарий повторного
+     * ответа на тот же вопрос.
+     */
+    @Test
+    fun `дубль с тем же родителем это наш ответ на этот вопрос`() {
+        val sameParent =
+            MoltbookClient.CommentOutcome.Duplicate(
+                existingCommentId = "c-7",
+                existingParentId = "parent-a",
+                status = "verified",
+            )
+
+        val decision = MoltbookDedupCheck.reuseOrMisparent(sameParent, "parent-a")
+
+        assertTrue("тот же родитель обязан быть Reused", decision is MoltbookTicker.PostResult.Reused)
+        assertEquals("c-7", (decision as MoltbookTicker.PostResult.Reused).commentId)
+    }
+
+    /**
+     * Сервер не вернул родителя — это «не знаю», и уверенно закрывать ветку нельзя.
+     *
+     * Отдельный случай, а не «разные родители»: отсутствие `parent_id` не доказывает
+     * расхождение, но и не подтверждает совпадение. Проверять нечем, поэтому исход —
+     * Misparented с пустым фактическим родителем, и живой коммент остаётся нетронутым
+     * (MOLTBOOK_ADVICE 3.2: неопределённость = не удалять, не перезаписывать, не считать).
+     */
+    @Test
+    fun `дубль без родителя это неопределённость а не повод закрыть ветку`() {
+        val noParent =
+            MoltbookClient.CommentOutcome.Duplicate(
+                existingCommentId = "c-8",
+                existingParentId = null,
+                status = "verified",
+            )
+
+        val decision = MoltbookDedupCheck.reuseOrMisparent(noParent, "parent-a")
+
+        assertTrue(
+            "без родителя ветка закрываться не может",
+            decision is MoltbookTicker.PostResult.Misparented,
+        )
+        assertNull((decision as MoltbookTicker.PostResult.Misparented).actualParentId)
     }
 
     @Test
@@ -505,7 +598,7 @@ class MoltbookTickerTest {
     fun `после удаления чужой ответ всё равно закрывает ветку`() {
         assertEquals(
             "наш живой ответ после удаления мёртвого — дубль не публикуем",
-            MoltbookTicker.PostResult.Done("c-live"),
+            MoltbookTicker.PostResult.Reused("c-live"),
             MoltbookTicker.afterPurge(
                 purged = true,
                 reProbe = MoltbookClient.ReplyProbe.Found("c-live"),

@@ -95,112 +95,16 @@ internal class MoltbookTicker(
         val swept = sweepDeadReplies(client, ledger)
         if (swept > 0) facts += "снял $swept непроверенных коммента"
 
-        // ПРОХОД 2 (дорого, с моделью). Потолок — предохранитель: один проход без
-        // него выдал 9 ответов за 11 минут, и в ленте это выглядит как спам-бот.
-        // retryBefore отдаёт в очередь и FAILED, которым не меньше RETRY_COOLDOWN_MS:
-// раньше такие комментарии выпадали из выборки навсегда.
-        val pending = ledger.pendingReplies(MAX_REPLIES_PER_TICK, retryBefore = now - RETRY_COOLDOWN_MS)
-        var replies = 0
-        var verifications = 0
-        for (target in pending) {
-            val draft = askModel(draftPrompt(target))
-            if (draft == null) {
-                // Модель не ответила: коммент помечаем FAILED, но НЕ SKIPPED — он не
-                // «не нужен», на него просто не хватило сил, и он дождётся следующего тика.
-                ledger.markComment(target.commentId, MoltbookLedger.CommentStatus.FAILED, now = now)
-                continue
-            }
-            val outcome =
-                try {
-                    postWithVerification(client, target.postId, target.commentId, draft, facts)
-                } catch (e: IOException) {
-                    // Сеть отвалилась на ЭТОМ ответе. Без catch IOException улетал из
-                    // runOnce в общий catch приёмника и уносил весь остаток визита:
-                    // остальные ответы, все апвоуты и снятие счётчиков. Ответ, который
-                    // не ушёл, — это FAILED, а не причина списать тик.
-                    Log.w(TAG, "сеть упала на ответе ${target.commentId}: ${e.message}")
-                    PostResult.Failed(e.message ?: "сеть недоступна")
-                }
-            when (outcome) {
-                is PostResult.Done -> {
-                    replies++
-                    // our_reply_id — ID нашего комментария, а не чужого: по нему
-                    // отличаем «уже ответили» от «ответили, но это другой тред».
-                    ledger.markComment(
-                        target.commentId,
-                        MoltbookLedger.CommentStatus.POSTED,
-                        outcome.commentId,
-                        now,
-                    )
-                    facts += "ответил ${target.author} в «${target.postTitle}»"
-                }
-                is PostResult.Verified -> {
-                    replies++
-                    verifications++
-                    ledger.markComment(
-                        target.commentId,
-                        MoltbookLedger.CommentStatus.POSTED,
-                        outcome.commentId,
-                        now,
-                    )
-                    facts += "ответил ${target.author} в «${target.postTitle}» (с verification)"
-                }
-                is PostResult.Blocked -> {
-                    // Ответ не ушёл и не может уйти, пока наш прошлый коммент не пройдёт
-                    // проверку или не будет удалён вручную. SKIPPED тут врал бы «не нужен»,
-                    // поэтому FAILED: ответ не отправлен, коммент не потерян, вернёмся
-                    // после чистки треда. Факт в дайджест обязателен — с id заблокировавшего
-                    // комментария, иначе ветку найти нечем.
-                    Log.w(TAG, "пост заблокирован нашим непроверенным комментом: $outcome")
-                    facts += "пропущено ${target.author} в «${target.postTitle}»: наш прошлый ответ ждёт проверки " +
-                        "(${outcome.status}, ${outcome.pendingCommentId.take(MoltbookClient.ID_LOG_CHARS)})"
-                    ledger.markComment(target.commentId, MoltbookLedger.CommentStatus.FAILED, now = now)
-                }
-                is PostResult.Failed -> {
-                    Log.w(TAG, "коммент не опубликован: ${outcome.reason}")
-                    // FAILED, а не SKIPPED: ответ не отправлен, коммент не потерян,
-                    // он дождётся следующего тика.
-                    ledger.markComment(target.commentId, MoltbookLedger.CommentStatus.FAILED, now = now)
-                }
-            }
-        }
+        val pass = answerPending(client, ledger, facts, now)
+        val replies = pass.replies
+        val verifications = pass.verifications
+        val answeredPosts = pass.answeredPosts
 
-// Счётчик непрочитанного снимаем только у постов, которые мы РЕАЛЬНО просканировали
-        // в этом тике, и только там, где NEW не осталось.
-        //
-        // Раньше цикл шёл по ВСЕМ home.awaitingReply, а скан берёт только
-        // POSTS_PER_TICK постов. У непросканированного поста в comments нет строк,
-        // поэтому postHasNoPending истинно вакуумно — markPostRead гасил серверный
-        // счётчик у поста, чьи комменты мы даже не выгрузили. Сервер обнулял
-        // new_notification_count, пост навсегда выпадал из awaitingReply
-        // (там фильтр newNotifications > 0), и его комменты уже никогда не попадали
-        // в ledger и не получали ответа, при том что глобальный unread уже обнулён.
-        // Ровно та потеря, ради которой этот блок и написан.
-        for (postId in scannedPosts) {
-            if (!ledger.postHasNoPending(postId)) continue
-            try {
-                client.markPostRead(postId)
-            } catch (e: IOException) {
-                // Ответы к этому моменту уже в ленте: терять из-за бейджа весь итог
-                // тика (дайджест + метку времени) — заметно хуже, чем просроченный
-                // счётчик непрочитанного. Пишем в лог и идём дальше.
-                Log.w(TAG, "не снял счётчик непрочитанного по $postId: ${e.message}")
-            }
-        }
+        settleReadCounters(client, ledger, scannedPosts, answeredPosts)
 
         val stats = ledger.stats()
         val housekeeping = decideHousekeeping(ledger, client, facts)
-        var upvotes = 0
-        for (postId in housekeeping.upvotePostIds) {
-            try {
-                client.upvote(postId)
-                ledger.recordUpvote(postId, now)
-                upvotes++
-            } catch (e: IOException) {
-                Log.w(TAG, "апвоут не прошёл: ${e.message}")
-            }
-        }
-        if (upvotes > 0) facts += "поддержал $upvotes пост(ов) в ленте"
+        val upvotes = giveUpvotes(client, ledger, housekeeping.upvotePostIds, facts)
 
         val report =
             TickReport(
@@ -538,12 +442,277 @@ internal class MoltbookTicker(
         return found
     }
 
+    /**
+     * Проход ответов: черновик, публикация, проверка, запись в учёт.
+     *
+     * Вынесено из [runOnce], потому что тик не собирался делать из него: цикл с пятью
+     * исходами, catch на сеть и запись в учёт тянул [runOnce] за оба порога detekt
+     * (длина и цикломатика), а сделать было негрому — этот цикл и есть вся работа тика.
+     *
+     * Возвращает и счётчики, и список постов, куда мы реально ответили: второй нужен
+     * гейтом на снятие непрочитанного (дефект 3).
+     */
+    private fun answerPending(
+        client: MoltbookClient,
+        ledger: MoltbookLedger,
+        facts: MutableList<String>,
+        now: Long,
+    ): ReplyPass {
+        // Потолок — предохранитель: один проход без него выдал 9 ответов за 11 минут.
+        // retryBefore отдаёт в очередь и FAILED, которым не меньше RETRY_COOLDOWN_MS:
+        // раньше такие комментарии выпадали из выборки навсегда.
+        val pending = ledger.pendingReplies(MAX_REPLIES_PER_TICK, retryBefore = now - RETRY_COOLDOWN_MS)
+        val tally = ReplyTally(facts, now)
+        for (target in pending) {
+            val draft = askModel(draftPrompt(target))
+            if (draft == null) {
+                // Модель не ответила: коммент помечаем FAILED, но НЕ SKIPPED — он не
+                // «не нужен», на него просто не хватило сил, и он дождётся следующего тика.
+                ledger.markComment(target.commentId, MoltbookLedger.CommentStatus.FAILED, now = now)
+                continue
+            }
+            val outcome =
+                try {
+                    postWithVerification(client, target.postId, target.commentId, draft, facts)
+                } catch (e: IOException) {
+                    // Сеть отвалилась на ЭТОМ ответе. Без catch IOException улетал из
+                    // runOnce в общий catch приёмника и уносил весь остаток визита:
+                    // остальные ответы, все апвоуты и снятие счётчиков. Ответ, который
+                    // не ушёл, — это FAILED, а не причина списать тик.
+                    Log.w(TAG, "сеть упала на ответе ${target.commentId}: ${e.message}")
+                    PostResult.Failed(e.message ?: "сеть недоступна")
+                }
+            record(ledger, target, outcome, tally)
+        }
+        return tally.pass(ledger)
+    }
+
+    /**
+     * Записывает исход одного ответа в учёт и в факты дайджеста.
+     *
+     * Разнесено из [answerPending] намеренно: пять исходов в одном теле тянут функцию
+     * за порог detekt, а читаются они отдельно — тут ровно то, что тик ЗАСЧИТЫВАЕТ, и
+     * потому, что здесь-то и решается, попадёт ли ответ в счётчик (дефект 2).
+     *
+     * our_reply_id — всегда ID нашего комментария, а не чужого: по нему отличаем
+     * «уже ответили» от «ответили, но это другой тред».
+     */
+    private fun record(
+        ledger: MoltbookLedger,
+        target: MoltbookLedger.PendingReply,
+        outcome: PostResult,
+        tally: ReplyTally,
+    ) {
+        val facts = tally.facts
+        when (outcome) {
+            is PostResult.Done -> {
+                tally.markAnswered(ledger, target, outcome.commentId, MoltbookLedger.ReplyOutcome.CREATED)
+                facts += "ответил ${target.author} в «${target.postTitle}» " +
+                    "(${replyFact(target.postId, target.commentId, outcome.commentId, "posted")})"
+            }
+            is PostResult.Verified -> {
+                tally.markAnswered(ledger, target, outcome.commentId, MoltbookLedger.ReplyOutcome.VERIFIED)
+                facts += "ответил ${target.author} в «${target.postTitle}» (с verification) " +
+                    replyFact(target.postId, target.commentId, outcome.commentId, "verified")
+            }
+            is PostResult.Reused -> {
+                // Ничего нового НЕ создано — наш ответ на этот вопрос уже виден
+                // читателям. Исход REUSED в пересчёт счётчика не попадает: это ноль
+                // новых подтверждённых фактов (MOLTBOOK_ADVICE 3.2). В учёте помечаем
+                // POSTED с живым id и REUSED, чтобы ветку больше не трогать.
+                tally.markAnswered(ledger, target, outcome.commentId, MoltbookLedger.ReplyOutcome.REUSED)
+                facts += "уже отвечено ранее ${target.author} в «${target.postTitle}» " +
+                    replyFact(target.postId, target.commentId, outcome.commentId, "reused")
+            }
+            is PostResult.Blocked -> {
+                // Ответ не ушёл и не может уйти, пока наш прошлый коммент не пройдёт
+                // проверку или не будет удалён вручную. SKIPPED тут врал бы «не нужен»,
+                // поэтому FAILED: ответ не отправлен, коммент не потерян, вернёмся
+                // после чистки треда. Факт в дайджест обязателен — с id заблокировавшего
+                // комментария, иначе ветку найти нечем.
+                Log.w(TAG, "пост заблокирован нашим непроверенным комментом: $outcome")
+                facts += "пропущено ${target.author} в «${target.postTitle}»: наш прошлый ответ ждёт проверки " +
+                    "(${outcome.status}, ${outcome.pendingCommentId.take(MoltbookClient.ID_LOG_CHARS)})"
+                ledger.markComment(target.commentId, MoltbookLedger.CommentStatus.FAILED, now = tally.now)
+            }
+            is PostResult.Misparented -> {
+                // Живой коммент в чужом треде — это не наш ответ, и он не заблокирован:
+                // удалять его нельзя (это чужой ответ на чужой вопрос), публиковать
+                // заново бессмысленно (дедуп вернёт то же самое), считать его своим —
+                // ровно тот обман, который этот исход и вводит. FAILED с кулдауном:
+                // повтор через RETRY_COOLDOWN_MS даёт время сверить intent вручную,
+                // а не молотит каждый тик об один и тот же дедуп.
+                Log.w(TAG, "already_existed вернул коммент из другого треда: $outcome")
+                facts += "не сходится: наш коммент ${outcome.existingCommentId.take(MoltbookClient.ID_LOG_CHARS)} " +
+                    "в чужом треде, ждали ответ на ${outcome.expectedParentId.take(MoltbookClient.ID_LOG_CHARS)} " +
+                    "(дедуп по тексту без родителя) — ответ не засчитан"
+                MoltbookVerifierLog.append(
+                    context,
+                    MoltbookVerifierLog.Kind.MISMATCH,
+                    clock(),
+                    target.postId,
+                    "dedup-alias parent=${outcome.expectedParentId.take(MoltbookClient.ID_LOG_CHARS)} " +
+                        "actual=${outcome.actualParentId ?: MoltbookDedupCheck.UNKNOWN_PARENT} " +
+                        "id=${outcome.existingCommentId.take(MoltbookClient.ID_LOG_CHARS)}",
+                )
+                ledger.markComment(target.commentId, MoltbookLedger.CommentStatus.FAILED, now = tally.now)
+            }
+            is PostResult.Failed -> {
+                Log.w(TAG, "коммент не опубликован: ${outcome.reason}")
+                // FAILED, а не SKIPPED: ответ не отправлен, коммент не потерян,
+                // он дождётся следующего тика.
+                ledger.markComment(target.commentId, MoltbookLedger.CommentStatus.FAILED, now = tally.now)
+            }
+        }
+    }
+
+    /**
+     * Живой след прохода ответов: чем закончился каждый ответ и куда реально ответили.
+     *
+     * СЧЁТЧИКОВ ЗДЕСЬ НЕТ, и это не потеря, а требование. Ответы и их проверки
+     * считаются пересчётом по журналу — [MoltbookLedger.createdRepliesSince] и
+     * [MoltbookLedger.verifiedRepliesSince], — а не накоплением `replies++` в
+     * ветках исхода. Причина та же, что требует сообщество (MOLTBOOK_ADVICE 3.13):
+     * счётчик должен быть проекцией журнала. Пока счётчик жил рядом с ветками,
+     * ровно одна ошибка в одной ветке (забыли `++`, или добавили лишний) тихо
+     * меняла число в дайджесте, и по дайджесту нельзя было понять, что счётчик врёт.
+     * Теперь число приходит из базы, и несоответствие видно сразу: пересчёт
+     * расходится с фактами журнала — значит кто-то записал исход не так, а не «счётчик
+     * забыл посчитать».
+     *
+     * Что осталось живым здесь: факты (пишутся рядом с исходом, чтобы не потерять
+     * id) и [answeredPosts] — это не число, а множество постов, и его всё равно
+     * нужно знать в том же проходе.
+     */
+    private class ReplyTally(
+        val facts: MutableList<String>,
+        val now: Long,
+    ) {
+        val answeredPosts = mutableSetOf<String>()
+
+        /**
+         * Ответ завершён и ветка закрыта: наш коммент живой, пост можно читать
+         * прочитанным. our_reply_id — ID нашего комментария, а не чужого: по нему
+         * отличаем «уже ответили» от «ответили, но это другой тред».
+         *
+         * [outcome] обязателен и пишется в журнал: без него строка осталась бы
+         * «не знаем» и пересчёт её пропустил бы.
+         */
+        fun markAnswered(
+            ledger: MoltbookLedger,
+            target: MoltbookLedger.PendingReply,
+            ourReplyId: String,
+            outcome: MoltbookLedger.ReplyOutcome,
+        ) {
+            answeredPosts += target.postId
+            ledger.markComment(
+                target.commentId,
+                MoltbookLedger.CommentStatus.POSTED,
+                ourReplyId,
+                now,
+                outcome,
+            )
+        }
+
+        /**
+         * Итог прохода: счётчики пересчитаны по журналу за окно текущего тика,
+         * поэтому повторный вызов на тех же данных вернёт то же число.
+         */
+        fun pass(ledger: MoltbookLedger): ReplyPass =
+            ReplyPass(ledger.createdRepliesSince(now), ledger.verifiedRepliesSince(now), answeredPosts)
+    }
+
+    /**
+     * Поддерживает посты, отобранные housekeeping, и возвращает, сколько прошло.
+     *
+     * Ошибка апвоута — не повод списать тик: апвоут не влияет ни на учёт, ни на
+     * дайджест, поэтому роняем только этот пост и идём дальше.
+     */
+    private fun giveUpvotes(
+        client: MoltbookClient,
+        ledger: MoltbookLedger,
+        postIds: List<String>,
+        facts: MutableList<String>,
+    ): Int {
+        var upvotes = 0
+        for (postId in postIds) {
+            try {
+                client.upvote(postId)
+                ledger.recordUpvote(postId, clock())
+                upvotes++
+            } catch (e: IOException) {
+                Log.w(TAG, "апвоут не прошёл: ${e.message}")
+            }
+        }
+        if (upvotes > 0) facts += "поддержал $upvotes пост(ов) в ленте"
+        return upvotes
+    }
+
+    /**
+     * Гасит серверный счётчик непрочитанного у постов, куда мы РЕАЛЬНО ответили.
+     *
+     * Раньше цикл шёл по ВСЕМ home.awaitingReply, а скан берёт только POSTS_PER_TICK
+     * постов. У непросканированного поста в comments нет строк, поэтому postHasNoPending
+     * истинно вакуумно — markPostRead гасил серверный счётчик у поста, чьи комменты мы
+     * даже не выгрузили. Сервер обнулял new_notification_count, пост навсегда выпадал
+     * из awaitingReply (там фильтр newNotifications > 0), и его комменты уже никогда
+     * не попадали в ledger и не получали ответа, при том что глобальный unread уже
+     * обнулён. Ровно та потеря, ради которой этот блок и написан.
+     *
+     * Второй гейт — [answeredPosts]: раньше условием был только «нет NEW-комментов», и
+     * read-only тред — где мы ничего не писали — помечался прочитанным. Читать чужой
+     * тред и писать в него — разные вещи (дефект 3, 09.10.2026).
+     */
+    private fun settleReadCounters(
+        client: MoltbookClient,
+        ledger: MoltbookLedger,
+        scannedPosts: Set<String>,
+        answeredPosts: Set<String>,
+    ) {
+        for (postId in scannedPosts) {
+            if (postId !in answeredPosts) continue
+            if (!ledger.postHasNoPending(postId)) continue
+            try {
+                client.markPostRead(postId)
+            } catch (e: IOException) {
+                // Ответы к этому моменту уже в ленте: терять из-за бейджа весь итог
+                // тика (дайджест + метку времени) — заметно хуже, чем просроченный
+                // счётчик непрочитанного. Пишем в лог и идём дальше.
+                Log.w(TAG, "не снял счётчик непрочитанного по $postId: ${e.message}")
+            }
+        }
+    }
+
+    /** Итог прохода ответов: что посчитали и куда реально ответили. */
+    private data class ReplyPass(
+        val replies: Int,
+        val verifications: Int,
+        val answeredPosts: Set<String>,
+    )
+
     internal sealed interface PostResult {
         data class Done(
             val commentId: String,
         ) : PostResult
 
         data class Verified(
+            val commentId: String,
+        ) : PostResult
+
+        /**
+         * Публиковать нечего: наш ответ на этот вопрос УЖЕ виден читателям.
+         *
+         * Отдельный исход, а не `Done`: ничего нового не создано, счётчик ответов
+         * инкрементить нельзя — иначе тик снова отчитается «ответил» там, где коммент
+         * пролежал с прошлого раза. И это НЕ блокировка: [Reused] несёт готовый id
+         * живого коммента, его нельзя ни удалять, ни перезаписывать.
+         *
+         * Появился из-за бага 09.10.2026: на повторный POST с тем же текстом сервер
+         * отвечал `already_existed` с нашим же `verified` комментом (id `0a359f36`),
+         * тикер принимал это за блокировку, звал [purgeDeadPending] и УДАЛЯЛ свой
+         * опубликованный ответ — в ленте он становился «Deleted comment».
+         */
+        data class Reused(
             val commentId: String,
         ) : PostResult
 
@@ -559,6 +728,31 @@ internal class MoltbookTicker(
         data class Blocked(
             val pendingCommentId: String,
             val status: String,
+        ) : PostResult
+
+        /**
+         * Сервер вернул наш коммент, но он НЕ отвечает на тот вопрос, куда мы писали.
+         *
+         * Отдельный исход от [Reused] из-за одного: [Reused] — это «наш ответ на ЭТОТ
+         * вопрос уже есть», и ветку можно закрывать. Здесь id настоящий и живой, но он
+         * висит в другом треде. Так выглядит кросс-родительский алиасинг дедупа: ключ
+         * дедупа — текст плюс автор БЕЗ родителя, поэтому ответ в треде B вернулся как
+         * «уже существующий» при публикации в треде A (MOLTBOOK_ADVICE 1.5/3.3,
+         * гипотеза smokeinthedesert на молтбуке).
+         *
+         * Раньше здесь был тихий обман: `existingParentId` разбирался и не
+         * использовался, ветка получала `Reused` с чужим-parent id и в дайджест уходило
+         * «уже отвечено ранее» — про вопрос, на который мы так и не ответили.
+         *
+         * Что НЕ делаем (MOLTBOOK_ADVICE 3.2, CONFIRMATION_INDETERMINATE): не удаляем
+         * чужой тред живой коммент, не перезаписываем, не считаем ответом. Повторная
+         * попытка тоже не поможет — дедуп вернёт то же самое, — поэтому исход
+         * остаётся не-успехом и уходит в FAILED с кулдауном до ручной сверки.
+         */
+        data class Misparented(
+            val existingCommentId: String,
+            val expectedParentId: String,
+            val actualParentId: String?,
         ) : PostResult
 
         data class Failed(
@@ -601,6 +795,14 @@ internal class MoltbookTicker(
             // уходил, а коммент оставался — ветка закрывалась навсегда. Замерено
             // 08.10.2026 вживую: модель решила задачу неверно, коммент стал `failed`,
             // и каждый следующий тик получал тот же `already_existed`.
+            //
+            // Отдельная ветка для ОПУБЛИКОВАННОГО дубля: если сервер вернул наш уже
+            // видимый читателям коммент, то публиковать нечего и чистить нечего —
+            // это Reused, а не Blocked. Раньше оба случая уходили в unblockBranch,
+            // и на verified-комменте запускался DELETE (баг 09.10.2026).
+            if (MoltbookClient.isPublishedStatus(outcome.status)) {
+                return MoltbookDedupCheck.reuseOrMisparent(outcome, parentId)
+            }
             val blocked = PostResult.Blocked(outcome.existingCommentId, outcome.status)
             val after = unblockBranch(client, postId, parentId, blocked)
             if (after != null) return logStop(postId, parentId, after)
@@ -653,6 +855,7 @@ internal class MoltbookTicker(
         val raw = client.rawBodyOf(path)
         if (raw == null) {
             facts += "сырой ответ на публикацию не сохранён — независимая сверка не выполнена"
+            MoltbookVerifierLog.append(context, MoltbookVerifierLog.Kind.REFUSED, clock(), postId, "тело ответа не сохранено")
             return
         }
         val receipt = MoltbookRawVerifier.receipt(raw)
@@ -667,6 +870,13 @@ internal class MoltbookTicker(
             when (verdict) {
                 MoltbookRawVerifier.Verdict.Confirmed ->
                     if (agreed) {
+                        MoltbookVerifierLog.append(
+                            context,
+                            MoltbookVerifierLog.Kind.CONFIRMED,
+                            clock(),
+                            postId,
+                            "id=${receipt.commentId}",
+                        )
                         return
                     } else {
                         "разбор ответа сервера разошёлся с тем, что вернул клиент"
@@ -677,6 +887,10 @@ internal class MoltbookTicker(
             }
         Log.w(TAG, "независимая сверка публикации в $postId: $message")
         facts += "независимая сверка: $message"
+        // Отказ пишется в журнал проверяющего, а не остаётся строкой дайджеста:
+        // дайджест переписывает публикатор, и его собственное признание не
+        // переживает следующий тик.
+        MoltbookVerifierLog.append(context, MoltbookVerifierLog.Kind.REFUSED, clock(), postId, message)
     }
 
     /**
@@ -706,6 +920,26 @@ internal class MoltbookTicker(
     }
 
     /**
+     * Строка ответа для дайджеста: `post / parent / id / status`.
+     *
+     * Без неё отчёт врал «ответил», потому что считал не созданные комменты, а
+     * POST-попытки (дефект 2, 09.10.2026). Каждая строка обязана нести три id —
+     * по `post_id` строку находят в ленте, по `parent_id` понимают, на какой вопрос
+     * ответили, по `id` проверяют живой коммент, — и статус, чтобы `reused` было
+     * видно отдельно от свежего `posted`.
+     */
+    private fun replyFact(
+        postId: String,
+        parentId: String,
+        replyId: String,
+        status: String,
+    ): String {
+        val n = MoltbookClient.ID_LOG_CHARS
+        return "post=${postId.take(n)} parent=${parentId.take(n)} " +
+            "id=${replyId.take(n)} status=$status"
+    }
+
+    /**
      * Убирает наш собственный непроверенный комментарий, который закрыл ветку.
      *
      * Такой коммент нельзя ни решить (код отдают только в момент создания), ни
@@ -721,6 +955,11 @@ internal class MoltbookTicker(
     ): Boolean {
         val id = blocked.pendingCommentId
         if (id.isBlank()) return false
+        // Опубликованный ответ НИКОГДА не удаляем: он виден читателям, и «убрать
+        // блокировку» тут нечего — блокировки нет. Этот гвард закрывает корень бага
+        // 09.10.2026: `already_existed` с нашим же `verified`-комментом приходил как
+        // Blocked, и безусловный DELETE превращал живой ответ в «Deleted comment».
+        if (MoltbookClient.isPublishedStatus(blocked.status)) return false
         val short = id.take(MoltbookClient.ID_LOG_CHARS)
         return try {
             client.deleteComment(id)
@@ -1181,7 +1420,7 @@ internal class MoltbookTicker(
          */
         internal fun probeDecision(probe: MoltbookClient.ReplyProbe): PostResult? =
             when (probe) {
-                is MoltbookClient.ReplyProbe.Found -> PostResult.Done(probe.commentId)
+                is MoltbookClient.ReplyProbe.Found -> PostResult.Reused(probe.commentId)
                 is MoltbookClient.ReplyProbe.Unpublished -> PostResult.Blocked(probe.commentId, probe.status)
                 is MoltbookClient.ReplyProbe.Unknown -> PostResult.Failed("проверка дубля не удалась: ${probe.reason}")
                 MoltbookClient.ReplyProbe.Absent -> null
@@ -1248,24 +1487,31 @@ internal class MoltbookTicker(
          * Решение по ответу платформы на публикацию. `null` — нужна проверка задачи,
          * её разбирает тикер (там нужен вызов модели и сеть).
          *
-         * `already_existed` обязан давать Blocked, а не успех: сервер не создал ничего
-         * нового и вернул чужой нам комментарий, у которого parent_id может указывать на
-         * другой вопрос (замерено 07.10.2026). Старый код читал его id как успех и писал
-         * «ответил» — при том что нового ответа не существовало.
+         * `already_existed` разводится по статусу вернувшегося комментария: если он
+         * УЖЕ опубликован (verified или пустой статус) — это [PostResult.Reused],
+         * живой ответ, ничего не создано и удалять нечего; если он `pending`/`failed` —
+         * это [PostResult.Blocked], ветку надо чистить. Старый код валил оба случая в
+         * Blocked и на опубликованном комменте запускал удаление — так и пропадал наш
+         * verified-ответ (баг 09.10.2026, id `0a359f36` → «Deleted comment»).
          */
         internal fun outcomeDecision(outcome: MoltbookClient.CommentOutcome): PostResult? =
             when (outcome) {
                 is MoltbookClient.CommentOutcome.Posted -> PostResult.Done(outcome.commentId)
                 is MoltbookClient.CommentOutcome.Rejected -> PostResult.Failed(outcome.reason)
                 is MoltbookClient.CommentOutcome.Duplicate ->
-                    PostResult.Blocked(outcome.existingCommentId, outcome.status)
+                    if (MoltbookClient.isPublishedStatus(outcome.status)) {
+                        PostResult.Reused(outcome.existingCommentId)
+                    } else {
+                        PostResult.Blocked(outcome.existingCommentId, outcome.status)
+                    }
                 is MoltbookClient.CommentOutcome.NeedsVerification -> null
             }
 
         const val KEY_PATH = "moltbook/moltkey"
 
         const val DIGEST_PATH = "moltbook-digest.md"
-        const val MOLTBOOK_MEMORY_TAG = "MOLTBOOK-SUMMARY"
+
+    const val MOLTBOOK_MEMORY_TAG = "MOLTBOOK-SUMMARY"
         const val POSTS_PER_TICK = 3
 
         /**
