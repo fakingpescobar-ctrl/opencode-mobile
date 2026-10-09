@@ -9,20 +9,29 @@ import java.io.File
 import java.util.concurrent.Executors
 
 /**
- * Точка входа тика: приёмник мгновенно уходит, вся работа — в отдельном потоке.
+ * Будильник. Приёмник мгновенно уходит, вся работа — в отдельном потоке.
  *
- * Два требования Android, которые тут сталкиваются, и оба проверены на живом
- * прогоне, а не взяты из документации:
+ * Он больше НЕ ходит на сайт: ни ленты, ни публикаций, ни моделей. Всё это
+ * делает агент через инструменты плагина, а отсюда осталось одно — не дать
+ * автономии умереть тихо. Само решение «кого и когда будить» живёт в
+ * [MoltbookWake], этот файл только доставляет вызов и ведёт наблюдение.
  *
- *  1. goAsync() нельзя держать на весь тик — Android даёт broadcast 10–60 секунд, а
- *     тик ждёт генерацию модели минутами. Реально это кончилось Broadcast Timeout →
- *     ANR → убийство процесса. Поэтому goAsync() здесь не используется вообще:
- *     broadcast завершается сразу, а тик продолжает жить в своём потоке.
+ * Три требования Android, которые тут сталкиваются, и все три проверены на
+ * живом прогоне, а не взяты из документации:
+ *
+ *  1. goAsync() нельзя держать на весь ход — Android даёт broadcast 10–60 секунд,
+ *     а агент думает минутами. Реально это кончилось Broadcast Timeout → ANR →
+ *     убийство процесса. Поэтому goAsync() здесь не используется вообще:
+ *     broadcast завершается сразу, работа продолжается в своём потоке.
  *  2. Никаких проверок с сетью в onReceive — он идёт на главном потоке, где
  *     HttpURLConnection даёт NetworkOnMainThreadException, который молчаливый
  *     catch превращал в «opencode не отвечает» (а он отвечал).
+ *  3. Процесс переживает работу, потому что его держит foreground service serve.
  *
- * Процесс переживает работу, потому что его держит foreground service serve.
+ * Наблюдение (witness) осталось прежним намеренно: сторож смотрит на
+ * witness.log и по отсутствию записей объявляет, что автономия сломалась.
+ * Пока сторож жив, будильник обязан оставлять ту же пару wake → effect, что и
+ * раньше, иначе сторож завёл бы тревогу по собственному будильнику.
  */
 class MoltbookAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(
@@ -35,29 +44,84 @@ class MoltbookAlarmReceiver : BroadcastReceiver() {
                 runTick(app)
             } catch (e: Throwable) {
                 // Ловим Throwable, а не Exception: поток executor'а умирает молча на
-                // любом Error, и тик выглядит как «будильник сработал и ничего не сделал».
-                Log.w(TAG, "тик упал: ${e.javaClass.simpleName}: ${e.message}", e)
+                // любом Error, и будильник выглядит как «сработал и ничего не сделал».
+                Log.w(TAG, "будильник упал: ${e.javaClass.simpleName}: ${e.message}", e)
             }
         }
     }
 
-/**
-     * Прошлый сбой больше не актуален — иначе панель вечно показывает ошибку вчерашнего
-     * тика. Ключ просто удаляется: панель ждёт именно null.
-     *
-     * Пишем в ledger самого тикера, а не создаём свой MoltbookLedger: каждый такой
-     * экземпляр — отдельный SQLiteOpenHelper, который никто не закрывает, а тик идёт
-     * каждые 30-720 минут.
+    /**
+     * Один проход целиком. Обёртка нужна ради одной строки в `finally`: сторож
+     * обязан быть взведён после ЛЮБОГО исхода, включая отказ по готовности
+     * (будильник отложен, потому что сервер ещё не поднят) — иначе единственный
+     * способ взвести сторож зависел бы от того, что он сам и должен проверять.
      */
-    private fun clearLastError(ticker: MoltbookTicker) {
-        runCatching { ticker.ledger().clearState(MoltbookLedger.KEY_LAST_ERROR) }
-            .onFailure { Log.w(TAG, "не записал состояние тика: ${it.message}") }
+    private fun runTick(context: Context) {
+        try {
+            runTickWork(context)
+        } finally {
+            MoltbookWatchdog.ensureArmed(context)
+        }
+    }
+
+    private fun runTickWork(context: Context) {
+        val blocker = readinessBlocker(context)
+        if (blocker != null) {
+            Log.i(TAG, blocker)
+            MoltbookScheduler.schedule(context, MoltbookScheduler.RETRY_MS)
+            return
+        }
+        // Receipt ДО работы: будильник сработал, работа пошла. Стоит он после
+        // проверки готовности, потому что «работа пошла» обязано означать
+        // «работа действительно началась», а не «мы что-то попробовали».
+        recordWitness(context, MoltbookWitness.KIND_WAKE, "wake")
+        // Всё решение — кого, когда и писать ли вообще — внутри MoltbookWake.
+        // Здесь нет ни сети, ни выбора сессии: приёмок обязан быть тупым,
+        // иначе правило «будить только свободную» начнёт разъезжаться между
+        // двумя местами с разными представлениями о занятости.
+        val record = MoltbookWake.nudge(context, System.currentTimeMillis())
+        Log.i(TAG, "будильник: $record")
+        // Отпечаток ПОСЛЕ работы, и это ровно то, чем будильник является:
+        // что он записал в журнал. Тик, начатый и не законченный, обязан
+        // остаться в журнале парой wake без effect — это и есть «начался и не
+        // дошёл», и замазывать её нельзя.
+        recordWitness(context, MoltbookWitness.KIND_EFFECT, record)
+        MoltbookScheduler.scheduleAfterVisit(context, nextVisitMs(context))
+    }
+
+    /**
+     * Пауза до следующего будильника.
+     *
+     * Раньше её выбирал тикер по состоянию ленты (`report.nextVisitMinutes`), и
+     * это была единственная причина, по которой тикер вообще что-то знал о
+     * ленте. Теперь лентой занимается агент, а будильник знает ровно одно:
+     * пользовательский интервал, если он задан, иначе обычный период.
+     */
+    private fun nextVisitMs(context: Context): Long =
+        MoltbookScheduler
+            .userIntervalMinutes(context)
+            .takeIf { it > 0 }
+            ?.times(60_000L)
+            ?: MoltbookScheduler.INTERVAL_MS
+
+    /**
+     * Готовность будильника, а не тикера: тику был нужен ещё и ключ от
+     * moltbook, будильнику достаточно поднятого сервера. Ключ проверяется
+     * только потому, что без него агент всё равно не сможет ничего
+     * опубликовать, и молчаливые нули в отчёте были бы хуже отложенного
+     * будильника.
+     */
+    private fun readinessBlocker(context: Context): String? {
+        if (!File(context.filesDir, KEY_PATH).isFile) {
+            return "нет ключа $KEY_PATH — будильник отложен"
+        }
+        return if (isServerUp()) null else "opencode не отвечает — будильник отложен"
     }
 
     /**
      * Запись в журнал-свидетель. Best effort, и это обязательное свойство:
-     * журнал — это наблюдение за тиком, а не условие его существования. Если
-     * падение записи уводит тик в ретрай, то битый диск отключает автономию
+     * журнал — это наблюдение за будильником, а не условие его существования.
+     * Если падение записи уводит автономию в ретрай, то битый диск отключает её
      * целиком, и никакой сторож этого уже не заметит — он тоже пишет туда.
      */
     private fun recordWitness(
@@ -76,152 +140,17 @@ class MoltbookAlarmReceiver : BroadcastReceiver() {
         }.onFailure { Log.w(TAG, "не записал свидетельство ($kind): ${it.message}") }
     }
 
-    /**
-     * Receipt ДО работы тика.
-     *
-     * Ставит host (этот файл), а не сам тикер, и именно поэтому он бесполезен
-     * после `ticker.runOnce()`: то, что пишет сам проверяемый код после своей
-     * работы, может отсутствовать из-за того же сбоя, который мы проверяем.
-     *
-     * Монотонный номер записи — это `Entry.seq`, отдельное поле журнала, и в
-     * payload он НЕ дублируется намеренно: чтобы подставить его в payload,
-     * пришлось бы заранее прочитать голову цепочки (`head()` читает журнал
-     * целиком), то есть завести гонку со сторожем и лишнее полное чтение файла
-     * на каждом тике ради числа, которое уже лежит в поле. Платить за это
-     * точностью доказательства нельзя.
-     */
-    private fun recordWake(context: Context) {
-        recordWitness(context, MoltbookWitness.KIND_WAKE, "tick started")
-    }
-
-    /**
-     * Отпечаток того, что тик оставил на диске — side-effect hash после работы.
-     *
-     * Отпечаток берётся у базы тикера, а не «считается тут же», и разница
-     * принципиальна: хэш должен быть тем, что лежит на диске после тика, иначе
-     * он ничего не доказывает. Само вычисление обёрнуто: база может быть
-     * недоступна, и тогда отсутствие отпечатка — тоже факт, который обязан
-     * попасть в журнал строкой `err:...`, а не молчанием.
-     */
-    private fun recordEffect(
-        context: Context,
-        ticker: MoltbookTicker,
-    ) {
-        val digest =
-            runCatching { ticker.ledger().ledgerDigest() }
-                .getOrElse { "err:" + it.javaClass.simpleName }
-        recordWitness(context, MoltbookWitness.KIND_EFFECT, digest)
-    }
-
-    /**
-     * Один тик целиком. Обёртка нужна ради одной строки в `finally`: сторож
-     * обязан быть взведён после ЛЮБОГО исхода, включая отказ по готовности
-     * (тик отложен, потому что сервер ещё не поднят) — иначе единственный
-     * способ взвести сторож зависел бы от того, что он сам и должен проверять.
-     */
-    private fun runTick(context: Context) {
-        try {
-            runTickWork(context)
-        } finally {
-            MoltbookWatchdog.ensureArmed(context)
-        }
-    }
-
-    private fun runTickWork(context: Context) {
-        val stamp = stampFile(context)
-        val blocker = readinessBlocker(context, stamp)
-        if (blocker != null) {
-            Log.i(TAG, blocker)
-            MoltbookScheduler.schedule(context, MoltbookScheduler.RETRY_MS)
-            return
-        }
-        // Receipt ДО любой работы тика: будильник сработал, тик пошёл. Стоит он
-        // после проверки готовности, потому что «тик пошёл» обязано означать
-        // «тик действительно начал работу», а не «мы что-то попробовали».
-        recordWake(context)
-        val ticker = MoltbookTicker(context)
-        try {
-            val report = ticker.runOnce()
-            Log.i(
-                TAG,
-                "тик: постов=${report.postsChecked} ответов=${report.repliesPosted} " +
-                    "verification=${report.verificationsSolved} karma=${report.karma} " +
-                    "ждёт=${report.deferredReplies} следующий визит через ${report.nextVisitMinutes} мин",
-            )
-            stamp.writeText(System.currentTimeMillis().toString())
-            clearLastError(ticker)
-            // Отпечаток ПОСЛЕ работы: он и есть side-effect hash тика. Именно
-            // поэтому он здесь, а не в finally: тик, начатый и не законченный,
-            // обязан остаться в журнале парой wake без effect — это и есть
-            // «начался и не дошёл», и замазывать её нельзя.
-            recordEffect(context, ticker)
-            // Паузу выбирает агент по фактическому состоянию ленты, а не расписание:
-            // жёсткие 2 часа означали либо простой, либо очередь отложенных ответов.
-            // Но если периодичность задал юзер, его выбор главнее — иначе карточка в UI
-            // была бы враньём. Приоритет и его цена описаны в scheduleAfterVisit.
-            MoltbookScheduler.scheduleAfterVisit(context, report.nextVisitMinutes * 60_000L)
-        } catch (e: Exception) {
-            Log.w(TAG, "тик упал: ${e.message}")
-            // KEY_LAST_ERROR читался панелью, но не писался НИГДЕ — строка «последняя
-            // ошибка» не могла появиться вообще, и сбой тика был виден только в logcat.
-            runCatching {
-                ticker.ledger().putState(MoltbookLedger.KEY_LAST_ERROR, "${e.javaClass.simpleName}: ${e.message}")
-            }.onFailure { Log.w(TAG, "не записал состояние тика: ${it.message}") }
-            // Сбой тоже оставляет след: молчание и порча должны выглядеть
-            // по-разному, и упавший тик обязан отличаться от не наступившего.
-            recordWitness(context, MoltbookWitness.KIND_EFFECT, "err: ${e.javaClass.simpleName}: ${e.message}")
-            MoltbookScheduler.schedule(context, MoltbookScheduler.RETRY_MS)
-        }
-    }
-
-    /** @return причина, по которой тик откладываем, или null — можно запускать. */
-    private fun readinessBlocker(
-        context: Context,
-        stamp: File,
-    ): String? {
-        val since = System.currentTimeMillis() - lastTickAt(stamp)
-        // Именно `in 0 until`, а не просто `< MIN_GAP_MS`: при откате стенных часов
-        // (NTP после ребута, ручная правка) since уходит в минус, и старая проверка
-        // возвращала «пропуск» на каждом тике — то есть до тех пор, пока часы не
-        // догонят, то есть навсегда, молча и без единой ошибки. Отрицательный
-        // since означает «прошло больше, чем мы думаем», и тик запускается.
-        if (since in 0 until MIN_GAP_MS) {
-            return "пропуск: прошлый тик был ${since / 60000} мин назад"
-        }
-        if (!File(context.filesDir, KEY_PATH).isFile) {
-            return "нет ключа $KEY_PATH — тик отложен"
-        }
-        val up = isServerUp()
-        return if (up) null else "opencode не отвечает — тик отложен"
-    }
-
-    /**
-     * Проверка дешёвая и осмысленная: тику нужна сессия opencode для черновиков, и
-     * без неё он всё равно не опубликует ни одного ответа.
-     */
+    /** Проверка дешёвая и осмысленная: будить некого, если сервера нет. */
     private fun isServerUp(): Boolean = LocalOpenCodeClient.get(OPENCODE_PORT, "/session") != null
-
-    private fun stampFile(context: Context) = File(context.filesDir, STAMP_PATH)
-
-    /**
-     * Первого тика в жизни ещё не было — файла нет, и это не поломка: «никогда»
-     * и есть 0. Битый (не число) тоже трактуем как «никогда», иначе после
-     * прерванной записи тик молча блокировался бы навсегда.
-     */
-    private fun lastTickAt(stamp: File): Long = if (stamp.isFile) stamp.readText().trim().toLongOrNull() ?: 0L else 0L
 
     private companion object {
         const val TAG = "MoltbookAlarm"
         const val OPENCODE_PORT = 4096
         const val KEY_PATH = "moltbook/moltkey"
-        const val STAMP_PATH = "moltbook/last-tick"
-
-        /** Меньше получаса не гоняем: ручная проверка и будильник не должны слипаться. */
-        const val MIN_GAP_MS = 30 * 60 * 1000L
 
         val executor =
             Executors.newSingleThreadExecutor { runnable ->
-                Thread(runnable, "moltbook-tick").apply { isDaemon = true }
+                Thread(runnable, "moltbook-wake").apply { isDaemon = true }
             }
     }
 }
