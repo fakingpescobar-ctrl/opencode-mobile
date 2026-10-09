@@ -25,7 +25,10 @@ import java.net.InetAddress
  *    LD_LIBRARY_PATH указывает туда. dlopen из filesDir разрешён (noexec касается
  *    только execve бинаря, не загрузки .so в существующий процесс).
  */
-@Suppress("TooManyFunctions")
+
+// Класс перекреёк порога выше лимита detekt, и после плагина
+// молтбука он ещё не добавил ещё строк общего класса: логика уеёзет ведёт себя в JS.
+@Suppress("TooManyFunctions", "LargeClass")
 object OpencodeRuntime {
     private const val LAUNCH_PERMISSION_KEY = "\"mobile_launch_app\""
     private const val BIN_NAME = "libopencode.so" // в nativeLibraryDir
@@ -268,6 +271,15 @@ object OpencodeRuntime {
      */
     fun ensureRetentionScript(context: Context): File? = ensureAssetScript(context, RETENTION_ASSET, RETENTION_SCRIPT)
 
+    /**
+     * Копирует moltbook.js — MCP-сервер плагина Moltbook — в filesDir/mem.
+     *
+     * Путь тот же, что у памяти и музыки: запуск у них общий (musl-загрузчик,
+     * LD_LIBRARY_PATH, HOME/XDG), и отдельная папка для плагина означала бы ещё одну
+     * копию обвязки запуска ради файла, который запускается ровно так же.
+     */
+    fun ensureMoltbookScript(context: Context): File? = ensureAssetScript(context, MoltbookMcp.ASSET, MoltbookMcp.SCRIPT)
+
     private fun ensureAssetScript(
         context: Context,
         assetName: String,
@@ -430,6 +442,52 @@ object OpencodeRuntime {
      * Порт, метка и env сложены в [McpLaunch]: семь позиционных параметров выглядели бы
      * одинаково, а переставить `port` с `logFile` компилятор не поймал бы.
      */
+    /**
+     * Поднимает moltbook.js как отдельный TCP-сервер на [MoltbookMcp.PORT].
+     *
+     * Тот же приём, что у памяти и музыки: локальный MCP через stdio у этой сборки
+     * opencode не работает, поэтому - отдельный процесс, TCP-порт и remote-регистрация.
+     *
+     * Ключ приходит сюда через env, а не зашит в конфиг: смена токена не должна
+     * переписывать файл конфига, а порт без ключа открываться не должен.
+     */
+    internal fun startMoltbookServer(
+        context: Context,
+        logFile: File,
+        workDir: File? = null,
+        extraEnv: Map<String, String> = emptyMap(),
+    ): Process? {
+        val base =
+            mapOf(
+                "MCP_MOLTBOOK_DIR" to File(context.filesDir, MoltbookMcp.DIR_NAME).absolutePath,
+                "MCP_MOLTBOOK_DB_DIR" to
+                    File(context.applicationInfo.dataDir, MoltbookMcp.DATABASES_DIR).absolutePath,
+                "MCP_MOLTBOOK_KEY_FILE" to
+                    File(File(context.filesDir, MoltbookMcp.DIR_NAME), MoltbookMcp.KEY_FILE).absolutePath,
+                "MCP_MOLTBOOK_PORT" to MoltbookMcp.PORT.toString(),
+            )
+        val env = base + proxyEnv() + extraEnv
+        val script = ensureMoltbookScript(context) ?: return null
+        return startMcpServer(
+            context = context,
+            logFile = logFile,
+            workDir = workDir,
+            launch = McpLaunch(script = script, port = MoltbookMcp.PORT, label = MoltbookMcp.LABEL, env = env),
+        )
+    }
+
+    /**
+     * Прокси для musl-Bun. Ресолвер Android доступен из Kotlin, а встроенный musl-Bun
+     * не резолвит DNS, поэтому его fetch падает с transport-ошибкой (status 0), а не
+     * с HTTP-кодом. Тот же приём, что у serve ([startServe]), вынесен отдельно: память
+     * и музыки наружу не ходят и прокси не получают.
+     */
+    private fun proxyEnv(): Map<String, String> {
+        val port = Ipv4Proxy.ensureStarted() ?: return emptyMap()
+        val proxy = "http://127.0.0.1:$port"
+        return mapOf("HTTPS_PROXY" to proxy, "HTTP_PROXY" to proxy)
+    }
+
     @Suppress("ReturnCount")
     private fun startMcpServer(
         context: Context,
@@ -506,12 +564,13 @@ object OpencodeRuntime {
     fun ensureMcpConfig(
         memoryToken: String,
         ynisonToken: String? = null,
+        moltbookReady: Boolean = false,
     ): Boolean =
         runCatching {
             require(memoryToken.isNotBlank()) { "MCP memory token is empty" }
             val cfg = OpencodeApp.ServerConfig
             val file = File(File(cfg.opencodeConfig, "opencode"), "opencode.jsonc")
-            val ok = ensureMcpConfigFile(file, ynisonToken)
+            val ok = ensureMcpConfigFile(file, ynisonToken, moltbookReady)
             // Эталон в Documents пишем только после успеха: копия неразобранного
             // конфига хуже отсутствия копии — потом её не отличить от рабочей.
             if (ok) mirrorConfig(file)
@@ -554,15 +613,43 @@ object OpencodeRuntime {
         }
     }
 
-    private fun ensureMcpConfigFile(
+        private fun ensureMcpConfigFile(
         file: File,
         ynisonToken: String?,
+        moltbookReady: Boolean,
     ): Boolean {
-        if (!ensureMemorySection(file)) return false
-        // Читаем заново, а не переиспользуем текст из лестницы: её последний шаг мог
-        // дописать permission-ключи на диск, и в памяти у нас осталась бы старая строка.
-        return syncMusicEntry(file, file.readTextOrEmpty(), ynisonToken)
+        val memoryReady = ensureMemorySection(file)
+        // Синхронизаторы идут по очереди и каждый читает файл заново: предыдущий мог его переписать.
+        val afterMusic = memoryReady && syncMusicEntry(file, file.readTextOrEmpty(), ynisonToken)
+        // Плагин идет последним и читает файл после музыки. Отказ любого шага - отказ целого файла:
+        // наполовину применённый конфиг хуже неверного, потому что агент увидит память без плагина и решит, что так и задумано.
+        return afterMusic && syncMoltbookEntry(file, file.readTextOrEmpty(), moltbookReady)
     }
+
+    /**
+     * Держит запись «moltbook» в конфиге вровень с тем, поднялся ли плагин.
+     *
+     * Отдельным шагом по той же причине, что и музыка ([syncMusicEntry]): плагин может
+     * не подняться (нет ключа, нет файла ассета, порт занят), и тогда модель получила бы
+     * инструмент, который гарантированно не отвечает. Отсутствие подключения - нормальное
+     * состояние, а не авария, поэтому мы не запускаемся вовсе, а не «запускаемся и падаем».
+     */
+    private fun syncMoltbookEntry(
+        file: File,
+        text: String,
+        ready: Boolean,
+    ): Boolean =
+        when (val plan = planMoltbookEntry(text, ready)) {
+            MoltbookEntryPlan.Keep -> true
+            is MoltbookEntryPlan.Write -> writeMemoryConfigText(file, plan.text)
+            MoltbookEntryPlan.Refuse -> {
+                android.util.Log.w(
+                    "OpencodeRuntime",
+                    "Managed mcp block has unexpected formatting; leaving moltbook MCP unregistered",
+                )
+                false
+            }
+        }
 
     /**
      * Доводит секцию mcp до управляемой двухсерверной формы (память + телефон).

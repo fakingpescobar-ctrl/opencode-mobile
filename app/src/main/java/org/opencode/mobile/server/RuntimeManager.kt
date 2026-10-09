@@ -25,6 +25,10 @@ import java.util.UUID
  * Явный стоп (requestStop) и мягкий рестарт не блокируют вызывающий поток —
  * остановка процессов уходит в daemon-тред.
  */
+
+// Класс пересёк порог лимита detekt, и плагин молтбука добавил ещё строк общего
+// класса: логика уходит в JS, а сюда остаётся только запуск процесса.
+@Suppress("LargeClass")
 class RuntimeManager(
     private val context: Context,
     private val onState: (RuntimeState) -> Unit,
@@ -75,6 +79,9 @@ class RuntimeManager(
     private val serve = ProcessSupervisor("serve")
     private val memory = ProcessSupervisor("memory")
     private val ynison = ProcessSupervisor("ynison")
+
+    /** Плагин Moltbook. Отдельный супервизор, чтобы падение плагина не трогало память. */
+    private val moltbook = ProcessSupervisor("moltbook")
 
     @Volatile
     private var running = false
@@ -244,12 +251,38 @@ class RuntimeManager(
                     YnisonAuth.set(ynisonToken)
                 }
 
+                // Плагин Moltbook (MOLTBOOK_PORT) — ДО serve и ДО ensureMcpConfig.
+                // Порядок здесь не символический: запись плагина в конфиг пишется по
+                // результату проверки порта, а конфиг читается serve при инициализации
+                // MCP. Поднимем позже - и модель получит инструмент, который не отвечает;
+                // поднимем раньше конфига - запись не появится вовсе.
+                //
+                // Не фатал: плагин не поднялся - приложение работает, агент просто не
+                // получает инструменты молтбука. Тикер-молтбук на этом шаге ещё существует
+                // и работает сам, его удаление - отдельная правка.
+                emit { copy(stage = RuntimeStage.STARTING_MEMORY, workspaceExternal = ext) }
+                val moltbookToken = UUID.randomUUID().toString()
+                val moltbookStarted =
+                    startMoltbookAndVerify(
+                        context = context,
+                        logFile = logFile,
+                        workspace = workspace,
+                        token = moltbookToken,
+                    )
+                if (!moltbookStarted) {
+                    android.util.Log.w(
+                        "RuntimeManager",
+                        "Плагин Moltbook не поднялся (порт ${MoltbookMcp.PORT} или процесс); " +
+                            "запись MCP в конфиг не пишем, старый Kotlin-тикер продолжает работать",
+                    )
+                }
+
                 // Регистрируем локальную память в конфиге serve как remote MCP
                 // (иначе serve о ней не знает — индикатор «0 MCP», инструменты
                 // памяти недоступны модели). До старта serve: он читает конфиг
                 // при инициализации MCP. Не фатал — память продолжит работать
                 // как TCP-сервер, просто без регистрации.
-                OpencodeRuntime.ensureMcpConfig(memoryToken, ynisonToken)
+                OpencodeRuntime.ensureMcpConfig(memoryToken, ynisonToken, moltbookStarted)
 
                 // Локальная память MCP как HTTP/TCP-сервер (MEMORY_PORT) — ДО serve.
                 // Не стартовала/умерла — НЕ фатал: serve продолжит, статус DEGRADED.
@@ -307,6 +340,12 @@ class RuntimeManager(
                                 // именно в окружении serve, поэтому переменная нужна и ему.
                                 // Само значение — тот же UUID, что у ynison.js.
                                 "MCP_YNISON_TOKEN" to (ynisonToken ?: ""),
+                                // Ссылка {env:MCP_MOLTBOOK_TOKEN} в конфиге разворачивается
+                                // в окружении serve, поэтому переменная нужна и ему. Токен
+                                // всегда есть, даже если плагин не поднялся: запись в
+                                // конфиге тогда просто не пишется, а пустая строка в
+                                // окружении не хуже любого другого значения.
+                                "MCP_MOLTBOOK_TOKEN" to moltbookToken,
                             ),
                     )
                 if (proc == null) {
@@ -798,6 +837,32 @@ class RuntimeManager(
         ynison.setProcess(proc)
         val ok = waitForPort(proc, OpencodeRuntime.YNISON_PORT)
         if (!ok) ynison.stop()
+        return ok
+    }
+
+    /**
+     * Поднимает плагин Moltbook и регистрирует процесс у супервизора.
+     *
+     * Проверка та же, что у памяти и музыки: процесс жив И порт отвечает. Здесь она
+     * обязательна ещё и потому, что её результат решает, писать ли запись в конфиге:
+     * поднявшийся процесс без сокета дал бы модели инструмент, который не отвечает.
+     */
+    private suspend fun startMoltbookAndVerify(
+        context: Context,
+        logFile: File,
+        workspace: File,
+        token: String,
+    ): Boolean {
+        val proc =
+            OpencodeRuntime.startMoltbookServer(
+                context,
+                logFile = logFile,
+                workDir = workspace,
+                extraEnv = mapOf("MCP_MOLTBOOK_TOKEN" to token),
+            ) ?: return false
+        moltbook.setProcess(proc)
+        val ok = waitForPort(proc, MoltbookMcp.PORT)
+        if (!ok) moltbook.stop()
         return ok
     }
 
