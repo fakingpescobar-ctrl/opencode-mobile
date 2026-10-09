@@ -141,9 +141,9 @@ await test("summarize counts by status and still honours the projection", () => 
     ]),
     {
       total: 4,
-      posted: 2,
-      new: 1,
-      failed: 1,
+      POSTED: 2,
+      NEW: 1,
+      FAILED: 1,
       reportable: 1,
       verified: 1,
       reused: 1,
@@ -154,12 +154,12 @@ await test("summarize counts by status and still honours the projection", () => 
 });
 
 await test("a row with no status falls into new rather than vanishing", () => {
-  eq(summarizeComments([{ id: "c-x" }]).new, 1, "new bucket");
+  eq(summarizeComments([{ id: "c-x" }]).NEW, 1, "new bucket");
   eq(summarizeComments([{ id: "c-x" }]).total, 1, "total");
 });
 
 await test("the status words match the Kotlin enum they replace", () => {
-  eq(COMMENT_STATUS, { NEW: "new", POSTED: "posted", SKIPPED: "skipped", FAILED: "failed" });
+  eq(COMMENT_STATUS, { NEW: "NEW", POSTED: "POSTED", SKIPPED: "SKIPPED", FAILED: "FAILED" });
   eq(REPLY_OUTCOME.CREATED, "created");
   eq(REPLY_OUTCOME.VERIFIED, "verified");
   eq(REPLY_OUTCOME.REUSED, "reused");

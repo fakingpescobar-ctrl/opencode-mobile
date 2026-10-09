@@ -51,6 +51,8 @@ import {
   openSync,
   fsyncSync,
   closeSync,
+  writeSync,
+  renameSync,
 } from "node:fs";
 import { join } from "node:path";
 
@@ -70,6 +72,12 @@ export const MOLTBOOK_PORT = Number(process.env.MCP_MOLTBOOK_PORT || 0);
 export const MOLTBOOK_TOKEN = process.env.MCP_MOLTBOOK_TOKEN || "";
 export const MOLTBOOK_KEY_FILE = process.env.MCP_MOLTBOOK_KEY_FILE || "";
 export const MOLTBOOK_NAME = "opencodekz";
+/**
+ * Имя плагина в ответах инструментов. Не путать с [MOLTBOOK_NAME]: это наш логин на
+ * сайте, а это кто отвечает. Раньше в двух местах стоял логин, и отчёт подписывался
+ * именем агента - выглядит как «отчёт от агента», хотя писал его плагин.
+ */
+export const PLUGIN_NAME = "moltbook";
 export const MOLTBOOK_HOST = "https://www.moltbook.com";
 export const LEDGER_NAME = "moltbook.db";
 export const DATABASES_DIR_NAME = "databases";
@@ -89,11 +97,42 @@ export const RAW_DIR_NAME = "raw";
 
 /** Статусы комментария в журнале - ровно как enum CommentStatus в MoltbookLedger.kt. */
 export const COMMENT_STATUS = {
-  NEW: "new",
-  POSTED: "posted",
-  SKIPPED: "skipped",
-  FAILED: "failed",
+  NEW: "NEW",
+  POSTED: "POSTED",
+  SKIPPED: "SKIPPED",
+  FAILED: "FAILED",
 };
+
+/**
+ * Сравнение статуса без учёта регистра.
+ *
+ * Зачем: Kotlin-тикер писал `CommentStatus.name`, то есть ПРОПИСНЫМИ
+ * (`POSTED`, `SKIPPED`), а плагин пишет строчными (`posted`). Обе
+ * разновидности лежат в одной таблице, и сравнение `=== "posted"`
+ * молча теряло все строки тикера: отчёт показывал ноль ответов при
+ * пятидесяти записанных, а `status != 'posted'` в upsert разрешал
+ * переписать ответ, который тикер уже закрыл.
+ *
+ * В SQL то же самое делается через `UPPER(status)` - SQLite не знает
+ * наш хелпер, и молчаливый промах здесь стоил бы записанного ответа.
+ */
+/**
+ * Status is stored UPPERCASE, exactly like the Kotlin ticker's
+ * CommentStatus.name. The columns are compared without COLLATE NOCASE, so
+ * while this plugin wrote lowercase the old ticker could not see its
+ * questions at all, and a plugin failure could lower an answer the ticker
+ * had already closed. We read case-insensitively (statusIs) and write
+ * the way Kotlin writes.
+ */
+export function storedStatus(value) {
+  const text = String(value === null || value === undefined ? "" : value).trim();
+  return text === "" ? "" : text.toUpperCase();
+}
+
+export function statusIs(value, status) {
+  const text = (input) => String(input == null ? "" : input).trim().toUpperCase();
+  return text(value) === text(status);
+}
 
 /**
  * Слова, которые приходят от МОЛТБУКА в verification_status. Это не наши статусы
@@ -133,7 +172,7 @@ export const REPLY_OUTCOME = {
 export function countReportable(rows) {
   const counted = rows.filter(
     (row) =>
-      row.status === COMMENT_STATUS.POSTED &&
+      statusIs(row.status, COMMENT_STATUS.POSTED) &&
       (row.reply_outcome === REPLY_OUTCOME.CREATED || row.reply_outcome === REPLY_OUTCOME.VERIFIED),
   );
   const verified = counted.filter((row) => row.reply_outcome === REPLY_OUTCOME.VERIFIED);
@@ -156,7 +195,7 @@ export function countReportable(rows) {
 export function summarizeComments(rows) {
   const byStatus = {};
   for (const row of rows) {
-    const key = row.status || COMMENT_STATUS.NEW;
+    const key = storedStatus(row.status) || COMMENT_STATUS.NEW;
     byStatus[key] = (byStatus[key] || 0) + 1;
   }
   return Object.assign({ total: rows.length }, byStatus, countReportable(rows));
@@ -390,7 +429,7 @@ function readLedger() {
 export function moltbookStatus() {
   const ledger = readLedger();
   return {
-    plugin: "moltbook",
+    plugin: PLUGIN_NAME,
     network: "not-used-yet",
     keyPresent: Boolean(MOLTBOOK_KEY_FILE) && existsSync(MOLTBOOK_KEY_FILE),
     ledger,
@@ -460,7 +499,11 @@ export function writeScan(db, posts, comments, now) {
     "INSERT OR IGNORE INTO comments (id,post_id,author,body,created_at,status,our_reply_id,summary_ru,seen_at,replied_at,reply_outcome)" +
       " VALUES (?,?,?,?,?,?,NULL,'',?,0,'')",
   );
-  const touchComment = db.prepare("UPDATE comments SET body=?, seen_at=? WHERE id=? AND status != 'posted'");
+  // Тело и seen_at обновляются у новых и пропущенных строк, но НЕ у failed.
+  // seen_at у провала пишет только markFailed: если бы скан подновлял его
+  // каждый раз, старый провал снова и снова попадал бы в «провалы за окно»,
+  // и счётчик не убывал бы никогда.
+  const touchComment = db.prepare("UPDATE comments SET body=?, seen_at=? WHERE id=? AND UPPER(status) NOT IN ('POSTED','FAILED')");
   // Явные BEGIN/COMMIT, а не db.transaction(): этот файл проверяется обычным node,
   // где движок - node:sqlite, а у него нет .transaction(). Транзакция всё равно одна.
   db.exec("BEGIN");
@@ -525,7 +568,7 @@ export async function moltbookScan() {
   const key = readMoltbookKey();
   if (!key) {
     return {
-      plugin: "moltbook",
+      plugin: PLUGIN_NAME,
       at: now,
       refused: "no-api-key",
       reason: "Файл с ключом молтбука не найден или пуст. Публиковать и ходить на сайт нечем.",
@@ -600,7 +643,7 @@ export async function moltbookScan() {
   }
 
   return {
-    plugin: "moltbook",
+    plugin: PLUGIN_NAME,
     at: now,
     network: { karma, unread, postsSeen: posts.length, threadsRead },
     ledger: {
@@ -834,7 +877,7 @@ const RECORD_SQL =
   // Записанная posted строка не переписывается: тело ответа — это доказательство,
   // и потерять его нельзя. Единственный пропускаемый переход — created -> verified,
   // иначе подтверждение никогда не смогло бы довести ответ до verified.
-" WHERE comments.status != 'posted' OR (comments.reply_outcome = 'created' AND excluded.reply_outcome = 'verified')";
+" WHERE UPPER(comments.status) != 'POSTED' OR (comments.reply_outcome = 'created' AND excluded.reply_outcome = 'verified')";
 
 export function recordComment(db, row) {
   if (!db || !row || !row.id) return false;
@@ -852,7 +895,7 @@ const stmt = db.prepare(RECORD_SQL);
     author,
     String(row.body || ""),
     Number(row.created_at || 0),
-    String(row.status || COMMENT_STATUS.NEW),
+    storedStatus(row.status) || COMMENT_STATUS.NEW,
     ourReplyId,
     now,
     // replied_at - не то, что ищет CREATED_SQL/VERIFIED_SQL:
@@ -870,7 +913,7 @@ const stmt = db.prepare(RECORD_SQL);
     .prepare("SELECT status, our_reply_id FROM comments WHERE id = ?")
     .get(String(row.id));
   if (!settled) return false;
-  if (settled.status !== COMMENT_STATUS.POSTED) return false;
+  if (!statusIs(settled.status, COMMENT_STATUS.POSTED)) return false;
   const settledReply = String(settled.our_reply_id || "");
   return Boolean(settledReply) && (!ourReplyId || settledReply === ourReplyId);
 }
@@ -1068,7 +1111,7 @@ const REFUSAL_NO_KEY = "Файл с ключом молтбука не найд�
 /** Отказ без сети: пустой результат здесь означал бы «нечего отвечать», а это ложь. */
 function publishRefusal(reason, at, detail) {
   return {
-    plugin: "moltbook",
+    plugin: PLUGIN_NAME,
     at,
     refused: reason,
     reason: detail || REFUSAL_NO_KEY,
@@ -1122,7 +1165,7 @@ export async function moltbookPublish(args, deps) {
       appendVerifier(VERIFIER_KIND.CONFIRMED, now, postId, "id=" + answer.id + " повторная публикация не нужна");
       const closed = writeReply(openDb, (db) => markAnswered(db, parentId, answer.id, now, REPLY_OUTCOME.REUSED, { post_id: postId, ...parentRow }), refusals);
       return {
-        plugin: "moltbook",
+        plugin: PLUGIN_NAME,
         at: now,
         outcome: "reused",
         comment_id: answer.id,
@@ -1135,9 +1178,9 @@ export async function moltbookPublish(args, deps) {
     }
     if (answer.kind === "unpublished") {
       refusals.push("our-unpublished-answer");
-      appendVerifier(VERIFIER_KIND.REFUSED, now, postId, "id=" + answer.id + " status=" + answer.status + " второй ответ платформа не даст");
+      appendVerifier(VERIFIER_KIND.REFUSED, now, postId, "id=" + answer.id + " status=" + statusText(answer.status) + " второй ответ платформа не даст");
       return {
-        plugin: "moltbook",
+        plugin: PLUGIN_NAME,
         at: now,
         outcome: "blocked",
         comment_id: answer.id,
@@ -1215,12 +1258,24 @@ export async function moltbookPublish(args, deps) {
     kind,
     now,
     postId,
-    "id=" + outcome.commentId + " status=" + confirmed.status + " sort=" + (confirmed.sort || "нет") + " parent=" + (confirmed.actualParent || "нет"),
+    "id=" + outcome.commentId + " status=" + statusText(confirmed.status) + " sort=" + (confirmed.sort || "нет") + " parent=" + (confirmed.actualParent || "нет"),
   );
   const created = replyResult(kind === VERIFIER_KIND.CONFIRMED ? "created" : "unconfirmed", outcome.commentId, postId, parentId, now, requests, refusals, kind === VERIFIER_KIND.CONFIRMED && written.counted);
   created.verifier = kind;
   created.server_status = confirmed.status;
   return created;
+}
+
+/**
+ * Статус для строки журнала. Пустое значение и «сервер не ответил» — это разные
+ * вещи, поэтому неизвестное записывается словом, а не пустотой: `status=` в логе
+ * читается как обрезанная строка, и потом никто не поймёт, что там было.
+ */
+export const UNKNOWN_STATUS = "неизвестно";
+
+export function statusText(value) {
+  const text = String(value == null ? "" : value).trim();
+  return text === "" ? UNKNOWN_STATUS : text;
 }
 
 /** Решение по задаче платформы. Её решает агент, а не плагин. */
@@ -1273,7 +1328,7 @@ export async function moltbookVerify(args, deps) {
   const kind = verifyVerdict(confirmed);
   if (kind !== VERIFIER_KIND.CONFIRMED) {
     refusals.push("server-said-ok-but-not-visible");
-    appendVerifier(kind, now, postId, "verify answer=" + answer + " id=" + commentId + " status=" + confirmed.status);
+    appendVerifier(kind, now, postId, "verify answer=" + answer + " id=" + commentId + " status=" + statusText(confirmed.status));
     const doubted = replyResult("unconfirmed", commentId, postId, parentId, now, requests, refusals, false);
     doubted.verifier = kind;
     doubted.server_status = confirmed.status;
@@ -1284,7 +1339,7 @@ export async function moltbookVerify(args, deps) {
     (db) => markAnswered(db, parentId, commentId, now, REPLY_OUTCOME.VERIFIED, { post_id: postId, ...(parentRow || confirmed.parent || {}) }),
     refusals,
   );
-  appendVerifier(VERIFIER_KIND.CONFIRMED, now, postId, "verify answer=" + answer + " id=" + commentId + " status=" + confirmed.status);
+  appendVerifier(VERIFIER_KIND.CONFIRMED, now, postId, "verify answer=" + answer + " id=" + commentId + " status=" + statusText(confirmed.status));
   const result = replyResult("verified", commentId, postId, parentId, now, requests, refusals, written.counted);
   result.verifier = kind;
   result.server_status = confirmed.status;
@@ -1329,7 +1384,7 @@ export function writeReply(openDb, action, refusals) {
 /** Общий вид ответа публикации: исход, что засчитано, и чем это подтверждено. */
 function replyResult(outcome, commentId, postId, parentId, at, requests, refusals, counted) {
   return {
-    plugin: "moltbook",
+    plugin: PLUGIN_NAME,
     at,
     outcome,
     comment_id: commentId,
@@ -1339,6 +1394,382 @@ function replyResult(outcome, commentId, postId, parentId, at, requests, refusal
     requests,
     refusals,
   };
+}
+
+// ---- отчёт для ПК-агента --------------------------------------------------
+// Файл, который читает ПК-агент. В нём должны быть не только успехи, но и
+// отказы: свидетель, который не умеет отказывать, - это самоотчёт (совет с
+// moltbook). Поэтому в отчёте есть раздел «Отказы свидетеля» и «Не про
+// что», а счётчик работы выводится проекцией журнала, а не памятью тула.
+
+export const REPORT_NAME = "MOLTBOOK_REPORT.md";
+
+/** Сколько времени отчёту смотрит назад, если агент не попросил окно явно. */
+export const DEFAULT_REPORT_WINDOW_MS = 86_400_000;
+
+/** Сколько неотвеченных вопросов перечисляем в отчёте. */
+export const REPORT_PENDING_LIMIT = 20;
+
+/**
+ * Окно отчёта. `since` приходит от агента, и он может прислать что угодно,
+ * поэтому нечисловое и нулевое значение заменяем окном по умолчанию, а не
+ * отказываем: пустой отчёт хуже отчёта за сутки.
+ */
+export function reportWindow(since, now, windowMs) {
+  const to = Number(now);
+  const fallback = Number.isFinite(windowMs) && windowMs > 0 ? windowMs : DEFAULT_REPORT_WINDOW_MS;
+  const asked = Number(since);
+  const from = Number.isFinite(asked) && asked > 0 && asked <= to ? asked : to - fallback;
+  return { from, to };
+}
+
+/**
+ * Разбор журнала свидетеля. Одна запись - одна строка вида
+ * `<at>s <kind> post=<id> <detail>`.
+ *
+ * Строку, которую не удалось разобрать, мы НЕ выбрасываем молча: она
+ * возвращается отдельным счётчиком. Иначе оборванная запись выглядела бы
+ * как «свидетель ничего не наблюдал», а это ровно тот самоотчёт, который
+ * нам и запрещали.
+ */
+export function parseVerifierLog(text) {
+  const records = [];
+  let unreadable = 0;
+  for (const raw of String(text || "").split("\n")) {
+    const line = raw.trim();
+    if (line === "") continue;
+    const match = /^(\d+)s (confirmed|mismatch|refused|divergence) post=(\S*)(?: (.*))?$/.exec(line);
+    if (!match) {
+      unreadable += 1;
+      continue;
+    }
+    records.push({
+      at: Number(match[1]),
+      kind: match[2],
+      postId: match[3] || "",
+      detail: match[4] || "",
+    });
+  }
+  // unreadable считается по ВСЕМУ файлу, потому что у непрочитанной строки
+  // нет времени: положить её в окно отчёта нельзя честно. Поэтому в отчёте
+  // это отдельная строка «без времени», а не часть отказов в окне.
+  return { records, unreadable };
+}
+
+/**
+ * Отказ свидетеля - это НЕ то же самое, что его согласие.
+ *
+ * Подтверждение тоже пишется в verifier.log: иначе нельзя отличить
+ * «проверили и подтвердили» от «проверили и не смогли подтвердить».
+ * Но в отчёте успех не должен выглядеть как отказ - иначе агент и
+ * ПК-агент будут читать одно и то же как бесконечную череду отказов.
+ */
+export function isRefusal(kind) {
+  return String(kind || "") !== VERIFIER_KIND.CONFIRMED;
+}
+
+/**
+ * Проекция журнала: что мы реально сделали за окно.
+ *
+ * created и verified - это работа, её и показываем в счётчике. reused - не
+ * работа, но видеть его надо: значит, мы попали в ветку, которую закрыли
+ * раньше. Пустой исход (строки до v5) не в счёт ни в одну строку: неизвестное
+ * не равно сделанному.
+ */
+export function projectWork(rows, from) {
+  const list = Array.isArray(rows) ? rows : [];
+  const status = (row) => String(row.status || "");
+  const outcome = (row) => String(row.reply_outcome || "");
+  const repliedAfter = (row) => Number(row.replied_at || 0) >= from;
+  const posted = (row) => statusIs(row.status, COMMENT_STATUS.POSTED);
+  const pick = (wire) =>
+    list
+      .filter((row) => posted(row) && repliedAfter(row) && outcome(row) === wire)
+      .map((row) => ({
+        id: String(row.id || ""),
+        postId: String(row.post_id || ""),
+        replyId: String(row.our_reply_id || ""),
+        at: Number(row.replied_at || 0),
+      }));
+  const failed = list
+    .filter((row) => statusIs(row.status, COMMENT_STATUS.FAILED) && Number(row.seen_at || 0) >= from)
+    .map((row) => ({ id: String(row.id || ""), postId: String(row.post_id || "") }));
+  const unknown = list.filter((row) => posted(row) && repliedAfter(row) && outcome(row) === "").length;
+  return {
+    created: pick(REPLY_OUTCOME.CREATED),
+    verified: pick(REPLY_OUTCOME.VERIFIED),
+    reused: pick(REPLY_OUTCOME.REUSED),
+    failed,
+    unknown,
+  };
+}
+
+/**
+ * Вопросы, на которые мы ещё не ответили. Свои собственные комментарии в
+ * список не попадают: иначе агент будет сам у себя спрашивать разрешения.
+ */
+export function pendingQuestions(rows, ourName, limit) {
+  const list = Array.isArray(rows) ? rows : [];
+  const mine = String(ourName || "").toLowerCase();
+  const max = Number.isFinite(limit) && limit > 0 ? limit : REPORT_PENDING_LIMIT;
+  return list
+    .filter((row) => statusIs(row.status, COMMENT_STATUS.NEW))
+    .filter((row) => String(row.author || "").toLowerCase() !== mine)
+    .slice(0, max)
+    .map((row) => ({
+      postId: String(row.post_id || ""),
+      commentId: String(row.id || ""),
+      author: String(row.author || ""),
+      body: String(row.body || "").slice(0, 300),
+    }));
+}
+
+function stamp(ms) {
+  const value = Number(ms);
+  return Number.isFinite(value) ? new Date(value).toISOString().replace("T", " ").slice(0, 19) + "Z" : "неизвестно";
+}
+
+function line(label) {
+  return "- " + label;
+}
+
+/**
+ * Сборка текста отчёта. Чистая функция: на вход объект, на выход строка,
+ * поэтому весь формат проверяется тестами без диска и без сети.
+ */
+export function renderReport(data) {
+  const work = data.work || { created: [], verified: [], reused: [], failed: [], unknown: 0 };
+  const pending = Array.isArray(data.pending) ? data.pending : [];
+  const refusals = Array.isArray(data.refusals) ? data.refusals : [];
+  const unreadable = Number(data.unreadable || 0);
+  const notes = Array.isArray(data.notes) ? data.notes : [];
+  const done = work.created.length + work.verified.length;
+  const out = [];
+  out.push("# Отчёт Moltbook");
+  out.push("");
+  out.push("Окно: " + stamp(data.from) + " … " + stamp(data.to));
+  out.push("Собрано: " + stamp(data.at));
+  out.push("");
+  out.push("## Итог");
+  out.push(line("ответов создано: " + work.created.length));
+  out.push(line("ответов проверено: " + work.verified.length));
+  out.push(line("работы всего: " + done));
+  out.push(line("веток закрыто повторно (reused, работы не считается): " + work.reused.length));
+  out.push(line("провалов записано: " + work.failed.length));
+  out.push(line("исход неизвестен (строки до v5, работы не считаются): " + work.unknown));
+  out.push("");
+  out.push("## Ответы");
+  const replies = work.created.concat(work.verified);
+  if (replies.length === 0) {
+    out.push("- за окно ответов нет");
+  } else {
+    for (const reply of replies) {
+      out.push(
+        line("пост " + reply.postId + " / наш коммент " + reply.id +
+          (reply.replyId ? " / ответ сервера " + reply.replyId : "") + " / " + stamp(reply.at))
+      );
+    }
+  }
+  out.push("");
+  out.push("## Не про что");
+  if (pending.length === 0) {
+    out.push("- неотвеченных вопросов нет");
+  } else {
+    for (const item of pending) {
+      out.push(line("пост " + item.postId + " / коммент " + item.commentId + " от " + item.author +
+        " — " + item.body.replace(/\s+/g, " ")));
+    }
+  }
+  out.push("");
+  out.push("## Отказы свидетеля");
+  for (const note of notes) {
+    out.push(line(note));
+  }
+  if (refusals.length === 0 && unreadable === 0 && notes.length === 0) {
+    out.push("- отказов не было");
+  } else {
+    for (const record of refusals) {
+      out.push(line(stamp(record.at) + " " + record.kind + " пост " + record.postId + " — " + record.detail));
+    }
+    if (unreadable > 0) {
+      out.push(line("\u041d\u0435\u043f\u0440\u043e\u0447\u0438\u0442\u0430\u043d\u043d\u044b\u0435\u0020\u0441\u0442\u0440\u043e\u043a\u0438\u0020\u0432\u0020verifier.log (\u0431\u0435\u0437 \u0432\u0440\u0435\u043c\u0435\u043d\u0438\u002c \u043f\u043e\u0442\u043e\u043c\u0443 \u0447\u0442\u043e \u044d\u0442\u043e\u0020\u043d\u0435 \u043f\u043e\u043f\u0430\u043b\u0430 \u0432 \u043e\u043a\u043d\u043e\u0020\u043e\u0442\u0447\u0451\u0442\u0430): " + unreadable));;
+    }
+  }
+  out.push("");
+  return out.join("\n");
+}
+
+/**
+ * Запись отчёта. tmp → fsync → rename → fsync каталога: одноимённый rename
+ * сам по себе не доводит запись до диска (совет 3.6 с moltbook).
+ * Возвращает путь или null; исключение наружу не выпускаем.
+ */
+export function writeReport(dir, text) {
+  if (!dir) return null;
+  let handle = null;
+  let dirHandle = null;
+  const target = join(dir, REPORT_NAME);
+  const temp = target + ".tmp";
+  try {
+    mkdirSync(dir, { recursive: true });
+    handle = openSync(temp, "w");
+    writeSync(handle, text);
+    fsyncSync(handle);
+    closeSync(handle);
+    handle = null;
+    renameSync(temp, target);
+    try {
+      dirHandle = openSync(dir, "r");
+      fsyncSync(dirHandle);
+    } catch (_) {
+      // Каталог не даёт fsync - это не повод выбрасывать уже переименованный файл.
+    }
+    return target;
+  } catch (_) {
+    return null;
+  } finally {
+    if (handle !== null) {
+      try {
+        closeSync(handle);
+      } catch (_) {
+        // Ручка уже могла закрыться сама.
+      }
+    }
+    if (dirHandle !== null) {
+      try {
+        closeSync(dirHandle);
+      } catch (_) {
+        // То же самое.
+      }
+    }
+  }
+}
+/** Куда класть отчёт: своё хранилище всегда, внешний каталог - если дан. */
+export function reportDirs() {
+  const external = String(process.env.MCP_MOLTBOOK_REPORT_DIR || "");
+  const list = [MOLTBOOK_DIR, external].filter((dir) => dir !== "");
+  return list.filter((dir, index) => list.indexOf(dir) === index);
+}
+
+/** Все записи журнала: проекции нужны полные строки, а не только сводка. */
+const REPORT_SELECT =
+  "SELECT id, post_id, author, body, status, our_reply_id, seen_at, replied_at, " +
+  "reply_outcome FROM comments";
+
+function reportRows(db, hasReplyOutcome) {
+  const columns = hasReplyOutcome ? "reply_outcome" : "''";
+  return db.prepare(REPORT_SELECT.replace(", reply_outcome", ", " + columns)).all();
+}
+
+function verifierRecords(from) {
+  if (!MOLTBOOK_DIR) return { refusals: [], unreadable: 0 };
+  let text = "";
+  try {
+    text = readFileSync(join(MOLTBOOK_DIR, VERIFIER_NAME), "utf8");
+  } catch (_) {
+    return { refusals: [], unreadable: 0 };
+  }
+  const parsed = parseVerifierLog(text);
+  const inWindow = parsed.records.filter((record) => record.at >= from);
+  return {
+    refusals: inWindow.filter((record) => isRefusal(record.kind)),
+    unreadable: parsed.unreadable,
+  };
+}
+
+function reportFailure(at, reason, extra) {
+  return Object.assign({ plugin: PLUGIN_NAME, at, outcome: "refused", refused: reason }, extra || {});
+}
+
+/**
+ * Отчёт для ПК-агента: что сделали, на что не ответили и где свидетель
+ * отказался. Сеть не трогаем - отчёт это чтение журнала, а поход на сайт
+ * делает moltbook_scan.
+ */
+export async function moltbookReport(args, deps) {
+  const options = deps || {};
+  const input = args || {};
+  const at = options.now ? options.now() : Date.now();
+  const window = reportWindow(input.since, at, options.windowMs);
+  // openLedger actually opens the file, and Database throws on a corrupt one.
+  // This call used to sit OUTSIDE try, so a broken journal arrived as a
+  // TypeError instead of a refusal. A refusal is also a result.
+  let opened = null;
+  try {
+    opened = options.openDb ? options.openDb() : openLedger(true);
+  } catch (_) {
+    return reportFailure(at, "ledger-unreadable", { window });
+  }
+  // openLedger на отсутствующем файле отдаёт объект {db:null}, а он истинен,
+  // поэтому проверять только сам opened бессмысленно: без проверки db на
+  // свежей установке prepare() упал бы с TypeError вместо отказа.
+  if (!opened || !opened.db) return reportFailure(at, "ledger-missing", { window });
+
+  try {
+    // prepare(), а не query(): query() - это обёртка bun, её нет ни у
+    // node:sqlite, ни у настоящего движка на некоторых сборках.
+    const column = opened.db
+      .prepare("SELECT name FROM pragma_table_info('comments') WHERE name = 'reply_outcome'")
+      .get();
+    const hasReplyOutcome = Boolean(column);
+    const rows = reportRows(opened.db, hasReplyOutcome);
+    const work = projectWork(rows, window.from);
+    const pending = pendingQuestions(rows, MOLTBOOK_NAME, options.pendingLimit);
+    const observed = verifierRecords(window.from);
+    const externalDir = String(process.env.MCP_MOLTBOOK_REPORT_DIR || "");
+    const notes = externalDir
+      ? []
+      : [
+          "внешний каталог недоступен - отчёт лежит только в приватном хранилище, " +
+            "ПК-агент его не увидит (MCP_MOLTBOOK_REPORT_DIR пуст)",
+        ];
+    const text = renderReport({
+      at,
+      from: window.from,
+      to: window.to,
+      work,
+      pending,
+      refusals: observed.refusals,
+      unreadable: observed.unreadable,
+      notes,
+    });
+    const written = [];
+    const dirs = options.dirs || reportDirs();
+    for (const dir of dirs) {
+      const path = writeReport(dir, text);
+      if (path) written.push(path);
+    }
+    if (written.length === 0) return reportFailure(at, "report-not-written", { window });
+    return {
+      plugin: PLUGIN_NAME,
+      at,
+      outcome: "written",
+      from: window.from,
+      to: window.to,
+      written,
+      work: {
+        created: work.created.length,
+        verified: work.verified.length,
+        reused: work.reused.length,
+        failed: work.failed.length,
+        unknown: work.unknown,
+      },
+      pending: pending.length,
+      refusals: observed.refusals.length,
+      notes,
+      unreadableVerifierLines: observed.unreadable,
+    };
+  } catch (error) {
+    return reportFailure(at, "report-failed:" + String(error && error.message ? error.message : error), { window });
+  } finally {
+    if (options.openDb === undefined && opened.db) {
+      try {
+        opened.db.close();
+      } catch (_) {
+        // Ручка могла закрыться сама.
+      }
+    }
+  }
 }
 
 const TOOLS = [
@@ -1399,6 +1830,22 @@ const TOOLS = [
       "будет пустым - это отказ, а не «нечего отвечать».",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
+  {
+    name: "moltbook_report",
+    description:
+      "Собрать MOLTBOOK_REPORT.md по журналу: что реально сделано за окно, что осталось " +
+      "непрочитанным и какие проверки отказались подтвердить. Отчёт - это проекция журнала: " +
+      "неизвестный исход не считается работой, повторное использование чужого ответа тоже. " +
+      "Ничего не публикует и не ходит на сайт. Если отчёт не записался, поле refused скажет почему, " +
+      "а refusals в успешном ответе - это число строк-отказов в verifier.log, а не причина.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        since: { type: "integer", description: "окно счёта в миллисекундах эпохи; 0 или мусор - за сутки" },
+      },
+      additionalProperties: false,
+    },
+  },
 ];
 
 async function callTool(name, args) {
@@ -1406,6 +1853,7 @@ async function callTool(name, args) {
   if (name === "moltbook_scan") return moltbookScan();
   if (name === "moltbook_publish") return moltbookPublish(args || {});
   if (name === "moltbook_verify") return moltbookVerify(args || {});
+  if (name === "moltbook_report") return moltbookReport(args || {});
   throw new Error("Unknown tool: " + name);
 }
 

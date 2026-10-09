@@ -465,6 +465,13 @@ object OpencodeRuntime {
                 "MCP_MOLTBOOK_KEY_FILE" to
                     File(File(context.filesDir, MoltbookMcp.DIR_NAME), MoltbookMcp.KEY_FILE).absolutePath,
                 "MCP_MOLTBOOK_PORT" to MoltbookMcp.PORT.toString(),
+                // Отчёт ПК-агента. Сюда идёт ТОЛЬКО настоящее внешнее хранилище:
+                // [Workspace.resolve] при отсутствии MANAGE_EXTERNAL_STORAGE молча
+                // отдаёт песочницу, и плагин написал бы отчёт по пути, который
+                // ПК-агент открыть не может, а ответ назвал бы «written». Пустая
+                // строка - честный отказ: плагин пишет приватную копию и сам
+                // помечает результат «ПК-агент отчёт не увидит».
+                "MCP_MOLTBOOK_REPORT_DIR" to moltbookReportDir(context),
             )
         val env = base + proxyEnv() + extraEnv
         val script = ensureMoltbookScript(context) ?: return null
@@ -474,6 +481,18 @@ object OpencodeRuntime {
             workDir = workDir,
             launch = McpLaunch(script = script, port = MoltbookMcp.PORT, label = MoltbookMcp.LABEL, env = env),
         )
+    }
+
+    /**
+     * Каталог отчёта для ПК-агента — только если внешнее хранилище действительно доступно.
+     *
+     * Возвращает пустую строку вместо пути-песочницы намеренно: пустой каталог плагин
+     * трактует как «внешней копии не будет» и говорит об этом вслух, а путь внутрь
+     * песочницы выглядел бы как успешно записанный отчёт, который никто не увидит.
+     */
+    private fun moltbookReportDir(context: Context): String {
+        if (!Workspace.usingExternal(context)) return ""
+        return Workspace.externalRoot()?.absolutePath ?: ""
     }
 
     /**

@@ -100,7 +100,7 @@ await test("a scan writes the post and the new comment", () => {
   eq(post.seen_at, 500);
   eq(post.updated_at, 500);
   const comment = db.prepare("SELECT * FROM comments WHERE id = 'c-1'").get();
-  eq(comment.status, "new");
+  eq(comment.status, "NEW");
   eq(comment.replied_at, 0);
   eq(comment.reply_outcome, "");
   eq(comment.our_reply_id, null);
@@ -156,11 +156,11 @@ await test("a not-yet-answered comment does get its body refreshed", () => {
   const comment = db.prepare("SELECT * FROM comments WHERE id = 'c-1'").get();
   eq(comment.body, "edited upstream");
   eq(comment.seen_at, 1000);
-  eq(comment.status, "new");
+  eq(comment.status, "NEW");
 });
 
 await test("a scan never resurrects a failed or skipped comment back to new", () => {
-  for (const status of ["failed", "skipped"]) {
+  for (const status of ["failed", "SKIPPED"]) {
     const db = freshDb();
     writeScan(db, [POST], [COMMENT], 500);
     db.prepare("UPDATE comments SET status = ? WHERE id = 'c-1'").run(status);
@@ -216,6 +216,18 @@ async function test(name, fn) {
   }
 }
 
+await test("a failed row does not become young again on every scan", () => {
+  // seen_at is what the report counts failures by. If the scan refreshed it
+  // every time, one failure from a week ago would land in every window and
+  // the counter would never go down. Only markFailed may touch it.
+  const db = freshDb();
+  writeScan(db, [POST], [COMMENT], 500);
+  db.prepare("UPDATE comments SET status = ?, seen_at = 1000 WHERE id = ?").run("failed", "c-1");
+  writeScan(db, [POST], [Object.assign({}, COMMENT, { body: "changed" })], 900000);
+  const row = db.prepare("SELECT seen_at, body FROM comments WHERE id = ?").get("c-1");
+  eq(row.seen_at, 1000, "seen_at of a failure is frozen");
+  eq(row.body, "hi", "and its body is evidence, not a cache entry");
+});
 console.log("");
 if (bad > 0) {
   console.log("FAILED: " + ok + " ok, " + bad + " broken");

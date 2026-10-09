@@ -93,7 +93,7 @@ function fresh() {
   db.exec(SCHEMA);
   db.prepare(
     "INSERT INTO comments (id, post_id, author, body, created_at, status, our_reply_id, summary_ru, seen_at, replied_at, reply_outcome) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-  ).run(PARENT, POST, "alice", "q", 0, "new", null, "", AT, 0, "");
+  ).run(PARENT, POST, "alice", "q", 0, "NEW", null, "", AT, 0, "");
   return path;
 }
 
@@ -162,7 +162,7 @@ const args = { post_id: POST, parent_id: PARENT, content: "answer" };
   const r = await m.moltbookPublish(args, d);
   eq(r.outcome, "reused", "our own verified answer => reused");
   eq(r.counted, true, "ветка закрыта записью в журнал");
-  eq(postCount(file, PARENT), "posted|reused|c-found", "the branch is closed with the id we already own");
+  eq(postCount(file, PARENT), "POSTED|reused|c-found", "the branch is closed with the id we already own");
 }
 
 // ---- 2. our own created-but-unverified answer blocks the branch ----------------------
@@ -193,7 +193,7 @@ const args = { post_id: POST, parent_id: PARENT, content: "answer" };
   eq(r.outcome, "created", "created and confirmed");
   eq(r.counted, true, "confirmed creation counts");
   eq(r.verifier, m.VERIFIER_KIND.CONFIRMED, "verifier says confirmed");
-  eq(postCount(file, PARENT), "posted|created|c-new", "journal records created outcome");
+  eq(postCount(file, PARENT), "POSTED|created|c-new", "journal records created outcome");
 }
 
 // ---- 4. server says ok but our read-back cannot see it => unconfirmed ----------------
@@ -227,7 +227,7 @@ const args = { post_id: POST, parent_id: PARENT, content: "answer" };
   const r = await m.moltbookPublish(args, d);
   eq(r.outcome, "reused", "already_existed with same parent => reused");
   eq(r.counted, true, "the question is closed in the journal");
-  eq(postCount(file, PARENT), "posted|reused|c-dup", "journal records reused, not created");
+  eq(postCount(file, PARENT), "POSTED|reused|c-dup", "journal records reused, not created");
 }
 
 // ---- 6. already_existed from ANOTHER thread = misparented, nothing counted ----------
@@ -248,7 +248,7 @@ const args = { post_id: POST, parent_id: PARENT, content: "answer" };
   const r = await m.moltbookPublish(args, d);
   eq(r.outcome, "misparented", "dedup alias across threads");
   eq(r.counted, false, "misparented is never counted");
-  eq(postCount(file, PARENT), "failed||", "the question stays unanswered for a human to look at");
+  eq(postCount(file, PARENT), "FAILED||", "the question stays unanswered for a human to look at");
 }
 
 // ---- 7. challenge is returned, parent NOT closed -------------------------------------
@@ -271,7 +271,7 @@ const args = { post_id: POST, parent_id: PARENT, content: "answer" };
   eq(r.outcome, "challenge", "challenge is handed back to the agent");
   eq(r.counted, false, "a challenge is not an answer yet");
   eq(r.challenge && r.challenge.code, "vc-1", "challenge code is passed through");
-  eq(postCount(file, PARENT), "new||", "the parent must NOT be closed before verification");
+  eq(postCount(file, PARENT), "NEW||", "the parent must NOT be closed before verification");
 }
 
 // ---- 8. already_existed wins over verification --------------------------------------
@@ -307,7 +307,7 @@ const args = { post_id: POST, parent_id: PARENT, content: "answer" };
   );
   eq(r.outcome, "verification-failed", "rejected answer is a failure, not a success");
   eq(r.counted, false, "rejected answer counts nothing");
-  eq(postCount(file, PARENT), "failed||", "a failed attempt is marked so it is not retried at once");
+  eq(postCount(file, PARENT), "FAILED||", "a failed attempt is marked so it is not retried at once");
 }
 
 // ---- 11. server says ok but read-back is blind => unconfirmed, not counted -----------
@@ -339,7 +339,7 @@ const args = { post_id: POST, parent_id: PARENT, content: "answer" };
   );
   eq(r.outcome, "verified", "server ok and we see it");
   eq(r.counted, true, "a verified answer counts");
-  eq(postCount(file, PARENT), "posted|verified|c-ch", "journal records verified");
+  eq(postCount(file, PARENT), "POSTED|verified|c-ch", "journal records verified");
 }
 
 // ---- 13. no key at all is a refusal, not a zero -------------------------------------
@@ -387,7 +387,7 @@ function postCount(file, id) {
   const r = await m.moltbookPublish(args, d);
   eq(r.outcome, "created", "an unscanned parent still gets answered");
   eq(r.counted, true, "and the work counts");
-  eq(postCount(file, PARENT), "posted|created|c-new", "the parent row was created by the upsert");
+  eq(postCount(file, PARENT), "POSTED|created|c-new", "the parent row was created by the upsert");
 }
 
 // ---- 21. a recorded answer is evidence: a later failure must not overwrite it ----
@@ -442,7 +442,7 @@ function countRows(file) {
   eq(r.outcome, "refused", "an unreadable thread refuses instead of publishing blind");
   eq(d.calls.length, 0, "a refused publish sends no POST at all");
   truthy(r.refusals.some((x) => x.startsWith("thread-unreadable-")), "the refusal is recorded, not hidden");
-  eq(postCount(file, PARENT), "new||", "the journal is untouched when nothing was published");
+  eq(postCount(file, PARENT), "NEW||", "the journal is untouched when nothing was published");
 }
 
 // ---- 23. an invisible answer is a failure, not work -------------------------------------
@@ -456,7 +456,7 @@ function countRows(file) {
   const r = await m.moltbookPublish(args, d);
   eq(r.outcome, "unconfirmed", "a comment we cannot see is not a finished answer");
   eq(r.counted, false, "and it is not counted as work");
-  eq(postCount(file, PARENT), "failed||", "the journal keeps it as failed, never as posted|created");
+  eq(postCount(file, PARENT), "FAILED||", "the journal keeps it as failed, never as posted|created");
 }
 
 // ---- 24. a failure must not invent a parent we never saw ---------------------------------
@@ -473,7 +473,26 @@ function countRows(file) {
   eq(r.outcome, "rejected", "the server rejected the answer");
   eq(countRows(file), 1, "the parent is filed so the next tick can retry it with a cooldown");
   eq(col(file, PARENT, "author"), "alice", "and it is filed with the real author, read off the thread");
-  eq(postCount(file, PARENT), "failed||", "a failure carries no answer id");
+  eq(postCount(file, PARENT), "FAILED||", "a failure carries no answer id");
+}
+
+// ---- 36. an answer recorded by the old Kotlin ticker must survive our failure too ----
+// The Kotlin ledger stored CommentStatus.name, i.e. UPPERCASE. A guard
+// written as `status != 'posted'` reads 'POSTED' as "not posted", so a
+// failure could silently downgrade an answer the ticker had already
+// closed. Case has to be ignored in the SQL, not just in JS.
+{
+  const file = fresh();
+  seed(
+    file,
+    "UPDATE comments SET status='POSTED', our_reply_id='r-old', reply_outcome='created', replied_at=1 WHERE id='" +
+      PARENT +
+      "'",
+  );
+  const db = new DatabaseSync(file);
+  m.recordComment(db, { id: PARENT, post_id: POST, status: "failed", now: AT });
+  db.close();
+  eq(postCount(file, PARENT), "POSTED|created|r-old", "an uppercase POSTED row is not lowered");
 }
 
 // ---- 24b. a row we know nothing about is never invented ------------------------------
@@ -508,10 +527,10 @@ function countRows(file) {
 // replies[] belongs to a branch that is already open. The old ticker would offer such a row
 // as something to answer, so the scan files it as skipped.
 {
-  eq(m.scanStatus({ id: "a", parent_id: null, author: "alice" }), "new", "someone else's top-level comment is a question");
-  eq(m.scanStatus({ id: "a", parent_id: "p", author: "alice" }), "skipped", "a nested reply is not a question");
-  eq(m.scanStatus({ id: "a", parent_id: null, author: "OpenCodeKZ" }), "skipped", "our own comment is not a question");
-  eq(m.scanStatus({ id: "", parent_id: null, author: "alice" }), "skipped", "a comment without an id is skipped");
+  eq(m.scanStatus({ id: "a", parent_id: null, author: "alice" }), "NEW", "someone else's top-level comment is a question");
+  eq(m.scanStatus({ id: "a", parent_id: "p", author: "alice" }), "SKIPPED", "a nested reply is not a question");
+  eq(m.scanStatus({ id: "a", parent_id: null, author: "OpenCodeKZ" }), "SKIPPED", "our own comment is not a question");
+  eq(m.scanStatus({ id: "", parent_id: null, author: "alice" }), "SKIPPED", "a comment without an id is skipped");
 }
 
 // ---- 27. the archive must record the method it really used ------------------------------
@@ -552,7 +571,7 @@ function countRows(file) {
   });
   const r = await m.moltbookPublish(args, d);
   eq(r.outcome, "created", "the second view showed it published, so it is work");
-  eq(postCount(file, PARENT), "posted|created|c-new", "and the journal says so");
+  eq(postCount(file, PARENT), "POSTED|created|c-new", "and the journal says so");
 }
 
 // ---- 30. a parent we cannot name is a refusal, not a silently dropped write --------------
@@ -617,7 +636,7 @@ function countRows(file) {
   });
   const r = await m.moltbookVerify({ post_id: POST, parent_id: PARENT, comment_id: "c-ch", verification_code: "code", answer: "40.00" }, d);
   eq(r.outcome, "verified", "the answer passed verification");
-  eq(postCount(file, PARENT), "posted|verified|c-ch", "and the journal advanced from created to verified");
+  eq(postCount(file, PARENT), "POSTED|verified|c-ch", "and the journal advanced from created to verified");
 }
 
 // ---- 35. verify knows who the parent is before it records anything ---------------------
@@ -708,7 +727,7 @@ function countRows(file) {
   const r = await m.moltbookPublish(args, d);
   eq(r.outcome, "unconfirmed", "published, but not to the parent we asked");
   eq(r.counted, false, "so nothing is counted");
-  eq(postCount(file, PARENT), "failed||", "and the branch is left unsettled rather than done");
+  eq(postCount(file, PARENT), "FAILED||", "and the branch is left unsettled rather than done");
 }
 
 {
@@ -723,6 +742,20 @@ function countRows(file) {
   const r = await m.moltbookPublish(long, d);
   eq(r.outcome, "created", "long answer still goes out");
   truthy(r.refusals.indexOf("content-truncated") >= 0, "but the tool says the tail was cut");
+}
+
+// ---- 37. an empty status is written as a word, not as nothing -------------
+// Пустое `status=` в строке журнала читается как обрезанная запись: не отличить
+// «сервер не ответил» от «запись испорчена». Неизвестное пишется словом.
+
+{
+  eq(m.statusText("verified"), "verified", "a real status is kept as is");
+  eq(m.statusText(""), m.UNKNOWN_STATUS, "empty is unknown");
+  eq(m.statusText(null), m.UNKNOWN_STATUS, "null is unknown");
+  eq(m.statusText("   "), m.UNKNOWN_STATUS, "blank is unknown");
+  eq(m.statusText(undefined), m.UNKNOWN_STATUS, "missing is unknown");
+  truthy(m.UNKNOWN_STATUS.trim().length > 0, "the marker is not blank");
+  truthy(m.statusText("").indexOf("=") < 0, "the marker cannot be mistaken for a field");
 }
 
 for (const f of failures) console.log("  FAIL " + f);
