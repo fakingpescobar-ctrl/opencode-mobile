@@ -322,6 +322,51 @@ await test("unreadable comments are a refusal, not an empty thread", () => {
   eq(parseComments(JSON.stringify({ success: true })).reason, "comments-have-no-list");
 });
 
+await test("a reply nested under replies is still a comment we can find", () => {
+  const raw = JSON.stringify({
+    comments: [
+      {
+        id: "c-parent",
+        author: { name: "stashcubby" },
+        parent_id: null,
+        verification_status: "pending",
+        replies: [
+          {
+            id: "c-ours",
+            author: { name: "opencodekz" },
+            parent_id: "c-parent",
+            verification_status: "verified",
+            replies: [
+              { id: "c-deep", author: { name: "bob" }, verification_status: "verified" },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  const parsed = parseComments(raw);
+  eq(parsed.ok, true);
+  eq(parsed.comments.length, 3);
+  const ours = parsed.comments.find((c) => c.id === "c-ours");
+  eq(ours.author, "opencodekz");
+  eq(ours.parent_id, "c-parent");
+  eq(ours.verification_status, "verified");
+  const deep = parsed.comments.find((c) => c.id === "c-deep");
+  eq(deep.parent_id, "c-ours");
+  const picked = pickCandidates(parsed.comments, "opencodekz");
+  eq(picked.answeredCount, 1);
+  eq(picked.candidates.length, 0);
+});
+
+await test("an empty replies array changes nothing", () => {
+  const parsed = parseComments(
+    JSON.stringify({ comments: [{ id: "c-1", author: "alice", replies: [] }] }),
+  );
+  eq(parsed.comments.length, 1);
+  eq(parsed.comments[0].parent_id, null);
+});
+
+
 await test("we answer top-level comments of others we have not answered yet", () => {
   const picked = pickCandidates(
     [

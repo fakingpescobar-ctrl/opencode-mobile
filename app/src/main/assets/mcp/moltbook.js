@@ -42,7 +42,16 @@
 //   5. Счётчик - проекция журнала, а не счётчик в коде.
 //   6. Свидетель, который не умеет отказать, - это самоотчёт.
 
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+  openSync,
+  fsyncSync,
+  closeSync,
+} from "node:fs";
 import { join } from "node:path";
 
 /** Короткий устойчивый хэш для имени файла архива. Не безопасность, а имя. */
@@ -236,6 +245,41 @@ export function parseFeedPosts(raw) {
  * «id существует»: уже случалось, что success:true и already_existed:true приехали
  * одним ответом, а комментарий так и остался pending.
  */
+/**
+ * Разворачивает ветку в плоский список.
+ *
+ *
+ * Ответ на наш ответ приносится не в верхнем `comments`, а в `replies`
+ * родителя, и тогда `parent_id` задан только на самом объекте.
+ * Пока мы смотрели только верхний уровень, плагин не мог найти свой собственный ответ и вечно писал
+ * unconfirmed, хотя сервер его вернул.
+ *
+ * Владеец невый родитель присодинся тем же идентификатором:
+ * свой `parent_id` именнее поля, иначе увязываемся с родителем.
+ */
+export function flattenComments(items, inheritedParentId = null) {
+  const flat = [];
+  // Не верим, что массив: сервер может прислать сюда вместо
+  // массива replies. Если войти по числу, for..of по числу нет, а по числу идёт итерация по символам - и уронили весь скан.
+  const rows = Array.isArray(items) ? items : [];
+  for (const item of rows) {
+    if (!item || typeof item !== "object") continue;
+    const id = String(item.id || "").trim();
+    if (!id) continue;
+    flat.push({
+      id,
+      post_id: String(item.post_id || ""),
+      author: authorName(item.author_name || item.author),
+      body: String(item.body || item.content || ""),
+      parent_id: item.parent_id ? String(item.parent_id) : inheritedParentId,
+      created_at: Number(item.created_at || 0),
+      verification_status: String(item.verification_status || ""),
+    });
+    flat.push(...flattenComments(item.replies, id));
+  }
+  return flat;
+}
+
 export function parseComments(raw) {
   let parsed = null;
   try {
@@ -246,22 +290,7 @@ export function parseComments(raw) {
   if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.comments)) {
     return { ok: false, reason: "comments-have-no-list", comments: [] };
   }
-  const comments = [];
-  for (const item of parsed.comments) {
-    if (!item || typeof item !== "object") continue;
-    const id = String(item.id || "").trim();
-    if (!id) continue;
-    comments.push({
-      id,
-      post_id: String(item.post_id || ""),
-      author: authorName(item.author_name || item.author),
-      body: String(item.body || item.content || ""),
-      parent_id: item.parent_id ? String(item.parent_id) : null,
-      created_at: Number(item.created_at || 0),
-      verification_status: String(item.verification_status || ""),
-    });
-  }
-  return { ok: true, reason: null, comments };
+  return { ok: true, reason: null, comments: flattenComments(parsed.comments) };
 }
 
 /**
@@ -272,6 +301,13 @@ export function parseComments(raw) {
  * комментария. Не по флажку в нашем коде, а по прочитанному треду - иначе «мы ответили»
  * держилось бы на памяти плагина и терялось при переустановке.
  */
+/** Автор родителя, чтобы в журнал попал не пустой строкой. */
+export function parentMeta(comments, parentId) {
+  const found = (comments || []).find((c) => c && String(c.id) === String(parentId));
+  if (!found) return null;
+  return { author: String(found.author || ""), body: String(found.body || "") };
+}
+
 export function pickCandidates(comments, ourName) {
   const ours = String(ourName || "").trim().toLowerCase();
   const mine = (author) => String(author || "").trim().toLowerCase() === ours;
@@ -292,12 +328,14 @@ export function pickCandidates(comments, ourName) {
 }
 
 /** Кладёт сырой ответ в архив. Тот же формат, что у MoltbookRawArchive: <мс>-<хэш>.json. */
-export function archiveRaw(dir, at, path, status, body) {
+export function archiveRaw(dir, at, path, status, body, method = "GET") {
   if (!dir) return null;
   try {
     const name = String(at) + "-" + simpleHash(path + "|" + String(body)) + ".json";
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, name), JSON.stringify({ method: "GET", path, status, at, body }));
+    // Метод часть данных: ответ на запрос и код сверки лежат
+    // в той же архиве, что бы по нему можно был попубтимь, а не прочитать.
+    writeFileSync(join(dir, name), JSON.stringify({ method, path, status, at, body }));
     return name;
   } catch (error) {
     return null;
@@ -400,6 +438,16 @@ export async function fetchRaw(key, path) {
  * status, our_reply_id, replied_at и reply_outcome. Иначе скан, который ничего не
  * публиковал, способен был бы обнулить запись о нашем же ответе.
  */
+/**
+ * Что в журнале лежит как вопрос. Вопрос без родителя (ответ на чужой) и наш собственный комментарий не вопрос: старый тикер выдал им вопросы и посылат бы получить што только на себя.
+ */
+export function scanStatus(comment) {
+  if (!comment || !comment.id) return COMMENT_STATUS.SKIPPED;
+  if (comment.parent_id) return COMMENT_STATUS.SKIPPED;
+  if (String(comment.author || "").trim().toLowerCase() === MOLTBOOK_NAME) return COMMENT_STATUS.SKIPPED;
+  return COMMENT_STATUS.NEW;
+}
+
 export function writeScan(db, posts, comments, now) {
   if (!db) return { postsWritten: 0, commentsWritten: 0, refused: "ledger-missing" };
   let postsWritten = 0;
@@ -439,7 +487,7 @@ export function writeScan(db, posts, comments, now) {
         comment.author,
         comment.body,
         comment.created_at,
-        COMMENT_STATUS.NEW,
+        scanStatus(comment),
         now,
       );
       if (result.changes > 0) {
@@ -573,6 +621,726 @@ export async function moltbookScan() {
   };
 }
 
+/** Ключи, которыми сервер отдаёт id опубликованного комментария. Порядок значим. */
+export const SUCCESS_ID_KEYS = ["id", "comment_id", "commentId"];
+/** Ключи со статусом проверки - серверные слова, не наши (см. SERVER_STATUS). */
+export const STATUS_KEYS = ["verification_status", "verificationStatus"];
+/** Ответ на задачу платформы: ровно `число.00`. Другой формат молча тратит код. */
+export const ANSWER_SHAPE = /^\d{1,6}\.\d{2}$/;
+/** CloudFront перед API режет тела примерно от килобайта. */
+export const MAX_COMMENT_CHARS = 900;
+/** Глубина, на которой ищем поля ответа: корень, comment, data. */
+const SCAN_DEPTH = 3;
+
+/**
+ * Куда в ответе сервера смотреть за полями.
+ *
+ * Молтбук отдаёт комментарий то на верхнем уровне, то вложенным в `comment`, то под
+ * `data`, и энпоинты меняют форму от случая к случаю. Читать только один уровень -
+ * значит либо получить пустой id, либо принять чужой объект за наш.
+ */
+export function commentScopes(root) {
+  const scopes = [];
+  let cursor = root;
+  for (let depth = 0; depth < SCAN_DEPTH && cursor && typeof cursor === "object"; depth++) {
+    scopes.push(cursor);
+    if (cursor.comment && typeof cursor.comment === "object") scopes.push(cursor.comment);
+    cursor = cursor.data;
+  }
+  return scopes;
+}
+
+/** id созданного комментария или пустая строка. */
+function idText(value) {
+  if (value === null || value === undefined || typeof value === "object") return "";
+  const text = String(value).trim();
+  return text === "null" || text === "undefined" ? "" : text;
+}
+
+/** Идентификатор текста: сервер может прислать не только строку, а flattenComments приводит тот же id к строке. */
+export function postedCommentId(root) {
+  for (const scope of commentScopes(root)) {
+    for (const key of SUCCESS_ID_KEYS) {
+      const text = idText(scope[key]);
+      if (text) return text;
+    }
+  }
+  return "";
+}
+
+/** Серверный статус проверки, а не наш статус журнала. */
+export function verificationStatusOf(root) {
+  for (const scope of commentScopes(root)) {
+    for (const key of STATUS_KEYS) {
+      const value = scope[key];
+      if (typeof value === "string" && value && value.toLowerCase() !== "null") return value;
+    }
+  }
+  return "";
+}
+
+/** Родитель, на который сервер повесил ответ, либо null. */
+export function commentParentId(root) {
+  for (const scope of commentScopes(root)) {
+    const text = idText(scope.parent_id);
+    if (text) return text;
+  }
+  return null;
+}
+
+/** Флаг дубля. Строка "true" тоже считается: платформа местами присылает строкой. */
+export function isAlreadyExisted(root) {
+  return commentScopes(root).some(
+    (scope) => scope.already_existed === true || scope.already_existed === "true",
+  );
+}
+
+/** Задача платформы: код, текст и срок. `null`, если задачи нет. */
+export function verificationChallenge(root) {
+  for (const scope of commentScopes(root)) {
+    const challenge = scope.verification;
+    if (challenge && typeof challenge === "object" && String(challenge.verification_code || "")) {
+      return {
+        code: String(challenge.verification_code),
+        text: String(challenge.challenge_text || ""),
+        expires_at: String(challenge.expires_at || ""),
+      };
+    }
+  }
+  return null;
+}
+
+/** JSON без исключений: неразобранный ответ - это отказ, а не повод упасть всему визиту. */
+export function safeJson(raw) {
+  try {
+    const parsed = JSON.parse(String(raw === undefined || raw === null ? "" : raw));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * Исход POST без побочных эффектов. Никакой сети, никакого журнала.
+ *
+ * Порядок обязателен: `already_existed` важнее verification. Если сервер ничего не
+ * создал, то и код выдал не для нас - публиковать тут нечего, и читать задачу как
+ * «создано, ждём проверки» нельзя.
+ */
+export function parsePostOutcome(raw) {
+  const root = safeJson(raw);
+  if (!root) {
+    return { kind: "rejected", commentId: "", status: "", parentId: null, challenge: null, message: "ответ сервера не JSON" };
+  }
+  const commentId = postedCommentId(root);
+  const status = verificationStatusOf(root);
+  const parentId = commentParentId(root);
+  if (isAlreadyExisted(root)) {
+    return { kind: "duplicate", commentId, status, parentId, challenge: null, message: "" };
+  }
+  const challenge = verificationChallenge(root);
+  if (challenge) {
+    return { kind: "challenge", commentId, status, parentId, challenge, message: "" };
+  }
+  if (!commentId) {
+    return { kind: "rejected", commentId, status, parentId, challenge: null, message: String(root.message || "без comment и без verification") };
+  }
+  return { kind: "created", commentId, status, parentId, challenge: null, message: "" };
+}
+
+/**
+ * Что означает дубль с точки зрения нашего ответа на конкретный вопрос.
+ *
+ * Дедуп молтбука - по тексту и автору БЕЗ родителя, поэтому сервер в ответ на вопрос в
+ * треде B вправе прислать id нашего же комментария из треда A. Одинаковый родитель -
+ * единственное доказательство, что это ответ именно на тот вопрос, который мы задаём.
+ *
+ * published + тот же родитель -> reused: это наш же ответ, ноль новых фактов.
+ * published + чужой родитель   -> misparented: подтвердить нечем, удалять нельзя.
+ * не published                 -> blocked: комментарий создан, но не виден, второй
+ *                                  ответ платформа всё равно не даст.
+ */
+/**
+ * Опубликован или нет — это разные вещи, и «не знаю» это третий исход.
+ *
+ * `isPublishedStatus` считает пустой статус опубликованным: это паритет Kotlin,
+ * где платформа просто не присылает поле. Но для решения «не публиковать второй
+ * ответ» такой счёт не годится: отсутствие поля ничего не доказывает, а приняв
+ * его за публикацию, мы навсегда закрыли бы ветку и потеряли бы наш ответ.
+ * Поэтому здесь — только явный статус.
+ */
+export function isAffirmativelyPublished(status) {
+  const text = String(status == null ? "" : status).trim();
+  return text !== "" && isPublishedStatus(text);
+}
+export function reuseOrMisparent(outcome, expectedParentId) {
+  if (!isAffirmativelyPublished(outcome.status)) return "blocked";
+  // Родителя нет в ответе — это не «чужой родитель», а «не знаю».
+  // Утверждать «чужой» нельзя: мы ничего не разводили.
+  if (!outcome.parentId) return "blocked";
+  return outcome.parentId === expectedParentId ? "reused" : "misparented";
+}
+
+/**
+ * Наш ответ на конкретный вопрос прямо сейчас.
+ *
+ * Три исхода, а не два: опубликованный ответ, созданный-но-невидимый (он не отвечает
+ * ни на что и блокирует ветку навсегда) и отсутствие ответа.
+ */
+export function ourAnswerFor(comments, parentId, ourName, knownReplyId) {
+  let unpublished = null;
+  const mine = String(ourName || "").trim().toLowerCase();
+  const known = String(knownReplyId || "").trim();
+  for (const comment of comments) {
+    if (String(comment.author || "").trim().toLowerCase() !== mine) continue;
+    // Платформа может отдать наш ответ без parent_id. Если журнал уже записал
+    // его как ответ именно на этот вопрос, id из журнала и есть доказательство.
+    if (comment.parent_id !== parentId && !(known && comment.id === known)) continue;
+    if (isAffirmativelyPublished(comment.verification_status)) {
+      return { kind: "published", id: comment.id || "", status: comment.verification_status };
+    }
+    if (!unpublished) unpublished = { kind: "unpublished", id: comment.id || "", status: comment.verification_status };
+  }
+  return unpublished || { kind: "absent", id: "", status: "" };
+}
+
+/**
+ * Записи журнала, которые вправо сделать только публикация.
+ *
+ * `markAnswered` закрывает чужой комментарий, на который мы ответили, и пишет id
+ * нашего ответа. `markFailed` честно помечает вопрос как нерешённый: иначе он
+ * выглядел бы не отвеченным и кандидатом снова.
+ */
+/**
+ * Записывает ответ в журнал целиком.
+ *
+ *
+ * Раньше был простой UPDATE по id, и он молчал:
+ * UPDATE по такой строке, которой ещё не была в журнале - строки нет,
+ * а наш свой ответ в журнал не попадал ни когда.
+ * Счётчик того стал бы весьм ноль: ответой на сайте и счётчик равны нулю.
+ *
+ * Строка, уже записанная как posted, не переписывается: тело записанного ответа
+ * длжно сохраняться как доказательство.
+ */
+const RECORD_SQL =
+  "INSERT INTO comments (id,post_id,author,body,created_at,status,our_reply_id,summary_ru,seen_at,replied_at,reply_outcome)" +
+  " VALUES (?,?,?,?,?,?,?,'',?,?,?)" +
+  " ON CONFLICT(id) DO UPDATE SET status = excluded.status," +
+  " our_reply_id = COALESCE(excluded.our_reply_id, comments.our_reply_id)," +
+  " reply_outcome = CASE WHEN excluded.reply_outcome = '' THEN comments.reply_outcome ELSE excluded.reply_outcome END," +
+  " replied_at = CASE WHEN excluded.replied_at = 0 THEN comments.replied_at ELSE excluded.replied_at END," +
+  " seen_at = excluded.seen_at" +
+  // Записанная posted строка не переписывается: тело ответа — это доказательство,
+  // и потерять его нельзя. Единственный пропускаемый переход — created -> verified,
+  // иначе подтверждение никогда не смогло бы довести ответ до verified.
+" WHERE comments.status != 'posted' OR (comments.reply_outcome = 'created' AND excluded.reply_outcome = 'verified')";
+
+export function recordComment(db, row) {
+  if (!db || !row || !row.id) return false;
+  const known = db.prepare("SELECT author FROM comments WHERE id = ?").get(String(row.id));
+  const author = String(row.author || (known && known.author) || "").trim();
+  // Автор нужен только на вставку: pendingReplies отдаст пустый автор
+  // как вопрос с пустым именем и пустым текстом. У уже стоявшей строки автор из журнала достаен, поэтому дефолт не нужен.
+  if (!author) return false;
+  const ourReplyId = row.our_reply_id ? String(row.our_reply_id) : null;
+  const now = Number(row.now || 0);
+const stmt = db.prepare(RECORD_SQL);
+  const changed = stmt.run(
+    String(row.id),
+    String(row.post_id || ""),
+    author,
+    String(row.body || ""),
+    Number(row.created_at || 0),
+    String(row.status || COMMENT_STATUS.NEW),
+    ourReplyId,
+    now,
+    // replied_at - не то, что ищет CREATED_SQL/VERIFIED_SQL:
+    // ответ без нашего id не может быть нашим ответом на этот вопрос
+    // и не должен попасть в счётчик работы.
+    ourReplyId ? now : 0,
+    String(row.reply_outcome || ""),
+  ).changes > 0;
+  if (changed) return true;
+  // Ничего не изменилось - но это не обязательно отказ. Запись могла уже стоять
+  // раньше: posted-строка защищена от понижения, и повторная публикация по тому
+  // же parent_id обязан вернуть «журнал уже это знает», а не «отказались
+  // записать». Иначе инструмент врёт агенту о записанном ответе.
+  const settled = db
+    .prepare("SELECT status, our_reply_id FROM comments WHERE id = ?")
+    .get(String(row.id));
+  if (!settled) return false;
+  if (settled.status !== COMMENT_STATUS.POSTED) return false;
+  const settledReply = String(settled.our_reply_id || "");
+  return Boolean(settledReply) && (!ourReplyId || settledReply === ourReplyId);
+}
+
+
+export function markAnswered(db, commentId, ourReplyId, now, outcome, row) {
+  if (!db || !commentId) return false;
+  const extra = row || {};
+  return recordComment(db, {
+    id: commentId,
+    post_id: extra.post_id || "",
+    author: extra.author || "",
+    body: extra.body || "",
+    created_at: Number(extra.created_at || 0),
+    status: COMMENT_STATUS.POSTED,
+    our_reply_id: ourReplyId || null,
+    now,
+    reply_outcome: String(outcome || ""),
+  });
+}
+
+export function markFailed(db, commentId, now, row) {
+  if (!db || !commentId) return false;
+  const extra = row || {};
+  return recordComment(db, {
+    id: commentId,
+    post_id: extra.post_id || "",
+    author: extra.author || "",
+    body: extra.body || "",
+    created_at: Number(extra.created_at || 0),
+    status: COMMENT_STATUS.FAILED,
+    now,
+  });
+}
+
+/** Виды записей свидетеля. Согласие пишется рядом с отказом - иначе журнал врёт. */
+export const VERIFIER_KIND = {
+  CONFIRMED: "confirmed",
+  MISMATCH: "mismatch",
+  REFUSED: "refused",
+  DIVERGENCE: "divergence",
+};
+
+/** Одна строка журнала свидетеля. Пробелы схлопываются: запись всегда должна быть строкой. */
+export function verifierLine(kind, at, postId, detail) {
+  const safe = String(detail === undefined || detail === null ? "" : detail).replace(/\s+/g, " ");
+  return at + "s " + kind + " post=" + postId + " " + safe;
+}
+
+/**
+ * Приписывает запись в `verifier.log` рядом с `witness.log`.
+ *
+ * Только добавление и только fsync: журнал свидетеля, который переписывает публикующий
+ * код, - это не свидетель, а самоотчёт. Ошибка записи не должна ронять визит - поэтому
+ * `null`, а не исключение.
+ */
+export function appendVerifier(kind, at, postId, detail) {
+  if (!MOLTBOOK_DIR) return null;
+  let handle = null;
+  try {
+    mkdirSync(MOLTBOOK_DIR, { recursive: true });
+    handle = openSync(join(MOLTBOOK_DIR, VERIFIER_NAME), "a");
+    writeFileSync(handle, verifierLine(kind, at, postId, detail) + "\n");
+    fsyncSync(handle);
+    return VERIFIER_NAME;
+  } catch (error) {
+    return null;
+  } finally {
+    if (handle !== null) {
+      try {
+        closeSync(handle);
+      } catch (_) {
+        // закрытие не удалось - запись уже на диске или fsync её не подтвердил
+      }
+    }
+  }
+}
+
+/** POST с телом. Архивирует сырой ответ тем же способом, что и GET. */
+export async function postRaw(key, path, payload) {
+  const at = Date.now();
+  try {
+    const response = await fetch(MOLTBOOK_HOST + path, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await response.text();
+    archiveRaw(MOLTBOOK_DIR ? join(MOLTBOOK_DIR, RAW_DIR_NAME) : "", at, path, response.status, body, "POST");
+    return { ok: response.ok, status: response.status, path, at, body };
+  } catch (error) {
+    archiveRaw(MOLTBOOK_DIR ? join(MOLTBOOK_DIR, RAW_DIR_NAME) : "", at, path, 0, String(error), "POST");
+    return { ok: false, status: 0, path, at, body: "", error: String((error && error.message) || error) };
+  }
+}
+
+/**
+ * Ищем свой комментарий перечитыванием ветки, а не доверием ответу POST.
+ *
+ * Первое представление может не показать комментарий, и это ещё не значит, что его нет:
+ * замерено, что сортировки `new`, `old` и `best` возвращают разные первые элементы.
+ * Второе представление - независимая проверка, а не повтор того же чтения.
+ */
+export async function confirmComment(get, key, postId, commentId, parentId) {
+  const views = [];
+  let undecided = null;
+  for (const sort of ["new", "best"]) {
+    const raw = await get(key, "/api/v1/posts/" + postId + "/comments?sort=" + sort + "&limit=100");
+    views.push({ sort, status: raw.status, ok: raw.ok });
+    const parsed = parseComments(raw.body);
+    if (!parsed.ok) continue;
+    const hit = parsed.comments.find((comment) => comment.id === commentId);
+    if (!hit) continue;
+    const seen = {
+      found: true,
+      sort,
+      status: hit.verification_status,
+      published: isAffirmativelyPublished(hit.verification_status),
+      // Разрывный parent_id — это незнание, а не доказательство расхождения.
+      parentUnknown: !hit.parent_id,
+      parentMatches: !parentId || hit.parent_id === parentId,
+      actualParent: hit.parent_id || null,
+      parent: parentMeta(parsed.comments, parentId),
+      views: views.slice(),
+    };
+    if (seen.published && seen.parentMatches) return seen;
+    if (!undecided) undecided = seen;
+  }
+  return undecided || {
+    found: false,
+    sort: null,
+    status: "",
+    published: false,
+    parentUnknown: false,
+    parentMatches: false,
+    actualParent: null,
+    parent: null,
+    views,
+  };
+}
+
+/**
+ * Что запись в журнал свидетеля должна сказать о перечитывании.
+ *
+ * `success: true` в ответе платформы ничего не доказывает: замерено, что в одном ответе
+ * приходили `success: true` и `already_existed: true`, а комментарий при этом оставался
+ * `pending`. Доказывает только наш собственный read-back по конкретному id.
+ */
+export function verifyVerdict(confirmed) {
+  if (!confirmed.found) return VERIFIER_KIND.REFUSED;
+  if (!confirmed.published) return VERIFIER_KIND.REFUSED;
+  if (!confirmed.parentMatches) return confirmed.parentUnknown ? VERIFIER_KIND.REFUSED : VERIFIER_KIND.MISMATCH;
+  return VERIFIER_KIND.CONFIRMED;
+}
+
+/** Обрезает текст под CloudFront, не разрывая слова. */
+export function capForWaf(text) {
+  const trimmed = String(text || "").trim();
+  if (trimmed.length <= MAX_COMMENT_CHARS) return trimmed;
+  const budget = MAX_COMMENT_CHARS - 1;
+  const cut = trimmed.slice(0, budget);
+  const lastSpace = cut.lastIndexOf(" ");
+  return (cut.slice(0, lastSpace > budget / 2 ? lastSpace : budget).trimEnd() || cut) + "…";
+}
+
+export function recordedReplyId(openDb, parentId) {
+  if (!openDb || !parentId) return "";
+  let opened = null;
+  try {
+    opened = openDb(true);
+    if (!opened || !opened.db) return "";
+    const row = opened.db.prepare("SELECT our_reply_id FROM comments WHERE id = ?").get(String(parentId));
+    return row && row.our_reply_id ? String(row.our_reply_id) : "";
+  } catch (_) {
+    return "";
+  } finally {
+    if (opened && opened.db) {
+      try {
+        opened.db.close();
+      } catch (_) {
+        // Журнал не закрылся — читать его дальше нельзя, и ответ мы не получили.
+        // Молча отдаём пустое: следующий вызов попробует снова.
+      }
+    }
+  }
+}
+
+/** Обрезали ли хвост: молча обрезанный текст хуже, чем честная метка об усечении. */
+export function wasTruncated(text) {
+  return String(text || "").trim().length > MAX_COMMENT_CHARS;
+}
+
+const REFUSAL_NO_KEY = "Файл с ключом молтбука не найден или пуст. Публиковать нечем.";
+
+/** Отказ без сети: пустой результат здесь означал бы «нечего отвечать», а это ложь. */
+function publishRefusal(reason, at, detail) {
+  return {
+    plugin: "moltbook",
+    at,
+    refused: reason,
+    reason: detail || REFUSAL_NO_KEY,
+    outcome: "refused",
+    requests: [],
+    refusals: [reason],
+  };
+}
+
+/**
+ * Наш инструмент: ответить на комментарий.
+ *
+ * Порядок шагов зафиксирован прошлыми инцидентами и не переставляется:
+ *   1. перечитать ветку - запись в сокет уходит раньше ответа, поэтому таймаут на чтении
+ *      означает «сервер, возможно, уже создал комментарий», а повторный POST без проверки
+ *      публикует второй ответ на тот же вопрос;
+ *   2. POST с явным parent_id;
+ *   3. дубль разводится по статусу и родителю, а не считается успехом;
+ *   4. перечитывание ветки вторым представлением и запись в журнал свидетеля.
+ */
+export async function moltbookPublish(args, deps) {
+  const io = deps || {};
+  const now = io.now ? io.now() : Date.now();
+  const key = io.key ? io.key() : readMoltbookKey();
+  const send = io.send || postRaw;
+  const get = io.get || fetchRaw;
+  const openDb = io.openDb || openLedger;
+  const requests = [];
+  const refusals = [];
+  if (!key) return publishRefusal("no-api-key", now, REFUSAL_NO_KEY);
+
+  const postId = String((args && args.post_id) || "");
+  const parentId = String((args && args.parent_id) || "");
+  const rawContent = String((args && args.content) || "");
+  const content = capForWaf(rawContent);
+  if (!postId || !parentId || !content) {
+    return publishRefusal("need-post-id-parent-id-and-content", now, "Нужны post_id, parent_id и непустой content.");
+  }
+  if (wasTruncated(rawContent)) refusals.push("content-truncated");
+
+  const threadPath = "/api/v1/posts/" + postId + "/comments?sort=new&limit=100";
+  // Журнал уже знает, какой ответ мы уже дали на эту ветку.
+  const recorded = recordedReplyId(openDb, parentId);
+  const before = await get(key, threadPath);
+  requests.push({ path: before.path, status: before.status, ok: before.ok });
+  const parsedBefore = parseComments(before.body);
+  const parentRow = parentMeta(parsedBefore.comments, parentId);
+  if (parsedBefore.ok) {
+    const answer = ourAnswerFor(parsedBefore.comments, parentId, MOLTBOOK_NAME, recorded);
+    if (answer.kind === "published") {
+      appendVerifier(VERIFIER_KIND.CONFIRMED, now, postId, "id=" + answer.id + " повторная публикация не нужна");
+      const closed = writeReply(openDb, (db) => markAnswered(db, parentId, answer.id, now, REPLY_OUTCOME.REUSED, { post_id: postId, ...parentRow }), refusals);
+      return {
+        plugin: "moltbook",
+        at: now,
+        outcome: "reused",
+        comment_id: answer.id,
+        post_id: postId,
+        parent_id: parentId,
+        counted: closed.counted,
+        requests,
+        refusals,
+      };
+    }
+    if (answer.kind === "unpublished") {
+      refusals.push("our-unpublished-answer");
+      appendVerifier(VERIFIER_KIND.REFUSED, now, postId, "id=" + answer.id + " status=" + answer.status + " второй ответ платформа не даст");
+      return {
+        plugin: "moltbook",
+        at: now,
+        outcome: "blocked",
+        comment_id: answer.id,
+        post_id: postId,
+        parent_id: parentId,
+        counted: false,
+        reason: "Наш прошлый ответ создан, но не прошёл проверку. Второй ответ платформа всё равно не даст.",
+        requests,
+        refusals,
+      };
+    }
+  } else {
+    // Таймаут на чтении — это не доказательство отсутствия:
+    // сервер возможно уже создал наш комментарий, и слепой POST вернул бы already_existed с чужим id.
+    refusals.push("thread-unreadable-" + before.status);
+    return replyResult("refused", "", postId, parentId, now, requests, refusals, false);
+  }
+
+  const posted = await send(key, "/api/v1/posts/" + postId + "/comments", { content, parent_id: parentId });
+  requests.push({ path: posted.path, status: posted.status, ok: posted.ok });
+  const outcome = parsePostOutcome(posted.body);
+
+  if (outcome.kind === "duplicate") {
+    const verdict = reuseOrMisparent(outcome, parentId);
+    if (verdict === "reused") {
+      const written = writeReply(openDb, (db) => markAnswered(db, parentId, outcome.commentId, now, REPLY_OUTCOME.REUSED, { post_id: postId, ...parentRow }), refusals);
+      appendVerifier(VERIFIER_KIND.CONFIRMED, now, postId, "id=" + outcome.commentId + " reused");
+      return replyResult("reused", outcome.commentId, postId, parentId, now, requests, refusals, written.counted);
+    }
+    if (verdict === "misparented") {
+      writeReply(openDb, (db) => markFailed(db, parentId, now, { post_id: postId, ...parentRow }), refusals);
+      appendVerifier(
+        VERIFIER_KIND.MISMATCH,
+        now,
+        postId,
+        "dedup-alias parent=" + parentId + " actual=" + (outcome.parentId || "unknown-parent") + " id=" + outcome.commentId,
+      );
+      return replyResult("misparented", outcome.commentId, postId, parentId, now, requests, refusals, false);
+    }
+    refusals.push("our-unpublished-answer");
+    writeReply(openDb, (db) => markFailed(db, parentId, now, { post_id: postId, ...parentRow }), refusals);
+    return replyResult("blocked", outcome.commentId, postId, parentId, now, requests, refusals, false);
+  }
+
+  if (outcome.kind === "rejected") {
+    refusals.push("post-rejected");
+    writeReply(openDb, (db) => markFailed(db, parentId, now, { post_id: postId, ...parentRow }), refusals);
+    const rejected = replyResult("rejected", "", postId, parentId, now, requests, refusals, false);
+    rejected.reason = outcome.message;
+    return rejected;
+  }
+
+  if (outcome.kind === "challenge") {
+    // Комментарий создан, но не виден читателям. Родителя закрывать рано: задача может
+    // быть не решена, и тогда ветка останется неотвеченной - честно.
+    refusals.push("needs-verification");
+    appendVerifier(VERIFIER_KIND.REFUSED, now, postId, "id=" + outcome.commentId + " ждёт проверки");
+    const challenged = replyResult("challenge", outcome.commentId, postId, parentId, now, requests, refusals, false);
+    challenged.challenge = outcome.challenge;
+    return challenged;
+  }
+
+  const confirmed = await confirmComment(get, key, postId, outcome.commentId, parentId);
+  const kind = verifyVerdict(confirmed);
+  // Подтвержденный id — единственный исход журнала.
+  // Если сверка не видел комментарий — это не работа, а не делано, и записываться нельзя.
+  const knownParent = parentRow || confirmed.parent;
+  if (!knownParent) refusals.push("parent-unknown");
+  const journalRow = { post_id: postId, ...(knownParent || {}) };
+  const written =
+    kind === VERIFIER_KIND.CONFIRMED
+      ? writeReply(openDb, (db) => markAnswered(db, parentId, outcome.commentId, now, REPLY_OUTCOME.CREATED, journalRow), refusals)
+      : writeReply(openDb, (db) => markFailed(db, parentId, now, journalRow), refusals);
+  appendVerifier(
+    kind,
+    now,
+    postId,
+    "id=" + outcome.commentId + " status=" + confirmed.status + " sort=" + (confirmed.sort || "нет") + " parent=" + (confirmed.actualParent || "нет"),
+  );
+  const created = replyResult(kind === VERIFIER_KIND.CONFIRMED ? "created" : "unconfirmed", outcome.commentId, postId, parentId, now, requests, refusals, kind === VERIFIER_KIND.CONFIRMED && written.counted);
+  created.verifier = kind;
+  created.server_status = confirmed.status;
+  return created;
+}
+
+/** Решение по задаче платформы. Её решает агент, а не плагин. */
+export async function moltbookVerify(args, deps) {
+  const io = deps || {};
+  const now = io.now ? io.now() : Date.now();
+  const key = io.key ? io.key() : readMoltbookKey();
+  const send = io.send || postRaw;
+  const get = io.get || fetchRaw;
+  const openDb = io.openDb || openLedger;
+  const requests = [];
+  const refusals = [];
+  if (!key) return publishRefusal("no-api-key", now, REFUSAL_NO_KEY);
+
+  const postId = String((args && args.post_id) || "");
+  const parentId = String((args && args.parent_id) || "");
+  const commentId = String((args && args.comment_id) || "");
+  const code = String((args && args.verification_code) || "");
+  const answer = String((args && args.answer) || "").trim();
+  if (!postId || !parentId || !commentId || !code) {
+    return publishRefusal("need-post-id-parent-id-comment-id-and-code", now, "Нужны post_id, parent_id, comment_id и verification_code.");
+  }
+  if (!ANSWER_SHAPE.test(answer)) {
+    // Формат задаёт платформа. Ответ вида "48.0" молча тратит одноразовый код.
+    return publishRefusal("answer-must-be-number-with-two-decimals", now, "Ответ должен быть числом с двумя знаками, например 40.00.");
+  }
+
+  // Чтобы записать, кому мы отвечаем: имя родителя без автора - строка придурака
+  // получила бы без неменного автора, и markAnswering просто бы не запишала ни одной строки.
+  const beforeThread = await get(key, "/api/v1/posts/" + postId + "/comments?sort=new&limit=100");
+  requests.push({ path: beforeThread.path, status: beforeThread.status, ok: beforeThread.ok });
+  const parsedBefore = parseComments(beforeThread.body);
+  const parentRow = parentMeta(parsedBefore.ok ? parsedBefore.comments : [], parentId);
+  if (!parentRow) refusals.push("parent-unknown");
+
+  const verified = await send(key, "/api/v1/verify", { verification_code: code, answer });
+  requests.push({ path: verified.path, status: verified.status, ok: verified.ok });
+  const root = safeJson(verified.body);
+  const accepted = Boolean(root && root.success === true);
+  if (!accepted) {
+    refusals.push("verification-rejected");
+    writeReply(openDb, (db) => markFailed(db, parentId, now, { post_id: postId, ...(parentRow || {}) }), refusals);
+    appendVerifier(VERIFIER_KIND.REFUSED, now, postId, "verify answer=" + answer + " id=" + commentId);
+    const rejected = replyResult("verification-failed", commentId, postId, parentId, now, requests, refusals, false);
+    rejected.server_message = String((root && root.message) || verified.body || "").slice(0, 200);
+    return rejected;
+  }
+
+  const confirmed = await confirmComment(get, key, postId, commentId, parentId);
+  const kind = verifyVerdict(confirmed);
+  if (kind !== VERIFIER_KIND.CONFIRMED) {
+    refusals.push("server-said-ok-but-not-visible");
+    appendVerifier(kind, now, postId, "verify answer=" + answer + " id=" + commentId + " status=" + confirmed.status);
+    const doubted = replyResult("unconfirmed", commentId, postId, parentId, now, requests, refusals, false);
+    doubted.verifier = kind;
+    doubted.server_status = confirmed.status;
+    return doubted;
+  }
+  const written = writeReply(
+    openDb,
+    (db) => markAnswered(db, parentId, commentId, now, REPLY_OUTCOME.VERIFIED, { post_id: postId, ...(parentRow || confirmed.parent || {}) }),
+    refusals,
+  );
+  appendVerifier(VERIFIER_KIND.CONFIRMED, now, postId, "verify answer=" + answer + " id=" + commentId + " status=" + confirmed.status);
+  const result = replyResult("verified", commentId, postId, parentId, now, requests, refusals, written.counted);
+  result.verifier = kind;
+  result.server_status = confirmed.status;
+  return result;
+}
+
+/**
+ * Запись в журнал под замком: открыли, записали, закрыли.
+ *
+ * Отказ открытия - это отказ, а не ноль: вернувший `0` без причины выглядел бы так же,
+ * как «мы ничего не ответили», и потерял бы различие.
+ */
+export function writeReply(openDb, action, refusals) {
+  let opened = null;
+  try {
+    opened = openDb(false);
+    if (!opened || !opened.db) {
+      refusals.push("ledger-missing");
+      return { counted: false };
+    }
+    try {
+      const counted = action(opened.db) === true;
+      // Тихий отказ без причины — раньше бы вернули "записано", что молчали.
+      if (!counted) refusals.push("journal-not-recorded");
+      return { counted };
+    } finally {
+      opened.db.close();
+    }
+  } catch (error) {
+    refusals.push("ledger-" + String((error && error.message) || error));
+    if (opened && opened.db) {
+      try {
+        opened.db.close();
+      } catch (_) {
+        // закрытие не удалось - запись всё равно не применена
+      }
+    }
+    return { counted: false };
+  }
+}
+
+/** Общий вид ответа публикации: исход, что засчитано, и чем это подтверждено. */
+function replyResult(outcome, commentId, postId, parentId, at, requests, refusals, counted) {
+  return {
+    plugin: "moltbook",
+    at,
+    outcome,
+    comment_id: commentId,
+    post_id: postId,
+    parent_id: parentId,
+    counted: counted === true,
+    requests,
+    refusals,
+  };
+}
+
 const TOOLS = [
   {
     name: "moltbook_status",
@@ -582,6 +1350,44 @@ const TOOLS = [
       "Ничего не публикует и не ходит на сайт - только читает уже записанный журнал. " +
       "Вызывай это первым, когда хочешь понять, что плагин видит.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "moltbook_publish",
+    description:
+      "Ответить на комментарий. Перед публикацией ветка перечитывается: если там уже есть " +
+      "наш опубликованный ответ - ничего не постится, возвращается reused. Ответ, который сервер " +
+      "пометил already_existed, не считается успехом: сверяется родитель, иначе это misparented " +
+      "(дедуп у сервера по тексту без родителя). Если сервер требует проверку - возвращается " +
+      "challenge с задачей, вызывай moltbook_verify. Поле counted говорит, попал ли ответ в журнал.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        post_id: { type: "string", description: "id треда" },
+        parent_id: { type: "string", description: "id комментария, на который отвечаем" },
+        content: { type: "string", description: "текст ответа, до 900 символов" },
+      },
+      required: ["post_id", "parent_id", "content"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "moltbook_verify",
+    description:
+      "Ответить на challenge, который вернул moltbook_publish. Ответ считается зачтённым только " +
+      "если сервер подтвердил И наша перечитка ветки это увидела. Иначе unconfirmed - и это честный " +
+      "отказ, а не успех.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        post_id: { type: "string" },
+        parent_id: { type: "string" },
+        comment_id: { type: "string" },
+        verification_code: { type: "string" },
+        answer: { type: "string", description: "число вида 42.00 - ровно два знака после запятой" },
+      },
+      required: ["post_id", "parent_id", "comment_id", "verification_code", "answer"],
+      additionalProperties: false,
+    },
   },
   {
     name: "moltbook_scan",
@@ -595,9 +1401,11 @@ const TOOLS = [
   },
 ];
 
-async function callTool(name) {
+async function callTool(name, args) {
   if (name === "moltbook_status") return moltbookStatus();
   if (name === "moltbook_scan") return moltbookScan();
+  if (name === "moltbook_publish") return moltbookPublish(args || {});
+  if (name === "moltbook_verify") return moltbookVerify(args || {});
   throw new Error("Unknown tool: " + name);
 }
 
