@@ -146,4 +146,91 @@ class ChatNoticeTest {
         assertFalse(abortResolvedTurn(runningBefore = false, runningAfter = false))
         assertFalse(abortResolvedTurn(runningBefore = false, runningAfter = true))
     }
+
+    /**
+     * Бюджет повторов: без него плашка «Модель повторяет запрос» висела 2.5 часа
+     * (47 ошибок подряд у провайдера opencode) и пользователь ничего не мог.
+     */
+    @Test
+    fun `бюджет повторов кончается по числу попыток и по времени`() {
+        val few = ChatNotice("t", "m", attempt = 3)
+        val many = ChatNotice("t", "m", attempt = RETRY_ATTEMPT_LIMIT)
+        assertFalse(retryExhausted(few, elapsedMs = 0L))
+        // Порог по счётчику попыток.
+        assertTrue(retryExhausted(many, elapsedMs = 0L))
+        // Порог по времени — попыток может не быть вовсе: при сетевом сбое сервер
+        // их не шлёт, и тогда единственный признак залипания это молчание.
+        assertFalse(retryExhausted(few, elapsedMs = RETRY_BUDGET_MS - 1))
+        assertTrue(retryExhausted(few, elapsedMs = RETRY_BUDGET_MS))
+        // Плашки нет — ждать нечего, останавливать нечего.
+        assertFalse(retryExhausted(null, elapsedMs = Long.MAX_VALUE))
+    }
+
+    /** Об остановленном ходе нужно сказать явно: иначе тишина выглядит как игнор. */
+    @Test
+    fun `после остановки плашка говорит что остановили мы`() {
+        val stopped =
+            stoppedRetryNotice(
+                ChatNotice("Модель повторяет запрос", "socket closed", attempt = 8),
+                elapsedMs = 1_000L,
+            )
+        assertEquals("Ход остановлен", stopped.title)
+        assertEquals(8, stopped.attempt)
+        assertTrue(stopped.message.contains("8"))
+        assertTrue(stopped.actionLabel == null)
+    }
+
+    /**
+     * Причина остановки в тексте названа честно: сервер при сетевом сбое может
+     * насчитать две попытки, и тогда «остановил после 8 попыток» было бы ложью.
+     */
+    @Test
+    fun `при остановке по времени текст не врёт про число попыток`() {
+        val stopped =
+            stoppedRetryNotice(
+                ChatNotice("Модель повторяет запрос", "socket closed", attempt = 2),
+                elapsedMs = RETRY_BUDGET_MS,
+            )
+        assertTrue(stopped.message.contains("10 мин"))
+        assertTrue(stopped.message.contains("2 попыток"))
+        assertTrue(!stopped.message.contains("после 2 попыток"))
+        // По счётчику причина остаётся прежней.
+        val byCount =
+            stoppedRetryNotice(
+                ChatNotice("Модель повторяет запрос", "socket closed", attempt = 8),
+                elapsedMs = 1L,
+            )
+        assertTrue(byCount.message.contains("после 8 попыток"))
+    }
+
+    /**
+     * «Ход остановлен» не должен молча затираться серверным retry на следующем
+     * тике опроса: сервер про нашу остановку не знает и вернёт свой статус.
+     */
+    @Test
+    fun `плашка об остановке переживает серверный статус`() {
+        val serverRetry = ChatNotice("Модель повторяет запрос", "socket closed", attempt = 1)
+        val stopped = ChatNotice("Ход остановлен", "остановил", attempt = 8)
+        // Сервер продолжает слать свой retry — наша плашка всё равно главнее.
+        assertEquals(stopped, nextRetryLatch(stopped, stopped, serverRetry, turnFinished = false))
+        // А вот успешный шаг модели гасит обе.
+        assertNull(nextRetryLatch(stopped, stopped, serverRetry, turnFinished = true))
+        // Без нашей остановки работает обычное правило защёлки.
+        assertEquals(serverRetry, nextRetryLatch(null, null, serverRetry, turnFinished = false))
+        assertEquals(stopped, nextRetryLatch(null, null, stopped, turnFinished = false))
+    }
+
+    /**
+     * Удалять сессию можно только когда сервер точно перестал её писать.
+     * Иначе opencode продолжает писать message/part для уже удалённой строки и
+     * падает на FOREIGN KEY constraint failed.
+     */
+    @Test
+    fun `удалять сессию можно только если статус виден и ход ушёл`() {
+        assertTrue(purgeAllowed(statusReachable = true, stillRunning = false))
+        assertFalse(purgeAllowed(statusReachable = true, stillRunning = true))
+        // Статус недоступен: «не знаю» здесь означает «сломаем внешние ключи».
+        assertFalse(purgeAllowed(statusReachable = false, stillRunning = false))
+        assertFalse(purgeAllowed(statusReachable = false, stillRunning = true))
+    }
 }

@@ -133,6 +133,9 @@ import org.opencode.mobile.server.LocalOpenCodeClient
 import org.opencode.mobile.server.MemoryMcp
 import org.opencode.mobile.server.OpenCodePermissionApi
 import org.opencode.mobile.server.OpenCodePermissionRequest
+import org.opencode.mobile.server.OpenCodeQuestionApi
+import org.opencode.mobile.server.OpenCodeQuestionRequest
+import org.opencode.mobile.server.OpenCodeQuestionPrompt
 import org.opencode.mobile.server.PermissionDecision
 import org.opencode.mobile.server.YnisonMcp
 import org.opencode.mobile.stt.NcnnModelValidator
@@ -289,7 +292,7 @@ private fun getMcpCached(port: Int): String? {
 // отдельно, потому что заголовок/метки могут меняться независимо от ленты.
 private data class ChatParseResult(
     val messages: List<ChatMsg>,
-    val question: ChatQuestion?,
+    val question: OpenCodeQuestionRequest?,
     val thinking: Boolean,
     val liveTool: ChatTool?,
     val contextTokens: Long,
@@ -363,12 +366,6 @@ internal data class ChatMsg(
     val text: String,
 )
 
-internal data class ChatQuestion(
-    val id: String,
-    val text: String,
-    val options: List<String>,
-)
-
 // Один вызов инструмента модели (tool) для live-чипа «что делает сейчас».
 internal data class ChatTool(
     val name: String,
@@ -388,7 +385,7 @@ internal data class ChatSnapshot(
     val messages: List<ChatMsg>,
     val label: String,
     val activeId: String?,
-    val question: ChatQuestion? = null,
+    val question: OpenCodeQuestionRequest? = null,
     val thinking: Boolean = false,
     val modelName: String = "Модель",
     val stalled: Boolean = false,
@@ -631,26 +628,51 @@ fun ChatOverlay(
     val moltbookSnapshot = rememberMoltbookSnapshot(moltbookRefresh, moltbookOpenToken)
     val moltbookStats = moltbookSnapshot.stats
 
+    /**
+     * Ответ на висящий вопрос. [answers] — по списку выбранных меток на каждый
+     * вопрос запроса, в том же порядке, что и `questions`: сервер сверяет
+     * позиции, поэтому ответ на один вопрос из нескольких иначе сдвинет
+     * остальные. [echo] — что показать в ленте как реплику пользователя.
+     */
     fun answerQuestion(
-        q: ChatQuestion,
-        text: String,
+        q: OpenCodeQuestionRequest,
+        answers: List<List<String>>,
+        echo: String,
     ) {
-        val sessionId = snapshot?.activeId ?: return
         if (sending || snapshot?.permission != null) return
         sending = true
         userScrolledUp = false
         scope.launch {
             val ok =
                 withContext(Dispatchers.IO) {
-                    postAnswer(serverPort, sessionId, q.id, listOf(text))
+                    OpenCodeQuestionApi.reply(serverPort, q.id, answers)
                 }
             sending = false
             if (ok) {
                 draft = ""
                 keyboard?.hide()
                 focusManager.clearFocus()
-                snapshot = snapshot?.let { it.copy(question = null, messages = it.messages + ChatMsg("user", text)) }
+                snapshot = snapshot?.let { it.copy(question = null, messages = it.messages + ChatMsg("user", echo)) }
                 scrollToBottomFull(listState, (snapshot?.messages?.size ?: 0) - 1)
+            }
+        }
+    }
+
+    fun rejectQuestion(q: OpenCodeQuestionRequest) {
+        if (sending || snapshot?.permission != null) return
+        sending = true
+        userScrolledUp = false
+        scope.launch {
+            val ok =
+                withContext(Dispatchers.IO) {
+                    OpenCodeQuestionApi.reject(serverPort, q.id)
+                }
+            sending = false
+            // Отклонение сервером не подтверждается отдельным чтением, поэтому
+            // карточку снимаем только по успеху: иначе вопрос на экране пропадёт
+            // без ответа и ход модели останется висеть навсегда.
+            if (ok) {
+                snapshot = snapshot?.let { it.copy(question = null) }
             }
         }
     }
@@ -660,9 +682,12 @@ fun ChatOverlay(
         if (text.isEmpty() || sending || snapshot?.permission != null) return
         val sessionId = snapshot?.activeId
         val pending = snapshot?.question
-        if (pending != null) {
-            // Модель ждёт ответа на вопрос — обычный POST не продвинет сессию.
-            answerQuestion(pending, text)
+        // Вопрос на один prompt (обычный случай) — написанный текст это ответ на
+        // него. Несколько prompt'ов одним текстом не закрыть: сервер ждёт
+        // список на каждый, и подставить один и тот же текст значило бы соврать
+        // модели. Тогда текст уходит обычным сообщением, а вопрос висит дальше.
+        if (pending != null && pending.prompts.size == 1) {
+            answerQuestion(pending, listOf(listOf(text)), text)
             return
         }
         sending = true
@@ -896,8 +921,17 @@ fun ChatOverlay(
                             for (i in 0 until arr.length()) {
                                 val sid = arr.getJSONObject(i).optString("id").takeIf(String::isNotBlank) ?: continue
                                 if (sid != id) {
-                                    abortSession(serverPort, sid)
-                                    LocalOpenCodeClient.delete(serverPort, "/session/$sid")
+                                    // Пока идёт цикл, сбой одного удаления не должен отменять
+                                    // остальные: общий catch раньше проглатывал всё молча,
+                                    // и пользователь видел «очистил», а половина сессий жила.
+                                    try {
+                                        stopAndPurge(serverPort, sid)
+                                    } catch (e: Exception) {
+                                        android.util.Log.w(
+                                            "ChatOverlay",
+                                            "PURGE failed session=$sid: ${e.message}",
+                                        )
+                                    }
                                 }
                             }
                         } catch (_: Exception) {
@@ -1224,6 +1258,14 @@ fun ChatOverlay(
         // STALL_EMPTY_MS — случаи abort-lag / зависший tool: снимаем спиннер раньше
         // общего 120с, чтобы юзер не видел вечного «Модель думает» после Stop.
         var emptyStallSince = 0L
+        // С какого момента висит плашка причины (retry/error). Отсчёт бюджета
+        // повторов: серверный attempt может не расти при сетевом сбое, а молчание
+        // само по себе не является признаком, пока плашка только что появилась.
+        var retrySince = 0L
+        // Плашка «Ход остановлен» после исчерпания бюджета. Живёт отдельно от
+        // noticeLatch, иначе серверный retry на следующем тике опроса её тихо
+        // затрёт: сервер не знает, что мы остановились, и вернёт свой статус.
+        var retryStop: ChatNotice? = null
         // Адаптивный поллинг: счётчик «стабильных» итераций. Растёт, пока лента
         // статична и не думается; по достижении STABLE_POLL_ROUNDS поллинг
         // растягивается до POLL_IDLE_MS. При малейшем прогрессе сбрасывается → 400мс.
@@ -1318,7 +1360,41 @@ fun ChatOverlay(
                 // Сравниваем latch ДО присваивания: сравнение после всегда даёт
                 // false и молча пропускало бы перерисовку в UI.
                 val latchBefore = noticeLatch
-                noticeLatch = nextNoticeLatch(latchBefore, final.notice, turnFinished = !final.thinking)
+                noticeLatch = nextRetryLatch(latchBefore, retryStop, final.notice, turnFinished = !final.thinking)
+                if (noticeLatch == null) {
+                    retryStop = null
+                    retrySince = 0L
+                } else if (noticeLatch != null && latchBefore == null && retryStop == null) {
+                    retrySince = now
+                }
+                // Бюджет повторов: без него плашка «Модель повторяет запрос»
+                // может висеть вечно — намеряно 47 раз подряд за 2.5 часа, пока
+                // провайдер рвал сокет. Исчерпали попытки или время → сами
+                // останавливаем ход и честно говорим об этом в плашке.
+                //
+                // Условие `retryStop == null` — не украшение, а страховка от
+                // повторного abort: без неё остановленный ход проверялся бы
+                // снова на каждом тике опроса, а `stoppedRetryNotice` обнуляет
+                // `retrySince`, из-за чего `now - retrySince` всегда больше
+                // бюджета. Итог был — abortSession на сессии по 400 мс, пока
+                // висит плашка.
+                if (retryStop == null && retryExhausted(noticeLatch, now - retrySince)) {
+                    val held = noticeLatch
+                    if (held != null) {
+                        retryStop = stoppedRetryNotice(held, now - retrySince)
+                        noticeLatch = retryStop
+                        val sid = final.activeId
+                        if (sid != null) {
+                            android.util.Log.w(
+                                "ChatOverlay",
+                                "RETRY budget spent attempt=${held.attempt} session=$sid, aborting",
+                            )
+                            // Сеть на главном потоке: этот вызов делает блокирующий
+                            // HttpURLConnection, как и остальные abortSession в файле.
+                            withContext(Dispatchers.IO) { abortSession(serverPort, sid) }
+                        }
+                    }
+                }
                 changed = old == null ||
                     old.messages != final.messages ||
                     old.thinking != final.thinking ||
@@ -2220,60 +2296,12 @@ fun ChatOverlay(
                 }
             }
             snapshot?.question?.let { q ->
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp)
-                        .background(Color(0xFF1E2B1E), RoundedCornerShape(12.dp))
-                        .padding(10.dp),
-                ) {
-                    Text(
-                        "Модель спрашивает:",
-                        color = Color(0xFF7BD88F),
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Text(
-                        q.text.ifBlank { "…" },
-                        color = Color(0xFFEDEDED),
-                        fontSize = 14.sp,
-                        lineHeight = 19.sp,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
-                    if (q.options.isEmpty()) {
-                        Text(
-                            "Напиши ответ в поле и нажми →",
-                            color = Color(0xFF8A8A8A),
-                            fontSize = 13.sp,
-                            modifier = Modifier.padding(top = 6.dp),
-                        )
-                    } else {
-                        q.options.forEach { label ->
-                            Surface(
-                                modifier =
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .padding(top = 6.dp)
-                                        .clickable { answerQuestion(q, label) },
-                                shape = RoundedCornerShape(8.dp),
-                                color = Color(0xFF24401F),
-                            ) {
-                                Text(
-                                    label,
-                                    color = Color(0xFFE6E6E6),
-                                    fontSize = 14.sp,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                                )
-                            }
-                        }
-                        Text(
-                            "…или напиши свой ответ в поле ↓",
-                            color = Color(0xFF8A8A8A),
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(top = 6.dp),
-                        )
-                    }
-                }
+                QuestionCard(
+                    request = q,
+                    busy = sending,
+                    onAnswer = { answers, echo -> answerQuestion(q, answers, echo) },
+                    onReject = { rejectQuestion(q) },
+                )
             }
             snapshot?.permission?.let { request ->
                 PermissionCard(
@@ -2568,6 +2596,212 @@ private fun LiveToolRow(tool: ChatTool) {
                 overflow = TextOverflow.Ellipsis,
             )
         }
+    }
+}
+
+/**
+ * Карточка висящего вопроса модели — второй источник запросов, требующих
+ * ответа (после разрешений, см. [PermissionCard]), поэтому выглядит так же:
+ * рамка, акцент, кнопки. Разница в содержимом: вариантов может быть много и
+ * у каждого есть пояснение, поэтому метка и описание живут разными строками.
+ *
+ * Один вариант отвечает сразу по тапу. Несколько (`multiple`) — копятся
+ * галочками и уходят кнопкой: молча отвечать одним таком здесь означало бы
+ * выбросить остальные выборы, а сервер ждёт список на КАЖДЫЙ вопрос.
+ */
+@Suppress("FunctionNaming", "LongMethod", "MagicNumber")
+@Composable
+private fun QuestionCard(
+    request: OpenCodeQuestionRequest,
+    busy: Boolean,
+    onAnswer: (List<List<String>>, String) -> Unit,
+    onReject: () -> Unit,
+) {
+    val accent = Color(0xFF5AA9E6)
+    val prompts = request.prompts
+    val anyMultiple = prompts.any { it.multiple }
+    // Выборы по индексу prompt'а, а не одним списком: ответ сервер сверяет
+    // позициями, и при нескольких вопросах общий список потерял бы, кто что выбрал.
+    var picked by remember(request.id) { mutableStateOf<Map<Int, List<String>>>(emptyMap()) }
+
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color(0xFF141E28))
+                .border(1.dp, accent.copy(alpha = 0.65f), RoundedCornerShape(12.dp))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Text(
+            "Модель задаёт вопрос",
+            color = accent,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            "OpenCode ждёт ответа — ход не завершится, пока вопрос не закрыт.",
+            color = Color(0xFFCBD8E6),
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 2.dp),
+        )
+        prompts.forEachIndexed { index, prompt ->
+            QuestionPromptCard(
+                prompt = prompt,
+                picked = picked[index].orEmpty(),
+                busy = busy,
+                emptyHint =
+                    if (prompts.size == 1) {
+                        "Вариантов нет — ответь своим текстом в поле ↓"
+                    } else {
+                        "Вариантов нет — на этот вопрос нужен свой текст"
+                    },
+                onClick = { label ->
+                    if (!prompt.multiple) {
+                        onAnswer(listOf(listOf(label)), label)
+                        return@QuestionPromptCard
+                    }
+                    val chosen = picked[index].orEmpty()
+                    val next =
+                        if (label in chosen) chosen - label else chosen + label
+                    picked = picked + (index to next)
+                },
+            )
+        }
+        if (anyMultiple) {
+            val answers = prompts.mapIndexed { index, _ -> picked[index].orEmpty() }
+            val ready = prompts.indices.all { answers[it].isNotEmpty() }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                TextButton(
+                    onClick = onReject,
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Отклонить", color = Color(0xFFFF8A75), fontSize = 12.sp)
+                }
+                TextButton(
+                    onClick = {
+                        onAnswer(answers, answers.flatten().joinToString(", "))
+                    },
+                    enabled = !busy && ready,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Ответить", color = accent, fontSize = 12.sp)
+                }
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                TextButton(
+                    onClick = onReject,
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Отклонить", color = Color(0xFFFF8A75), fontSize = 12.sp)
+                }
+                if (prompts.size == 1) {
+                    Text(
+                        "…или напиши свой ответ в поле ↓",
+                        color = Color(0xFF8A96A3),
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+            }
+        }
+        if (busy) {
+            Text(
+                "Отправляю ответ…",
+                color = Color(0xFF9E9E9E),
+                fontSize = 11.sp,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+    }
+}
+
+/**
+ * Один вопрос карточки: заголовок, текст и его варианты. Вынесено из
+ * [QuestionCard], потому что там же живут кнопки ответа — вместе они
+ * переваливали за порог сложности, а по отдельности читаются честно.
+ *
+ * [picked] — уже выбранные метки этого вопроса. [onAnswer] срабатывает по
+ * одиночному таку, [onToggle] — по переключению галочки у multiple.
+ */
+@Suppress("FunctionNaming", "LongMethod", "MagicNumber")
+@Composable
+private fun QuestionPromptCard(
+    prompt: OpenCodeQuestionPrompt,
+    picked: List<String>,
+    busy: Boolean,
+    emptyHint: String,
+    onClick: (String) -> Unit,
+) {
+    val accent = Color(0xFF5AA9E6)
+    if (prompt.header.isNotBlank()) {
+        Text(
+            prompt.header,
+            color = accent,
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+    }
+    Text(
+        prompt.question,
+        color = Color(0xFFE8EEF5),
+        fontSize = 14.sp,
+        lineHeight = 19.sp,
+        modifier = Modifier.padding(top = 2.dp),
+    )
+    prompt.options.forEach { option ->
+        val on = option.label in picked
+        val mark = if (prompt.multiple) "☑" else "•"
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (on) Color(0xFF1E3A5F) else Color(0xFF1B2430))
+                    .border(
+                        1.dp,
+                        if (on) accent.copy(alpha = 0.8f) else Color(0xFF2C3542),
+                        RoundedCornerShape(8.dp),
+                    )
+                    .clickable(enabled = !busy) { onClick(option.label) }
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+        ) {
+            Text(
+                "$mark ${option.label}",
+                color = Color(0xFFE6EDF5),
+                fontSize = 14.sp,
+                lineHeight = 18.sp,
+            )
+            if (option.description.isNotBlank()) {
+                Text(
+                    option.description,
+                    color = Color(0xFF9AA9B8),
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+        }
+    }
+    if (prompt.options.isEmpty()) {
+        Text(
+            emptyHint,
+            color = Color(0xFF8A96A3),
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 6.dp),
+        )
     }
 }
 
@@ -3911,39 +4145,16 @@ private fun titleOf(
     return "сессия"
 }
 
+/**
+ * Висящий вопрос модели для активной сессии. Опрос общий на все сессии
+ * каталога, поэтому фильтр по sessionID — обязательный, иначе карточка
+ * вопроса из чужой сессии появилась бы здесь. Разбор ответа — в
+ * [OpenCodeQuestionApi]: здесь только адрес и отсев по сессии.
+ */
 private fun questionOf(
     port: Int,
     sessionId: String,
-): ChatQuestion? {
-    try {
-        val raw = LocalOpenCodeClient.get(port, "/api/session/$sessionId/question") ?: return null
-        val data = JSONObject(raw).optJSONArray("data") ?: return null
-        if (data.length() == 0) return null
-        val q = data.getJSONObject(0)
-        val opts = q.optJSONArray("options") ?: JSONArray()
-        val labels = ArrayList<String>(opts.length())
-        for (i in 0 until opts.length()) {
-            labels.add(opts.getJSONObject(i).optString("label", ""))
-        }
-        return ChatQuestion(q.optString("id", ""), q.optString("text", ""), labels)
-    } catch (_: Exception) {
-        return null
-    }
-}
-
-private fun postAnswer(
-    port: Int,
-    sessionId: String,
-    questionId: String,
-    labels: List<String>,
-): Boolean {
-    val answers = JSONArray()
-    val one = JSONArray()
-    one.put(labels.firstOrNull() ?: "")
-    answers.put(one)
-    val body = JSONObject().put("answers", answers).toString()
-    return LocalOpenCodeClient.postAsync(port, "/api/session/$sessionId/question/$questionId/reply", body)
-}
+): OpenCodeQuestionRequest? = OpenCodeQuestionApi.pendingForSession(LocalOpenCodeClient.get(port, "/question"), sessionId)
 
 private suspend fun scrollToBottomFull(
     state: LazyListState,
@@ -4075,13 +4286,12 @@ private fun sessionHasMessages(
 
 /**
  * Множество сессий, занятых сервером прямо сейчас (значения из
- * /session/status). Пустое множество, если статус не прочитался: тогда
- * проверка «занята ли» ничего не запретит, но полезная нагрузка всё равно
- * отсечёт пустые сессии.
+ * /session/status). null — статус не прочитался, и это НЕ то же самое, что
+ * «никто не занят»: удалять сессии вслепую нельзя (см. [purgeAllowed]).
  */
-private fun busySessionIds(port: Int): Set<String> =
+private fun busySessionIds(port: Int): Set<String>? =
     try {
-        val raw = LocalOpenCodeClient.get(port, "/session/status") ?: return emptySet()
+        val raw = LocalOpenCodeClient.get(port, "/session/status") ?: return null
         val obj = JSONObject(raw)
         val out = LinkedHashSet<String>()
         for (k in obj.keys()) {
@@ -4089,8 +4299,54 @@ private fun busySessionIds(port: Int): Set<String> =
         }
         out
     } catch (_: Exception) {
-        emptySet()
+        null
     }
+
+/**
+ * Сколько раз переспрашиваем /session/status, прежде чем признать ход незаглушенным.
+ */
+private const val PURGE_CONFIRM_TRIES = 5
+
+/**
+ * Пауза между попытками подтвердить, что abort дождался сервера.
+ */
+private const val PURGE_CONFIRM_STEP_MS = 200L
+
+/**
+ * Остановить сессию и только потом удалить её.
+ *
+ * Прежний порядок (abort → delete, без паузы и без проверки) давал
+ * FOREIGN KEY constraint failed: сервер держит сессию в памяти и продолжает
+ * писать message/part уже после удаления строки. abort отвечает мгновенно, но
+ * это не значит, что цикл записи остановился, поэтому здесь ждём ухода записи
+ * из /session/status.
+ *
+ * Если статус недоступен или ход так и не ушёл — сессия остаётся. Это осознанный
+ * размен: лишняя сессия в ленте её удалит сам позже, а удалённая насильно
+ * ломает базу насмерть (см. [purgeAllowed]).
+ */
+private suspend fun stopAndPurge(
+    port: Int,
+    sessionId: String,
+) {
+    if (sessionRunning(port, sessionId)) {
+        abortSession(port, sessionId)
+        var tries = 0
+        while (sessionRunning(port, sessionId) && tries < PURGE_CONFIRM_TRIES) {
+            delay(PURGE_CONFIRM_STEP_MS)
+            tries++
+        }
+    }
+    val reachable = LocalOpenCodeClient.get(port, "/session/status") != null
+    if (!purgeAllowed(reachable, sessionRunning(port, sessionId))) {
+        android.util.Log.w(
+            "ChatOverlay",
+            "PURGE skipped session=$sessionId: ход не подтверждённо остановлен, удаление сломало бы внешние ключи",
+        )
+        return
+    }
+    deleteSession(port, sessionId)
+}
 
 /**
  * Подчистить сессии-сироты: созданные, но так и не использованные.
@@ -4118,7 +4374,9 @@ private fun pruneEmptySessions(
             (0 until arr.length())
                 .mapNotNull { arr.getJSONObject(it).optString("id").takeIf(String::isNotBlank) }
         } catch (_: Exception) {
-            return
+            // Список не разобрали — идти не по чему, но это не повод заглянуть
+            // в pruneAllowed или логировать: ниже всё равно ничего не удалится.
+            emptyList()
         }
     var removed = 0
     // Список busy берём ОДИН раз на весь проход: /session/status отдаёт объект,
@@ -4126,6 +4384,12 @@ private fun pruneEmptySessions(
     // сообщений может быть ноль (генерация только началась), и без этой
     // проверки такая сессия попала бы под нож вместе с живым ответом.
     val busy = busySessionIds(port)
+    if (busy == null) {
+        // Статус не прочитали — значит, «занята ли сессия», мы не знаем.
+        // Мусор в ленте дешевле, чем удаление бегущей сессии: см. [purgeAllowed].
+        android.util.Log.w("ChatOverlay", "PRUNE skipped: /session/status недоступен")
+        return
+    }
     for (sid in ids) {
         // Текущую и те, что мы сами бережём, не трогаем.
         if (sid in keep) continue
