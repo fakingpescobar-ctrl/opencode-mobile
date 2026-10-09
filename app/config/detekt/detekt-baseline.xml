@@ -5,6 +5,7 @@
     <ID>CyclomaticComplexMethod:ChatOverlay.kt$private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot?</ID>
     <ID>CyclomaticComplexMethod:DiagnosticsScreen.kt$@Composable fun DiagnosticsScreen( onClose: () -&gt; Unit, modifier: Modifier = Modifier, )</ID>
     <ID>CyclomaticComplexMethod:ModelDownloader.kt$ModelDownloader$private suspend fun downloadTo( context: Context, url: String, dest: File, minBytes: Long, label: String, requiredFree: Long, onProgress: (Long, Long) -&gt; Unit, ): File</ID>
+    <ID>CyclomaticComplexMethod:MoltbookTicker.kt$MoltbookTicker.Companion$internal fun lastAssistantText(messages: org.json.JSONArray): String?</ID>
     <ID>CyclomaticComplexMethod:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
     <ID>CyclomaticComplexMethod:SentenceChunker.kt$SentenceChunker$private fun findBoundary(text: String, limit: Int): Int?</ID>
     <ID>CyclomaticComplexMethod:SystemSpeechSynth.kt$PcmWav$fun readMonoFloat(file: File): TtsAudio?</ID>
@@ -20,20 +21,28 @@
     <ID>InstanceOfCheckForException:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$e is IllegalStateException</ID>
     <ID>InvalidPackageDeclaration:sherpa_Tts.kt$package com.k2fsa.sherpa.onnx</ID>
     <ID>InvalidPackageDeclaration:sherpa_WaveReader.kt$package com.k2fsa.sherpa.onnx</ID>
-    <ID>LongMethod:ChatOverlay.kt$fun stopVoice()</ID>
+    <ID>LargeClass:MoltbookClientTest.kt$MoltbookClientTest</ID>
+    <ID>LargeClass:MoltbookTicker.kt$MoltbookTicker</ID>
     <ID>LongMethod:ChatOverlay.kt$private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot?</ID>
     <ID>LongMethod:DiagnosticsScreen.kt$@Composable fun DiagnosticsScreen( onClose: () -&gt; Unit, modifier: Modifier = Modifier, )</ID>
     <ID>LongMethod:GaugeSettings.kt$@Composable fun GaugeSettings( ctxShape: GaugeShape, onCtxShapeChange: (GaugeShape) -&gt; Unit, onCtxShapePersist: () -&gt; Unit, zenShape: GaugeShape, onZenShapeChange: (GaugeShape) -&gt; Unit, onZenShapePersist: () -&gt; Unit, palette: GaugePalette, onColorChange: (GaugeColorKey, Int) -&gt; Unit, onPalettePersist: () -&gt; Unit, barGap: Int, onBarGapChange: (Int) -&gt; Unit, onBarGapPersist: () -&gt; Unit, onResetDefaults: () -&gt; Unit, modifier: Modifier = Modifier, )</ID>
     <ID>LongMethod:ModelDownloader.kt$ModelDownloader$private suspend fun downloadTo( context: Context, url: String, dest: File, minBytes: Long, label: String, requiredFree: Long, onProgress: (Long, Long) -&gt; Unit, ): File</ID>
+    <ID>LongMethod:MoltbookPanel.kt$@Composable internal fun MoltbookPanel( stats: MoltbookLedger.Stats, modifier: Modifier = Modifier, live: Boolean = false, )</ID>
     <ID>LongMethod:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
     <ID>LongMethod:sherpa_Tts.kt$fun getOfflineTtsConfig( modelDir: String, modelName: String, // for VITS acousticModelName: String, // for Matcha vocoder: String, // for Matcha voices: String, // for Kokoro or kitten lexicon: String, dataDir: String, dictDir: String, // unused ruleFsts: String, ruleFars: String, numThreads: Int? = null, isKitten: Boolean = false, isSupertonic: Boolean = false, durationPredictor: String = "", // for Supertonic textEncoder: String = "", // for Supertonic vectorEstimator: String = "", // for Supertonic supertonicVocoder: String = "", // for Supertonic ttsJson: String = "", // for Supertonic unicodeIndexer: String = "", // for Supertonic voiceStyle: String = "", // for Supertonic ): OfflineTtsConfig</ID>
     <ID>LongParameterList:GaugeSettings.kt$( ctxShape: GaugeShape, onCtxShapeChange: (GaugeShape) -&gt; Unit, onCtxShapePersist: () -&gt; Unit, zenShape: GaugeShape, onZenShapeChange: (GaugeShape) -&gt; Unit, onZenShapePersist: () -&gt; Unit, palette: GaugePalette, onColorChange: (GaugeColorKey, Int) -&gt; Unit, onPalettePersist: () -&gt; Unit, barGap: Int, onBarGapChange: (Int) -&gt; Unit, onBarGapPersist: () -&gt; Unit, onResetDefaults: () -&gt; Unit, modifier: Modifier = Modifier, )</ID>
     <ID>LongParameterList:GaugeSettings.kt$( label: String, value: Float, valueRange: ClosedFloatingPointRange&lt;Float&gt;, steps: Int, onValueChange: (Float) -&gt; Unit, onValueChangeFinished: () -&gt; Unit, display: String, )</ID>
     <ID>LongParameterList:ModelDownloader.kt$ModelDownloader$( context: Context, url: String, dest: File, minBytes: Long, label: String, requiredFree: Long, onProgress: (Long, Long) -&gt; Unit, )</ID>
+    <ID>LongParameterList:MoltbookLedger.kt$MoltbookLedger$( commentId: String, postId: String, author: String, body: String, createdAt: Long, now: Long, )</ID>
+    <ID>LongParameterList:MoltbookLedger.kt$MoltbookLedger$( postId: String, title: String, author: String, ours: Boolean, repostOf: String?, commentsTotal: Int, upvotes: Int, now: Long, )</ID>
+    <ID>LongParameterList:MoltbookLedgerDeltaTest.kt$MoltbookLedgerDeltaTest$( commentId: String, postId: String = "p-1", status: String = "NEW", ours: Boolean = false, at: Long = now - 2 * day, hits: Int = MoltbookLedger.SURVIVED_SCANS, )</ID>
+    <ID>LongParameterList:MoltbookRawArchive.kt$MoltbookRawArchive$( dir: File, method: String, path: String, status: Int, body: String, at: Long, )</ID>
     <ID>LongParameterList:sherpa_Tts.kt$( modelDir: String, modelName: String, // for VITS acousticModelName: String, // for Matcha vocoder: String, // for Matcha voices: String, // for Kokoro or kitten lexicon: String, dataDir: String, dictDir: String, // unused ruleFsts: String, ruleFars: String, numThreads: Int? = null, isKitten: Boolean = false, isSupertonic: Boolean = false, durationPredictor: String = "", // for Supertonic textEncoder: String = "", // for Supertonic vectorEstimator: String = "", // for Supertonic supertonicVocoder: String = "", // for Supertonic ttsJson: String = "", // for Supertonic unicodeIndexer: String = "", // for Supertonic voiceStyle: String = "", // for Supertonic )</ID>
     <ID>LoopWithTooManyJumpStatements:AudioTrackPlayer.kt$AudioTrackPlayer$while</ID>
     <ID>LoopWithTooManyJumpStatements:ChatOverlay.kt$for</ID>
     <ID>LoopWithTooManyJumpStatements:Ipv4Proxy.kt$Ipv4Proxy$while</ID>
+    <ID>LoopWithTooManyJumpStatements:MoltbookTicker.kt$MoltbookTicker$for</ID>
+    <ID>LoopWithTooManyJumpStatements:MoltbookTicker.kt$MoltbookTicker.Companion$for</ID>
     <ID>LoopWithTooManyJumpStatements:OpencodeRuntime.kt$OpencodeRuntime$for</ID>
     <ID>LoopWithTooManyJumpStatements:RuntimeManager.kt$RuntimeManager$while</ID>
     <ID>LoopWithTooManyJumpStatements:TtsSpeaker.kt$TtsSpeaker$while</ID>
@@ -60,8 +69,6 @@
     <ID>MagicNumber:ChatOverlay.kt$0xFF101010</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFF161616</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFF1C1C1C</ID>
-    <ID>MagicNumber:ChatOverlay.kt$0xFF1E2B1E</ID>
-    <ID>MagicNumber:ChatOverlay.kt$0xFF24401F</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFF252525</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFF2A2A2A</ID>
     <ID>MagicNumber:ChatOverlay.kt$0xFF2E5E8E</ID>
@@ -185,6 +192,48 @@
     <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$4</ID>
     <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$512</ID>
     <ID>MagicNumber:ModelDownloader.kt$ModelDownloader$60_000</ID>
+    <ID>MagicNumber:MoltbookAlarmReceiver.kt$MoltbookAlarmReceiver$60000</ID>
+    <ID>MagicNumber:MoltbookAlarmReceiver.kt$MoltbookAlarmReceiver$60_000L</ID>
+    <ID>MagicNumber:MoltbookClient.kt$MoltbookClient$1000</ID>
+    <ID>MagicNumber:MoltbookClient.kt$MoltbookClient.Companion$3</ID>
+    <ID>MagicNumber:MoltbookLedger.kt$MoltbookLedger$3</ID>
+    <ID>MagicNumber:MoltbookLedger.kt$MoltbookLedger$4</ID>
+    <ID>MagicNumber:MoltbookLedger.kt$MoltbookLedger$5</ID>
+    <ID>MagicNumber:MoltbookPanel.kt$0xFF14110C</ID>
+    <ID>MagicNumber:MoltbookPanel.kt$0xFF1E1B15</ID>
+    <ID>MagicNumber:MoltbookPanel.kt$0xFF39FF88</ID>
+    <ID>MagicNumber:MoltbookPanel.kt$0xFF3A3A3A</ID>
+    <ID>MagicNumber:MoltbookPanel.kt$0xFF8A8A8A</ID>
+    <ID>MagicNumber:MoltbookPanel.kt$0xFFBDBDBD</ID>
+    <ID>MagicNumber:MoltbookPanel.kt$0xFFE8E8E8</ID>
+    <ID>MagicNumber:MoltbookPanel.kt$0xFFFF6B6B</ID>
+    <ID>MagicNumber:MoltbookPanel.kt$0xFFFFB020</ID>
+    <ID>MagicNumber:MoltbookPanel.kt$40</ID>
+    <ID>MagicNumber:MoltbookPanel.kt$60</ID>
+    <ID>MagicNumber:MoltbookRawArchive.kt$MoltbookRawArchive$8</ID>
+    <ID>MagicNumber:MoltbookScheduler.kt$MoltbookScheduler$120</ID>
+    <ID>MagicNumber:MoltbookScheduler.kt$MoltbookScheduler$30</ID>
+    <ID>MagicNumber:MoltbookScheduler.kt$MoltbookScheduler$360</ID>
+    <ID>MagicNumber:MoltbookScheduler.kt$MoltbookScheduler$60</ID>
+    <ID>MagicNumber:MoltbookScheduler.kt$MoltbookScheduler$60000</ID>
+    <ID>MagicNumber:MoltbookScheduler.kt$MoltbookScheduler$60_000L</ID>
+    <ID>MagicNumber:MoltbookTicker.kt$MoltbookTicker$1000</ID>
+    <ID>MagicNumber:MoltbookTicker.kt$MoltbookTicker$12</ID>
+    <ID>MagicNumber:MoltbookTicker.kt$MoltbookTicker$240</ID>
+    <ID>MagicNumber:MoltbookTicker.kt$MoltbookTicker$3</ID>
+    <ID>MagicNumber:MoltbookTicker.kt$MoltbookTicker$40</ID>
+    <ID>MagicNumber:MoltbookTicker.kt$MoltbookTicker$400</ID>
+    <ID>MagicNumber:MoltbookTicker.kt$MoltbookTicker$60_000L</ID>
+    <ID>MagicNumber:MoltbookTicker.kt$MoltbookTicker$8</ID>
+    <ID>MagicNumber:MoltbookTicker.kt$MoltbookTicker.Companion$60_000L</ID>
+    <ID>MagicNumber:MoltbookWatchdog.kt$MoltbookWatchdog$3600000</ID>
+    <ID>MagicNumber:MoltbookWatchdog.kt$MoltbookWatchdog$60</ID>
+    <ID>MagicNumber:MoltbookWatchdog.kt$MoltbookWatchdog$60000</ID>
+    <ID>MagicNumber:MoltbookWatchdog.kt$MoltbookWatchdog$60_000L</ID>
+    <ID>MagicNumber:MoltbookWatchdogReceiver.kt$MoltbookWatchdogReceiver$3600000</ID>
+    <ID>MagicNumber:MoltbookWitness.kt$MoltbookWitness$3</ID>
+    <ID>MagicNumber:MoltbookWitness.kt$MoltbookWitness$4</ID>
+    <ID>MagicNumber:MoltbookWitness.kt$MoltbookWitness$5</ID>
     <ID>MagicNumber:OpencodeRuntime.kt$OpencodeRuntime$8192</ID>
     <ID>MagicNumber:OpencodeServerService.kt$ContextCompatSafe$26</ID>
     <ID>MagicNumber:OpencodeServerService.kt$OpencodeServerService$26</ID>
@@ -238,6 +287,10 @@
     <ID>MagicNumber:sherpa_Tts.kt$4</ID>
     <ID>MaxLineLength:ChatOverlay.kt$"Как работает: int8-энкодер (блочная квантование, ~2× быстрее fp32) → fp16/32-декодер с KV-cache (шаг по токену ~64мс)."</ID>
     <ID>MaxLineLength:ModelDownloader.kt$ModelDownloader$"206 без etag/Content-Range гарантии (start=$crStart, ждали $startAt, etag=${etagFile.exists()}) — перекачка с нуля"</ID>
+    <ID>MaxLineLength:MoltbookIntegrityFixTest.kt$MoltbookIntegrityFixTest$val oldTamper = listOf(Entry(seq = 0, at = now - 61 * 60 * 1000L, kind = MoltbookWitness.KIND_TAMPER, payload = "цепь порвана", prevHash = MoltbookWitness.GENESIS_HASH, hash = "x"))</ID>
+    <ID>MaxLineLength:MoltbookIntegrityFixTest.kt$MoltbookIntegrityFixTest$val recentTamper = listOf(Entry(seq = 0, at = now - 10 * 60 * 1000L, kind = MoltbookWitness.KIND_TAMPER, payload = "цепь порвана", prevHash = MoltbookWitness.GENESIS_HASH, hash = "x"))</ID>
+    <ID>MaxLineLength:MoltbookTicker.kt$MoltbookTicker$"RU: переведи КАЖДЫЙ комментарий на русский — по одной строке `RU &lt;номер&gt;: &lt;перевод&gt;`. Это для панели, читает русский человек."</ID>
+    <ID>MaxLineLength:MoltbookTicker.kt$MoltbookTicker$"проверено постов=${report.postsChecked} ответов=${report.repliesPosted} verification=${report.verificationsSolved} апвоутов=${report.upvotesGiven}"</ID>
     <ID>MayBeConst:GaugeStyle.kt$GaugeBarGap$val DEFAULT = 4</ID>
     <ID>NestedBlockDepth:ChatOverlay.kt$private fun playNotificationSound(context: Context)</ID>
     <ID>NestedBlockDepth:DiagnosticsScreen.kt$private fun readLogTail( file: File, maxBytes: Int = 4000, ): String</ID>
@@ -245,18 +298,43 @@
     <ID>NestedBlockDepth:ModelDownloader.kt$ModelDownloader$private fun hasGgmlMagic(file: File): Boolean</ID>
     <ID>NestedBlockDepth:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
     <ID>NestedBlockDepth:SentenceChunker.kt$SentenceChunker$private fun findBoundary(text: String, limit: Int): Int?</ID>
+    <ID>NewLineAtEndOfFile:MoltbookIntegrityFixTest.kt$org.opencode.mobile.social.MoltbookIntegrityFixTest.kt</ID>
+    <ID>NewLineAtEndOfFile:MoltbookRawArchive.kt$org.opencode.mobile.social.MoltbookRawArchive.kt</ID>
+    <ID>NewLineAtEndOfFile:MoltbookRawArchiveTest.kt$org.opencode.mobile.social.MoltbookRawArchiveTest.kt</ID>
     <ID>NewLineAtEndOfFile:SentenceChunker.kt$org.opencode.mobile.tts.SentenceChunker.kt</ID>
     <ID>NewLineAtEndOfFile:SystemSpeechSynth.kt$org.opencode.mobile.tts.SystemSpeechSynth.kt</ID>
     <ID>ReturnCount:AudioTrackPlayer.kt$AudioTrackPlayer$fun play(audio: TtsAudio): Boolean</ID>
     <ID>ReturnCount:ChatOverlay.kt$AudioRecorder$fun stop(): FloatArray</ID>
     <ID>ReturnCount:ChatOverlay.kt$private fun prettyModel(id: String?): String</ID>
-    <ID>ReturnCount:ChatOverlay.kt$private fun questionOf( port: Int, sessionId: String, ): ChatQuestion?</ID>
     <ID>ReturnCount:ChatOverlay.kt$private suspend fun scrollToBottomFull( state: LazyListState, target: Int, )</ID>
     <ID>ReturnCount:DiagnosticsScreen.kt$private fun fmtBytes(b: Long): String</ID>
     <ID>ReturnCount:Ipv4Proxy.kt$Ipv4Proxy$fun ensureStarted(port: Int = PORT): Int?</ID>
     <ID>ReturnCount:Ipv4Proxy.kt$Ipv4Proxy$private fun handleConn(client: Socket)</ID>
+    <ID>ReturnCount:MediaControlController.kt$private fun PlaybackState?.toIsPlaying(): Boolean</ID>
     <ID>ReturnCount:ModelDownloader.kt$ModelDownloader$fun checkIntegrity(file: File): ModelIntegrity</ID>
     <ID>ReturnCount:ModelDownloader.kt$ModelDownloader$private fun parseContentRangeStart(header: String?): Long?</ID>
+    <ID>ReturnCount:MoltbookAlarmReceiver.kt$MoltbookAlarmReceiver$private fun readinessBlocker( context: Context, stamp: File, ): String?</ID>
+    <ID>ReturnCount:MoltbookClient.kt$MoltbookClient$fun postComment( postId: String, content: String, parentId: String?, ): CommentOutcome</ID>
+    <ID>ReturnCount:MoltbookClient.kt$MoltbookClient$private fun JSONObject.firstInt(vararg keys: String): Int</ID>
+    <ID>ReturnCount:MoltbookClient.kt$MoltbookClient.Companion$internal fun feedArray(root: JSONObject): JSONArray?</ID>
+    <ID>ReturnCount:MoltbookClient.kt$MoltbookClient.Companion$internal fun postedCommentId(root: JSONObject): String</ID>
+    <ID>ReturnCount:MoltbookLedger.kt$MoltbookLedger.Companion$fun prunePlan( rows: List&lt;SeenComment&gt;, now: Long, ): List&lt;SeenComment&gt;</ID>
+    <ID>ReturnCount:MoltbookPanel.kt$private fun cadenceHint(stats: MoltbookLedger.Stats): String</ID>
+    <ID>ReturnCount:MoltbookRawArchive.kt$MoltbookRawVerifier$fun verdict( receipt: Receipt?, sentContent: String?, ): Verdict</ID>
+    <ID>ReturnCount:MoltbookTicker.kt$MoltbookTicker$private fun askModel(prompt: String): String?</ID>
+    <ID>ReturnCount:MoltbookTicker.kt$MoltbookTicker$private fun checkLedgerUntouched( ledger: MoltbookLedger, facts: MutableList&lt;String&gt;, )</ID>
+    <ID>ReturnCount:MoltbookTicker.kt$MoltbookTicker$private fun lastTouchedUserSession(): String?</ID>
+    <ID>ReturnCount:MoltbookTicker.kt$MoltbookTicker$private fun postWithVerification( client: MoltbookClient, postId: String, parentId: String, draft: String, facts: MutableList&lt;String&gt;, ): PostResult</ID>
+    <ID>ReturnCount:MoltbookTicker.kt$MoltbookTicker$private fun purgeDeadPending( client: MoltbookClient, blocked: PostResult.Blocked, ): Boolean</ID>
+    <ID>ReturnCount:MoltbookTicker.kt$MoltbookTicker$private fun solveChallenge( client: MoltbookClient, challenge: MoltbookClient.CommentOutcome.NeedsVerification, ): PostResult</ID>
+    <ID>ReturnCount:MoltbookWatchdog.kt$MoltbookWatchdog$fun inspect( head: Entry?, now: Long, limitMs: Long = LIMIT_MS_FALLBACK, ): Verdict?</ID>
+    <ID>ReturnCount:MoltbookWatchdog.kt$MoltbookWatchdog$fun interruptedTick( openedAt: Long?, lastEntryAt: Long, now: Long, minAgeMs: Long = INTERRUPT_MIN_AGE_MS, ): Verdict?</ID>
+    <ID>ReturnCount:MoltbookWatchdog.kt$MoltbookWatchdog$fun mirrorFile(context: Context): File?</ID>
+    <ID>ReturnCount:MoltbookWatchdogReceiver.kt$MoltbookWatchdogReceiver$private fun lastTouchedUserSession(): String?</ID>
+    <ID>ReturnCount:MoltbookWitness.kt$MoltbookWitness$fun parseLine(line: String): Entry?</ID>
+    <ID>ReturnCount:MoltbookWitness.kt$MoltbookWitness$fun verify(logFile: File): VerifyResult</ID>
+    <ID>ReturnCount:MoltbookWitness.kt$MoltbookWitness$fun verifyMirror( logFile: File, mirrorFile: File?, ): String</ID>
+    <ID>ReturnCount:MoltbookWitness.kt$MoltbookWitness$private fun defectIn( entry: Entry, previous: Entry?, ): String?</ID>
     <ID>ReturnCount:OpencodeServerService.kt$OpencodeServerService$override fun onStartCommand( intent: Intent?, flags: Int, startId: Int, ): Int</ID>
     <ID>ReturnCount:RuntimeManager.kt$RuntimeManager$private fun rotateLogFile(logFile: File)</ID>
     <ID>ReturnCount:RuntimeManager.kt$RuntimeManager$private suspend fun waitForHttp(port: Int): Boolean</ID>
@@ -270,8 +348,11 @@
     <ID>SwallowedException:DiagnosticsScreen.kt$e: Exception</ID>
     <ID>SwallowedException:Ipv4Proxy.kt$Ipv4Proxy$e: IOException</ID>
     <ID>SwallowedException:ModelDownloader.kt$ModelDownloader$e: java.io.FileNotFoundException</ID>
+    <ID>SwallowedException:MoltbookClient.kt$MoltbookClient$e: TimeoutException</ID>
     <ID>SwallowedException:ProcessSupervisor.kt$ProcessSupervisor$e: Exception</ID>
     <ID>SwallowedException:RuntimeManager.kt$RuntimeManager$e: Exception</ID>
+    <ID>ThrowsCount:MoltbookClient.kt$MoltbookClient$private fun requestBodyBlocking( path: String, method: String, body: String?, ): String</ID>
+    <ID>ThrowsCount:MoltbookClient.kt$MoltbookClient.Companion$internal fun collectPagedComments(fetch: (String?) -&gt; JSONObject): List&lt;Comment&gt;</ID>
     <ID>ThrowsCount:OpencodeRuntime.kt$OpencodeRuntime$@Throws(Exception::class) fun ensureMuslLibs(context: Context): File</ID>
     <ID>ThrowsCount:sherpa_Tts.kt$fun getOfflineTtsConfig( modelDir: String, modelName: String, // for VITS acousticModelName: String, // for Matcha vocoder: String, // for Matcha voices: String, // for Kokoro or kitten lexicon: String, dataDir: String, dictDir: String, // unused ruleFsts: String, ruleFars: String, numThreads: Int? = null, isKitten: Boolean = false, isSupertonic: Boolean = false, durationPredictor: String = "", // for Supertonic textEncoder: String = "", // for Supertonic vectorEstimator: String = "", // for Supertonic supertonicVocoder: String = "", // for Supertonic ttsJson: String = "", // for Supertonic unicodeIndexer: String = "", // for Supertonic voiceStyle: String = "", // for Supertonic ): OfflineTtsConfig</ID>
     <ID>TooGenericExceptionCaught:AudioTrackPlayer.kt$AudioTrackPlayer$t: Throwable</ID>
@@ -281,6 +362,13 @@
     <ID>TooGenericExceptionCaught:DiagnosticsScreen.kt$e: Exception</ID>
     <ID>TooGenericExceptionCaught:Ipv4Proxy.kt$Ipv4Proxy$e: Exception</ID>
     <ID>TooGenericExceptionCaught:ModelDownloader.kt$ModelDownloader$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:MoltbookAlarmReceiver.kt$MoltbookAlarmReceiver$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:MoltbookAlarmReceiver.kt$MoltbookAlarmReceiver$e: Throwable</ID>
+    <ID>TooGenericExceptionCaught:MoltbookClient.kt$MoltbookClient$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:MoltbookLedger.kt$MoltbookLedger$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:MoltbookRawArchive.kt$MoltbookRawArchive$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:MoltbookTicker.kt$MoltbookTicker$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:MoltbookWatchdogReceiver.kt$MoltbookWatchdogReceiver$e: Throwable</ID>
     <ID>TooGenericExceptionCaught:OpencodeRuntime.kt$OpencodeRuntime$e: Exception</ID>
     <ID>TooGenericExceptionCaught:OpencodeServerService.kt$OpencodeServerService$e: Exception</ID>
     <ID>TooGenericExceptionCaught:ProcessSupervisor.kt$ProcessSupervisor$e: Exception</ID>
@@ -297,6 +385,14 @@
     <ID>TooManyFunctions:ChatOverlay.kt$org.opencode.mobile.ui.ChatOverlay.kt</ID>
     <ID>TooManyFunctions:DiagnosticsScreen.kt$org.opencode.mobile.ui.DiagnosticsScreen.kt</ID>
     <ID>TooManyFunctions:ModelDownloader.kt$ModelDownloader</ID>
+    <ID>TooManyFunctions:MoltbookAlarmReceiver.kt$MoltbookAlarmReceiver : BroadcastReceiver</ID>
+    <ID>TooManyFunctions:MoltbookClient.kt$MoltbookClient</ID>
+    <ID>TooManyFunctions:MoltbookClient.kt$MoltbookClient$Companion</ID>
+    <ID>TooManyFunctions:MoltbookLedger.kt$MoltbookLedger : SQLiteOpenHelper</ID>
+    <ID>TooManyFunctions:MoltbookScheduler.kt$MoltbookScheduler</ID>
+    <ID>TooManyFunctions:MoltbookTicker.kt$MoltbookTicker</ID>
+    <ID>TooManyFunctions:MoltbookWatchdog.kt$MoltbookWatchdog</ID>
+    <ID>TooManyFunctions:MoltbookWitness.kt$MoltbookWitness</ID>
     <ID>TooManyFunctions:OpencodeServerService.kt$OpencodeServerService : Service</ID>
     <ID>TooManyFunctions:RuntimeManager.kt$RuntimeManager</ID>
     <ID>TooManyFunctions:WhisperTranscribeService.kt$WhisperTranscribeService$Companion</ID>
@@ -323,6 +419,7 @@
     <ID>UseCheckOrError:OpencodeRuntime.kt$OpencodeRuntime$throw IllegalStateException("musl lib $neededName not materialized")</ID>
     <ID>UseCheckOrError:OpencodeRuntime.kt$OpencodeRuntime$throw IllegalStateException("musl lib $neededName: tmp rename failed")</ID>
     <ID>UseCheckOrError:OpencodeRuntime.kt$OpencodeRuntime$throw IllegalStateException("musl lib $srcName missing in nativeLibraryDir")</ID>
+    <ID>UseRequire:MoltbookClient.kt$MoltbookClient$throw IllegalArgumentException("Moltbook: метод $method запрещён, разрешено $ALLOWED_METHODS")</ID>
     <ID>UseRequire:sherpa_Tts.kt$throw IllegalArgumentException("Please provide vocoder for Matcha TTS")</ID>
     <ID>UseRequire:sherpa_Tts.kt$throw IllegalArgumentException("Please specify a TTS model")</ID>
     <ID>UseRequire:sherpa_Tts.kt$throw IllegalArgumentException("Please specify either a VITS or a Matcha model, but not both")</ID>
