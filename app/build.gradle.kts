@@ -1,3 +1,7 @@
+import java.security.MessageDigest
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Properties
 
 plugins {
@@ -24,6 +28,153 @@ val keystoreProps = Properties().apply {
 }
 val releaseStoreFile = keystoreProps.getProperty("storeFile")
 val hasReleaseKey = releaseStoreFile != null && file(releaseStoreFile).exists()
+
+// ---- Штамп сборки ----
+//
+// Зачем: «О программе» показывал всегда `0.1.0 (code 1)`, то есть на телефоне
+// невозможно было понять, КАКАЯ сборка стоит. Сравнивать приходилось по
+// sha256 APK, а это не то же самое, что «что я собрал» — sha256 меняется от
+// пересборки без правки исходников (время в подписи, порядок ресурсов).
+// Пользователю нужен ответ на вопрос «откуда эта сборка», а не «как называется
+// файл», поэтому в BuildConfig кладём ИМЕННО ТО, из чего собрали: хэш
+// дерева-источника и время сборки.
+//
+// Оба значения считаются ОДИН РАЗ на конфигурирование, и это обязательно, а не
+// для скорости: если читать git на каждый task, то `--offline`/повторный
+// запуск дадут другое время, и Gradle пересоберёт BuildConfig, а с ним и весь
+// APK, даже когда исходники не менялись. Считаем на старте сессии — тогда
+// повторный запуск на неизменённом дереве даёт тот же BuildConfig и сборка
+// остаётся up-to-date.
+val gitSha: String =
+    runCatching {
+        val proc = ProcessBuilder("git", "rev-parse", "--short=8", "HEAD")
+            .directory(rootProject.projectDir)
+            .redirectErrorStream(true)
+            .start()
+        val out = proc.inputStream.bufferedReader().use { it.readText() }.trim()
+        if (proc.waitFor() != 0) throw IllegalStateException("git rev-parse -> $out")
+        out
+    }.getOrElse { "nogit" }
+
+// Локальный git-репозиторий может быть с изменениями в рабочем дереве - тогда
+// короткий хэш врёт (он указывает на последний коммит, а не на то, что
+// собрано). Считаем сами файлы и помечаем, если дерево грязное.
+//
+// Неотслеживаемые файлы ТОЖЕ считаются грязными, и это не педантизм: новый
+// .kt в app/src/main попадает в APK, но при --untracked-files=no он не виден
+// - и метка сборки врала бы ровно в том случае, ради которого добавлена.
+val gitStatus: String =
+    runCatching {
+        val proc = ProcessBuilder("git", "status", "--porcelain")
+            .directory(rootProject.projectDir)
+            .redirectErrorStream(true)
+            .start()
+        val out = proc.inputStream.bufferedReader().use { it.readText() }.trim()
+        if (proc.waitFor() != 0) throw IllegalStateException("git status -> $out")
+        out
+    }.getOrElse { "" }
+
+val gitDirty: Boolean = gitStatus.isNotEmpty()
+
+// Хэш содержимого правок, а не «грязно/чисто». Булева было бы мало: дерево с
+// тремя правками в 10:00 и с тремя ДРУГИМИ правками в 14:00 даёт один и тот же
+// `dirty=true`, метка совпала бы, и вторая сборка байт-в-байт перезаписала бы
+// первую - то есть ровно то, ради чего имя APK стало датой и хэшем, снова
+// перестало бы работать.
+//
+// `git diff HEAD` смотрит только на ОТСЛЕЖИВАЕМЫЕ файлы, поэтому добавление нового
+// .kt в app/src/main в него не попадает вообще: такой файл меняет содержимое APK,
+// а хэш остаётся прежним. Значит имя не меняется и новая сборка затирает старую.
+// Поэтому untracked добавляются вручную: список имён плюс содержимое, но с
+// потолком на файл - в untracked легко случайно оказывается дамп или архив, а
+// читать сотни мегабайт на каждом запуске Gradle нельзя. Файл крупнее потолка
+// вклад даёт по имени и длине: этого хватает, чтобы отличить одно дерево от
+// другого, и не стоит ничего.
+val UNTRACKED_FILE_LIMIT = 1024L * 1024L
+val treeHash: String = runCatching {
+    val md = MessageDigest.getInstance("MD5")
+    val proc = ProcessBuilder("git", "diff", "HEAD")
+        .directory(rootProject.projectDir)
+        .redirectErrorStream(true)
+        .start()
+    val buf = ByteArray(64 * 1024)
+    while (true) {
+        val n = proc.inputStream.read(buf)
+        if (n <= 0) break
+        md.update(buf, 0, n)
+    }
+    proc.waitFor()
+    md.update(gitStatus.toByteArray())
+    val untracked = ProcessBuilder("git", "ls-files", "--others", "--exclude-standard")
+        .directory(rootProject.projectDir)
+        .redirectErrorStream(true)
+        .start()
+    untracked.inputStream.bufferedReader().use { reader ->
+        while (true) {
+            val rel = reader.readLine() ?: break
+            if (rel.isBlank()) continue
+            val f = rootProject.file(rel)
+            md.update(rel.toByteArray())
+            if (!f.isFile) {
+                md.update("dir".toByteArray())
+            } else if (f.length() > UNTRACKED_FILE_LIMIT) {
+                md.update("big:${f.length()}".toByteArray())
+            } else {
+                md.update(f.readBytes())
+            }
+        }
+    }
+    untracked.waitFor()
+    md.digest().joinToString("") { "%02x".format(it) }.take(8)
+}.getOrElse { "nohash" }
+
+// Время в UTC +5 (Алматы) без секунд: точность до минуты достаточна, чтобы
+// отличить две сборки в один день, а разница с UTC-меткой в телефоне не сбивает.
+// Формат ISO-подобный и сортируемый: `2026-10-10T22:13+05:00`.
+//
+// ВАЖНО, метка кешируется, а не пересчитывается на каждом запуске. `Instant.now()`
+// здесь означал бы, что BuildConfig.BUILD_STAMP меняется при ЛЮБОМ запуске
+// Gradle: задача generateBuildConfig видела бы новое значение, пересобирала
+// файл, и следом пересобирался весь APK - up-to-date не срабатывал бы никогда.
+// Комментарий выше про «считаем один раз на сессию» был ровно про это свойство,
+// но сам `Instant.now()` ему противоречил.
+//
+// Ключ кеша - пара (git sha, хэш содержимого правок). Пока коммит и содержимое
+// дерева те же, метка та же, и пересборка честно остаётся no-op. Изменился любой
+// байт исходников - метка новая: тогда содержимое сборки действительно другое,
+// и имя APK обязано отличаться, иначе история сборок снова схлопнется в один файл.
+// Файл лежит в build/, который в .gitignore и который `gradlew clean` сносит -
+// после чистой сборки метка будет новой, и это верно: пересобрано с нуля.
+//
+// Обойти кеш вручную (пересобрать то же дерево под новой меткой):
+//   .\gradlew.bat -PforceBuildStamp=true :app:assembleDebug
+val stampCache = rootProject.file("build/build-stamp.txt")
+val forceStamp = (findProperty("forceBuildStamp") as String?)?.toBoolean() == true
+val stampKey = "$gitSha/$treeHash"
+val nowStamp = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mmxxx")
+    .withZone(ZoneId.of("Asia/Almaty"))
+    .format(Instant.now())
+val buildStamp: String = run {
+    val cached = runCatching { stampCache.readText().trim() }.getOrNull()
+    if (!forceStamp && cached != null && cached.startsWith("$stampKey ")) {
+        cached.removePrefix("$stampKey ")
+    } else {
+        // Отказ записи кеша НЕ молчим: иначе каждая следующая сборка получит
+        // новую метку, generateDebugBuildConfig перезапишется, и весь APK будет
+        // пересобираться при каждом запуске - ровно та деградация, ради которой
+        // кеш и заведён. Сообщение в консоли позволяет понять, что происходит.
+        runCatching {
+            stampCache.parentFile.mkdirs()
+            stampCache.writeText("$stampKey $nowStamp")
+        }.onFailure {
+            logger.warn(
+                "build-stamp cache is not writable (${it.message}); " +
+                    "the build will not stay up-to-date between runs",
+            )
+        }
+        nowStamp
+    }
+}
 
 android {
     namespace = "org.opencode.mobile"
@@ -64,9 +215,16 @@ android {
         applicationId = "org.opencode.mobile"
         minSdk = 28
         targetSdk = 36
-        versionCode = 1
+        versionCode = 2
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Штамп сборки в BuildConfig: `BuildConfig.GIT_SHA`, `BUILD_STAMP`,
+        // `GIT_DIRTY`. Читает их DiagnosticsScreen («О программе»).
+        // Значения - константы времени компиляции, поэтому обычные строки.
+        buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
+        buildConfigField("String", "BUILD_STAMP", "\"$buildStamp\"")
+        buildConfigField("boolean", "GIT_DIRTY", "$gitDirty")
     }
 
     signingConfigs {
@@ -214,6 +372,28 @@ android {
     // Подкладываем готовые бинари (musl-сборка opencode + зависимые libc/libstdc++/libgcc)
     // Кладутся в nativeLibraryDir. Имена строго lib*.so.
     sourceSets["main"].jniLibs.srcDirs("src/main/jniLibs")
+
+    // Имя APK = дата-время + короткий git-хэш, чтобы каталог outputs сам отвечал
+    // на вопрос «какая сборка это». Раньше все сборки назывались app-debug.apk и
+    // перезаписывали друг друга: в истории оставалось одно имя и ноль истории.
+    applicationVariants.all {
+        // Имя варианта читаем ЗДЕСЬ и сохраняем: внутри outputs.all та же метка
+        // `all` уже занята внешним блоком, и обращение к variant изнутри
+        // нерезолвится (Kotlin DSL путает receiver'ы вложенных all).
+        val variantName = buildType.name
+        outputs.forEach { outputSpec ->
+            // В AGP 8 `VariantOutput` не даёт setter имени файла напрямую -
+            // он есть только на внутреннем BaseVariantOutputImpl. Если вдруг
+            // реализация сменится, оставляем дефолтное имя и сборка не падает.
+            val output = outputSpec as? com.android.build.gradle.internal.api.BaseVariantOutputImpl
+            if (output != null) {
+                val stampPart = buildStamp.replace(':', '-').replace('T', '_')
+                val dirtyPart = if (gitDirty) "-dirty" else ""
+                output.outputFileName =
+                    "opencode-$variantName-$stampPart-$gitSha$dirtyPart.apk"
+            }
+        }
+    }
 }
 
 dependencies {

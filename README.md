@@ -252,10 +252,13 @@ Vulkan-эксперимент 6.45 s — стабилен, но в проде в
    ```powershell
    powershell -ExecutionPolicy Bypass -File build.ps1 -Task debug
    ```
-3. APK появится в `app/build/outputs/apk/debug/app-debug.apk`.
+3. APK появится в `app/build/outputs/apk/debug/opencode-debug-<дата>-<git-sha>[-dirty].apk` — в имени метка времени и хэш коммита, иначе установленные сборки не отличить друг от друга. Старые сборки не перезаписываются, поэтому имя берётся последним по времени:
+   ```powershell
+   Get-ChildItem app/build/outputs/apk/debug/*.apk | Sort-Object LastWriteTime -Desc | Select-Object -First 1
+   ```
 4. Установить:
-   ```bash
-   adb install -r app/build/outputs/apk/debug/app-debug.apk
+   ```powershell
+   adb install -r (Get-ChildItem app/build/outputs/apk/debug/opencode-debug-*.apk | Sort-Object LastWriteTime -Desc | Select-Object -First 1).FullName
    ```
    или просто скопировать APK на телефон и открыть.
 
@@ -284,8 +287,8 @@ Vulkan-эксперимент 6.45 s — стабилен, но в проде в
 > под значком.
 
 - **Debug** («OpenCode Mobile · Debug»):
-  ```bash
-  adb install -r app/build/outputs/apk/debug/app-debug.apk
+  ```powershell
+  adb install -r (Get-ChildItem app/build/outputs/apk/debug/opencode-debug-*.apk | Sort-Object LastWriteTime -Desc | Select-Object -First 1).FullName
   adb shell monkey -p org.opencode.mobile.debug -c android.intent.category.LAUNCHER 1
   ```
 - **Release** («OpenCode Mobile», R8-минифицирован, подписан release-ключом):
@@ -296,7 +299,7 @@ Vulkan-эксперимент 6.45 s — стабилен, но в проде в
   cp keystore.properties.example keystore.properties   # вписать путь и пароли
 
   gradlew.bat :app:assembleRelease -x lint
-  adb install -r app/build/outputs/apk/release/app-release.apk
+  adb install -r (Get-ChildItem app/build/outputs/apk/release/opencode-release-*.apk | Sort-Object LastWriteTime -Desc | Select-Object -First 1).FullName
   adb shell monkey -p org.opencode.mobile -c android.intent.category.LAUNCHER 1
   ```
 
@@ -309,7 +312,7 @@ Vulkan-эксперимент 6.45 s — стабилен, но в проде в
   сборку публиковать нельзя — она совместима только с уже установленным debug.
   Проверить, чем подписан APK:
   ```bash
-  $ANDROID_HOME/build-tools/36.0.0/apksigner.bat verify --print-certs app/build/outputs/apk/release/app-release.apk
+  $ANDROID_HOME/build-tools/36.0.0/apksigner.bat verify --print-certs (Get-ChildItem app/build/outputs/apk/release/opencode-release-*.apk | Sort-Object LastWriteTime -Desc | Select-Object -First 1).FullName
   ```
 
 ### minVerify: проверить release-пайплайн на устройстве

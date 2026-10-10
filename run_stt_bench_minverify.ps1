@@ -104,9 +104,16 @@ if (-not $SkipPush) {
     } finally { Pop-Location }
     Ok 'build done'
 
-    $appApk  = Join-Path $Repo 'app\build\outputs\apk\minVerify\app-minVerify.apk'
+    # Имя APK несёт дату и git-sha, поэтому берём последний по времени, а не
+    # фиксированное имя: жёсткий путь ломался бы на каждой сборке. Каталоги
+    # androidTest не переименовываются, там имя остаётся штатным.
+    $appApkDir = Join-Path $Repo 'app\build\outputs\apk\minVerify'
+    $appApk = Get-ChildItem -Path $appApkDir -Filter '*.apk' -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
     $testApk = Join-Path $Repo 'app\build\outputs\apk\androidTest\minVerify\app-minVerify-androidTest.apk'
-    foreach ($a in @($appApk, $testApk)) { if (-not (Test-Path $a)) { Die "APK not found: $a" } }
+    if (-not $appApk) { Die "APK not found in $appApkDir" }
+    if (-not (Test-Path $testApk)) { Die "APK not found: $testApk" }
+    $appApk = $appApk.FullName
 
     # Assert on the ARTIFACT, not on the flag we think we passed. A green gradle
     # build says nothing about whether the native libs made it into the APK, and

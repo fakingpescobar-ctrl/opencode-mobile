@@ -59,6 +59,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.opencode.mobile.BuildConfig
 import org.opencode.mobile.OpencodeApp
 import org.opencode.mobile.account.YandexAccountController
 import org.opencode.mobile.installer.InstalledAppController
@@ -471,6 +472,10 @@ fun DiagnosticsScreen(
                         }
                     }
                 InfoRow("Приложение", "${appInfo?.versionName ?: "?"} (code ${appInfo?.longVersionCode ?: 0})")
+                // Штамп СБОРКИ, а не версия из манифеста. versionName навсегда
+                // останется 0.1.0 - он про продукт, а не про конкретный APK.
+                // «Какая сборка стоит» отвечает только этот ряд.
+                InfoRow("Сборка", buildStampLabel())
                 InfoRow("SDK / ABI", "API ${Build.VERSION.SDK_INT} / ${Build.SUPPORTED_ABIS.firstOrNull() ?: "?"}")
                 InfoRow(
                     "RAM",
@@ -763,6 +768,7 @@ private fun buildDiagnosticsDump(
     val pm = context.packageManager
     val appInfo = runCatching { pm.getPackageInfo(context.packageName, 0) }.getOrNull()
     sb.append("Приложение: v${appInfo?.versionName ?: "?"} (code ${appInfo?.longVersionCode ?: 0})\n")
+    sb.append("Сборка: ${buildStampLabel()}\n")
     sb.append("SDK: API ${Build.VERSION.SDK_INT}, ABI: ${Build.SUPPORTED_ABIS.firstOrNull() ?: "?"}\n")
     val mi = ActivityManager.MemoryInfo()
     runCatching {
@@ -847,6 +853,28 @@ private fun dumpValidationSection(
         },
     )
     sb.append("ncnn-turbo: ${v.ncnnTurbo}\n")
+}
+
+/**
+ * Подпись сборки одной строкой: `b58898e · 2026-10-10 22:13 · dirty`.
+ *
+ * Хэш и время приходят из `BuildConfig`, их проставляет `app/build.gradle.kts`
+ * на этапе конфигурирования. Значения НЕ вычисляются здесь: подпись обязана
+ * совпадать с тем, из чего APK реально собрали, а «сейчас» на экране — это
+ * время открытия диагностики, то есть другая величина.
+ *
+ * `GIT_DIRTY` означает, что в момент сборки были незакоммиченные правки.
+ * Такой хэш указывает на не тот код, который стоит в репозитории, и молчать
+ * об этом нельзя - иначе пользователь пришлёт «сборку b58898e», а там будет
+ * половина других правок.
+ *
+ * `GIT_SHA == "nogit"` означает, что git недоступен (например, сборка из
+ * архива без `.git`). Это тоже показываем, а не прячем: иначе неизвестное
+ * выглядит как известное.
+ */
+private fun buildStampLabel(): String {
+    val dirty = if (BuildConfig.GIT_DIRTY) " · dirty" else ""
+    return "${BuildConfig.GIT_SHA} · ${BuildConfig.BUILD_STAMP}$dirty"
 }
 
 /** Человекочитаемый лейбл движка STT (stt_engine pref → русское имя). */

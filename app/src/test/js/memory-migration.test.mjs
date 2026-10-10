@@ -205,6 +205,16 @@ function callResult(msg) {
 }
 function isError(msg) { return !!(msg.result && msg.result.isError); }
 
+// Каждый ответ, который прошёл через runServer, обязан нести jsonrpc:"2.0".
+// Пункт 8 патча добавил это в send(): без него строгий MCP-клиент (opencode)
+// ответы не принимал. Проверка живёт здесь, а не в отдельном тесте, потому что
+// иначе пришлось бы дублировать запуск сервера ради одного поля.
+function parsedReplies(out) {
+  return out.split("\n").map(l => l.trim()).filter(Boolean)
+    .map(l => JSON.parse(l))
+    .filter(m => m.id !== undefined);
+}
+
 createOldDatabase();
 
 // Первый запуск: он же выполняет миграцию.
@@ -444,12 +454,227 @@ await test("схема инструмента объявляет provenance", as
     "у local_memory_recall нет фильтра доверия");
 });
 
-rmSync(dir, { recursive: true, force: true });
+await test("вытесненная запись прячется, но не пропадает", async () => {
+  // Вытеснение вместо удаления: запись обязана исчезнуть из обычной выдачи и
+  // вернуться по include_superseded, иначе это молчаливая потеря урока.
+  const r = await runServer([
+    { method: "initialize", params: { protocolVersion: "2024-11-05" } },
+    { method: "tools/call", params: { name: "local_memory_supersede", arguments: {
+      id: "mem:own1", by: "mem:late1", reason: "заменено новой формулировкой" } } },
+    { method: "tools/call", params: { name: "local_memory_list", arguments: {
+      project: "opencode-mobile", limit: 100 } } },
+    { method: "tools/call", params: { name: "local_memory_list", arguments: {
+      project: "opencode-mobile", limit: 100, include_superseded: true } } },
+  ]);
+  const got = r.out.split("\n").map(l => l.trim()).filter(Boolean)
+    .map(l => JSON.parse(l)).filter(m => m.result && m.result.content);
+  okIf(got.length >= 3, "сервер не ответил на все три вызова: " + r.out.slice(0, 300));
+  const sup = callResult(got[0]);
+  okIf(sup.ok === true, "supersede не отвечает ok");
+  eq(sup.superseded_by, "mem:late1", "тул вернул не ту замену");
+  const plain = callResult(got[1]);
+  const all = callResult(got[2]);
+  okIf(!(plain.memories || []).some(x => x.id === "mem:own1"),
+    "вытесненная запись осталась в обычной выдаче");
+  okIf((all.memories || []).some(x => x.id === "mem:own1"),
+    "вытесненная запись не вернулась по include_superseded");
+});
+
+await test("вытеснение без by это ошибка а не тихий no-op", async () => {
+  // Пустой superseded_by проходит фильтр `!r.superseded_by`, поэтому запись
+  // осталась бы видимой, а тул отвечал бы ok:true - агент решил бы, что
+  // вытеснение состоялось, и потерял бы урок без единого слова.
+  const r = await runServer([
+    { method: "initialize", params: { protocolVersion: "2024-11-05" } },
+    { method: "tools/call", params: { name: "local_memory_supersede", arguments: {
+      id: "mem:ext1", reason: "забыл указать замену" } } },
+    { method: "tools/call", params: { name: "local_memory_list", arguments: {
+      project: "opencode-mobile", limit: 100 } } },
+  ]);
+  const got = r.out.split("\n").map(l => l.trim()).filter(Boolean)
+    .map(l => JSON.parse(l)).filter(m => m.result && m.result.content);
+  okIf(got.length >= 2, "сервер не ответил: " + r.out.slice(0, 300));
+  okIf(isError(got[0]), "вытеснение без by прошло как успешное");
+  const plain = callResult(got[1]);
+  okIf((plain.memories || []).some(x => x.id === "mem:ext1"),
+    "запись пропала из выдачи, хотя вытеснение должно было провалиться");
+});
+
+await test("вытеснение на несуществующую замену это ошибка", async () => {
+  // Опечатка в by спрятала бы урок навсегда - замены нет, а тул отвечал бы
+  // ok:true, и агент уверился бы в замене, которой не было.
+  const r = await runServer([
+    { method: "initialize", params: { protocolVersion: "2024-11-05" } },
+    { method: "tools/call", params: { name: "local_memory_supersede", arguments: {
+      id: "mem:late1", by: "mem:нет-такой", reason: "опечатка" } } },
+    { method: "tools/call", params: { name: "local_memory_list", arguments: {
+      project: "opencode-mobile", limit: 100 } } },
+  ]);
+  const got = r.out.split("\n").map(l => l.trim()).filter(Boolean)
+    .map(l => JSON.parse(l)).filter(m => m.result && m.result.content);
+  okIf(got.length >= 2, "сервер не ответил: " + r.out.slice(0, 300));
+  okIf(isError(got[0]), "вытеснение на несуществующую замену прошло как успешное");
+  const plain = callResult(got[1]);
+  okIf((plain.memories || []).some(x => x.id === "mem:late1"),
+    "запись спрятана вытеснением, которого не произошло");
+});
+
+await test("повторный store не отменяет вытеснение", async () => {
+  // INSERT OR REPLACE пересоздаёт строку, и колонки вне списка получают дефолт.
+  // Без явного переноса superseded_by откатывался бы в '', и вытесненный урок
+  // снова появлялся в выдаче - как будто агент его «обновил».
+  const r = await runServer([
+    { method: "initialize", params: { protocolVersion: "2024-11-05" } },
+    { method: "tools/call", params: { name: "local_memory_store", arguments: {
+      id: "mem:own1", content: "секреты нельзя коммитить в конфиг агента (уточнено)",
+      type: "error-solution", project: "opencode-mobile" } } },
+    { method: "tools/call", params: { name: "local_memory_list", arguments: {
+      project: "opencode-mobile", limit: 100 } } },
+  ]);
+  const got = r.out.split("\n").map(l => l.trim()).filter(Boolean)
+    .map(l => JSON.parse(l)).filter(m => m.result && m.result.content);
+  okIf(got.length >= 2, "сервер не ответил: " + r.out.slice(0, 300));
+  okIf(!isError(got[0]), "повторный store упал: " + r.out.slice(0, 300));
+  const plain = callResult(got[1]);
+  okIf(!(plain.memories || []).some(x => x.id === "mem:own1"),
+    "повторный store отменил вытеснение - запись вернулась в выдачу");
+});
+
+await test("записи для проверки цикла вытеснения существуют", async () => {
+  // Предусловие для следующего теста: если их нет, цикл проверялся бы на пустоте
+  // и проходил бы зелёным, ни разу не дойдя до нужной ветки.
+  const r = await runServer([
+    { method: "initialize", params: { protocolVersion: "2024-11-05" } },
+    { method: "tools/call", params: { name: "local_memory_store", arguments: {
+      id: "mem:cyc1", content: "запись для проверки цикла, первая", project: "opencode-mobile" } } },
+    { method: "tools/call", params: { name: "local_memory_store", arguments: {
+      id: "mem:cyc2", content: "запись для проверки цикла, вторая", project: "opencode-mobile" } } },
+  ]);
+  const got = r.out.split("\n").map(l => l.trim()).filter(Boolean)
+    .map(l => JSON.parse(l)).filter(m => m.result && m.result.content);
+  okIf(got.length >= 2, "сервер не ответил: " + r.out.slice(0, 300));
+  okIf(!isError(got[0]) && !isError(got[1]), "записи для цикла не создались: " + r.out.slice(0, 300));
+});
+
+await test("вытеснение циклом это ошибка а не две исчезнувшие записи", async () => {
+  // A вытеснил B, потом B вытесняет A: обе записи невидимы навсегда, при этом
+  // by продолжает существовать и все простые проверки проходят. Записи
+  // возвращаем в исходное состояние, чтобы цикл был единственным, что тестируется.
+  const r = await runServer([
+    { method: "initialize", params: { protocolVersion: "2024-11-05" } },
+    { method: "tools/call", params: { name: "local_memory_supersede", arguments: {
+      id: "mem:cyc1", by: "mem:cyc2", reason: "первый шаг" } } },
+    { method: "tools/call", params: { name: "local_memory_supersede", arguments: {
+      id: "mem:cyc2", by: "mem:cyc1", reason: "замыкаем круг" } } },
+    { method: "tools/call", params: { name: "local_memory_list", arguments: {
+      project: "opencode-mobile", limit: 100, include_superseded: true } } },
+  ]);
+  const got = r.out.split("\n").map(l => l.trim()).filter(Boolean)
+    .map(l => JSON.parse(l)).filter(m => m.result && m.result.content);
+  okIf(got.length >= 3, "сервер не ответил: " + r.out.slice(0, 300));
+  okIf(!isError(got[0]), "первый шаг цикла не прошёл: " + r.out.slice(0, 300));
+  okIf(isError(got[1]), "вытеснение циклом прошло как успешное");
+  const all = callResult(got[2]);
+  const rows = all.memories || [];
+  const c1 = rows.find(x => x.id === "mem:cyc1");
+  const c2 = rows.find(x => x.id === "mem:cyc2");
+  okIf(c1, "первая запись пропала из базы совсем");
+  okIf(c2, "вторая запись пропала из базы совсем");
+  // cyc1 вытеснен законно (замена есть), cyc2 - нет: отказ по циклу обязан
+  // оставить её видимой, иначе обе записи исчезли бы из выдачи навсегда.
+  eq(c1.superseded_by, "mem:cyc2", "первая запись должна быть вытеснена заменой");
+  eq(c2.superseded_by, "", "вторая запись вытеснена в цикле - обе скрыты навсегда");
+});
+
+await test("ответы сервера несут jsonrpc 2.0", async () => {
+  // Пункт 8 патча: send() стал { jsonrpc: "2.0", ...obj }. Если это откатить,
+  // все тесты ниже останутся зелёными - runServer разбирает ответы по id и
+  // jsonrpc не смотрит, - а opencode по stdio перестанет их принимать.
+  const replies = parsedReplies(first.out);
+  okIf(replies.length >= 2, "ответов не нашлось: " + first.out.slice(0, 300));
+  for (const r of replies) {
+    eq(r.jsonrpc, "2.0", "ответ без jsonrpc 2.0: " + JSON.stringify(r).slice(0, 200));
+  }
+});
+
+await test("обход графа идёт по хопам даже когда веса разные", async () => {
+  // Старые рёбра с created=0 не штрафуются и весят ровно 1.0, а у свежего
+  // ребра вес всегда МЕНЬШЕ единицы (decay от возраста). Если сортировать
+  // только по весу, далёкое ребро с created=0 перепрыгивает ближнее свежее -
+  // и клиент, читающий edges по порядку как по близости, получает бессмыслицу.
+  // Хоп обязан быть ПЕРВЫМ ключом сортировки.
+  const edges = [
+    { source: "file:a", target: "mem:hopNear", relation: "mentions" },
+    { source: "mem:hopFar", target: "mem:hopNear", relation: "mentions" },
+    { source: "mem:hopFar", target: "file:z", relation: "mentions" },
+  ];
+  const add = await runServer([
+    { method: "initialize", params: { protocolVersion: "2024-11-05" } },
+    ...edges.map(e => ({ method: "tools/call", params: { name: "local_memory_graph_add_edge", arguments: e } })),
+  ]);
+  okIf(add.code === 0, "сервер не создал рёбра: " + add.err.slice(0, 300));
+
+  // file:a - единственный сосед ПЕРВОГО хопа, и он обязан быть свежим. file:z
+  // живёт на втором хопе, и ему оставляем created=0 (возраст неизвестен), что
+  // даёт максимальный вес 1.0. Ставим прямо в базу: тул создания всегда пишет
+  // created=now, а decay от нулевого возраста всё равно даёт ~1.0, то есть
+  // разницы между хопами не было бы и тест проверял бы пустоту.
+  // Раскладка весов подбирается ЯВНО, иначе проверка пустая: сортировка по
+  // весу на РАВНЫХ весах случайно даёт правильный порядок, и тест проходит
+  // зелёным на сломанном коде. Нужна именно та расстановка, что описана в
+  // коде: ребро с created=0 («возраст неизвестен») весит 1.0 и обгоняет
+  // ближкое, которое старше на два периода полураспада (0.25).
+  const NOW = Date.now();
+  const fix = new Database(DB_PATH);
+  try {
+    // Дальний хоп - возраст НЕИЗВЕСТЕН (created=0), decay его не штрафует:
+    // вес 1.0, максимум. Ставим ровно 0, а не «оставляем как тул создал».
+    fix.prepare("UPDATE graph SET created=0 WHERE source=? AND target=?").run("mem:hopFar", "file:z");
+    // Ближний хоп - известный возраст в два полураспада: вес 0.25, меньше.
+    fix.prepare("UPDATE graph SET created=? WHERE source=? AND target=?").run(NOW - 60 * 24 * 60 * 60 * 1000, "file:a", "mem:hopNear");
+    const near = fix.prepare("SELECT created FROM graph WHERE source=? AND target=?").get("file:a", "mem:hopNear");
+    const far = fix.prepare("SELECT created FROM graph WHERE source=? AND target=?").get("mem:hopFar", "file:z");
+    eq(far.created, 0, "предусловие не выполнено: у дальнего ребра ненулевой возраст");
+    eq(near.created > 0, true, "предусловие не выполнено: у ближнего ребра нет возраста");
+  } finally { fix.close(); }
+
+  const r = await runServer([
+    { method: "initialize", params: { protocolVersion: "2024-11-05" } },
+    { method: "tools/call", params: { name: "local_memory_graph_query", arguments: { node: "mem:hopNear", depth: 2 } } },
+  ]);
+  const got = parsedReplies(r.out).filter(m => m.result && m.result.content);
+  okIf(got.length >= 1, "сервер не ответил: " + r.out.slice(0, 300));
+  const g = callResult(got[0]);
+  const list = g.edges || [];
+  okIf(list.length >= 3, "обход не нашёл рёбер: " + JSON.stringify(g).slice(0, 300));
+
+  const nearEdge = list.find(e => e.other === "file:a");
+  const farEdge = list.find(e => e.other === "file:z");
+  okIf(nearEdge, "ближнее ребро пропало из обхода: " + JSON.stringify(list).slice(0, 300));
+  okIf(farEdge, "дальнее ребро пропало из обхода: " + JSON.stringify(list).slice(0, 300));
+  // Вес дальнего БОЛЬШЕ веса ближнего - иначе сортировка по весу случайно
+  // дала бы правильный порядок, и тест прошёл бы зелёным на сломанном коде.
+  okIf(farEdge.weight > nearEdge.weight,
+    "предусловие не выполнено: дальнее ребро легче ближнего, сортировка ничего не проверяет");
+  const hops = list.map(e => e.hop);
+  eq(JSON.stringify(hops), JSON.stringify(hops.slice().sort((a, b) => a - b)),
+    "рёбра вышли не по хопам: " + JSON.stringify(list));
+  eq(nearEdge.hop, 1, "ближнее ребро обязано быть первым хопом");
+  eq(farEdge.hop, 2, "дальнее ребро обязано быть вторым хопом");
+  okIf(list.indexOf(nearEdge) < list.indexOf(farEdge),
+    "ближнее ребро стоит ПОСЛЕ дальнего: " + JSON.stringify(list));
+});
+
+// Итог печатается ДО удаления каталога: rmSync на Windows падает с EBUSY,
+// пока держит открытая БД, и необработанный EBUSY съедал весь отчёт - вместо
+// списка неудачных тестов показывался стек где-то в rm.
 console.log("");
 if (bad > 0) {
   console.log("ПРОВАЛЕНО: " + ok + " ок, " + bad + " сломалось");
   for (const f of failures) console.log("  - " + f);
-  process.exit(1);
 } else {
   console.log("зелёное: " + ok + " ок, 0 сломалось");
 }
+try { rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }); }
+catch (e) { console.log("  [уборка] каталог " + dir + " не удалён: " + (e && e.code)); }
+process.exit(bad > 0 ? 1 : 0);

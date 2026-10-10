@@ -74,7 +74,7 @@
 Диагностика: **nohup logcat → `/sdcard/stt.log`** + grep `NcnnWhisper` (`fbank=/encoder=/decoder=` в ncnn_jni.cpp). Буфер logcat на OPPO заливается AONLog/radio — стрим в файл обязателен.
 
 Шаги:
-1. `adb install -r app-debug.apk`
+1. `adb install -r (Get-ChildItem app\build\outputs\apk\debug\opencode-debug-*.apk | Sort-Object LastWriteTime -Desc | Select-Object -First 1).FullName` — имя APK несёт дату и git-sha, поэтому прошлые сборки копятся в каталоге, а glob без `Select-Object -First 1` передаст adb несколько аргументов
 2. `adb shell am force-stop org.opencode.mobile.debug`
 3. AUTOSTT (test.f32) ИЛИ ручной голосовой триггер.
 4. снять `fbank=/encoder=/decoder=` из `/sdcard/stt.log`.
@@ -240,7 +240,7 @@ fp32 стартует со **146 МБ**, доходит до **4 860 МБ**.
 #    БЕЗ whisper-библиотек → dlopen fail):
 ./build-install.ps1          # vcvars + :app:assembleDebug (без скипа)
 ./gradlew :app:assembleDebugAndroidTest   # тест-APK, без скипа
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r (Get-ChildItem app\build\outputs\apk\debug\opencode-debug-*.apk | Sort-Object LastWriteTime -Desc | Select-Object -First 1).FullName
 adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 
 # 2. Доставка моделей. ПРОВЕРЕНО: run-as НЕ видит /sdcard (FUSE ColorOS) —
@@ -291,8 +291,13 @@ pwsh -ExecutionPolicy Bypass -File run_stt_bench_minverify.ps1
 pwsh -ExecutionPolicy Bypass -File run_stt_bench_minverify.ps1 -SkipPush
 ```
 
-1. Собрать и установить `app-minVerify.apk` + `app-minVerify-androidTest.apk`
-   (именно в этом порядке — модели заливать **после** установки).
+1. Собрать и установить APK из `app\build\outputs\apk\minVerify\` — имена теперь
+   с датой и хэшем, поэтому берём самый свежий:
+   ```powershell
+   adb install -r -d (Get-ChildItem app\build\outputs\apk\minVerify\*minVerify*.apk | Sort-Object LastWriteTime -Desc | Select-Object -First 1).FullName
+   adb install -r -d (Get-ChildItem app\build\outputs\apk\androidTest\minVerify\*androidTest*.apk | Sort-Object LastWriteTime -Desc | Select-Object -First 1).FullName
+   ```
+   Порядок важен — модели заливать **после** установки.
 2. Залить `tools/ncnn-int8/turbo` в `/data/local/tmp/ocmodels/ncnn-turbo`
    (16 файлов, 2.31 ГБ, ~40 МБ/с).
 3. На устройстве собрать fp32-конверт: копия turbo **без**

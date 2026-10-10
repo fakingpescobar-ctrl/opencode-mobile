@@ -139,7 +139,7 @@ Invoke-RestMethod -Method POST "http://127.0.0.1:4098/session/$($s[0].id)/messag
 node app\src\test\js\ynison-announce.test.mjs      # 22 теста: announce/seed/cache/repeat
 pwsh -File .\build.ps1 -Task jstest                 # весь JS-гейт
 pwsh -File .\build.ps1 -Task debug                  # сборка APK
-adb install -r -d app\build\outputs\apk\debug\app-debug.apk
+adb install -r -d (Get-ChildItem app\build\outputs\apk\debug\opencode-debug-*.apk | Sort-Object LastWriteTime -Desc | Select-Object -First 1).FullName
 ```
 
 - `ynison-announce.test.mjs` вырезает блок кода по якорям вида `function neutralState() {`
