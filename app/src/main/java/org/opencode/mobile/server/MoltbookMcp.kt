@@ -35,6 +35,17 @@ internal object MoltbookMcp {
      */
     const val LEDGER_NAME = "moltbook.db"
 
+    /**
+     * Снимок для панели «М».
+     *
+     * Путь повторяет то, что плагин собирает из `MCP_MOLTBOOK_DIR`, поэтому он
+     * объявлен здесь, а не в разных местах двумя строками: панель читает файл,
+     * который переписывает плагин, и путь здесь — единственное место, где
+     * можно ошибиться тихо, без всякой ошибки.
+     */
+    const val PANEL_NAME = "panel.json"
+    const val PANEL_PATH = "$DIR_NAME/$PANEL_NAME"
+
     const val URL = "http://127.0.0.1:$PORT$PATH"
 
     /**

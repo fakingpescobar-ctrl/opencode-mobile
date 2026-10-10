@@ -19,8 +19,10 @@ class MoltbookWakeTest {
     private val older = now - 10_000L
     private val fresher = now - 1_000L
 
-    private fun sessionJson(id: String, updated: Long) =
-        """{"id":"$id","title":"t","time":{"created":$updated,"updated":$updated}}"""
+    private fun sessionJson(
+        id: String,
+        updated: Long,
+    ) = """{"id":"$id","title":"t","time":{"created":$updated,"updated":$updated}}"""
 
     // ---- разбор /session ----
 
@@ -124,10 +126,89 @@ class MoltbookWakeTest {
     }
 
     @Test
-    fun `пустой список сессий это отказ а не повод завести сессию`() {
+    fun `пустой список сессий это повод завести сессию а не отказ`() {
         val plan = MoltbookWakePlan.choosePlan(emptyList(), emptySet(), now, lastWakeAt = 0L)
+        assertTrue(plan is MoltbookWakePlan.Plan.Create)
+        assertEquals("create", MoltbookWakePlan.tag(plan))
+    }
+
+    @Test
+    fun `завести сессию но не чаще чем раз в паузу`() {
+        val recent = MoltbookWakePlan.choosePlan(emptyList(), emptySet(), now, lastWakeAt = now - 60_000L)
+        assertTrue(recent is MoltbookWakePlan.Plan.Hold)
+        assertTrue((recent as MoltbookWakePlan.Plan.Hold).reason.contains("мин назад"))
+    }
+
+    @Test
+    fun `пауза помечена как штатная а не как поломка`() {
+        val paused = MoltbookWakePlan.choosePlan(emptyList(), emptySet(), now, lastWakeAt = now - 60_000L)
+
+        assertTrue((paused as MoltbookWakePlan.Plan.Hold).routine)
+        assertEquals(MoltbookWakePlan.TAG_GAP, MoltbookWakePlan.tag(paused))
+    }
+
+    @Test
+    fun `настоящий отказ это не штатная пауза`() {
+        val plan = MoltbookWakePlan.planFor(null, "{}", now, lastWakeAt = 0L)
+
+        assertFalse((plan as MoltbookWakePlan.Plan.Hold).routine)
+        assertEquals(MoltbookWakePlan.TAG_HOLD, MoltbookWakePlan.tag(plan))
+    }
+
+    @Test
+    fun `молчание сервера это отказ а не пустой список`() {
+        val plan = MoltbookWakePlan.planFor(null, "{}", now, lastWakeAt = 0L)
         assertTrue(plan is MoltbookWakePlan.Plan.Hold)
-        assertEquals("сессий нет — будить некого", (plan as MoltbookWakePlan.Plan.Hold).reason)
+        assertEquals("сервер не ответил", (plan as MoltbookWakePlan.Plan.Hold).reason)
+    }
+
+    @Test
+    fun `пустой список от живого сервера это работа а не отказ`() {
+        val plan = MoltbookWakePlan.planFor("[]", "{}", now, lastWakeAt = 0L)
+        assertTrue(plan is MoltbookWakePlan.Plan.Create)
+    }
+
+    @Test
+    fun `мусор вместо списка это отказ а не повод создать сессию`() {
+        val broken = listOf("{}", """{"error":"boom"}""", "<html>502</html>", "не json", """{"id":"ses_a"}""")
+
+        broken.forEach { raw ->
+            val plan = MoltbookWakePlan.planFor(raw, "{}", now, lastWakeAt = 0L)
+            assertTrue("$raw обязан быть отказом, а не $plan", plan is MoltbookWakePlan.Plan.Hold)
+            assertEquals("ответ сервера не список сессий", (plan as MoltbookWakePlan.Plan.Hold).reason)
+        }
+    }
+
+    @Test
+    fun `пауза перебивает даже мусор`() {
+        val plan = MoltbookWakePlan.planFor("<html>502</html>", "{}", now, lastWakeAt = now - 60_000L)
+
+        assertTrue((plan as MoltbookWakePlan.Plan.Hold).routine)
+        assertEquals(MoltbookWakePlan.TAG_GAP, MoltbookWakePlan.tag(plan))
+    }
+
+    @Test
+    fun `из сырого ответа сервера выбирается та же сессия`() {
+        val raw = """[{"id":"ses_old","time":{"updated":$older}},{"id":"ses_new","time":{"updated":$fresher}}]"""
+        val plan = MoltbookWakePlan.planFor(raw, """{"ses_old":{}}""", now, lastWakeAt = 0L)
+        assertTrue(plan is MoltbookWakePlan.Plan.Wake)
+        assertEquals("ses_new", (plan as MoltbookWakePlan.Plan.Wake).sessionId)
+    }
+
+    @Test
+    fun `созданная сессия без id это отказ а не успех`() {
+        assertNull(MoltbookWakePlan.parseCreated(null))
+        assertNull(MoltbookWakePlan.parseCreated(""))
+        assertNull(MoltbookWakePlan.parseCreated("{}"))
+        assertNull(MoltbookWakePlan.parseCreated("не json"))
+        assertEquals("ses_new", MoltbookWakePlan.parseCreated("""{"id":" ses_new "}"""))
+    }
+
+    @Test
+    fun `созданная сессия попадает в журнал как созданная`() {
+        val wake = MoltbookWakePlan.Plan.Wake("ses_new", created = true)
+        assertTrue(MoltbookWakePlan.reason(wake).contains("создана"))
+        assertFalse(MoltbookWakePlan.reason(MoltbookWakePlan.Plan.Wake("ses_new")).contains("создана"))
     }
 
     @Test

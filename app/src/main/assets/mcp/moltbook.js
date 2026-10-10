@@ -82,6 +82,16 @@ export const MOLTBOOK_HOST = "https://www.moltbook.com";
 export const LEDGER_NAME = "moltbook.db";
 export const DATABASES_DIR_NAME = "databases";
 /**
+ * Предел одного запроса к молтбуку.
+ *
+ * Скан ходит на сайт десятком запросов, и очередь вызовов у него одна на весь
+ * плагин: зависший сокет без предела глушит не только себя, но и moltbook_status,
+ * на который агент смотрит, чтобы понять, живой ли плагин. 30 секунд - с запасом
+ * на медленный мобильный интернет и при этом достаточно мало, чтобы ожидание
+ * было заметно меньше минуты тика.
+ */
+export const MOLTBOOK_TIMEOUT_MS = 30_000;
+/**
  * База живёт не рядом с логами, а там, где её создал SQLiteOpenHelper. Путь приходит
  * готовым из приложения: выводить его от каталога логов значило бы угадывать уровень
  * вверх, и одна ошибка вверх выглядит как «плагин никогда не работает».
@@ -427,12 +437,15 @@ function readLedger() {
 
 /** Наш инструмент: что плагин знает, ничего не меняя и никуда не ходя. */
 export function moltbookStatus() {
+  const now = Date.now();
   const ledger = readLedger();
   return {
     plugin: PLUGIN_NAME,
+    at: now,
     network: "not-used-yet",
     keyPresent: Boolean(MOLTBOOK_KEY_FILE) && existsSync(MOLTBOOK_KEY_FILE),
     ledger,
+    panel: readPanel(now),
   };
 }
 
@@ -448,6 +461,57 @@ export function readMoltbookKey() {
 }
 
 /**
+ * fetch, который обязан закончиться.
+ *
+ * Молтбук - чужой сайт, и он может висеть сколько угодно. Без предела один
+ * зависший GET намертво занимает очередь вызовов (см. enqueueTool): следующий
+ * инструмент не стартует, и панель молчит, пока процесс жив. Abort роняет сокет,
+ * дальше срабатывает обычный catch, запрос попадает в архив как отказ - то есть
+ * агент видит "сервер не ответил", а не пустоту.
+ *
+ * Предел задаётся третьим аргументом только ради теста: ждать настоящие полминуты
+ * ради проверки, что сокет рвётся, никто не потерпит. Позвонивший без него
+ * получает MOLTBOOK_TIMEOUT_MS, а во время вызова тула - ещё и остаток от
+ * MOLTBOOK_CALL_BUDGET_MS.
+ *
+ * Возвращает тело строкой, а не Response: иначе предел закончился бы на
+ * заголовках, а тело читалось бы уже без него.
+ */
+/**
+ * Предел ОДНОГО вызова тула, а не одного запроса.
+ *
+ * Скан делает десяток последовательных GET, и предела на запрос для этого
+ * мало: десять висящих по полминуты запросов держат очередь вызовов пять
+ * минут, а moltbook_status - проверка живости - всё это время молчит, хотя
+ * жив. Сквозной дедлайн ставится вокруг вызова, а fetchWithTimeout берёт
+ * остаток от него. Ноль означает "вне вызова", тогда работает только предел
+ * запроса.
+ */
+export const MOLTBOOK_CALL_BUDGET_MS = 120_000;
+let callDeadlineAt = 0;
+
+export async function fetchWithTimeout(url, options, timeoutMs) {
+  const wanted = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : MOLTBOOK_TIMEOUT_MS;
+  const left = callDeadlineAt > 0 ? callDeadlineAt - Date.now() : wanted;
+  // Остаток может кончиться между запросами: тогда limit становится 1мс,
+  // и запрос честно падает как "время вызова вышло", а не висит дальше.
+  const limit = Math.max(1, Math.min(wanted, left));
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), limit);
+  try {
+    const response = await fetch(url, Object.assign({}, options, { signal: controller.signal }));
+    // Тело читается ПОД ТЕМ ЖЕ пределом, и это не формальность: сервер может
+    // отдать заголовки и зависнуть на теле. Снять таймер после fetch - значит
+    // оставить response.text() без предела, то есть вернуть ровно тот зависший
+    // вызов, ради которого предел и вводился.
+    const body = await response.text();
+    return { ok: response.ok, status: response.status, body };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Один GET к молтбуку с архивированием сырого ответа.
  *
  * Сырой ответ пишется ДО разбора и разбирается из той же строки, что ушла в архив.
@@ -458,10 +522,12 @@ export async function fetchRaw(key, path) {
   const at = Date.now();
   const url = MOLTBOOK_HOST + path;
   try {
-    const response = await fetch(url, { headers: { Authorization: "Bearer " + key } });
-    const body = await response.text();
-    archiveRaw(MOLTBOOK_DIR ? join(MOLTBOOK_DIR, RAW_DIR_NAME) : "", at, path, response.status, body);
-    return { ok: response.ok, status: response.status, path, at, body };
+    const { ok, status, body } = await fetchWithTimeout(url, {
+      method: "GET",
+      headers: { Authorization: "Bearer " + key },
+    });
+    archiveRaw(MOLTBOOK_DIR ? join(MOLTBOOK_DIR, RAW_DIR_NAME) : "", at, path, status, body);
+    return { ok, status, path, at, body };
   } catch (error) {
     archiveRaw(MOLTBOOK_DIR ? join(MOLTBOOK_DIR, RAW_DIR_NAME) : "", at, path, 0, String(error));
     return { ok: false, status: 0, path, at, body: "", error: String((error && error.message) || error) };
@@ -640,6 +706,10 @@ export async function moltbookScan() {
     }
   } catch (error) {
     refusals.push("home-not-json");
+  }
+  if (karma !== null || unread !== null) {
+    const cached = cacheHome(karma, unread, now);
+    if (cached) refusals.push("home-cache-" + cached);
   }
 
   return {
@@ -996,14 +1066,13 @@ export function appendVerifier(kind, at, postId, detail) {
 export async function postRaw(key, path, payload) {
   const at = Date.now();
   try {
-    const response = await fetch(MOLTBOOK_HOST + path, {
+    const { ok, status, body } = await fetchWithTimeout(MOLTBOOK_HOST + path, {
       method: "POST",
       headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const body = await response.text();
-    archiveRaw(MOLTBOOK_DIR ? join(MOLTBOOK_DIR, RAW_DIR_NAME) : "", at, path, response.status, body, "POST");
-    return { ok: response.ok, status: response.status, path, at, body };
+    archiveRaw(MOLTBOOK_DIR ? join(MOLTBOOK_DIR, RAW_DIR_NAME) : "", at, path, status, body, "POST");
+    return { ok, status, path, at, body };
   } catch (error) {
     archiveRaw(MOLTBOOK_DIR ? join(MOLTBOOK_DIR, RAW_DIR_NAME) : "", at, path, 0, String(error), "POST");
     return { ok: false, status: 0, path, at, body: "", error: String((error && error.message) || error) };
@@ -1772,6 +1841,254 @@ export async function moltbookReport(args, deps) {
   }
 }
 
+/** Имя файла-снимка для панели «М». Панель читает файл, а не лезет в SQLite. */
+export const PANEL_NAME = "panel.json";
+
+const PANEL_PENDING_LIMIT = 6;
+const PANEL_BODY_CHARS = 400;
+
+// Второй писатель этих ключей - MoltbookTicker.kt:80-81, из другого процесса.
+// Он мёртв: конструктор MoltbookTicker( в проекте не вызывается ни разу, и
+// внутри себя тикер сам пишет «не запускать старый тикер». Если его когда-нибудь
+// оживят, он обязан писать и karma_at, иначе карточка подпишет его карму как
+// «только что», взяв время из нашего кэша.
+const PANEL_HOME_KEYS = { KARMA: "karma", UNREAD: "unread", AT: "karma_at" };
+
+const PANEL_SQL = {
+  ourPosts: "SELECT COUNT(*) AS n FROM posts WHERE ours = 1",
+  repliesToOurs:
+    "SELECT COUNT(*) AS n FROM comments c JOIN posts p ON p.id = c.post_id" +
+    " WHERE p.ours = 1 AND UPPER(c.author) != UPPER(?)",
+  // Репосты НАШИХ постов, а не все репосты подряд. Прежний тикер под той же
+  // подписью считал `repost_of IS NOT NULL` по всей таблице, то есть включал
+  // чужие репосты чужих постов; цифра на карточке от этого станет меньше, и
+  // это осознанное изменение, а не тихая ошибка.
+  reposts: "SELECT COUNT(*) AS n FROM posts r JOIN posts p ON p.id = r.repost_of WHERE p.ours = 1",
+  upvotes: "SELECT COUNT(*) AS n FROM upvotes",
+pending:
+    "SELECT c.id AS id, c.author AS author, c.body AS body, c.post_id AS post_id, p.title AS title" +
+    " FROM comments c LEFT JOIN posts p ON p.id = c.post_id" +
+    " WHERE UPPER(c.status) = 'NEW' AND UPPER(c.author) != UPPER(?)" +
+    " ORDER BY c.created_at ASC LIMIT ?",
+  // Счётчик отделён от списка: список обрезан шестью строками, а отвечать надо
+  // на вопрос "сколько ждут ответа", то есть по всей таблице. Один и тот же
+  // запрос не может дать и то и другое.
+  awaiting:
+    "SELECT COUNT(*) AS n FROM comments c" +
+    " WHERE UPPER(c.status) = 'NEW' AND UPPER(c.author) != UPPER(?)",
+};
+
+const HOME_SQL =
+  "INSERT INTO ticker_state (key, value) VALUES (?, ?)" +
+  " ON CONFLICT(key) DO UPDATE SET value = excluded.value";
+
+function panelCount(db, sql, ...args) {
+  const value = Number((db.prepare(sql).get(...args) || {}).n || 0);
+  return value > 0 ? value : 0;
+}
+
+/** Вопросы для панели: без id строки нет, тело сжимается до одной строки. */
+export function panelPending(rows) {
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => ({
+      id: String((row && row.id) || "").trim(),
+      author: String((row && row.author) || "").trim(),
+      post_id: String((row && row.post_id) || "").trim(),
+      title: String((row && row.title) || "").trim(),
+      body: String((row && row.body) || "").replace(/\s+/g, " ").slice(0, PANEL_BODY_CHARS),
+    }))
+    .filter((row) => row.id !== "");
+}
+
+/**
+ * Карма и непрочитанные в кэш состояния.
+ *
+ * Панель не ходит на сайт сама: она читает файл. Значит цифры у неё не новее
+ * последнего скана, и единственный честный способ показать их — запомнить
+ * вместе со временем, когда их видели. Молча ставить ноль было бы хуже: юзер
+ * решил бы, что аккаунт обнулили.
+ */
+export function rememberHome(db, karma, unread, seenAt) {
+  const stmt = db.prepare(HOME_SQL);
+  const at = Number(seenAt) > 0 ? String(Math.floor(Number(seenAt))) : String(Date.now());
+  let wrote = false;
+  const write = (key, value) => {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) return;
+    stmt.run(key, String(value));
+    wrote = true;
+  };
+  write(PANEL_HOME_KEYS.KARMA, karma);
+  write(PANEL_HOME_KEYS.UNREAD, unread);
+  // Время ЗАПИСИ этих чисел, а не время вызова тула. Без него карточка подписывает
+  // трёхдневную карму как «только что»: снимок-то свежий, а карма в нём старая.
+  // Если не записано ничего, время тоже не пишем - иначе подпись «карма посмотрена
+  // только что» появилась бы рядом с пустотой.
+  if (wrote) stmt.run(PANEL_HOME_KEYS.AT, at);
+}
+
+function readHome(db) {
+  // Не SELECT * по ticker_state: там лежит repost_seen:* на каждый пост, а нужны
+  // три ключа. Таблица не урезается, поэтому её размер растёт с активностью, и
+  // полный скан на каждом вызове - это работа, которой никто не просил.
+  const rows = db
+    .prepare("SELECT key, value FROM ticker_state WHERE key IN (?, ?, ?)")
+    .all(PANEL_HOME_KEYS.KARMA, PANEL_HOME_KEYS.UNREAD, PANEL_HOME_KEYS.AT);
+  const out = {};
+  for (const row of rows) out[String(row.key)] = String(row.value);
+  const number = (key) => {
+    // Пустая строка - это не ноль, а неизвестность: иначе старая схема оставила бы
+    // на карточке выдуманную нулевую карму рядом со свежими счётчиками.
+    const raw = out[key];
+    if (raw === undefined || raw.trim() === "") return null;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : null;
+  };
+  return {
+    karma: number(PANEL_HOME_KEYS.KARMA),
+    unread: number(PANEL_HOME_KEYS.UNREAD),
+    at: number(PANEL_HOME_KEYS.AT) || 0,
+  };
+}
+
+/** Пустая панель: нули и честная причина, а не «всё хорошо, просто ничего нет». */
+export function panelEmpty(reason) {
+  return {
+    // at = 0, а не время попытки: снимка нет, поэтому снимок и не датирован.
+    // С временем попытки карточка писала "только что" и зелёный ноль, хотя
+    // плагин не прочитал ничего (стale => "нет данных", at <= 0).
+    at: 0,
+    ok: false,
+    reason,
+    awaiting: 0,
+    answered: 0,
+    verified: 0,
+    reused: 0,
+    failed: 0,
+    unknown: 0,
+    ourPosts: 0,
+    repliesToOurs: 0,
+    reposts: 0,
+upvotes: 0,
+    karma: null,
+    unread: null,
+    // 0 = карму не видели никогда. Иначе карточка подписывает «карма 103» как
+    // «только что», хотя это число может лежать в кэше третий день.
+    karmaAt: 0,
+    pending: [],
+  };
+}
+
+/**
+ * Снимок панели из журнала.
+ *
+ * Отдельная чистая функция принимает сводку и строки, поэтому числа проверяются
+ * обычным тестом без SQLite. `awaiting` приходит отдельным счётом, а не длиной
+ * списка: список обрезан, и «сколько ждут ответа» на обрезке стало бы враньём.
+ * Нет счёта - длина списка, потому что в тестах списки не обрезаны.
+ */
+export function panelState(at, summary, pending, counts) {
+  const awaiting = counts && counts.awaiting !== undefined ? counts.awaiting : pending && pending.length;
+  return Object.assign(panelEmpty(null), {
+    ok: true,
+    at,
+    awaiting: Number(Array.isArray(pending) ? awaiting || 0 : awaiting || 0),
+    answered: Number(summary.reportable || 0),
+    verified: Number(summary.verified || 0),
+    reused: Number(summary.reused || 0),
+    failed: Number(summary[COMMENT_STATUS.FAILED] || 0),
+    unknown: Number(summary.unknown || 0),
+    ourPosts: Number((counts && counts.ourPosts) || 0),
+    repliesToOurs: Number((counts && counts.repliesToOurs) || 0),
+    reposts: Number((counts && counts.reposts) || 0),
+    upvotes: Number((counts && counts.upvotes) || 0),
+    pending: Array.isArray(pending) ? pending.slice(0, PANEL_PENDING_LIMIT) : [],
+  });
+}
+
+/** Снимок панели целиком: журнал плюс то, что лежит рядом с ним. */
+export function readPanel(at) {
+  const ledger = readLedger();
+  if (!ledger.ok) return panelEmpty(ledger.reason);
+  let db = null;
+  try {
+    const { Database } = require("bun:sqlite");
+    db = new Database(ledger.path, ledgerOpenOptions(true));
+    const ours = MOLTBOOK_NAME;
+const pending = panelPending(
+      db.prepare(PANEL_SQL.pending).all(ours, PANEL_PENDING_LIMIT),
+    );
+    const panel = panelState(
+      at,
+      ledger.comments,
+      pending,
+      {
+        awaiting: panelCount(db, PANEL_SQL.awaiting, ours),
+        ourPosts: panelCount(db, PANEL_SQL.ourPosts),
+        repliesToOurs: panelCount(db, PANEL_SQL.repliesToOurs, ours),
+        reposts: panelCount(db, PANEL_SQL.reposts),
+        upvotes: panelCount(db, PANEL_SQL.upvotes),
+      },
+    );
+const home = readHome(db);
+    panel.karma = home.karma;
+    panel.unread = home.unread;
+    panel.karmaAt = home.at;
+    return panel;
+  } catch (error) {
+    return panelEmpty(String((error && error.message) || error));
+  } finally {
+    if (db) {
+      try {
+        db.close();
+      } catch (_) {
+        // закрытие не удалось - файл только читался
+      }
+    }
+  }
+}
+
+/**
+ * Запись снимка на диск: tmp -> fsync -> rename, как и отчёт.
+ *
+ * Панель читает файл в произвольный момент, поэтому наполовину записанный
+ * снимок хуже отсутствующего: юзер увидит случайные цифры и примет их за правду.
+ *
+ * Отказ НЕ затирает предыдущий снимок. Транзиентная ошибка (журнал занят
+ * сканом) дала бы вместо вчерашних забот карточку из одних тире - то есть
+ * хорошие данные исчезли бы из-за того, что чтение не удалось. Старый снимок
+ * честнее: у него есть время, и карточка скажет «данные 22:53».
+ */
+export function writePanel(at, panel) {
+  if (!MOLTBOOK_DIR) return null;
+  // Снимок, который вызов уже посчитал, переиспользуется: moltbook_status
+  // возвращает панель в ответе и не должен ради неё открывать журнал второй раз.
+  const snapshot = panel || readPanel(at);
+  if (!snapshot || snapshot.ok !== true) return null;
+  const target = join(MOLTBOOK_DIR, PANEL_NAME);
+  const temp = target + ".tmp";
+  let handle = null;
+  try {
+    mkdirSync(MOLTBOOK_DIR, { recursive: true });
+    handle = openSync(temp, "w");
+    writeSync(handle, JSON.stringify(snapshot));
+    fsyncSync(handle);
+    closeSync(handle);
+    handle = null;
+    renameSync(temp, target);
+    return target;
+  } catch (_) {
+    return null;
+  } finally {
+    if (handle !== null) {
+      try {
+        closeSync(handle);
+      } catch (_) {
+        // уже нечего закрывать
+      }
+    }
+  }
+}
+
 const TOOLS = [
   {
     name: "moltbook_status",
@@ -1848,13 +2165,85 @@ const TOOLS = [
   },
 ];
 
+/**
+ * Защёлка на весь вызов тула.
+ *
+ * Журнал и снимок панели - по одному на плагин, и два параллельных вызова
+ * писали бы в одни и те же строки. Поздний из них при этом затирал бы более
+ * свежие числа своими, уже устаревшими (оба скана начались в одно время, но
+ * приехали в разном порядке), и панель показала бы карму назад по времени.
+ * Очередь не даёт вызовам пересекаться; ничего не теряется, вызовы просто
+ * ждут друг друга - агент всё равно шлёт их по одному.
+ */
+let toolChain = Promise.resolve();
+
+export function enqueueTool(task) {
+  const next = toolChain.then(task, task);
+  toolChain = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
+}
+
 async function callTool(name, args) {
+  return enqueueTool(async () => {
+    // Сквозной предел на весь вызов: очередь вызовов общая, и висящий скан
+    // не должен отнимать её у moltbook_status на десяток пределов подряд.
+    callDeadlineAt = Date.now() + MOLTBOOK_CALL_BUDGET_MS;
+    let result;
+    try {
+      result = await runTool(name, args);
+    } finally {
+      callDeadlineAt = 0;
+    }
+    // Снимок панели переписывается после ЛЮБОГО вызова: панель открывают между
+    // тиками, и если бы она обновлялась только на скане, юзер видел бы протухшие
+    // цифры с часовой давностью и думал, что агент встал. Вызов, который уже
+    // посчитал снимок, отдаёт его сюда, чтобы журнал не открывался дважды.
+    writePanel(Date.now(), result && typeof result.panel === "object" ? result.panel : null);
+    return result;
+  });
+}
+
+async function runTool(name, args) {
   if (name === "moltbook_status") return moltbookStatus();
   if (name === "moltbook_scan") return moltbookScan();
   if (name === "moltbook_publish") return moltbookPublish(args || {});
   if (name === "moltbook_verify") return moltbookVerify(args || {});
   if (name === "moltbook_report") return moltbookReport(args || {});
   throw new Error("Unknown tool: " + name);
+}
+
+/**
+ * Карма и непрочитанные в состояние - для панели.
+ *
+ * Отдельная попытка вместо записи внутри уже открытого журнала: скан держит
+ * транзакцию, а лишняя запись после неё всё равно требует своего открытия.
+ * Отказ здесь не важен для работы агента, но он виден в ответе, иначе панель
+ * молча показывала бы нули.
+ */
+export function cacheHome(karma, unread, seenAt) {
+  let db = null;
+  try {
+    const opened = openLedger(false);
+    if (!opened.db) return "ledger-missing";
+    db = opened.db;
+    rememberHome(db, karma, unread, seenAt);
+    db.close();
+    db = null;
+    return null;
+  } catch (error) {
+    return String((error && error.message) || error);
+  } finally {
+    if (db) {
+      try {
+        db.close();
+      } catch (_) {
+        // закрытие не удалось - запись уже ушла или уже не нужна
+      }
+    }
+  }
 }
 
 // ---- MCP: сообщения ------------------------------------------------------------

@@ -64,8 +64,10 @@ internal object MoltbookWake {
     fun line(
         at: Long,
         plan: MoltbookWakePlan.Plan,
-    ): String =
-        "$at ${MoltbookWakePlan.tag(plan)} ${MoltbookWakePlan.reason(plan).replace(Regex("\\s+"), " ")}"
+    ): String {
+        val detail = MoltbookWakePlan.reason(plan).replace(Regex("\\s+"), " ")
+        return "$at ${MoltbookWakePlan.tag(plan)} $detail"
+    }
 
     /**
      * Одна попытка разбудить. Возвращает строку журнала — она же попадает в
@@ -91,21 +93,39 @@ internal object MoltbookWake {
         plan: MoltbookWakePlan.Plan,
         now: Long,
     ): String {
-        val target = plan as? MoltbookWakePlan.Plan.Wake
+        val found = (plan as? MoltbookWakePlan.Plan.Wake)?.sessionId
+        val created =
+            if (plan is MoltbookWakePlan.Plan.Create) {
+                // "{}" а не "": LocalOpenCodeClient.post при пустом body не ставит
+                // doOutput и не шлёт тело вообще (его KDoc описывает этот режим
+                // как "POST без тела, как abort-эндпоинт"). Валидатор opencode такую
+                // сессию не создаёт, post вернёт null, и Create навсегда останется
+                // мёртвой веткой с правдоподобной записью в журнале.
+                MoltbookWakePlan.parseCreated(LocalOpenCodeClient.post(OPENCODE_PORT, SESSION_PATH, "{}"))
+            } else {
+                null
+            }
+        val target = found ?: created
+        // Отказ отправки после Create не плодит сессии. Сессия УЖЕ создана и
+        // видна в GET /session, поэтому следующая попытка planFor не выберет
+        // Create (список непустой), а выберет Wake на эту самую сессию и
+        // разбудит её. Метка не двинулась - значит пауза сохранилась, и это
+        // ровно то поведение, ради которого она и не двигается при отказе.
         val sent =
             target != null &&
                 LocalOpenCodeClient.postAsync(
                     OPENCODE_PORT,
-                    messagePath(target.sessionId),
+                    messagePath(target),
                     messageBody(wakeText(now)),
                 )
         val record =
             when {
-                target == null -> line(now, plan)
-                !sent -> line(now, MoltbookWakePlan.Plan.Hold("не отправили в ${target.sessionId}"))
+                plan is MoltbookWakePlan.Plan.Hold -> line(now, plan)
+                target == null -> line(now, MoltbookWakePlan.Plan.Hold("сессию создать не вышло"))
+                !sent -> line(now, MoltbookWakePlan.Plan.Hold("не отправили в $target"))
                 else -> {
                     stamp(context, now)
-                    line(now, plan)
+                    line(now, MoltbookWakePlan.Plan.Wake(target, created = found == null))
                 }
             }
         return record
@@ -115,12 +135,13 @@ internal object MoltbookWake {
     private fun plan(
         context: Context,
         now: Long,
-    ): MoltbookWakePlan.Plan {
-        val sessions = MoltbookWakePlan.parseSessions(LocalOpenCodeClient.get(OPENCODE_PORT, "/session"))
-        if (sessions.isEmpty()) return MoltbookWakePlan.Plan.Hold("сервер не ответил или сессий нет")
-        val busy = MoltbookWakePlan.parseBusy(LocalOpenCodeClient.get(OPENCODE_PORT, "/session/status"))
-        return MoltbookWakePlan.choosePlan(sessions, busy, now, lastWakeAt(context))
-    }
+    ): MoltbookWakePlan.Plan =
+        MoltbookWakePlan.planFor(
+            LocalOpenCodeClient.get(OPENCODE_PORT, SESSION_PATH),
+            LocalOpenCodeClient.get(OPENCODE_PORT, STATUS_PATH),
+            now,
+            lastWakeAt(context),
+        )
 
     /**
      * Метка последнего УСПЕШНОГО будильника. На отказе она не двигается:
@@ -163,4 +184,6 @@ internal object MoltbookWake {
 
     private const val TAG: String = "MoltbookWake"
     private const val OPENCODE_PORT: Int = 4096
+    private const val SESSION_PATH: String = "/session"
+    private const val STATUS_PATH: String = "/session/status"
 }

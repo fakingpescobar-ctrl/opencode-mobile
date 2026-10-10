@@ -134,8 +134,8 @@ import org.opencode.mobile.server.MemoryMcp
 import org.opencode.mobile.server.OpenCodePermissionApi
 import org.opencode.mobile.server.OpenCodePermissionRequest
 import org.opencode.mobile.server.OpenCodeQuestionApi
-import org.opencode.mobile.server.OpenCodeQuestionRequest
 import org.opencode.mobile.server.OpenCodeQuestionPrompt
+import org.opencode.mobile.server.OpenCodeQuestionRequest
 import org.opencode.mobile.server.PermissionDecision
 import org.opencode.mobile.server.YnisonMcp
 import org.opencode.mobile.stt.NcnnModelValidator
@@ -609,24 +609,21 @@ fun ChatOverlay(
     val showSettings = activePanel == PANEL_SETTINGS
     val showSttSettings = activePanel == PANEL_STT
 
-    // Статистика Moltbook: локальный ledger мгновенно, поверх — одна попытка сети
-    // ПРИ ОТКРЫТИИ панели. Ключ растёт и по таймеру, пока панель открыта, иначе цифры
-    // «ждут ответа» застыли бы на весь сеанс, пока тик не отработает; но таймер
-    // перечитывает только ledger — иначе панель, открытая на час, сходила бы на
-    // /api/v1/home 240 раз.
+    // Панель Moltbook: файл снимка, который переписывает плагин после каждого
+    // своего вызова. Ни сети, ни ledger - читается файл, поэтому таймер здесь
+    // один и на все случаи: раз открыли панель, так и перечитываем её, пока
+    // открыта. Раньше был ещё отдельный ключ на «попытку сети при открытии»,
+    // и он исчез вместе с сетью.
     var moltbookRefresh by remember { mutableIntStateOf(0) }
-    var moltbookOpenToken by remember { mutableIntStateOf(0) }
     LaunchedEffect(showMoltbookPanel) {
         if (!showMoltbookPanel) return@LaunchedEffect
-        moltbookOpenToken++
         moltbookRefresh++
         while (true) {
             delay(MOLTBOOK_PANEL_REFRESH_MS)
             moltbookRefresh++
         }
     }
-    val moltbookSnapshot = rememberMoltbookSnapshot(moltbookRefresh, moltbookOpenToken)
-    val moltbookStats = moltbookSnapshot.stats
+    val moltbookStats = rememberMoltbookState(moltbookRefresh)
 
     /**
      * Ответ на висящий вопрос. [answers] — по списку выбранных меток на каждый
@@ -1587,7 +1584,7 @@ fun ChatOverlay(
                 // вместо иконки намеренно: это не сервис, а сам агент, и цифра на нём —
                 // не «сколько серверов сломано», а «кого мы ещё не ответили».
                 MoltbookIndicator(
-                    awaiting = moltbookStats.awaitingReply,
+                    awaiting = moltbookStats.awaiting,
                     active = showMoltbookPanel,
                     onClick = { toggleHeaderPanel(PANEL_MOLTBOOK) },
                 )
@@ -1727,8 +1724,7 @@ fun ChatOverlay(
             // наши посты, кому именно мы не ответили. Тот же тёмный кард, что и MCP.
             if (showMoltbookPanel) {
                 MoltbookPanel(
-                    stats = moltbookStats,
-                    live = moltbookSnapshot.live,
+                    state = moltbookStats,
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 2.dp),
                 )
             }
@@ -2774,8 +2770,7 @@ private fun QuestionPromptCard(
                         1.dp,
                         if (on) accent.copy(alpha = 0.8f) else Color(0xFF2C3542),
                         RoundedCornerShape(8.dp),
-                    )
-                    .clickable(enabled = !busy) { onClick(option.label) }
+                    ).clickable(enabled = !busy) { onClick(option.label) }
                     .padding(horizontal = 10.dp, vertical = 8.dp),
         ) {
             Text(

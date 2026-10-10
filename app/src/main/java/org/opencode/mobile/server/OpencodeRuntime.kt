@@ -442,15 +442,6 @@ object OpencodeRuntime {
      * Порт, метка и env сложены в [McpLaunch]: семь позиционных параметров выглядели бы
      * одинаково, а переставить `port` с `logFile` компилятор не поймал бы.
      */
-    /**
-     * Поднимает moltbook.js как отдельный TCP-сервер на [MoltbookMcp.PORT].
-     *
-     * Тот же приём, что у памяти и музыки: локальный MCP через stdio у этой сборки
-     * opencode не работает, поэтому - отдельный процесс, TCP-порт и remote-регистрация.
-     *
-     * Ключ приходит сюда через env, а не зашит в конфиг: смена токена не должна
-     * переписывать файл конфига, а порт без ключа открываться не должен.
-     */
     internal fun startMoltbookServer(
         context: Context,
         logFile: File,
@@ -632,7 +623,7 @@ object OpencodeRuntime {
         }
     }
 
-        private fun ensureMcpConfigFile(
+    private fun ensureMcpConfigFile(
         file: File,
         ynisonToken: String?,
         moltbookReady: Boolean,
