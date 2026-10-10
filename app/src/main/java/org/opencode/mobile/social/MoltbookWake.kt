@@ -4,6 +4,8 @@ import android.content.Context
 import android.util.Log
 import org.json.JSONObject
 import org.opencode.mobile.server.LocalOpenCodeClient
+import org.opencode.mobile.server.wakeLog
+import org.opencode.mobile.server.wakeStamp
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -19,9 +21,14 @@ import java.io.IOException
  * из ответов сервера и проверяется без телефона. Здесь только доставка.
  */
 internal object MoltbookWake {
-    const val STAMP_PATH: String = "moltbook/last-wake"
+    /**
+     * Имена файлов отделены от путей: путь относительный и собирается вызывающим
+     * под своё хранилище ([MoltbookPaths]), а имя файла - это одно и то же
+     * свойство будильника в любом хранилище.
+     */
+    const val FILE_NAME_WAKE_STAMP: String = "last-wake"
 
-    const val LOG_PATH: String = "moltbook/wake.log"
+const val FILE_NAME_WAKE_LOG: String = "wake.log"
 
     /**
      * Что именно сказать агенту.
@@ -151,13 +158,13 @@ internal object MoltbookWake {
         context: Context,
         now: Long,
     ) {
-        runCatching { File(context.filesDir, STAMP_PATH).writeText(now.toString()) }
+        runCatching { wakeStamp(context).writeText(now.toString()) }
             .onFailure { Log.w(TAG, "не записал метку будильника: ${it.message}") }
     }
 
     /** Первого будильника в жизни не было — файла нет, и это не поломка: «никогда» и есть 0. */
     private fun lastWakeAt(context: Context): Long {
-        val file = File(context.filesDir, STAMP_PATH)
+        val file = wakeStamp(context)
         return if (file.isFile) file.readText().trim().toLongOrNull() ?: 0L else 0L
     }
 
@@ -170,7 +177,7 @@ internal object MoltbookWake {
         record: String,
     ) {
         try {
-            val target = File(context.filesDir, LOG_PATH)
+            val target = wakeLog(context)
             target.parentFile?.mkdirs()
             FileOutputStream(target, true).use { out ->
                 out.write((record + "\n").toByteArray())

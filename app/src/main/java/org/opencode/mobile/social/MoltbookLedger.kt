@@ -5,6 +5,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import java.security.MessageDigest
+import org.opencode.mobile.server.MoltbookPaths
 
 /**
  * Локальный учёт Moltbook. До него «сколько не отвечено» вычислялось пересчётом
@@ -16,9 +17,15 @@ import java.security.MessageDigest
  * двигается только вперёд (NEW → POSTED/SKIPPED/FAILED) и никогда не откатывается,
  * поэтому повторный проход по той же ленте не может «разбудить» уже закрытый коммент.
  */
+/**
+ * @param context база открывается НЕ там, где решил Android, а там, где её ищет
+ *   плагин: [MoltbookPaths.ledgerContext]. Без этого подменённого контекста SQLiteOpenHelper
+ *   создал бы `moltbook.db` в приватном `dataDir/databases`, плагин его не увидел бы и
+ *   отвечал `ledger-missing` - то есть база была бы, а чтения всё равно не было бы.
+ */
 internal class MoltbookLedger(
     context: Context,
-) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
+) : SQLiteOpenHelper(MoltbookPaths.ledgerContext(context), DB_NAME, null, DB_VERSION) {
     /** Статус комментария. Хранится строкой — парсится в enum на границе чтения. */
     enum class CommentStatus {
         /** Найден, ответа ещё нет. Единственное состояние, из которого берётся работа. */

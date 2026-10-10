@@ -2,6 +2,8 @@ package org.opencode.mobile.social
 
 import android.content.Context
 import org.opencode.mobile.server.MoltbookMcp
+import org.opencode.mobile.server.panelFile
+import org.opencode.mobile.server.wakeLog
 import java.io.File
 import java.io.RandomAccessFile
 
@@ -21,7 +23,7 @@ internal object MoltbookPanelSource {
      * отдельно: по нему видно, ПОЧЕМУ агента не разбудили, когда карточка молчит.
      */
     fun read(context: Context): MoltbookPanelState {
-        val panel = File(context.filesDir, MoltbookMcp.PANEL_PATH)
+        val panel = panelFile(context)
         val state =
             runCatching { parsePanel(if (panel.isFile) panel.readText() else null) }
                 .getOrElse { MoltbookPanelState(reason = "снимок не прочитать") }
@@ -44,7 +46,7 @@ internal object MoltbookPanelSource {
         context: Context,
         now: Long,
     ): WakeRefusal? {
-        val log = File(context.filesDir, MoltbookWake.LOG_PATH)
+        val log = wakeLog(context)
         if (!log.isFile) return null
         return wakeRefusalOf(tailText(log, WAKE_LOG_TAIL_BYTES), now)
     }

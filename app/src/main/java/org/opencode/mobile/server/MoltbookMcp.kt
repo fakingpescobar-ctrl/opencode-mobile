@@ -44,7 +44,6 @@ internal object MoltbookMcp {
      * можно ошибиться тихо, без всякой ошибки.
      */
     const val PANEL_NAME = "panel.json"
-    const val PANEL_PATH = "$DIR_NAME/$PANEL_NAME"
 
     const val URL = "http://127.0.0.1:$PORT$PATH"
 

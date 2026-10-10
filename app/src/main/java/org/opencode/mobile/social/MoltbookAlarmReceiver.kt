@@ -5,7 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import org.opencode.mobile.server.LocalOpenCodeClient
-import java.io.File
+import org.opencode.mobile.server.keyFile
 import java.util.concurrent.Executors
 
 /**
@@ -112,8 +112,15 @@ class MoltbookAlarmReceiver : BroadcastReceiver() {
      * будильника.
      */
     private fun readinessBlocker(context: Context): String? {
-        if (!File(context.filesDir, KEY_PATH).isFile) {
-            return "нет ключа $KEY_PATH — будильник отложен"
+        // Путь берём из MoltbookPaths, а не из filesDir: после переноса состояния
+        // наружу ключ лежит там, куда его положил тот же резолвер, что и плагин.
+        // Проверка приватного пути после переноса всегда «находит» старый ключ
+        // (он остаётся копией) и тем самым пропускает проверку, которая должна
+        // была её остановить, — или, наоборот, блокирует тик навсегда после
+        // первой же чистой установки, когда приватной копии ещё нет.
+        val key = keyFile(context)
+        if (!key.isFile) {
+            return "нет ключа ${key.absolutePath} — будильник отложен"
         }
         return if (isServerUp()) null else "opencode не отвечает — будильник отложен"
     }
@@ -146,7 +153,6 @@ class MoltbookAlarmReceiver : BroadcastReceiver() {
     private companion object {
         const val TAG = "MoltbookAlarm"
         const val OPENCODE_PORT = 4096
-        const val KEY_PATH = "moltbook/moltkey"
 
         val executor =
             Executors.newSingleThreadExecutor { runnable ->

@@ -448,13 +448,38 @@ object OpencodeRuntime {
         workDir: File? = null,
         extraEnv: Map<String, String> = emptyMap(),
     ): Process? {
+        // Состояние молтбука переносится из приватного каталога наружу ДО старта
+        // плагина: иначе обновлённое приложение нашло бы новый путь пустым и
+        // объявило `ledger-missing`, хотя журнал лежит рядом, в старом месте.
+        val migration = MoltbookPaths.migrateFromPrivate(context)
+        if (migration.moved.isNotEmpty()) {
+            android.util.Log.i("OpencodeRuntime", "moltbook state moved outside filesDir: ${migration.moved.joinToString()}")
+        }
+        if (!migration.complete) {
+            // Перенос не довёз - и это не повод создавать базу на новом месте.
+            android.util.Log.w(
+                "OpencodeRuntime",
+                "moltbook state NOT fully moved, journal left alone: ${migration.failed.joinToString()}",
+            )
+        }
+        // Схему журнала создаёт Kotlin, а не плагин: moltbook.js не делает ни одного
+        // CREATE TABLE и на отсутствующем файле честно отдаёт `ledger-missing`. Так
+        // что на чистой установке базы нет, и создавать её больше некому - тикер,
+        // который раньше это делал, мёртв, а будильник и сторож базу только читают.
+        // Поэтому трогаем её здесь: до старта плагина, чтобы к моменту его старта
+        // файл уже существовал и плагин не отказался на пустом месте.
+        //
+        // Но только если перенос довёз: пустая база по целевому пути закрыла бы
+        // перенос навсегда (план пропускает всё, что уже существует), и настоящий
+        // журнал из filesDir не переехал бы больше никогда - молча.
+        if (migration.complete) {
+            ensureMoltbookLedger(context)
+        }
         val base =
             mapOf(
-                "MCP_MOLTBOOK_DIR" to File(context.filesDir, MoltbookMcp.DIR_NAME).absolutePath,
-                "MCP_MOLTBOOK_DB_DIR" to
-                    File(context.applicationInfo.dataDir, MoltbookMcp.DATABASES_DIR).absolutePath,
-                "MCP_MOLTBOOK_KEY_FILE" to
-                    File(File(context.filesDir, MoltbookMcp.DIR_NAME), MoltbookMcp.KEY_FILE).absolutePath,
+                "MCP_MOLTBOOK_DIR" to MoltbookPaths.dir(context).absolutePath,
+                "MCP_MOLTBOOK_DB_DIR" to MoltbookPaths.databasesDir(context).absolutePath,
+                "MCP_MOLTBOOK_KEY_FILE" to keyFile(context).absolutePath,
                 "MCP_MOLTBOOK_PORT" to MoltbookMcp.PORT.toString(),
                 // Отчёт ПК-агента. Сюда идёт ТОЛЬКО настоящее внешнее хранилище:
                 // [Workspace.resolve] при отсутствии MANAGE_EXTERNAL_STORAGE молча
@@ -484,6 +509,37 @@ object OpencodeRuntime {
     private fun moltbookReportDir(context: Context): String {
         if (!Workspace.usingExternal(context)) return ""
         return Workspace.externalRoot()?.absolutePath ?: ""
+    }
+
+    /**
+     * Создать журнал молтбука, если его ещё нет, и закрыть его сразу.
+     *
+     * Отдельной функцией, а не строкой в [startMoltbookServer], потому что у вызова
+     * есть ровно одна обязанность, которую легко пропустить, глядя на старт плагина:
+     * базы может не быть вообще. Молча пропустить это нельзя - плагин на
+     * отсутствующем файле отдаёт `ledger-missing`, и карточка молчит.
+     *
+     * Закрываем сразу же: `readableDatabase` открывает соединение, а держать его
+     * ради одной проверки - значит держать файловый дескриптор до перезапуска
+     * процесса ради ничего.
+     */
+    private fun ensureMoltbookLedger(context: Context) {
+        when (val ready = openLedgerForPlugin(context)) {
+            LedgerReady.Exists -> Unit // Журнал уже есть - трогать нечего.
+            is LedgerReady.Created -> {
+                // Закрываем сразу же: readableDatabase открывает соединение, а держать
+                // его ради одной проверки - значит держать файловый дескриптор до
+                // перезапуска процесса ради ничего.
+                ready.ledger.close()
+                val file = java.io.File(MoltbookPaths.databasesDir(context), MoltbookMcp.LEDGER_NAME)
+                android.util.Log.i("OpencodeRuntime", "moltbook journal created at ${file.absolutePath}")
+            }
+            is LedgerReady.Failed ->
+                // Молчание здесь стоило бы истории: плагин стартует, честно отвечает
+                // ledger-missing, карточка молчит, и видно это только по симптому
+                // в другом месте. Поэтому причина уходит в лог целиком.
+                android.util.Log.w("OpencodeRuntime", "moltbook journal NOT created: ${ready.cause}", ready.cause)
+        }
     }
 
     /**
