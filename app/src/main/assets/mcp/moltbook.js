@@ -2294,9 +2294,69 @@ function authorized(req, url) {
   return constantTimeEqual(bearer, MOLTBOOK_TOKEN) || constantTimeEqual(queryToken, MOLTBOOK_TOKEN);
 }
 
-function serveHttp() {
+/**
+ * Ждём, пока порт реально освободится, и только потом поднимаем сервер.
+ *
+ * Зачем: плагин перезапускается вместе с serve (виток RuntimeManager), а его порт
+ * 4201 фиксирован. Прошлый процесс мы гасим - и дожидаемся его смерти - но раскрытые
+ * им соединения (SSE с keepalive, их держит opencode) уходят в TIME_WAIT, и порт
+ * ещё несколько секунд не берётся. Bun.serve не ставит SO_REUSEADDR, поэтому
+ * новый процесс падал с EADDRINUSE - и плагин молча выпадал из набора инструментов
+ * модели, пока кто-нибудь не посмотрит в лог.
+ *
+ * Повторов ровно столько, чтобы пережить TIME_WAIT, и НЕ больше: если порт держит
+ * живой чужой процесс, это не «занято momentarily», это баг - и мы обязаны упасть
+ * громко, а не висеть молча. Пробуем только EADDRINUSE: любая другая ошибка
+ * listen - наша собственная, повторять её бессмысленно.
+ */
+export const MOLTBOOK_BIND_RETRY_DELAYS_MS = [250, 500, 1000, 1500, 2500];
+
+export function isPortBusyError(error) {
+  if (error && error.code === "EADDRINUSE") return true;
+  // Bun не всегда ставит code (в Bun 1.4.0 на телефоне приходит только текст
+  // "Failed to start server. Is port 4201 in use?"), поэтому ловим и формулировку.
+  return /EADDRINUSE|address already in use|is port \d+ in use/i.test(
+    String((error && error.message) || ""),
+  );
+}
+
+/**
+ * bindHttpServer(options, { delays, create }) - create подменяется в тестах,
+ * чтобы не поднимать настоящий сокет. Продлён сигнатурой, а не новым аргументом
+ * функции: аргумент options и так несёт порт, а лишний позиционный параметр
+ * легко перепутать местами при вызове.
+ */
+export async function bindHttpServer(
+  options,
+  { delays = MOLTBOOK_BIND_RETRY_DELAYS_MS, create = (opts) => Bun.serve(opts) } = {},
+) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+    try {
+      return create(options);
+    } catch (error) {
+      if (!isPortBusyError(error)) throw error;
+      lastError = error;
+      const delayMs = delays[attempt];
+      if (delayMs === undefined) break;
+      console.error(
+        "moltbook MCP: порт " +
+          options.port +
+          " ещё занят (попытка " +
+          (attempt + 1) +
+          "), жду " +
+          delayMs +
+          " мс",
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  throw lastError;
+}
+
+async function serveHttp() {
   const clients = new Set();
-  const server = Bun.serve({
+  const server = await bindHttpServer({
     port: MOLTBOOK_PORT,
     hostname: "127.0.0.1",
     fetch(req, srv) {
@@ -2401,7 +2461,10 @@ if (MOLTBOOK_PORT > 0) {
     console.error("moltbook MCP: нет MCP_MOLTBOOK_TOKEN, сервер не поднимается");
     process.exit(1);
   }
-  serveHttp();
+// await, а не голый вызов: подъём теперь умеет ждать освобождения порта, и без
+  // await ошибка EADDRINUSE после исчерпания повторов ушла бы в unhandled rejection
+  // вместо падения процесса с внятным кодом.
+  await serveHttp();
 } else if (process.env.MOLTBOOK_STDIO === "1") {
   // Ручной запуск для отладки. Под тестом (node, без bun) этого не происходит, иначе
   // импорт файла уводил бы процесс в вечное чтение stdin.

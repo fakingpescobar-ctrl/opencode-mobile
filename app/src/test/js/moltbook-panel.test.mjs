@@ -37,6 +37,9 @@ const {
   fetchWithTimeout,
   MOLTBOOK_TIMEOUT_MS,
   MOLTBOOK_CALL_BUDGET_MS,
+  MOLTBOOK_BIND_RETRY_DELAYS_MS,
+  isPortBusyError,
+  bindHttpServer,
 } = await import(pathToFileURL(MOLTBOOK_JS).href);
 
 let ok = 0;
@@ -396,6 +399,84 @@ await test("caching the account refuses instead of throwing when the journal is 
   const refused = cacheHome(103, 33);
   truthy(typeof refused === "string" && refused !== "", "a refusal is named");
   truthy(refused.includes("ledger"), "the refusal says which store refused");
+});
+
+// ---- Порт занят не мгновенно. Плагин перезапускается вместе с serve, его порт
+// 4201 фиксирован, и раскрытые ранее соединения уходят в TIME_WAIT: Bun.serve без
+// SO_REUSEADDR падал с EADDRINUSE, и модель молча теряла инструменты moltbook.
+await test("only a busy port is worth retrying", () => {
+  truthy(isPortBusyError({ code: "EADDRINUSE", message: "listen failed" }), "EADDRINUSE is busy");
+  truthy(isPortBusyError(new Error("Failed to start server. Is port 4201 in use?")), "text says busy");
+  truthy(!isPortBusyError(new Error("Invalid port")), "anything else is our own bug");
+  truthy(!isPortBusyError(undefined), "no error is not a busy port");
+});
+
+await test("the port is retried and the plugin still comes up", async () => {
+  let calls = 0;
+  const server = await bindHttpServer(
+    { port: 4201 },
+    {
+      delays: [1, 1],
+      create: () => {
+        calls += 1;
+        if (calls < 3) throw new Error("Failed to start server. Is port 4201 in use?");
+        return { port: 4201, attempts: calls };
+      },
+    },
+  );
+  eq(calls, 3, "two refusals then success");
+  eq(server.attempts, 3, "the server came up, not a refusal");
+});
+
+await test("a port held by a live process fails loudly instead of hanging", async () => {
+  let calls = 0;
+  let thrown = null;
+  try {
+    await bindHttpServer(
+      { port: 4201 },
+      {
+        delays: [1, 1],
+        create: () => {
+          calls += 1;
+          throw new Error("Failed to start server. Is port 4201 in use?");
+        },
+      },
+    );
+  } catch (error) {
+    thrown = error;
+  }
+  eq(calls, 3, "tried once plus every delay, then gave up");
+  truthy(thrown !== null, "a refusal nobody can fix is not retried forever");
+  truthy(String(thrown && thrown.message).includes("4201"), "the last refusal is the one reported");
+});
+
+await test("our own bind error is not retried at all", async () => {
+  let calls = 0;
+  let thrown = null;
+  try {
+    await bindHttpServer(
+      { port: 4201 },
+      {
+        delays: [1, 1, 1],
+        create: () => {
+          calls += 1;
+          throw new Error("Invalid port");
+        },
+      },
+    );
+  } catch (error) {
+    thrown = error;
+  }
+  eq(calls, 1, "one try: retrying our own bug only delays the report");
+  eq(String(thrown && thrown.message), "Invalid port", "reported as is");
+});
+
+await test("the retry budget covers TIME_WAIT but is not endless", () => {
+  truthy(MOLTBOOK_BIND_RETRY_DELAYS_MS.length > 0, "there is something to wait for");
+  truthy(MOLTBOOK_BIND_RETRY_DELAYS_MS.length <= 6, "and it is bounded");
+  const total = MOLTBOOK_BIND_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0);
+  truthy(total >= 3000, "waits long enough for TIME_WAIT to expire (" + total + " ms)");
+  truthy(total <= 30000, "but not so long that a real conflict looks like a hang (" + total + " ms)");
 });
 
 console.log("");
