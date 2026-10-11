@@ -47,7 +47,9 @@ DATABASES_DIR_NAME,
   RAW_DIR_NAME,
   SERVER_STATUS,
   SCAN_POST_LIMIT,
-  SCAN_THREAD_LIMIT,
+SCAN_THREAD_LIMIT,
+  SCAN_OWN_THREAD_LIMIT,
+  SCAN_FEED_THREAD_LIMIT,
   isPublishedStatus,
   simpleHash,
   parseFeedPosts,
@@ -138,16 +140,20 @@ await test("summarize counts by status and still honours the projection", () => 
       row(COMMENT_STATUS.POSTED, REPLY_OUTCOME.REUSED),
       row(COMMENT_STATUS.NEW, REPLY_OUTCOME.UNKNOWN),
       row(COMMENT_STATUS.FAILED, REPLY_OUTCOME.UNKNOWN),
+      row(COMMENT_STATUS.POSTED, REPLY_OUTCOME.UNKNOWN),
     ]),
     {
-      total: 4,
-      POSTED: 2,
+      total: 5,
+      POSTED: 3,
       NEW: 1,
       FAILED: 1,
       reportable: 1,
       verified: 1,
       reused: 1,
-      unknown: 2,
+      // Неизвестный исход - только у нашего ОПУБЛИКОВАННОГО ответа. У NEW и
+      // FAILED исхода нет по определению: мы их не отвечали, и пустой
+      // reply_outcome там это «не отвечали», а не «не поняли, что вышло».
+      unknown: 1,
     },
     "summary",
   );
@@ -429,7 +435,19 @@ await test("an empty thread yields no candidates and does not throw", () => {
 await test("scan bounds are small on purpose", () => {
   eq(SCAN_POST_LIMIT > 0, true);
   eq(SCAN_THREAD_LIMIT > 0, true);
-  eq(SCAN_THREAD_LIMIT <= SCAN_POST_LIMIT, true);
+  eq(SCAN_THREAD_LIMIT <= 8, true, "и при этом не обход всего молтбука");
+  // Квоты по источникам существуют потому, что один общий лимит ничего не
+  // решает: либо наши посты съедают всё и лента не читается, либо наоборот.
+  // Проверено симуляцией: при общем лимипе третий источник (чужие посты, где
+  // нам ответили) не получал ни одного слота НИКОГДА - целая половина второго
+  // источника была декорацией.
+  eq(SCAN_OWN_THREAD_LIMIT > 0, true, "наши посты читаются");
+  eq(SCAN_FEED_THREAD_LIMIT > 0, true, "лента читается");
+  eq(
+    SCAN_OWN_THREAD_LIMIT + SCAN_FEED_THREAD_LIMIT <= SCAN_THREAD_LIMIT,
+    true,
+    "и вместе они влезают в общий лимит",
+  );
 });
 
 await test("the archive name is stable for the same request and differs for another", () => {

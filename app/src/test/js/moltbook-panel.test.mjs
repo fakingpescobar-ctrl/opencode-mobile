@@ -40,6 +40,13 @@ const {
   MOLTBOOK_BIND_RETRY_DELAYS_MS,
   isPortBusyError,
   bindHttpServer,
+  parseNotifications,
+  parseCreatedAt,
+  writeScan,
+  notificationPath,
+  nextNotificationPath,
+  SCAN_NOTIFICATION_PAGES,
+  NOTIFICATION_KINDS,
 } = await import(pathToFileURL(MOLTBOOK_JS).href);
 
 let ok = 0;
@@ -477,6 +484,196 @@ await test("the retry budget covers TIME_WAIT but is not endless", () => {
   const total = MOLTBOOK_BIND_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0);
   truthy(total >= 3000, "waits long enough for TIME_WAIT to expire (" + total + " ms)");
   truthy(total <= 30000, "but not so long that a real conflict looks like a hang (" + total + " ms)");
+});
+
+// ---- Второй контур: наши посты. Лента отдаёт чужие, поэтому наши посты видны
+// только через /notifications. Без него ours был нулём при живых постах агента.
+await test("a notification about our post names the post to read", () => {
+  const page = parseNotifications(
+    JSON.stringify({
+      notifications: [
+        {
+          id: "f02a0123-",
+          agentId: "e3c0a083-",
+          type: "post_comment",
+          content: "Someone commented on your post",
+          relatedPostId: "5ead528f-",
+          relatedCommentId: "21f2d192-",
+          isRead: false,
+          createdAt: "2026-10-10T15:58:16.153Z",
+          post: { id: "5ead528f-", title: "Ask: how do you implement memory" },
+          comment: { id: "21f2d192-", authorId: "0f86f8a4-", parentId: null },
+        },
+      ],
+      has_more: true,
+      next_cursor: "c2",
+      unread_count: 84,
+    }),
+  );
+  truthy(page.ok, "a page of notifications is readable");
+  eq(page.posts, ["5ead528f-"], "the post to read comes out of the notification");
+  eq(page.titles["5ead528f-"], "Ask: how do you implement memory", "the title travels with it");
+  eq(page.items[0].comment_id, "21f2d192-", "and the comment it is about");
+  eq(page.nextCursor, "c2", "the cursor is what the next page hangs on");
+  eq(page.unread, 84, "unread is read from the answer, not counted by us");
+});
+
+await test("a reply to our comment points at the comment, not at the post", () => {
+  const page = parseNotifications(
+    JSON.stringify({
+      notifications: [
+        {
+          type: "comment_reply",
+          relatedPostId: "post-1",
+          relatedCommentId: "20cbd0df-",
+          isRead: true,
+          comment: { id: "20cbd0df-", parentId: "261a6bcb-" },
+        },
+      ],
+    }),
+  );
+  // Разбор агента с устройства: relatedCommentId - это НОВЫЙ комментарий,
+  // а comment.parentId - наш комментарий, на который ответили. Если спутать,
+  // агент решит отвечать сам себе.
+  eq(page.items[0].parent_id, "261a6bcb-", "the thing being answered is ours");
+  eq(page.items[0].comment_id, "20cbd0df-", "the new comment is theirs");
+});
+
+await test("following someone is not a post to read", () => {
+  const page = parseNotifications(
+    JSON.stringify({
+      notifications: [
+        {
+          type: "new_follower",
+          content: "khayon started following you",
+          isRead: false,
+          createdAt: "2026-10-10T08:05:37.501Z",
+        },
+      ],
+    }),
+  );
+  // Подписчик не несёт ни postId, ни commentId: читать нечего, и выдумывать
+  // пост из пустоты нельзя - получится строка, не привязанная ни к чему.
+  eq(page.items, [], "no item is invented out of a follower");
+  eq(page.posts, [], "and no post to read either");
+});
+
+await test("a notification without a post id is refused, not guessed", () => {
+  const page = parseNotifications(
+    JSON.stringify({ notifications: [{ type: "post_comment", relatedCommentId: "c1" }] }),
+  );
+  eq(page.items, [], "a post id is the only thing that makes a notification usable");
+  eq(page.posts, [], "nothing to read follows from it");
+});
+
+await test("garbage notifications say so instead of looking empty", () => {
+  truthy(!parseNotifications("не json").ok, "not json is a refusal");
+  truthy(parseNotifications("не json").reason === "notifications-not-json", "and it is named");
+  truthy(!parseNotifications('{"notifications":"не список"}').ok, "a string where a list belongs is a refusal");
+  truthy(!parseNotifications(null).ok, "nothing at all is a refusal, not an empty inbox");
+});
+
+await test("the first page needs no cursor and later ones do", () => {
+  eq(notificationPath(null), "/api/v1/notifications", "the first page is just the address");
+  eq(notificationPath(""), "/api/v1/notifications", "and an empty cursor is not a cursor");
+  eq(
+    notificationPath("c2"),
+    "/api/v1/notifications?cursor=c2",
+    "the next page hangs on what the last answer returned",
+  );
+});
+
+await test("the scan stops instead of walking the same page forever", () => {
+  // У этого эндпоинта limit и offset не работают, а has_more всегда true,
+  // пока не прочитать. Без проверки курсор скан крутил бы одну страницу вечно.
+  eq(
+    nextNotificationPath(null, { nextCursor: "c2" }, 0, SCAN_NOTIFICATION_PAGES),
+    "/api/v1/notifications?cursor=c2",
+    "a moving cursor earns a request",
+  );
+  eq(nextNotificationPath("c2", { nextCursor: "c2" }, 0, 4), null, "the same cursor does not");
+  eq(nextNotificationPath("c2", { nextCursor: null }, 0, 4), null, "no cursor means the end");
+  eq(nextNotificationPath("c2", { nextCursor: "c3" }, 3, 4), null, "the budget is spent");
+});
+
+await test("the unread pile is bounded, not drained", () => {
+  truthy(SCAN_NOTIFICATION_PAGES >= 2, "at least the newest page and one behind it");
+  truthy(SCAN_NOTIFICATION_PAGES <= 8, "and not a march through all 123 unread");
+  truthy(NOTIFICATION_KINDS.includes("post_comment"), "comments on our post are read");
+  truthy(NOTIFICATION_KINDS.includes("comment_reply"), "replies to us are read");
+  truthy(!NOTIFICATION_KINDS.includes("new_follower"), "followers are not a thread to read");
+});
+
+// ---- ours по уведомлению -----------------------------------------------------------
+
+await test("a post we were notified about is ours, even with no name to compare", () => {
+  const { dir, file } = journal();
+  const db = new DatabaseSync(file);
+  writeScan(
+    db,
+    [
+      // Пост из ленты - чужой.
+      { id: "p-feed", title: "чужой", author: "vina", comments_total: 3, upvotes: 1, created_at: 0, repost_of: null },
+      // Пост из уведомления: автора не знаем, но post_comment по определению
+      // значит «прокомментировали ваш пост». Сравнивать не с чем - /agents/{id} 404.
+      { id: "p-notice", title: "наш", author: "", comments_total: 0, upvotes: 0, created_at: 0, repost_of: null },
+    ],
+    [],
+    AT,
+    ["p-notice"],
+  );
+  const ours = db.prepare("SELECT id FROM posts WHERE ours = 1").all().map((r) => r.id);
+  const theirs = db.prepare("SELECT id FROM posts WHERE ours = 0").all().map((r) => r.id);
+  db.close();
+  rmSync(dir, { recursive: true, force: true });
+  eq(ours, ["p-notice"], "the post we were notified about counts as ours");
+  eq(theirs, ["p-feed"], "and the one from the feed does not");
+});
+
+await test("without a notification the same post stays somebody else's", () => {
+  const { dir, file } = journal();
+  const db = new DatabaseSync(file);
+  writeScan(
+    db,
+    [{ id: "p-x", title: "x", author: "", comments_total: 0, upvotes: 0, created_at: 0, repost_of: null }],
+    [],
+    AT,
+    [],
+  );
+  eq(db.prepare("SELECT COUNT(*) AS n FROM posts WHERE ours = 1").get().n, 0, "no name and no notice means not ours");
+  db.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+await test("a date the server wrote is a time, not NaN", () => {
+  // Молтбук отдаёт createdAt строкой ISO, а колонка ждёт число миллисекунд.
+  // Раньше здесь стояло Number(item.created_at): имя поля не совпадало,
+  // получался NaN, SQLite считал его NULL, а INSERT OR IGNORE молча
+  // проглатывал нарушение NOT NULL. Треды читались, а в журнал не попадало
+  // ни одного комментария - и плагин об этом не говорил.
+  eq(parseCreatedAt("2026-10-10T15:58:16.153Z"), Date.parse("2026-10-10T15:58:16.153Z"), "ISO becomes milliseconds");
+  eq(parseCreatedAt("2026-10-10T15:58:16.153Z"), 1791647896153, "and it is that exact instant");
+  eq(parseCreatedAt(1791668296153), 1791668296153, "a number stays a number");
+  eq(parseCreatedAt("1791668296153"), 1791668296153, "a numeric string is read as a number");
+  eq(parseCreatedAt("вчера"), 0, "nonsense is zero, not NaN");
+  eq(parseCreatedAt(undefined), 0, "and absence is zero too");
+  eq(Number.isNaN(parseCreatedAt("вчера")), false, "NaN must never reach SQLite");
+});
+
+await test("a reply to our comment does not make the post ours", () => {
+  // Разбор агента: comment_reply - это ответ на наш комментарий в ЧУЖОМ посте.
+  // Если такой пост пометить ours=1, то ourPosts и repliesToOurs на карточке
+  // начнут считать чужую работу нашей.
+  const page = parseNotifications(
+    JSON.stringify({
+      notifications: [
+        { type: "comment_reply", relatedPostId: "post-foreign", relatedCommentId: "c9" },
+        { type: "post_comment", relatedPostId: "post-ours", relatedCommentId: "c1" },
+      ],
+    }),
+  );
+  eq(page.posts, ["post-foreign", "post-ours"], "оба поста надо прочитать");
+  eq(page.ourPosts, ["post-ours"], "но наш только тот, где прокомментировали НАС");
 });
 
 console.log("");

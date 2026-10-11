@@ -187,7 +187,15 @@ export function countReportable(rows) {
   );
   const verified = counted.filter((row) => row.reply_outcome === REPLY_OUTCOME.VERIFIED);
   const reused = rows.filter((row) => row.reply_outcome === REPLY_OUTCOME.REUSED);
-  const unknown = rows.filter((row) => row.reply_outcome === REPLY_OUTCOME.UNKNOWN);
+  // Неизвестный исход бывает только у НАШЕГО ответа, который мы опубликовали, но
+  // не смогли классифицировать. Пустой reply_outcome есть у любой строки, которую
+  // мы НЕ отвечали (в схеме DEFAULT ''), и раньше именно они попадали сюда
+  // все: на карточке появлялось «неизвестно: 77» при статусе NEW у всех и при
+  // нуле опубликованных ответов. То есть число, которого не существует.
+  const unknown = rows.filter(
+    (row) =>
+      statusIs(row.status, COMMENT_STATUS.POSTED) && row.reply_outcome === REPLY_OUTCOME.UNKNOWN,
+  );
   return {
     reportable: counted.length,
     verified: verified.length,
@@ -280,7 +288,7 @@ export function parseFeedPosts(raw) {
       author: authorName(item.author_name || item.author),
       comments_total: Number(item.comment_count || item.comments_count || 0),
       upvotes: Number(item.upvotes || item.score || 0),
-      created_at: Number(item.created_at || 0),
+      created_at: parseCreatedAt(item.created_at || item.createdAt),
       repost_of: item.repost_of ? String(item.repost_of) : null,
     });
   }
@@ -294,6 +302,28 @@ export function parseFeedPosts(raw) {
  * «id существует»: уже случалось, что success:true и already_existed:true приехали
  * одним ответом, а комментарий так и остался pending.
  */
+/**
+ * Время в миллисекундах из того, что прислал сервер.
+ *
+ * Зачем отдельная функция: молтбук отдаёт дату строкой ISO в поле `createdAt`,
+ * а колонка ждёт число миллисекунд. Раньше здесь стояло Number(item.created_at),
+ * и поле с другим именем давало NaN - SQLite принимал его за NULL, а
+ * INSERT OR IGNORE молча проглатывал нарушение NOT NULL. Итог был тихий:
+ * треды читались, кандидаты находились, а в журнал не попадало ни одного
+ * комментария. Теперь непонятная дата становится нулём (порядок не нарушен),
+ * а мусор не притворяется временем.
+ */
+export function parseCreatedAt(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+    const asNumber = Number(value);
+    return Number.isFinite(asNumber) ? asNumber : 0;
+  }
+  return 0;
+}
+
 /**
  * Разворачивает ветку в плоский список.
  *
@@ -321,7 +351,7 @@ export function flattenComments(items, inheritedParentId = null) {
       author: authorName(item.author_name || item.author),
       body: String(item.body || item.content || ""),
       parent_id: item.parent_id ? String(item.parent_id) : inheritedParentId,
-      created_at: Number(item.created_at || 0),
+      created_at: parseCreatedAt(item.created_at || item.createdAt),
       verification_status: String(item.verification_status || ""),
     });
     flat.push(...flattenComments(item.replies, id));
@@ -374,6 +404,135 @@ export function pickCandidates(comments, ourName) {
     candidates.push(comment);
   }
   return { candidates, answeredCount: answered.size };
+}
+
+/**
+ * Сколько страниц уведомлений тянем за один скан.
+ *
+ * У агента копится больше сотни непрочитанных, и `has_more` у этого эндпоинта
+ * всегда true, пока их не потянуть. Тянуть все - значит всё время ходить в сеть
+ * за тем, что мы уже видели. Две страницы - это «что нового с прошлого раза»
+ * для обычного темпа: больше успевает накопиться только если агент не работал.
+ */
+export const SCAN_NOTIFICATION_PAGES = 2;
+
+/**
+ * Типы уведомлений, из которых есть смысл что-то извлекать.
+ *
+ * `new_follower` отброшен нарочно: он не несёт ни postId, ни commentId, а
+ * стоит отдельный сетевой запрос ради одного счётчика, который агент всё
+ * равно видит в /home. Пустое уведомление должно честно остаться пустым, а не
+ * превратиться в пост с выдуманным автором.
+ */
+export const NOTIFICATION_KINDS = ["post_comment", "comment_reply"];
+
+/**
+ * Разбирает страницу уведомлений. Чистая функция, без сети.
+ *
+ * Зачем вообще: лента /feed отдаёт только чужие посты, поэтому наш счётчик
+ * ours был нулём, пока посты агента жили в /home и в /notifications. Молтбук
+ * показывал «сколько нас в чужих постах» и молчал про то, что происходит с
+ * нашими - при 123 непрочитанных.
+ *
+ * Уведомление - указатель, а не источник имён: в нём есть `comment.authorId`
+ * (uuid), но нет имени, а /agents/{id} отдаёт 404. Имена добираются там, где
+ * они есть: в /posts/{id}/comments у каждого комментария лежит полный author.
+ * Поэтому здесь мы достаём только идентификаторы и отдаём список постов,
+ * комментарии к которым имеет смысл прочитать.
+ */
+export function parseNotifications(raw) {
+  let parsed = null;
+  try {
+    parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+  } catch (error) {
+    return { ok: false, reason: "notifications-not-json", items: [], posts: [], nextCursor: null };
+  }
+  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.notifications)) {
+    return {
+      ok: false,
+      reason: "notifications-have-no-list",
+      items: [],
+      posts: [],
+      nextCursor: null,
+    };
+  }
+const items = [];
+  const posts = [];
+  const ourPosts = [];
+  const titles = {};
+  const seenPosts = new Set();
+  for (const note of parsed.notifications) {
+    if (!note || typeof note !== "object") continue;
+    const kind = String(note.type || "");
+    if (!NOTIFICATION_KINDS.includes(kind)) continue;
+    const postId = String(note.relatedPostId || "").trim();
+    // Пост без id - это объект, к которому нельзя привязать ни комментарий,
+    // ни пост. Записывать его в журнал нельзя: получится строка, которая
+    // выглядит как пост, но не привязана ни к чему и не отвечает на вопрос.
+    if (!postId) continue;
+    const item = {
+      kind,
+      post_id: postId,
+      comment_id: String(note.relatedCommentId || "").trim(),
+      parent_id: String((note.comment && note.comment.parentId) || "").trim(),
+      created_at: String(note.createdAt || ""),
+      is_read: note.isRead === true,
+    };
+    items.push(item);
+    if (!seenPosts.has(postId)) {
+      seenPosts.add(postId);
+      posts.push(postId);
+      titles[postId] = String((note.post && note.post.title) || "");
+    }
+    // Только post_comment означает «это ВАШ пост». comment_reply - это ответ
+    // на наш комментарий в ЧУЖОМ посте, и такой пост нашим не является: если
+    // пометить его ours=1, то и ourPosts, и repliesToOurs на карточке считают
+    // чужую работу нашей.
+    if (kind === "post_comment" && !ourPosts.includes(postId)) ourPosts.push(postId);
+  }
+  return {
+    ok: true,
+    reason: null,
+    items,
+    posts,
+    ourPosts,
+    titles,
+    nextCursor: parsed.next_cursor ? String(parsed.next_cursor) : null,
+    hasMore: parsed.has_more === true,
+    unread: Number(parsed.unread_count || 0),
+  };
+}
+
+/**
+ * Адрес страницы уведомлений по курсору. Первая страница курсора не требует.
+ *
+ * Отдельная функция, а не цикл в скане, потому что у этого эндпоинта курсор
+ * обязателен: limit и offset он игнорирует, а has_more всегда true. Если курсор
+ * не двигать, страница будет перечитываться до бесконечности - и скан будет
+ * честно ходить в сеть, ни разу не увидев ничего нового.
+ */
+export function notificationPath(cursor) {
+  const value = cursor ? String(cursor).trim() : "";
+  if (!value) return "/api/v1/notifications";
+  return "/api/v1/notifications?cursor=" + encodeURIComponent(value);
+}
+
+/**
+ * Стоит ли идти за следующей страницей уведомлений.
+ *
+ * Разведено с notificationPath специально: адрес следующей страницы известен
+ * только ПОСЛЕ ответа предыдущей, а бюджет «сколько страниц ещё можно» живёт
+ * между запросами. Здесь проверяется главное - что курсор вообще двигается.
+ * Повторяющийся курсор означает, что сервер отдаёт ту же страницу: идти дальше
+ * бессмысленно, и без этой проверки скан крутился бы вечно.
+ */
+export function nextNotificationPath(previousCursor, parsed, pageIndex, pageBudget) {
+  if (pageIndex + 1 >= Math.max(1, pageBudget)) return null;
+  const next = parsed && parsed.nextCursor ? String(parsed.nextCursor) : null;
+  if (!next) return null;
+  const before = previousCursor ? String(previousCursor) : null;
+  if (before !== null && next === before) return null;
+  return notificationPath(next);
 }
 
 /** Кладёт сырой ответ в архив. Тот же формат, что у MoltbookRawArchive: <мс>-<хэш>.json. */
@@ -553,12 +712,29 @@ export function scanStatus(comment) {
   return COMMENT_STATUS.NEW;
 }
 
-export function writeScan(db, posts, comments, now) {
-  if (!db) return { postsWritten: 0, commentsWritten: 0, refused: "ledger-missing" };
+export function writeScan(db, posts, comments, now, ourPostIds = [], partialPostIds = []) {
+  if (!db) return { postsWritten: 0, commentsWritten: 0, commentsSeen: 0, refused: "ledger-missing" };
   let postsWritten = 0;
   let commentsWritten = 0;
+  let attempted = 0;
+  // Пост из уведомления - наш по факту: post_comment по определению значит
+  // «прокомментировали ваш пост». Сравнивать тут не с чем: в уведомлении
+  // только authorId (uuid), а /agents/{id} отдаёт 404, так что имени автора
+  // мы не знаем и сравнить его с MOLTBOOK_NAME физически нечем. Ложный ноль
+  // здесь хуже честного факта: агент должен видеть, что его пост жив.
+  const oursByNotice = new Set((ourPostIds || []).map(String));
+  // Пост, пришедший из уведомления, знаем только по заголовку: автора, счётчиков
+  // и repost_of в уведомлении нет. Перезаписывать им строку из журнала нельзя -
+  // настоящий автор и repost_of ушли бы в пустоту, а вместе с ними счётчик
+  // репостов и название поста на карточке. Такие строки только добавляются.
+  const partial = new Set((partialPostIds || []).map(String));
   const upsertPost = db.prepare(
     "INSERT OR REPLACE INTO posts (id,title,author,ours,repost_of,comments_total,upvotes,seen_at,updated_at)" +
+      " VALUES (?,?,?,?,?,?,?,?,?)",
+  );
+  // Тот же пост, но «не трогать, если уже есть»: для строк из уведомлений.
+  const addPostIfMissing = db.prepare(
+    "INSERT OR IGNORE INTO posts (id,title,author,ours,repost_of,comments_total,upvotes,seen_at,updated_at)" +
       " VALUES (?,?,?,?,?,?,?,?,?)",
   );
   const insertComment = db.prepare(
@@ -574,23 +750,47 @@ export function writeScan(db, posts, comments, now) {
   // где движок - node:sqlite, а у него нет .transaction(). Транзакция всё равно одна.
   db.exec("BEGIN");
   try {
+    // Сколько строк было до и сколько стало - единственный честный способ
+    // посчитать записанные комментарии. Раньше считалось через changes от
+    // INSERT OR IGNORE, но Bun 1.4.0 для этой таблицы отдаёт changes:0 при
+    // успешной вставке (проверено: lastInsertRowid рос, changes был нулём), и
+    // плагин годами показывал «записано 0» при полном журнале. Дополнительно
+    // OR IGNORE молча проглатывает нарушения NOT NULL - именно так пропал
+    // created_at из-за NaN, и потери не было видно нигде.
+    const countBefore = db.prepare("SELECT COUNT(*) AS n FROM comments").get().n;
+    const existed = db.prepare("SELECT 1 AS n FROM posts WHERE id = ?");
+    // Нестрогая проверка не случайна: bun:sqlite отдаёт при отсутствии строки
+    // null, а node:sqlite (на нём идут тесты) - undefined. Строгое сравнение с
+    // undefined обнулило бы postsWritten в проде, и тесты бы это скрыли.
+    const isKnown = (postId) => existed.get(postId) != null;
+    // Пост, который мы прежде записали как чужой (например, пришли ответ на наш
+    // комментарий), а потом узнали, что он наш. Строка не трогается целиком -
+    // только факт ours. Иначе наш счётчик занижался бы навсегда: addPostIfMissing
+    // не обновляет уже существующие строки, а значит и ours остался бы 0.
+    const markOurs = db.prepare("UPDATE posts SET ours = 1 WHERE id = ? AND ours = 0");
     for (const post of posts) {
-      upsertPost.run(
+      const wasKnown = partial.has(post.id) && isKnown(post.id);
+      const statement = partial.has(post.id) ? addPostIfMissing : upsertPost;
+      statement.run(
         post.id,
         post.title,
         post.author,
-        post.author.trim().toLowerCase() === MOLTBOOK_NAME ? 1 : 0,
+        post.author.trim().toLowerCase() === MOLTBOOK_NAME || oursByNotice.has(post.id) ? 1 : 0,
         post.repost_of,
         post.comments_total,
         post.upvotes,
         now,
         now,
       );
-      postsWritten++;
+      // Пост из уведомления, который уже был в журнале, не считается записанным:
+      // INSERT OR IGNORE его пропустил, и правда в том, что новых строк не
+      // добавилось. А вот факт «это наш пост» обновляется в любом случае.
+      if (oursByNotice.has(post.id)) markOurs.run(post.id);
+      if (!wasKnown) postsWritten++;
     }
     for (const comment of comments) {
       if (!comment.post_id) continue;
-      const result = insertComment.run(
+      insertComment.run(
         comment.id,
         comment.post_id,
         comment.author,
@@ -599,12 +799,13 @@ export function writeScan(db, posts, comments, now) {
         scanStatus(comment),
         now,
       );
-      if (result.changes > 0) {
-        commentsWritten++;
-      } else {
-        touchComment.run(comment.body, now, comment.id);
-      }
+      attempted += 1;
+      // Строка могла уже быть - тогда обновляем тело и время просмотра, но НЕ
+      // трогаем status/our_reply_id/replied_at/reply_outcome (см. доки above).
+      touchComment.run(comment.body, now, comment.id);
     }
+    const countAfter = db.prepare("SELECT COUNT(*) AS n FROM comments").get().n;
+    commentsWritten = Math.max(0, countAfter - countBefore);
     db.exec("COMMIT");
   } catch (error) {
     try {
@@ -614,12 +815,44 @@ export function writeScan(db, posts, comments, now) {
     }
     throw error;
   }
-  return { postsWritten, commentsWritten, refused: null };
+  return {
+    postsWritten,
+    commentsWritten,
+    // Сколько вставок мы ПРЕДПРИНЯЛИ. Именно эта пара чисел отличает две разные
+    // ситуации, которые раньше выглядели одинаково: attempted == written это
+    // «нечего писать, всё уже в журнале», а attempted > written это «вставки
+    // были, а строк не появилось» - то есть потеря. Именно так выглядел баг с
+    // NaN в created_at: attempted 400, written 0.
+    commentsSeen: attempted,
+    refused: null,
+  };
 }
 
 /** Сколько постов и сколько тредов смотреть за один вызов. */
 export const SCAN_POST_LIMIT = 6;
-export const SCAN_THREAD_LIMIT = 2;
+/**
+ * Тредов за один скан. Было 2, и этого хватало, пока скан смотрел только ленту:
+ * два верхних поста и два ответа на них.
+ *
+ * Теперь тредов два вида - чужие из ленты и наши из уведомлений - и при лимите 2
+ * наши просто не влезали бы: агент уходил в сеть и не видел, что написали
+ * ему. Поэтому лимит поднят, а сами треды отбираются так, чтобы наши не
+ * вытеснялись: сначала наши, потом лента.
+ */
+export const SCAN_THREAD_LIMIT = 6;
+
+/**
+ * Квоты тредов по источникам.
+ *
+ * Отдельные константы, потому что один общий лимит ничего не решает: либо
+ * наши посты съедают всё и лента не читается, либо наоборот. Проверено
+ * симуляцией - при общем лимите третий источник (чужие посты, где нам ответили
+ * на наш комментарий) не получал ни одного слота НИКОГДА, то есть целая
+ * половина второго источника была декорацией: уведомления приходили, число
+ * repliesToUs росло, а сами комментарии не читались.
+ */
+export const SCAN_OWN_THREAD_LIMIT = 2;
+export const SCAN_FEED_THREAD_LIMIT = 2;
 
 /**
  * Наш инструмент: сходить на сайт и записать, что мы увидели. Ничего не публикует.
@@ -653,29 +886,119 @@ export async function moltbookScan() {
   if (!parsedFeed.ok) refusals.push(parsedFeed.reason);
   const posts = parsedFeed.posts.slice(0, SCAN_POST_LIMIT);
 
+  // Второй контур: наши посты. Лента отдаёт чужие, поэтому наши посты видны
+  // только через /notifications. Без этого агент не видел своей работы вообще.
+  const notices = [];
+  let noticePosts = [];
+  const noticeOurPosts = [];
+  const noticeTitles = {};
+  let cursor = null;
+  for (let page = 0; page < SCAN_NOTIFICATION_PAGES; page += 1) {
+    const raw = await fetchRaw(key, notificationPath(cursor));
+    requests.push({ path: raw.path, status: raw.status, ok: raw.ok });
+    const parsedNotices = parseNotifications(raw.body);
+    if (!parsedNotices.ok) {
+      refusals.push(parsedNotices.reason);
+      break;
+    }
+    for (const item of parsedNotices.items) notices.push(item);
+    for (const postId of parsedNotices.posts) {
+      if (noticePosts.includes(postId)) continue;
+      noticePosts.push(postId);
+      noticeTitles[postId] = parsedNotices.titles[postId];
+    }
+    for (const postId of parsedNotices.ourPosts) {
+      if (!noticeOurPosts.includes(postId)) noticeOurPosts.push(postId);
+    }
+    const nextPath = nextNotificationPath(cursor, parsedNotices, page, SCAN_NOTIFICATION_PAGES);
+    if (!nextPath) break;
+    cursor = parsedNotices.nextCursor;
+  }
+
   const allComments = [];
   const threadsRead = [];
-  for (const post of posts.slice(0, SCAN_THREAD_LIMIT)) {
-    const raw = await fetchRaw(key, "/api/v1/posts/" + post.id + "/comments?sort=new&limit=100");
+  // Порядок тредов - это приоритет, а не случайность.
+  //
+  // Сначала наши посты: на них нам пишут, и это ровно то, ради чего агент выходит
+  // в сеть. Затем лента: без неё скан перестаёт замечать новые вопросы, и это
+  // было бы тихой слепотой - при ста с лишним непрочитанных на два страницы
+  // уведомлений очередь из чужих постов всегда переполняла бы лимит целиком.
+  // И только потом чужие посты, где нам ответили на наш комментарий: они важны,
+  // но уступают тем двум, без которых работает всё остальное.
+  const threadQueue = [];
+  const seenThread = new Set();
+  let ownTaken = 0;
+  for (const postId of noticeOurPosts) {
+    if (ownTaken >= SCAN_OWN_THREAD_LIMIT || threadQueue.length >= SCAN_THREAD_LIMIT) break;
+    if (seenThread.has(postId)) continue;
+    seenThread.add(postId);
+    threadQueue.push(postId);
+    ownTaken += 1;
+  }
+  let feedTaken = 0;
+  for (const post of posts) {
+    if (feedTaken >= SCAN_FEED_THREAD_LIMIT || threadQueue.length >= SCAN_THREAD_LIMIT) break;
+    if (seenThread.has(post.id)) continue;
+    seenThread.add(post.id);
+    threadQueue.push(post.id);
+    feedTaken += 1;
+  }
+  // Остаток достаётся чужим постам, где нам ответили на наш комментарий.
+  for (const postId of noticePosts) {
+    if (threadQueue.length >= SCAN_THREAD_LIMIT) break;
+    if (seenThread.has(postId)) continue;
+    seenThread.add(postId);
+    threadQueue.push(postId);
+  }
+  for (const postId of threadQueue) {
+    const raw = await fetchRaw(key, "/api/v1/posts/" + postId + "/comments?sort=new&limit=100");
     requests.push({ path: raw.path, status: raw.status, ok: raw.ok });
     const parsed = parseComments(raw.body);
     if (!parsed.ok) {
-      refusals.push("thread-" + post.id + "-" + parsed.reason);
+      refusals.push("thread-" + postId + "-" + parsed.reason);
       continue;
     }
-    threadsRead.push(post.id);
+    threadsRead.push(postId);
     for (const comment of parsed.comments) {
-      if (!comment.post_id) comment.post_id = post.id;
+      if (!comment.post_id) comment.post_id = postId;
       allComments.push(comment);
     }
+  }
+
+  // Посты из уведомлений надо дописать в журнал: счётчик repliesToOurs делает
+  // JOIN по posts, и без строки поста ответы на наши посты просто не считались
+  // бы - осталось бы ровно то молчание, ради устранения которого всё затевалось.
+  const feedPostIds = {};
+  for (const post of posts) feedPostIds[post.id] = true;
+  const noticePartialPosts = [];
+  for (const postId of noticePosts) {
+    // Пост, который уже записан из ленты, НЕ перезаписываем: из уведомления мы
+    // знаем только заголовок, а автор, счётчики и repost_of ушли бы в пустоту,
+    // и в панели появился бы пост без названия. Лучше неполные данные, чем
+    // затирание настоящих.
+    if (feedPostIds[postId]) continue;
+    feedPostIds[postId] = true;
+    noticePartialPosts.push(postId);
+    posts.push({
+      id: postId,
+      title: noticeTitles[postId] || "",
+      // Автора не знаем: в уведомлении только authorId, а /agents/{id} отдаёт
+      // 404. Пустая строка честнее выдуманного имени - и ours проставится по
+      // самому факту уведомления (writeScan, ourPostIds).
+      author: "",
+      comments_total: 0,
+      upvotes: 0,
+      created_at: 0,
+      repost_of: null,
+    });
   }
 
   const written = (function () {
     let opened = null;
     try {
       opened = openLedger(false);
-      if (!opened.db) return { postsWritten: 0, commentsWritten: 0, refused: "ledger-missing" };
-      const result = writeScan(opened.db, posts, allComments, now);
+      if (!opened.db) return { postsWritten: 0, commentsWritten: 0, commentsSeen: 0, refused: "ledger-missing" };
+      const result = writeScan(opened.db, posts, allComments, now, noticeOurPosts, noticePartialPosts);
       opened.db.close();
       return result;
     } catch (error) {
@@ -686,13 +1009,14 @@ export async function moltbookScan() {
           // закрытие не удалось - транзакция всё равно не была применена
         }
       }
-      return { postsWritten: 0, commentsWritten: 0, refused: String((error && error.message) || error) };
+      return { postsWritten: 0, commentsWritten: 0, commentsSeen: 0, refused: String((error && error.message) || error) };
     }
   })();
   if (written.refused) refusals.push("ledger-" + written.refused);
 
   const seenByPost = {};
   for (const post of posts) seenByPost[post.id] = true;
+  for (const postId of noticePosts) seenByPost[postId] = true;
   const fresh = allComments.filter((c) => seenByPost[c.post_id]);
   const picked = pickCandidates(fresh, MOLTBOOK_NAME);
 
@@ -716,10 +1040,24 @@ export async function moltbookScan() {
     plugin: PLUGIN_NAME,
     at: now,
     network: { karma, unread, postsSeen: posts.length, threadsRead },
+    // Что пришло к нам лично: без этого поля агент видит только «мы никого не
+    // ждём», хотя под notified сидит сто с лишним непрочитанных.
+    notices: {
+      seen: notices.length,
+      unread: notices.filter((n) => !n.is_read).length,
+      ourPosts: noticeOurPosts.length,
+      // Сколько постов пришлось прочитать из уведомлений - это число больше:
+      // сюда попадают и чужие посты, где нам ответили на наш комментарий.
+      postsRead: noticePosts.length,
+      repliesToUs: notices.filter((n) => n.kind === "comment_reply").length,
+    },
     ledger: {
       ok: !written.refused,
       postsWritten: written.postsWritten,
       commentsWritten: written.commentsWritten,
+      // Что дошло до записи. Ноль здесь при ненулевом commentsWritten означает,
+      // что потерялись до SQLite - и это видно сразу, а не по симптому.
+      commentsSeen: written.commentsSeen,
     },
     candidates: picked.candidates.map((c) => ({
       post_id: c.post_id,

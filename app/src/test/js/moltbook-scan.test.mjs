@@ -20,7 +20,9 @@ function join4(...parts) {
   return parts.join("/").replace(/\\/g, "/").replace(/\/+/g, "/");
 }
 
-const { writeScan } = await import(pathToFileURL(MOLTBOOK_JS).href);
+const { writeScan, countReportable, COMMENT_STATUS, REPLY_OUTCOME } = await import(
+  pathToFileURL(MOLTBOOK_JS).href
+);
 
 // Schema copied from MoltbookLedger.kt onCreate. If a column is added there, this must
 // change too - that is the point of the file.
@@ -179,13 +181,17 @@ await test("a comment without a post_id is refused, not written into nowhere", (
 await test("a scan with nothing to write is not a failure", () => {
   const db = freshDb();
   const written = writeScan(db, [], [], 500);
-  eq(written, { postsWritten: 0, commentsWritten: 0, refused: null });
+  // commentsSeen - сколько дошло до записи. Он нужен, чтобы отличить «в тредах
+  // пусто» от «дошло, но не записалось»: молчаливый ноль в commentsWritten
+  // выглядит одинаково, и именно этим прикрывался баг с датой.
+  eq(written, { postsWritten: 0, commentsWritten: 0, commentsSeen: 0, refused: null });
 });
 
 await test("no ledger at all is a refusal, not an exception", () => {
   eq(writeScan(null, [POST], [COMMENT], 500), {
     postsWritten: 0,
     commentsWritten: 0,
+    commentsSeen: 0,
     refused: "ledger-missing",
   });
 });
@@ -215,6 +221,91 @@ async function test(name, fn) {
     console.log("  FAIL " + name);
   }
 }
+
+await test("attempted and written separate a loss from 'nothing to write'", () => {
+  // Раньше оба числа означали одно и то же, поэтому «вставки были, а строк не
+  // появилось» (тот самый баг с NaN в created_at) выглядело ровно как «нечего
+  // писать». Смысл есть только в паре: attempted == written - всё записано,
+  // attempted > written - потеря.
+  const db = freshDb();
+  const fresh = writeScan(db, [POST], [COMMENT], 500);
+  eq(fresh.commentsSeen, 1, "одна вставка предпринята");
+  eq(fresh.commentsWritten, 1, "и одна строка появилась");
+
+  const again = writeScan(db, [POST], [COMMENT], 900);
+  eq(again.commentsSeen, 1, "вставка снова предпринята");
+  eq(again.commentsWritten, 0, "но строка уже была - писать было нечего");
+  db.close();
+});
+
+await test("a post we learn is ours later still becomes ours", () => {
+  // Порядок бывает такой: сначала приходит ответ на наш комментарий в чужом
+  // посте (comment_reply) - пост записывается как чужой. Потом приходит
+  // post_comment по тому же посту, и он оказывается НАШИМ. Если такая строка
+  // только добавляется и не обновляется, счётчик ourPosts занижается навсегда.
+  const db = freshDb();
+  const stub = {
+    id: "p-late",
+    title: "чужой пост с нашим комментарием",
+    author: "",
+    comments_total: 0,
+    upvotes: 0,
+    created_at: 0,
+    repost_of: null,
+  };
+  writeScan(db, [stub], [], 500, [], ["p-late"]);
+  eq(db.prepare("SELECT ours FROM posts WHERE id = ?").get("p-late").ours, 0, "пока это чужой пост");
+
+  writeScan(db, [stub], [], 900, ["p-late"], ["p-late"]);
+  const row = db.prepare("SELECT ours, title FROM posts WHERE id = ?").get("p-late");
+  eq(row.ours, 1, "узнали, что он наш, - факт обновился");
+  eq(row.title, "чужой пост с нашим комментарием", "а остальные поля остались как были");
+  db.close();
+});
+
+await test("a post learned from a notification never overwrites what we already know", () => {
+  // Из уведомления приходит только заголовок. Если такая строка делалась через
+  // INSERT OR REPLACE, настоящий автор и repost_of уходили в пустоту, а вместе
+  // с ними - счётчик репостов и название поста на карточке. Защита в самой
+  // записи: такие посты добавляются, но не заменяют уже записанные.
+  const db = freshDb();
+  const full = Object.assign({}, POST, { id: "p-full", title: "настоящий заголовок", author: "vina", repost_of: "p-src" });
+  writeScan(db, [full], [], 500);
+
+  const stub = {
+    id: "p-full",
+    title: "заголовок из уведомления",
+    author: "",
+    comments_total: 0,
+    upvotes: 0,
+    created_at: 0,
+    repost_of: null,
+  };
+  writeScan(db, [stub], [], 900, [], ["p-full"]);
+
+  const row = db.prepare("SELECT title, author, repost_of FROM posts WHERE id = ?").get("p-full");
+  eq(row.author, "vina", "автор не затёрт пустым");
+  eq(row.title, "настоящий заголовок", "и заголовок из уведомления не вытеснил настоящий");
+  eq(row.repost_of, "p-src", "ссылка на репост тоже цела");
+  db.close();
+});
+
+await test("a comment we never answered is not an unknown answer", () => {
+  // reply_outcome по умолчанию пустой у ЛЮБОЙ строки, на которую мы не отвечали
+  // (в схеме DEFAULT ''), а REPLY_OUTCOME.UNKNOWN - это тоже пустая строка.
+  // Пока фильтр был один, на карточку попадало «неизвестно: 77» при статусе NEW
+  // у всех строк и при нуле опубликованных ответов: число, которого не бывает.
+  const never = [
+    { status: COMMENT_STATUS.NEW, reply_outcome: "" },
+    { status: COMMENT_STATUS.SKIPPED, reply_outcome: "" },
+  ];
+  eq(countReportable(never).unknown, 0, "чужой комментарий без ответа - не неизвестный ответ");
+
+  const answeredButUnknown = [
+    { status: COMMENT_STATUS.POSTED, reply_outcome: REPLY_OUTCOME.UNKNOWN },
+  ];
+  eq(countReportable(answeredButUnknown).unknown, 1, "а наш опубликованный ответ - неизвестный исход");
+});
 
 await test("a failed row does not become young again on every scan", () => {
   // seen_at is what the report counts failures by. If the scan refreshed it
