@@ -138,6 +138,7 @@ import org.opencode.mobile.server.OpenCodeQuestionPrompt
 import org.opencode.mobile.server.OpenCodeQuestionRequest
 import org.opencode.mobile.server.PermissionDecision
 import org.opencode.mobile.server.YnisonMcp
+import org.opencode.mobile.social.MoltbookScanClient
 import org.opencode.mobile.stt.NcnnModelValidator
 import org.opencode.mobile.stt.WhisperTranscribeService
 import org.opencode.mobile.tts.ElevenLabsSecret
@@ -168,7 +169,15 @@ private const val PANEL_STT = "stt"
 
 // Как часто открытая панель Moltbook перечитывает ledger. Быстрее 10 секунд —
 // это долбить базу впустую, медленнее минуты — панель успевает соврать.
-private const val MOLTBOOK_PANEL_REFRESH_MS = 15_000L
+private const val MOLTBOOK_PANEL_REFRESH_MS = 10_000L
+
+// Как часто панель просит плагин перечитать ленту. Раз в пять минут, а не на
+// каждом чтении: скан ходит в молтбук за лентой, уведомлениями и тредами — это
+// около девяти запросов, и десять секунд между ними это 54 запроса в минуту,
+// за которые платформа вправе порезать. Пять минут — компромисс между «числа
+// на карточке свежие» и «мы не долбим чужой сервис». Скан сам по себе умеет
+// ждать до минуты, поэтому задержка сверху не копится.
+private const val MOLTBOOK_SCAN_EVERY_MS = 5 * 60_000L
 
 // testTag-метки для проверки геометрии по дампу uiautomator (resource-id).
 // Читать их в коде не нужно - это якоря для инструментов, а не логика.
@@ -621,6 +630,28 @@ fun ChatOverlay(
         while (true) {
             delay(MOLTBOOK_PANEL_REFRESH_MS)
             moltbookRefresh++
+        }
+    }
+
+    // Скан отдельно от чтения, и отдельным медленным кругом. Чтение файла дешёвое,
+    // поэтому оно часто; скан ходит в ленту и стоит девяти запросов, поэтому его
+    // пять минут. Один круг на оба означал бы либо протухшую карточку, либо
+    // платформу, которая режет нас за 54 запроса в минуту.
+    //
+    // Первый скан - сразу, а не через пять минут: карточка, открытая на пустом
+    // снимке, минуту показывала бы «нет данных» при живом плагине.
+    // Скан идёт только пока панель открыта, и это замысел, а не недосмотр:
+    // карточки нет - смотреть некуда, а девять запросов к молтбуку каждые пять
+    // минут впустую копятся тем дольше, чем реже открывают панель.
+    //
+    // Эффект на `showMoltbookPanel`, поэтому закрытие панели обрывает скан на
+    // середине, а не ждёт его конца: `requestScan` рвёт соединение по отмене.
+    LaunchedEffect(showMoltbookPanel) {
+        if (!showMoltbookPanel) return@LaunchedEffect
+        moltbookRefresh++
+        while (true) {
+            MoltbookScanClient.requestScan(context)
+            delay(MOLTBOOK_SCAN_EVERY_MS)
         }
     }
     val moltbookStats = rememberMoltbookState(moltbookRefresh)

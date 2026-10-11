@@ -131,21 +131,21 @@ await test("the card counts work, not attempts", () => {
   truthy(panel.ok, "ok");
 });
 
-await test("awaiting is the whole table, not the six shown", () => {
+await test("awaiting is the whole table, not only what the list holds", () => {
   const many = Array.from({ length: 11 }, (_, i) => ({ id: "c-" + i }));
   const panel = panelState(AT, SUMMARY, many, { awaiting: 11 });
   eq(panel.awaiting, 11, "awaiting counts every question");
-  eq(panel.pending.length, 6, "the list stays short");
+  eq(panel.pending.length, 11, "the list keeps them all");
 });
 
 await test("awaiting survives a list that was cut off by the query", () => {
-  // SQL отдаёт только первые шесть, счётчик приходит отдельным COUNT. Если бы
-  // awaiting считался по длине списка, на большом журнале карточка показывала
-  // "ждут ответа: 6" вместо настоящих двухсот.
-  const six = Array.from({ length: 6 }, (_, i) => ({ id: "c-" + i }));
-  const panel = panelState(AT, SUMMARY, six, { awaiting: 214 });
+  // Счётчик приходит отдельным COUNT, а список - обрезанным пределом запроса.
+  // Если бы awaiting считался по длине списка, на большом журнале карточка
+  // показала бы "ждут ответа: 214 строк показано как 200".
+  const page = Array.from({ length: 200 }, (_, i) => ({ id: "c-" + i }));
+  const panel = panelState(AT, SUMMARY, page, { awaiting: 214 });
   eq(panel.awaiting, 214, "the count is not the length of the page");
-  eq(panel.pending.length, 6, "the page is still short");
+  eq(panel.pending.length, 200, "the page is still the whole page");
 });
 
 await test("without a separate count awaiting falls back to the list", () => {

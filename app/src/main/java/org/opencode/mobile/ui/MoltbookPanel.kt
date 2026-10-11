@@ -13,10 +13,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -43,6 +43,7 @@ import org.opencode.mobile.social.UNKNOWN
 import org.opencode.mobile.social.cadenceHint
 import org.opencode.mobile.social.countLabel
 import org.opencode.mobile.social.karmaLabel
+import org.opencode.mobile.social.pendingHeadline
 
 /**
  * Иконка «М» и панель Moltbook в шапке чата.
@@ -182,7 +183,7 @@ internal fun MoltbookPanel(
         if (state.pending.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
             Divider()
-            PendingList(state.pending)
+            PendingList(state.pending, state.awaiting)
         }
 
         if (state.reason.isNotBlank()) RefusalNote(state.reason)
@@ -285,12 +286,17 @@ private fun AwaitingCount(state: MoltbookPanelState) {
 
 /** Список вопросов: ограничен по высоте и прокручивается, панель не тонет в тексте. */
 @Composable
-private fun PendingList(pending: List<MoltbookQuestion>) {
+private fun PendingList(
+    pending: List<MoltbookQuestion>,
+    awaiting: Int,
+) {
+    val hidden = (awaiting - pending.size).coerceAtLeast(0)
     Text(
-        // Без числа: плагин шлёт первые шесть, а крупная цифра выше — полный
-        // счёт. «ЖДУТ ОТВЕТА · 6» под «14» читалось бы как «шесть из четырнадцати»,
-        // то есть как «восемь где-то ещё». Сколько всего — уже написано выше.
-        text = "ЖДУТ ОТВЕТА",
+        // Число ждущих - это сколько их ВСЕГО, крупной цифрой выше. Список под ним
+        // присылает плагин (его предел больше любой реальной очереди), и если
+        // когда-нибудь упрётся, заголовок обязан об этом сказать - иначе снова
+        // получится «67 наверху, 6 внизу». См. pendingHeadline.
+        text = pendingHeadline(hidden),
         color = MoltIdle,
         fontSize = TINY,
         letterSpacing = 1.sp,
@@ -299,12 +305,19 @@ private fun PendingList(pending: List<MoltbookQuestion>) {
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier.padding(top = 4.dp, bottom = 3.dp),
     )
-    Column(
-        Modifier
-            .heightIn(max = PENDING_LIST_MAX_HEIGHT)
-            .verticalScroll(rememberScrollState()),
+    // Список длинный и скроллится сам: карточка живёт в неподвижной шапке
+    // чата, поэтому без своей прокрутки семьдесят вопросов просто уедут за
+    // нижний край экрана. Внутренний скролл вместо общего - сознательный
+    // размен: жест в этом месте не прокручивает переписку.
+    //
+    // Именно LazyColumn, а не Column с verticalScroll: в снимке бывает до двухсот
+    // неотвеченных, и обычный Column компонует все строки целиком при каждом
+    // кадре прокрутки - то есть прокрутка дёргалась бы ровно так, как её не должно
+    // быть видно. LazyColumn держит в памяти только видимое.
+    LazyColumn(
+        Modifier.heightIn(max = PENDING_LIST_MAX_HEIGHT),
     ) {
-        pending.take(MAX_PENDING_ROWS).forEach { question ->
+        items(pending, key = { it.id }) { question ->
             PendingRow(question)
         }
     }
@@ -367,10 +380,15 @@ private fun PendingRow(question: MoltbookQuestion) {
     }
 }
 
-/** Список вопросов не выше этого: панель не должна занимать весь экран ради ленты. */
-private val PENDING_LIST_MAX_HEIGHT = 112.dp
+/**
+ * Список вопросов не выше этого.
+ *
+ * 280 dp — примерно половина экрана: видно сразу десяток с половиной вопросов,
+ * остальное крутится внутри списка. Раньше было 112 dp, и шесть строк выглядели
+ * как конец данных, хотя всего их семьдесят с лишним.
+ */
+private val PENDING_LIST_MAX_HEIGHT = 280.dp
 
-private const val MAX_PENDING_ROWS = 6
 const val TAG_PANEL_MOLTBOOK = "panel_moltbook"
 
 /** Колонок в сетке показателей: 8 / 4 = 2 ряда без хвоста. */

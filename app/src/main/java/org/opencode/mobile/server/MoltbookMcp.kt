@@ -20,6 +20,15 @@ internal object MoltbookMcp {
     const val ASSET = "mcp/moltbook.js"
     const val SCRIPT = "moltbook.js"
 
+    /**
+     * Имя тула, который перечитывает ленту и переписывает снимок панели.
+     *
+     * Живёт здесь, а не в [org.opencode.mobile.social.MoltbookScanClient], потому
+     * что это имя из контракта с плагином, как и [PORT], [PATH] и [KEY_FILE]: одна
+     * смена строки в двух местах даст «плагин не отвечает» вместо «тула нет».
+     */
+    const val SCAN_TOOL = "moltbook_scan"
+
     /** Приватная папка плагина: журнал, ключ, witness.log, verifier.log, raw/. */
     const val DIR_NAME = "moltbook"
 

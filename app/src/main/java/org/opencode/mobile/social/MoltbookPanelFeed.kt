@@ -178,6 +178,25 @@ internal fun cadenceHint(state: MoltbookPanelState): String =
     }
 
 /**
+ * Заголовок списка неотвеченных: «ЖДУТ ОТВЕТА» или «ЖДУТ ОТВЕТА · ЕЩЁ 61».
+ *
+ * На карточке две разные величины об одном: крупная цифра - сколько вопросов
+ * ждут ВСЕГО, список под ней - сколько поместилось (плагин присылает первые
+ * шесть). Без оговорки про остаток «67 наверху, 6 внизу» читается как ошибка:
+ * либо в базе шесть, либо список врёт. Пользователь это и увидел, и правильно
+ * спросил.
+ *
+ * [hidden] считается на вызывающей стороне не просто так: если бы он считался
+ * здесь из `awaiting - shown`, то расхождение между «сколько прислал плагин» и
+ * «сколько показали» стало бы невидимым - а это ровно тот случай, где молчать
+ * вредно.
+ */
+internal fun pendingHeadline(hidden: Int): String =
+    if (hidden > 0) "$PENDING_HEAD · ЕЩЁ $hidden" else PENDING_HEAD
+
+private const val PENDING_HEAD = "ЖДУТ ОТВЕТА"
+
+/**
  * Подпись клетки кармы: «карма» или «карма · вчера».
  *
  * Карма приходит из кэша и стареет отдельно от снимка. Раньше подпись была
@@ -190,18 +209,20 @@ internal fun karmaLabel(
     nowMs: Long = System.currentTimeMillis(),
 ): String {
     if (state.karma == UNKNOWN_COUNT || state.karmaAt <= 0L) return KARMA
-    val age = karmaAgeLabel(nowMs - state.karmaAt)
+    val ageMs = nowMs - state.karmaAt
+    // Возраст и его слова живут в одной функции намеренно: это один формат,
+    // разорванный на две, существовал только ради лимита detekt, а разделение
+    // спрятало условие «пусто = молчание» от того, кто читает подпись целиком.
+    val age =
+        when {
+            ageMs < STALE_AFTER_MS -> ""
+            ageMs < HOUR_MS -> (ageMs / MINUTE_MS).toString() + MINUTES_AGO
+            ageMs < DAY_MS -> (ageMs / HOUR_MS).toString() + HOURS_AGO
+            ageMs < YESTERDAY_UNTIL_MS -> "вчера"
+            else -> (ageMs / DAY_MS).toString() + DAYS_AGO
+        }
     return if (age.isEmpty()) KARMA else "$KARMA · $age"
 }
-
-private fun karmaAgeLabel(ageMs: Long): String =
-    when {
-        ageMs < STALE_AFTER_MS -> ""
-        ageMs < HOUR_MS -> (ageMs / MINUTE_MS).toString() + MINUTES_AGO
-        ageMs < DAY_MS -> (ageMs / HOUR_MS).toString() + HOURS_AGO
-        ageMs < YESTERDAY_UNTIL_MS -> "вчера"
-        else -> (ageMs / DAY_MS).toString() + DAYS_AGO
-    }
 
 /** Длина подписи счётчика, чтобы «не прочитано» не съедало колонку. */
 private const val STALE_AFTER_MS = 2 * 60 * 1000L
