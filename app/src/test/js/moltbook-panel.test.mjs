@@ -25,10 +25,23 @@ const MOLTBOOK_JS =
 const {
   PANEL_NAME,
   COMMENT_STATUS,
-  panelState,
+panelState,
   panelPending,
+  panelBody,
   panelEmpty,
   rememberHome,
+  translationKey,
+  translateUrl,
+  parseTranslation,
+  translateText,
+  translatePending,
+  translationFor,
+  rememberTranslation,
+  TRANSLATE_ENDPOINT,
+  TRANSLATE_PER_SCAN,
+  TRANSLATE_BUDGET_MS,
+  TRANSLATE_TIMEOUT_MS,
+  TRANSLATE_TAIL_GUARD_MS,
   readPanel,
   writePanel,
   cacheHome,
@@ -141,11 +154,11 @@ await test("awaiting is the whole table, not only what the list holds", () => {
 await test("awaiting survives a list that was cut off by the query", () => {
   // Счётчик приходит отдельным COUNT, а список - обрезанным пределом запроса.
   // Если бы awaiting считался по длине списка, на большом журнале карточка
-  // показала бы "ждут ответа: 214 строк показано как 200".
-  const page = Array.from({ length: 200 }, (_, i) => ({ id: "c-" + i }));
+  // показала бы "ждут ответа: 214 строк показано как 120".
+  const page = Array.from({ length: 120 }, (_, i) => ({ id: "c-" + i }));
   const panel = panelState(AT, SUMMARY, page, { awaiting: 214 });
   eq(panel.awaiting, 214, "the count is not the length of the page");
-  eq(panel.pending.length, 200, "the page is still the whole page");
+  eq(panel.pending.length, 120, "the page is still the whole page");
 });
 
 await test("without a separate count awaiting falls back to the list", () => {
@@ -186,11 +199,21 @@ await test("a row without an id is not a question", () => {
   eq(panelPending([{ id: "c-1", author: " a " }])[0].author, "a", "trimmed author");
 });
 
-await test("the body shown on the card is one line and bounded", () => {
-  const body = "a".repeat(500) + "\n second line\r\n third";
+await test("the body keeps its whole text, only the newlines are folded", () => {
+  const long = "a".repeat(2500);
+  const body = long + "\n second line\r\n third";
   const row = panelPending([{ id: "c-1", body }])[0];
-  truthy(row.body.length <= 400, "body is bounded");
+  // 400 символов обрезали половину комментария: юзер открывал панель читать, а
+  // читал обрывок. Теперь режется только переводчик, и то на границе карточки.
+  eq(row.body.length, 2500 + " second line third".length, "body is whole");
+  truthy(row.body.startsWith(long), "nothing lost at the front");
+  truthy(row.body.endsWith("third"), "nothing lost at the tail");
   eq(row.body.indexOf("\n"), -1, "no newline survives");
+});
+
+await test("a body past the translator ceiling is still bounded", () => {
+  const row = panelPending([{ id: "c-1", body: "b".repeat(9000) }])[0];
+  truthy(row.body.length <= 4000, "body is bounded");
 });
 
 await test("a missing title is empty, not the word undefined", () => {
@@ -674,6 +697,318 @@ await test("a reply to our comment does not make the post ours", () => {
   );
   eq(page.posts, ["post-foreign", "post-ours"], "оба поста надо прочитать");
   eq(page.ourPosts, ["post-ours"], "но наш только тот, где прокомментировали НАС");
+});
+
+// --- Переводы на русский ---------------------------------------------------
+
+await test("the same text always gets the same translation key", () => {
+  eq(translationKey("Recovery policies"), translationKey("  Recovery   policies \n"), "same");
+  truthy(translationKey("a") !== translationKey("b"), "different texts differ");
+});
+
+await test("a short text cannot steal the cache slot of a long one", () => {
+  // Хэш короткого текста вполне может совпасть с хэшем длинного; молотбук полон
+  // коротких реплик, где совпадение стоило бы показать не тот перевод.
+  const short = "ok";
+  const long = "ok".repeat(200);
+  truthy(translationKey(short) !== translationKey(long), "length is part of the key");
+});
+
+await test("the translation address carries the text, not a broken one", () => {
+  const url = translateUrl("Memory & recovery?");
+  truthy(url.startsWith(TRANSLATE_ENDPOINT + "?"), "endpoint");
+  truthy(url.includes("tl=ru"), "target language");
+  truthy(url.includes("q=Memory%20%26%20recovery%3F"), "text is encoded");
+  truthy(!url.includes(" "), "no raw spaces");
+});
+
+await test("a long comment is cut for the translator, not for the card", () => {
+  const url = translateUrl("z".repeat(9000));
+  // Потолок переводчика РОВНО равен тому, что показывает карточка. Меньше - и
+  // перевод покрывает часть тела, но подан как полный: это хуже, чем никакого.
+  // Больше - переводим текст, которого юзер никогда не увидит.
+  truthy(url.includes("q=" + "z".repeat(4000)), "translator gets the card's ceiling");
+  truthy(!url.includes("z".repeat(4001)), "and not a char more");
+});
+
+await test("the translator answers in pieces and the pieces are joined", () => {
+  // Настоящий ответ: все куски лежат в ПЕРВОМ массиве, а не каждый в своём.
+  const raw = '[[["Политики восстановления","Recovery policies",null,3],[" вместо ","x",null,3]]]';
+  eq(parseTranslation(raw), "Политики восстановления вместо", "joined");
+  eq(parseTranslation(""), "", "empty answer");
+  eq(parseTranslation("not json at all"), "", "garbage is not a translation");
+  eq(parseTranslation('{"error":"quota"}'), "", "a json object is not a translation");
+  eq(parseTranslation('[[]]'), "", "no chunks");
+});
+
+await test("a refused translation leaves the card with the original", async () => {
+  eq(await translateText("hello", { request: async () => ({ ok: false, body: "" }) }), "", "refused");
+  eq(
+    await translateText("hello", {
+      request: async () => {
+        throw new Error("сеть легла");
+      },
+    }),
+    "",
+    "thrown",
+  );
+  eq(await translateText("   ", { request: async () => ({ ok: true, body: "[[[\"x\"]]]" }) }), "", "empty text is not sent");
+});
+
+await test("a translation of one text is read back for the next scan", async () => {
+  const dir = mkdtempSync(join4(tmpdir(), "moltbook-ru-"));
+  const db = new DatabaseSync(join4(dir, "state.db"));
+  db.exec("CREATE TABLE ticker_state (key TEXT PRIMARY KEY, value TEXT)");
+  try {
+    const text = "Durable memory beats a longer context window.";
+    const ru = await translateText(text, {
+      request: async () => ({ ok: true, body: '[[["Долговременная память сильнее длинного окна контекста."]]]' }),
+    });
+    eq(ru, "Долговременная память сильнее длинного окна контекста.", "translated");
+    truthy(rememberTranslation(db, translationKey(text), ru), "remembered");
+    eq(translationFor(db, translationKey(text)), ru, "read back");
+    eq(rememberTranslation(db, translationKey(text), "  "), false, "пустой перевод не запоминаем");
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  }
+});
+
+await test("the card shows the translation when there is one", () => {
+  const body = "Stealing-worthy question, and I can only answer the easy version.";
+  const row = panelPending([{ id: "c-1", body }], new Map([[translationKey(body), "Вопрос-кража."]]))[0];
+  eq(row.bodyRu, "Вопрос-кража.", "translation reached the card");
+  eq(row.body, body, "the original is still there");
+  eq(panelPending([{ id: "c-1", body }])[0].bodyRu, "", "без перевода поле пустое, не выдуманное");
+});
+
+await test("a scan translates a bounded batch and skips what it already has", async () => {
+  const dir = mkdtempSync(join4(tmpdir(), "moltbook-ru-"));
+  const db = new DatabaseSync(join4(dir, "state.db"));
+  try {
+    db.exec(
+      "CREATE TABLE comments (id TEXT PRIMARY KEY, author TEXT, body TEXT, status TEXT, created_at INTEGER)",
+    );
+    // Переводы лежат в ticker_state рядом с кармой: своей таблицы у них нет
+    // специально, лишняя миграция схемы того не стоит.
+    db.exec("CREATE TABLE ticker_state (key TEXT PRIMARY KEY, value TEXT)");
+    const stmt = db.prepare("INSERT INTO comments (id, author, body, status, created_at) VALUES (?, ?, ?, 'NEW', ?)");
+    for (let i = 0; i < 5; i += 1) stmt.run("c-" + i, "vina", "Comment number " + i, i);
+    db.prepare("INSERT INTO comments (id, author, body, status, created_at) VALUES ('c-own', ?, 'наш', 'NEW', 9)").run("opencodekz");
+
+    let asked = 0;
+    const result = await translatePending(db, {
+      limit: 5,
+      // Бюджет задан явно и заведомо больше стража: «времени нет» проверяет
+      // отдельный тест, здесь оно есть.
+      budgetMs: TRANSLATE_BUDGET_MS,
+      request: async () => {
+        asked += 1;
+        return { ok: true, body: '[[["перевод"]]]' };
+      },
+      now: () => 1000,
+    });
+    eq(result.attempted, 5, "asked about five");
+    eq(result.translated, 5, "translated five");
+    eq(asked, 5, "the network heard five requests");
+    eq(translationFor(db, translationKey("Comment number 0")), "перевод", "saved");
+    eq(translationFor(db, translationKey("наш")), "", "our own comment is not translated");
+
+    const second = await translatePending(db, {
+      limit: 5,
+      request: async () => {
+        asked += 1;
+        return { ok: true, body: '[[["перевод"]]]' };
+      },
+    });
+    eq(second.attempted, 0, "второй круг не ходит в сеть за тем же");
+    eq(asked, 5, "and asked nothing");
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  }
+});
+
+await test("the budget stops the batch instead of the scan", async () => {
+  const dir = mkdtempSync(join4(tmpdir(), "moltbook-ru-"));
+  const db = new DatabaseSync(join4(dir, "state.db"));
+  try {
+    db.exec(
+      "CREATE TABLE comments (id TEXT PRIMARY KEY, author TEXT, body TEXT, status TEXT, created_at INTEGER)",
+    );
+    // Переводы лежат в ticker_state рядом с кармой: своей таблицы у них нет
+    // специально, лишняя миграция схемы того не стоит.
+    db.exec("CREATE TABLE ticker_state (key TEXT PRIMARY KEY, value TEXT)");
+    const stmt = db.prepare("INSERT INTO comments (id, author, body, status, created_at) VALUES (?, ?, ?, 'NEW', ?)");
+    for (let i = 0; i < 10; i += 1) stmt.run("c-" + i, "vina", "Body " + i, i);
+    let tick = 0;
+    const result = await translatePending(db, {
+      limit: 10,
+      // Бюджет за вычетом защитного хвоста: запрос не начинается, если ему не
+      // хватит времени на поход наружу. Считаем от констант, а не от
+      // выдуманных чисел - страж теперь равен таймауту, и «магические» 2500
+      // означали бы «не осталось ничего».
+      budgetMs: TRANSLATE_TAIL_GUARD_MS + 1000,
+      request: async () => ({ ok: true, body: '[[["перевод"]]]' }),
+      now: () => (tick += 300),
+    });
+    // Время идёт на каждой проверке: за круг успевает столько, сколько влезает
+    // в запас сверх стража.
+    eq(result.translated, 3, "переведено до бюджета, а не всё");
+    truthy(result.translated > 0 && result.translated < 10, "partial batch");
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  }
+});
+
+await test("the queue reaches its tail instead of circling the oldest twenty five", async () => {
+  // Настоящий баг: SELECT ... LIMIT 25 по created_at возвращал одни и те же
+  // двадцать пять самых старых комментария, а переведённые из прошлого круга
+  // просто пропускались - то есть с четвёртого круга очередь была мёртвой.
+  const dir = mkdtempSync(join4(tmpdir(), "moltbook-ru-"));
+  const db = new DatabaseSync(join4(dir, "state.db"));
+  db.exec(
+    "CREATE TABLE comments (id TEXT PRIMARY KEY, author TEXT, body TEXT, status TEXT, created_at INTEGER)",
+  );
+  db.exec("CREATE TABLE ticker_state (key TEXT PRIMARY KEY, value TEXT)");
+  try {
+    const stmt = db.prepare("INSERT INTO comments (id, author, body, status, created_at) VALUES (?, ?, ?, 'NEW', ?)");
+    for (let i = 0; i < 60; i += 1) stmt.run("c-" + i, "vina", "Comment number " + i, i);
+    const send = async () => ({ ok: true, body: '[[["перевод"]]]' });
+
+    const first = await translatePending(db, { limit: 25, request: send });
+    eq(first.translated, 25, "первый круг взял двадцать пять");
+
+    const second = await translatePending(db, { limit: 25, request: send });
+    eq(second.translated, 25, "второй круг пошёл дальше, а не повторил первый");
+    eq(second.skipped, 25, "мимо уже переведённых");
+
+    const third = await translatePending(db, { limit: 25, request: send });
+    eq(third.translated, 10, "третий круг дошёл до хвоста");
+    eq(translationFor(db, translationKey("Comment number 59")), "перевод", "последний тоже переведён");
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  }
+});
+
+await test("the translation budget is a sane number, not a magic one", () => {
+  truthy(TRANSLATE_PER_SCAN >= 5 && TRANSLATE_PER_SCAN <= 100, "per scan");
+  truthy(TRANSLATE_BUDGET_MS >= 5000 && TRANSLATE_BUDGET_MS <= 60000, "budget");
+});
+
+await test("a long comment finds its translation by the text the card shows", () => {
+  // readPanel считал ключ от полного тела, а карточка показывала обрезанное на
+  // 4000 символах - у длинного комментария перевод не находился никогда.
+  const raw = "z".repeat(9000);
+  const shown = panelPending([{ id: "c-1", body: raw }])[0];
+  const cache = new Map([[translationKey(panelBody(raw)), "перевод длинного"]]);
+  const row = panelPending([{ id: "c-1", body: raw }], cache)[0];
+  eq(row.bodyRu, "перевод длинного", "перевод найден по показанному тексту");
+  eq(row.body, shown.body, "и тело то же самое");
+});
+
+await test("a long comment is stored under the key the card will ask for", async () => {
+  // Тот же разрыв со другой стороны: переводчик писал под ключ полного тела,
+  // панель искала под ключ обрезанного - перевод л��г в кэш и там оставался.
+  const dir = mkdtempSync(join4(tmpdir(), "moltbook-ru-"));
+  const db = new DatabaseSync(join4(dir, "state.db"));
+  db.exec(
+    "CREATE TABLE comments (id TEXT PRIMARY KEY, author TEXT, body TEXT, status TEXT, created_at INTEGER)",
+  );
+  db.exec("CREATE TABLE ticker_state (key TEXT PRIMARY KEY, value TEXT)");
+  try {
+    const raw = "z".repeat(9000);
+    db.prepare("INSERT INTO comments (id, author, body, status, created_at) VALUES (?, ?, ?, 'NEW', ?)").run(
+      "c-long",
+      "vina",
+      raw,
+      1,
+    );
+    const send = async () => ({ ok: true, body: '[[["перевод длинного"]]]' });
+    const result = await translatePending(db, { limit: 25, request: send });
+    eq(result.translated, 1, "переведён");
+    eq(
+      translationFor(db, translationKey(panelBody(raw))),
+      "перевод длинного",
+      "лежит под тем ключом, который спросит карточка",
+    );
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  }
+});
+
+await test("the tail guard is not shorter than one translation", () => {
+  // Страж в две секунды при переводе на пятнадцать не защищал ровно от того,
+  // от чего объявлен: запрос, начатый впритык, всё равно уходил за бюджет.
+  truthy(
+    TRANSLATE_TAIL_GUARD_MS >= TRANSLATE_TIMEOUT_MS,
+    "guard covers a whole request",
+  );
+});
+
+await test("no budget left means no translation, not a fresh default", async () => {
+  // budgetMs: 0 - это НОЛЬ. Раньше он читался как "бюджет не передан" и скан
+  // уходил в сотни заведомо мёртвых запросов к переводчику.
+  const dir = mkdtempSync(join4(tmpdir(), "moltbook-ru-"));
+  const db = new DatabaseSync(join4(dir, "state.db"));
+  db.exec(
+    "CREATE TABLE comments (id TEXT PRIMARY KEY, author TEXT, body TEXT, status TEXT, created_at INTEGER)",
+  );
+  db.exec("CREATE TABLE ticker_state (key TEXT PRIMARY KEY, value TEXT)");
+  try {
+    const stmt = db.prepare("INSERT INTO comments (id, author, body, status, created_at) VALUES (?, ?, ?, 'NEW', ?)");
+    for (let i = 0; i < 5; i += 1) stmt.run("c-" + i, "vina", "Body " + i, i);
+    let calls = 0;
+    const result = await translatePending(db, {
+      limit: 25,
+      budgetMs: 0,
+      request: async () => {
+        calls += 1;
+        return { ok: true, body: '[[["перевод"]]]' };
+      },
+    });
+    eq(calls, 0, "ни одного запроса наружу");
+    eq(result.translated, 0, "и ничего не переведено");
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  }
+});
+
+await test("the limit counts attempts, not only successes", async () => {
+  // Отказ переводчика не должен открывать квоту: раньше неудачные попытки в
+  // счёт лимита не шли, и скан делал сотни запросов вместо заявленных двадцати
+  // пяти.
+  const dir = mkdtempSync(join4(tmpdir(), "moltbook-ru-"));
+  const db = new DatabaseSync(join4(dir, "state.db"));
+  db.exec(
+    "CREATE TABLE comments (id TEXT PRIMARY KEY, author TEXT, body TEXT, status TEXT, created_at INTEGER)",
+  );
+  db.exec("CREATE TABLE ticker_state (key TEXT PRIMARY KEY, value TEXT)");
+  try {
+    const stmt = db.prepare("INSERT INTO comments (id, author, body, status, created_at) VALUES (?, ?, ?, 'NEW', ?)");
+    for (let i = 0; i < 60; i += 1) stmt.run("c-" + i, "vina", "Body " + i, i);
+    let calls = 0;
+    const result = await translatePending(db, {
+      limit: 25,
+      budgetMs: TRANSLATE_BUDGET_MS,
+      // Переводчик молчит: ни одного успеха, значит лимит обязан остановить
+      // по числу попыток, а не ждать своего успеха.
+      request: async () => {
+        calls += 1;
+        return { ok: false, status: 429, text: async () => "quota" };
+      },
+    });
+    eq(calls, 25, "ровно двадцать пять попыток, не шестьдесят");
+    eq(result.attempted, 25, "и столько же попыток в отчёте");
+    eq(result.translated, 0, "успехов ноль");
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  }
 });
 
 console.log("");

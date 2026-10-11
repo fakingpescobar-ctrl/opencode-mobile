@@ -57,6 +57,14 @@ internal data class MoltbookQuestion(
     val author: String,
     val title: String,
     val body: String,
+    /**
+     * Русский текст из кэша переводов плагина.
+     *
+     * Пустая строка — это «перевода ещё нет», а не «перевода нет»: очередь
+     * длинная, плагин досылает её по мере сил. Карточка в этом случае показывает
+     * оригинал целиком, а не пустую строку.
+     */
+    val bodyRu: String = "",
 )
 
 internal const val UNKNOWN_COUNT: Int = -1
@@ -97,7 +105,17 @@ private fun questionsOf(json: JSONObject): List<MoltbookQuestion> {
     return (0 until array.length()).mapNotNull { i ->
         val item = array.optJSONObject(i) ?: return@mapNotNull null
         val id = textOf(item, "id")
-        if (id.isEmpty()) null else MoltbookQuestion(id, textOf(item, "author"), textOf(item, "title"), textOf(item, "body"))
+        if (id.isEmpty()) {
+            null
+        } else {
+            MoltbookQuestion(
+                id,
+                textOf(item, "author"),
+                textOf(item, "title"),
+                textOf(item, "body"),
+                textOf(item, "bodyRu"),
+            )
+        }
     }
 }
 

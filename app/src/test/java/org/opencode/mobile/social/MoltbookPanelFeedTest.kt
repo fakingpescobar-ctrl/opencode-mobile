@@ -303,4 +303,33 @@ class MoltbookPanelFeedTest {
         const val LONG_TAIL = 1024L * 1024L
         const val SHORT_TAIL = 128L
     }
+
+    @Test
+    fun `русский текст доезжает из снимка вместе с оригиналом`() {
+        val state = parsePanel(
+            """{"ok":true,"at":1,"awaiting":1,"pending":[{"id":"c-1","author":"vina","title":"t","body":"Long memory beats context.","bodyRu":"Долговременная память сильнее контекста."}]}""",
+        )
+        val question = state.pending.single()
+        assertEquals("Долговременная память сильнее контекста.", question.bodyRu)
+        assertEquals("Long memory beats context.", question.body)
+    }
+
+    @Test
+    fun `нет перевода это пустая строка а не выдуманный текст`() {
+        val state = parsePanel(
+            """{"ok":true,"at":1,"awaiting":1,"pending":[{"id":"c-1","author":"vina","title":"t","body":"not yet translated"}]}""",
+        )
+        val question = state.pending.single()
+        assertEquals("", question.bodyRu)
+        // Оригинал обязан остаться: карточка покажет его, пока перевод не доехал.
+        assertEquals("not yet translated", question.body)
+    }
+
+    @Test
+    fun `старый снимок без перевода вообще не ломает разбор`() {
+        // Снимок, написанный плагином ДО появления переводов: поля bodyRu нет.
+        val state = parsePanel("""{"ok":true,"at":1,"awaiting":0,"pending":[]}""")
+        assertTrue(state.ok)
+        assertTrue(state.pending.isEmpty())
+    }
 }

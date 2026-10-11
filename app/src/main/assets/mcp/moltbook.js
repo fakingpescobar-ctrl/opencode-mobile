@@ -1036,6 +1036,35 @@ export async function moltbookScan() {
     if (cached) refusals.push("home-cache-" + cached);
   }
 
+  // Переводы - после записи журнала и отдельным шагом: их отказ не должен
+  // отменять скан. Панель получит русский текст со следующим кругом, а пока
+  // покажет оригинал.
+  const translation = await (async function () {
+    let opened = null;
+    try {
+      opened = openLedger(false);
+      if (!opened.db) return { attempted: 0, translated: 0, skipped: 0 };
+      return await translatePending(opened.db, {
+        target: TRANSLATE_TARGET,
+        // Бюджет вызова скана делится с переводами: упор в сетевую ленту не
+        // должен оставлять переводчику 0 ms, в которые fetch отдаст таймаут на
+        // каждый из двадцати пяти текстов подряд.
+        budgetMs: Math.min(TRANSLATE_BUDGET_MS, Math.max(0, callDeadlineAt - Date.now())),
+      });
+    } catch (error) {
+      return { attempted: 0, translated: 0, refused: String((error && error.message) || error) };
+    } finally {
+      if (opened && opened.db) {
+        try {
+          opened.db.close();
+        } catch (_) {
+          // закрытие не удалось - переводы уже записаны, база закроется с процессом
+        }
+      }
+    }
+  })();
+  if (translation.refused) refusals.push("translate-" + translation.refused);
+
   return {
     plugin: PLUGIN_NAME,
     at: now,
@@ -1067,6 +1096,9 @@ export async function moltbookScan() {
       body: c.body.slice(0, 400),
     })),
     answerable: picked.candidates.length,
+    // Сколько русских текстов доехало в этом круге. Не «сколько всего»: панель
+    // показывает переведённое, а сколько ещё в очереди - видно по заголовку.
+    translation: { attempted: translation.attempted, translated: translation.translated, skipped: translation.skipped },
     refusals,
     requests,
   };
@@ -2188,13 +2220,20 @@ export const PANEL_NAME = "panel.json";
  * Раньше было 6 - и карточка врала: сверху «67 ждут ответа», снизу шесть строк,
  * и ни слова о том, где остальные. Пользователь это увидел и спросил прямо.
  * Читать очередь нужно и панели (нажать, посмотреть, что там), поэтому верхняя
- * граница теперь 200: это заведомо больше любой реальной очереди, но всё же
- * предел - очередь растёт монотонно, и снимок не должен превратиться в дамп
- * таблицы. Сколько всего - считается отдельно и не зависит от этого числа,
- * поэтому панель всегда знает, что осталось за краем.
+ * граница поднята с шести: шесть это «подставить витрину», а не «прочитать».
+ *
+ * Предел 120 - не из жадности, а из веса. Каждая строка несёт тело до 4000
+ * символов плюс перевод того же объёма, то есть 120 строк это примерно
+ * мегабайт, и он целиком парсится при каждом обновлении панели. Реальная
+ * очередь агента - десятки, так что 120 это запас, а не обрезка того, что
+ * нужно прямо сейчас. Сколько всего - считается отдельно и не зависит от
+ * этого числа, поэтому панель всегда знает, что осталось за краем.
  */
-const PANEL_PENDING_LIMIT = 200;
-const PANEL_BODY_CHARS = 400;
+const PANEL_PENDING_LIMIT = 120;
+// Тело вопроса показывается целиком: юзер читает его сам, и обрезанный на 400
+// символах комментарий - это не «кратко», а «не прочитано». 4000 - заведомо
+// больше типичного комментария, но не снимок всей ветки в один файл.
+const PANEL_BODY_CHARS = 4000;
 
 // Второй писатель этих ключей - MoltbookTicker.kt:80-81, из другого процесса.
 // Он мёртв: конструктор MoltbookTicker( в проекте не вызывается ни разу, и
@@ -2236,17 +2275,235 @@ function panelCount(db, sql, ...args) {
   return value > 0 ? value : 0;
 }
 
-/** Вопросы для панели: без id строки нет, тело сжимается до одной строки. */
-export function panelPending(rows) {
+/**
+ * Тело вопроса в том виде, в каком его увидит юзер.
+ *
+ * Одна функция, а не обрезка на месте: ключ перевода считается от того же
+ * текста, который показывается. Две разные обрезки означали бы, что у длинного
+ * комментария перевод ищется не по тому, что на экране, и не находится.
+ */
+export function panelBody(raw) {
+  return String(raw || "")
+    .replace(/\s+/g, " ")
+    .slice(0, PANEL_BODY_CHARS);
+}
+
+/**
+ * Вопросы для панели: без id строки нет.
+ *
+ * `translations` - Map из ключа [translationKey] в русский текст. Это кэш, а не
+ * сеть: панель открыта часто, а ходить за переводом на каждый чих нельзя. Нет
+ * перевода - поле пустое, и карточка показывает оригинал, а не пустую строку.
+ */
+export function panelPending(rows, translations) {
+  const cache = translations instanceof Map ? translations : new Map();
   return (Array.isArray(rows) ? rows : [])
-    .map((row) => ({
-      id: String((row && row.id) || "").trim(),
-      author: String((row && row.author) || "").trim(),
-      post_id: String((row && row.post_id) || "").trim(),
-      title: String((row && row.title) || "").trim(),
-      body: String((row && row.body) || "").replace(/\s+/g, " ").slice(0, PANEL_BODY_CHARS),
-    }))
+    .map((row) => {
+      const body = panelBody((row && row.body) || "");
+      return {
+        id: String((row && row.id) || "").trim(),
+        author: String((row && row.author) || "").trim(),
+        post_id: String((row && row.post_id) || "").trim(),
+        title: String((row && row.title) || "").trim(),
+        body,
+        bodyRu: String(cache.get(translationKey(body)) || ""),
+      };
+    })
     .filter((row) => row.id !== "");
+}
+
+/**
+ * Переводы ленты на русский.
+ *
+ * Зачем: панель читает чужие комментарии, а читать их должен юзер, а не агент.
+ * Оригинал без перевода - это работа для него, а не отдых.
+ *
+ * Где хранится: в ticker_state под ключом `tr:<хэш>:<длина>`, а не новой
+ * таблицей. Таблица переводов означала бы миграцию схемы, то есть ещё одну
+ * причину упасть на старте, - а состояние плагина и так переживает переезд
+ * между хранилищами.
+ */
+export const TRANSLATE_ENDPOINT = "https://translate.googleapis.com/translate_a/single";
+export const TRANSLATE_PER_SCAN = 25;
+export const TRANSLATE_BUDGET_MS = 40_000;
+export const TRANSLATE_KEY_PREFIX = "tr:";
+
+/** Язык перевода. Задан константой, а не размазан по строке, чтобы смена языка была одной правкой. */
+const TRANSLATE_TARGET = "ru";
+
+// Сколько символов отдаём переводчику за раз. Равно PANEL_BODY_CHARS намеренно:
+// карточка показывает именно столько, и перевод короче этой границы был бы
+// половиной тела, поданной как полный перевод. Запас Google на одну строку -
+// 5000 символов, то есть мы в него помещаемся.
+const TRANSLATE_MAX_CHARS = PANEL_BODY_CHARS;
+export const TRANSLATE_TIMEOUT_MS = 15_000;
+const TRANSLATE_STATE_PREFIX = "translate-";
+
+// Сколько строк читаем, чтобы найти те, что ещё без перевода. Не limit: limit
+// брал бы первые N по created_at, а переведённые из прошлого круга там же -
+// то есть очередь второго круга состояла бы из continue'ов и до хвоста не
+// дошла бы никогда.
+const TRANSLATE_SCAN_ROWS = 400;
+
+// Не начинать запрос, если осталось меньше этого. Равен таймауту одного
+// перевода: страж в 2 секунды при переводе на 15 секунд не защищал ровно от
+// того, от чего объявлен - запрос, начатый впритык, всё равно уходил за бюджет.
+export const TRANSLATE_TAIL_GUARD_MS = TRANSLATE_TIMEOUT_MS;
+
+const TRANSLATE_SQL =
+  "SELECT id, body FROM comments" +
+  " WHERE UPPER(status) = 'NEW' AND UPPER(author) != UPPER(?)" +
+  " ORDER BY created_at ASC LIMIT ?";
+
+/**
+ * Ключ перевода: хэш текста плюс длина.
+ *
+ * Длина добавлена намеренно: хэш короткого текста вполне может совпасть с
+ * хэшем длинного, а молотбук полон однотипных коротких реплик, где совпадение
+ * стоило бы показать не тот перевод.
+ */
+export function translationKey(text) {
+  const value = String(text || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  let hash = 5381;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (Math.imul(hash, 33) + value.charCodeAt(i)) >>> 0;
+  }
+  return TRANSLATE_KEY_PREFIX + hash.toString(16) + ":" + value.length;
+}
+
+/** Адрес перевода. Отдельно от самой сети, чтобы проверялся обычным тестом. */
+export function translateUrl(text, target = "ru") {
+  const query = String(text || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, TRANSLATE_MAX_CHARS);
+  return (
+    TRANSLATE_ENDPOINT +
+    "?client=gtx&sl=auto&dt=t" +
+    "&tl=" +
+    encodeURIComponent(target) +
+    "&q=" +
+    encodeURIComponent(query)
+  );
+}
+
+/**
+ * Текст из ответа переводчика.
+ *
+ * Сервис отдаёт `[[["перевод","оригинал",...],["хвост",...]]]` - кусками, и
+ * мусор вместо JSON здесь не редкость. Любой не-JSON даёт пустую строку: пустой
+ * перевод панель честно заменяет оригиналом, а выдуманный - нет.
+ */
+export function parseTranslation(raw) {
+  if (typeof raw !== "string" || raw.trim() === "") return "";
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !Array.isArray(parsed[0])) return "";
+    return parsed[0]
+      .map((chunk) => (Array.isArray(chunk) ? String(chunk[0] || "") : ""))
+      .join("")
+      .trim();
+  } catch (_) {
+    return "";
+  }
+}
+
+/**
+ * Готовый перевод из состояния или пустая строка, если его ещё нет.
+ *
+ * Промис под ключом - часть контракта с [rememberTranslation]: переводы лежат
+ * рядом с кармой, и без префикса они перетирали бы `karma` тем же хэшем.
+ */
+export function translationFor(db, key) {
+  const row = db
+    .prepare("SELECT value FROM ticker_state WHERE key = ?")
+    .get(TRANSLATE_STATE_PREFIX + String(key));
+  return row ? String(row.value || "") : "";
+}
+
+/** Запомнить перевод: тот же приём, что у кармы, ключ перезаписывает значение. */
+export function rememberTranslation(db, key, translated) {
+  const value = String(translated || "").trim();
+  if (value === "") return false;
+  db.prepare(HOME_SQL).run(TRANSLATE_STATE_PREFIX + String(key), value);
+  return true;
+}
+
+/**
+ * Перевод одного текста. Сеть внутри, поэтому проверяется подставленным
+ * `request`, а не настоящим выходом наружу.
+ *
+ * Любой отказ - пустая строка. Перевод не проходит: скан обязан отработать и
+ * показать оригинал, а не упасть из-за чужого сервиса.
+ */
+export async function translateText(text, options = {}) {
+  const trimmed = String(text || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (trimmed === "") return "";
+  const target = options.target || "ru";
+  const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : TRANSLATE_TIMEOUT_MS;
+  const send = options.request || ((url) => fetchWithTimeout(url, { method: "GET" }, timeoutMs));
+  try {
+    const response = await send(translateUrl(trimmed, target));
+    if (!response || response.ok !== true) return "";
+    return parseTranslation(response.body);
+  } catch (_) {
+    return "";
+  }
+}
+
+/**
+ * Досылаем переводы для очереди неотвеченных.
+ *
+ * С бюджетом по времени и по числу текстов: очередь бывает и в сотню
+ * комментариев, а скан уже уложился в свой лимит. Лучше недоперевести десяток,
+ * чем сорвать скан целиком - недопереведённое дойдёт следующим кругом.
+ *
+ * Уже переведённые пропускаются и НЕ в счёт лимита: иначе очередь из
+ * двадцати пяти самых старых комментариев держала бы переводчик вечно, а до
+ * остальных он не дошёл бы никогда.
+ */
+export async function translatePending(db, options = {}) {
+  const limit = Number(options.limit) > 0 ? Math.floor(Number(options.limit)) : TRANSLATE_PER_SCAN;
+  // Ноль - это НОЛЬ, а не «бюджет не передан». Иначе остаток дедлайна вызова,
+  // дошедший до нуля, читался бы как «переводи хоть полминуты» - и скан
+  // уходил бы в сотни заведомо мёртвых запросов к переводчику.
+  const budgetMs =
+    options.budgetMs === undefined || options.budgetMs === null
+      ? TRANSLATE_BUDGET_MS
+      : Math.max(0, Number(options.budgetMs));
+  const clock = options.now || (() => Date.now());
+  const startedAt = clock();
+  let attempted = 0;
+  let translated = 0;
+  let skipped = 0;
+  let rows = [];
+  try {
+    rows = db.prepare(TRANSLATE_SQL).all(MOLTBOOK_NAME, TRANSLATE_SCAN_ROWS);
+  } catch (_) {
+    return { attempted: 0, translated: 0, skipped: 0, refused: "translate-query" };
+  }
+  for (const row of rows) {
+    if (attempted >= limit) break;
+    if (budgetMs <= 0) break;
+    if (clock() - startedAt > budgetMs - TRANSLATE_TAIL_GUARD_MS) break;
+    const body = String((row && row.body) || "").trim();
+    if (body === "") continue;
+    // Ключ от того же текста, что увидит юзер: иначе перевод длинного тела
+    // лёг бы в кэш под ключом, которого панель никогда не спросит.
+    const key = translationKey(panelBody(body));
+    if (translationFor(db, key) !== "") {
+      skipped += 1;
+      continue;
+    }
+    attempted += 1;
+    const ru = await translateText(body, options);
+    if (ru !== "" && rememberTranslation(db, key, ru)) translated += 1;
+  }
+  return { attempted, translated, skipped };
 }
 
 /**
@@ -2363,9 +2620,17 @@ export function readPanel(at) {
     const { Database } = require("bun:sqlite");
     db = new Database(ledger.path, ledgerOpenOptions(true));
     const ours = MOLTBOOK_NAME;
-const pending = panelPending(
-      db.prepare(PANEL_SQL.pending).all(ours, PANEL_PENDING_LIMIT),
-    );
+    const pendingRows = db.prepare(PANEL_SQL.pending).all(ours, PANEL_PENDING_LIMIT);
+    // Переводы достаются из кэша, а не просятся у сети: панель открывают часто,
+    // а очередь перевода живёт своим темпом в конце скана.
+    const cached = new Map();
+    for (const row of pendingRows) {
+      // Ключ от того же текста, что увидит юзер, - panelBody(), а не сырой body.
+      const key = translationKey(panelBody((row && row.body) || ""));
+      const ru = translationFor(db, key);
+      if (ru !== "") cached.set(key, ru);
+    }
+    const pending = panelPending(pendingRows, cached);
     const panel = panelState(
       at,
       ledger.comments,

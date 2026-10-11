@@ -345,6 +345,7 @@ private fun RefusalNote(reason: String) {
 
 @Composable
 private fun PendingRow(question: MoltbookQuestion) {
+    val translated = question.bodyRu.isNotBlank()
     Column(Modifier.padding(vertical = 2.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -358,6 +359,8 @@ private fun PendingRow(question: MoltbookQuestion) {
                 modifier = Modifier.width(88.dp),
             )
             Text(
+                // Заголовок ветки - навигация, а не чтение: он указывает, ОТКУДА
+                // пришёл вопрос. Обрезать можно.
                 text = "«${question.title.take(40)}»",
                 color = MoltIdle,
                 fontSize = TINY,
@@ -367,16 +370,31 @@ private fun PendingRow(question: MoltbookQuestion) {
                 modifier = Modifier.weight(1f).padding(start = 5.dp),
             )
         }
-        Text(
-            // Перевода нет — показываем оригинал, а не пустую строку. Сжатая
-            // одна строка: сырой текст из ленты здесь лёг бы на пол-экрана.
-            text = question.body,
-            color = Color(0xFFBDBDBD),
-            fontSize = SMALL,
-            lineHeight = SMALL_LINE,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
+        // Русский текст, если плагин уже перевёл. Оригинал - только если
+        // перевода ещё нет: показывать вместо него пустую строку значило бы
+        // сказать юзеру «здесь нечего читать».
+        if (translated) {
+            Text(
+                text = question.bodyRu,
+                color = MoltValue,
+                fontSize = SMALL,
+                lineHeight = SMALL_LINE,
+            )
+        }
+        // Без maxLines намеренно: список прокручивается, и обрезанный на двух
+        // строках комментарий - это не «кратко», а «не прочитано». Целиком
+        // пусть даже в тридцать строк: читать должен юзер, а не агент.
+        if (!translated || question.body.isNotBlank()) {
+            Text(
+                text = question.body,
+                // При переводе оригинал уходит в мельче: он больше не главный
+                // текст, а приложение к прочитанному.
+                color = if (translated) MoltIdle else Color(0xFFBDBDBD),
+                fontSize = if (translated) TINY else SMALL,
+                lineHeight = if (translated) TINY_LINE else SMALL_LINE,
+                modifier = Modifier.padding(top = if (translated) 2.dp else 0.dp),
+            )
+        }
     }
 }
 
