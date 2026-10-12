@@ -3,8 +3,8 @@
 Дата ревизии: **12.10.2026**. Целевая версия сервера: **opencode 2.0.27**.
 
 Ключевой факт, определяющий всю сложность: приложение **не подключается к
-установленному opencode** — бинарник сервера лежит внутри APK
-(`app/src/main/jniLibs/arm64-v8a/libopencode.so`, 184.7 MB) и запускается через
+установленному opencode** — бинаррь сервера лежит внутри APK
+(`app/src/main/jniLibs/arm64-v8a/libopencode.so`, 195.5 MB) и запускается через
 `nativeLibraryDir` + `libldmusl.so`. Значит, апгрейд = замена бинаря + перенос
 HTTP-слоя.
 
@@ -15,8 +15,8 @@ HTTP-слоя.
 | Параметр | Сейчас (v1) | Цель (v2) |
 |---|---|---|
 | Версия | **1.18.25** (захардкожена) | **2.0.27** |
-| Бинарь в APK | `libopencode.so` + `libbun-musl.so`, 184.7 + 70.2 MB | `@opencode/cli-linux-arm64-musl@2.0.27`, **один** `libopencode.so` 195.5 MB, `libbun-musl.so` больше нет |
-| musl-рантайм | `libldmusl.so` (0.7 MB) | плюс Alpine `libstdc++.so.6` (2.63 MB) + `libgcc_s.so.1` (0.13 MB) — **в v2 бинарь не статический** |
+| Нативы в APK | `libopencode.so` + `libbun-musl.so`, 184.7 + 70.2 MB | `@opencode/cli-linux-arm64-musl@2.0.27` → `libopencode.so` 195.5 MB; `libbun-musl.so` 70.2 MB остаётся (JS-рантайм приложения, не opencode) |
+| musl-рантайм | `libldmusl.so` (0.7 MB) | плюс Alpine `libstdc++.so.6` (2.63 MB) + `libgcc_s.so.1` (0.13 MB) — **в v2 бинарник не статический** |
 | Источник бинаря | GitHub release tarball | **npm** (GitHub-релизов для v2 нет, `releases/tags/v2.0.27` → 404) |
 | musl ARM64 | есть | есть ✅ |
 | Префикс API | `/session*` | `/api/*` |
@@ -24,9 +24,10 @@ HTTP-слоя.
 | Поток событий | **не используется**, чистый поллинг | `/api/event` SSE доступен; `/api/experimental/session/{id}/wait` в 2.0.27 **отсутствует** (404) |
 | Установка в v2 | `opencode-ai` | `@opencode/cli` |
 
-Размер бинаря растёт всего на ~11 MB, а `libbun-musl.so` (70.2 MB) из APK
-выпадает; взамен приходит 2.76 MB musl-рантайма GCC — миграция технически
-возможна.
+Бинарь толстеет всего на ~11 MB, а взамен приходит 2.76 MB musl-рантайма GCC —
+миграция технически возможна. `libbun-musl.so` (70.2 MB) при этом **остаётся**:
+он не нужен opencode, но нужен приложению как JS-рантайм для `Retention.kt:179-180`
+и harness-скриптов.
 
 **Что v2 НЕ ломает:** конфиг (`~/.config/opencode/opencode.json`,
 `<project>/opencode.json`, `.opencode/`), агенты, скиллы, команды, MCP. Формат v1
@@ -159,7 +160,7 @@ HTTP-слоя.
 - Скачаны `@opencode/cli-linux-arm64-musl@2.0.27` (91.2 MB) и
   `@opencode/cli-windows-x64@2.0.27` (95.2 MB), распакованы в
   `%TEMP%\opencode\ocv2\`.
-- **v2 — один статический бинарь, а не тройка .so.** Внутри tarball ровно
+- **v2 — один статический бинарник, а не тройка .so.** Внутри tarball ровно
   `package/bin/opencode`: 195.50 MB для musl-arm64 и `opencode.exe` 202.97 MB для
   windows-x64. **`libbun-musl.so` в v2 не существует.** Нынешняя схема
   `libopencode.so` + `libbun-musl.so` + `libldmusl.so` превращается максимум в два
@@ -184,7 +185,7 @@ HTTP-слоя.
 
 ### Что осталось
 
-- [ ] Запустить musl-arm64 бинарь на устройстве под `libldmusl.so`,
+- [ ] Запустить musl-arm64 бинарник на устройстве под `libldmusl.so`,
       снять `opencode --version`. Единственный гейт «миграция отменяется / идём дальше».
 - [ ] Проверить, что `serve` на Android не пытается лезть в сеть за
       `bin` / `repos` и не ломается без `persistentPty`
@@ -204,7 +205,7 @@ ERROR  Unrecognized flag: --standalone in command opencode serve
 **логи сервера в 2.0.27 получить нельзя**. Наш `RuntimeValidation`/`RuntimeManager`
 не должен полагаться на серверные логи.
 
-**Готово когда:** бинарь v2 запускается на телефоне и `GET /api/info` отвечает.
+**Готово когда:** бинарник v2 запускается на телефоне и `GET /api/info` отвечает.
 Если не запускается — миграция отменяется, дальше не идём.
 
 ---
@@ -242,11 +243,11 @@ ERROR  Unrecognized flag: --standalone in command opencode serve
 
 ---
 
-## Этап 3 — Переезд на бинарь v2 (1 день)
+## Этап 3 — Переезд на бинарник v2 (1 день)
 
 - `ci.yml:62-75` — сменить источник с GitHub release на npm:
   `https://registry.npmjs.org/@opencode/cli-linux-arm64-musl/-/cli-linux-arm64-musl-2.0.27.tgz`
-- **Схема .so меняется:** в v2 один бинарь, `libbun-musl.so` не нужна.
+- **Схема .so меняется:** в v2 один бинарник, `libbun-musl.so` не нужна.
   Значит `OpencodeRuntime.kt` (`BIN_NAME`/`BUN_NAME`/`LOADER_NAME`) и проверки в
   `RuntimeValidation.kt`/`RuntimeManager.kt:720` надо править — иначе APK продолжит
   тащить 70 MB мёртвого веса и ждать файла, которого больше нет.
@@ -263,7 +264,7 @@ ERROR  Unrecognized flag: --standalone in command opencode serve
   Alpine `.apk` — это multi-stream gz tar, распаковывается обычным `tar -xzf`.
   Установщик v2 (`https://opencode.ai/v2/install`) их не везёт: он рассчитывает
   на хост Alpine. Итого в APK: `libopencode.so` 195.5 MB + 2.63 MB рантайма GCC.
-- Положить v2-бинарь рядом со старым (`libopencode.so`), чтобы старые установки
+- Положить v2-бинарник рядом со старым (`libopencode.so`), чтобы старые установки
   не сломались до этапа 7.
 - Проверить `RuntimeValidation.kt:12,35` и `RuntimeManager.kt:720` — они валидируют
   связку `libopencode.so` + musl и печатают имя бинаря в диагностике.
@@ -287,7 +288,7 @@ versionCode 3. Установлен поверх v1, сессия пережил
 **Обвязку трогать не пришлось.** `libstdcxx.so` (2 754 992 б) и `libgcc_s.so`
 (133 008 б) в APK уже были Alpine-ными — размеры совпали с измеренными на
 этапе 0 байт в байт. `OpencodeRuntime.ensureMuslLibs` раскладывает их в
-`filesDir/musl` под именами из DT_NEEDED, и v2-бинарь (204 999 888 б) после
+`filesDir/musl` под именами из DT_NEEDED, и v2-бинарник (204 999 888 б) после
 подмены `libopencode.so` поехал без единой правки Kotlin.
 
 **`libbun-musl.so` остаётся.** Это не рантайм opencode: его exec'ит
@@ -431,18 +432,48 @@ MCP-сервера из `files/opencode-config/opencode/opencode.jsonc` с уж�
 
 ## Этап 7 — Чистка (0.5 дня)
 
-- Удалить v1-бинарь из `jniLibs` → **экономия ~255 MB в APK** (184.7 MB
-  `libopencode.so` + 70.2 MB `libbun-musl.so`).
-- Чистая экономия на финальном APK ≈ **−57 MB**: `−184.7 −70.2 +195.5 +2.63 +0.13`
-  (v1-бинарь, `libbun-musl.so`, v2-бинарь, Alpine `libstdc++.so.6`, Alpine `libgcc_s.so.1`).
-  Переезд на v2 сам по себе APK почти не раздувает — выигрывает этап 7.
-- Удалить v1-ветки из `ApiPaths` и `ServerFlavor`.
+- **Экономии мегабайт здесь нет, и оценка «−255 MB» была неверной.**
+  `libopencode.so` v1 заменили на v2 ещё в этапе 3, а не держали рядом, так что
+  удалять нечего. `libbun-musl.so` (70.2 MB) нужен независимо от v2 — это JS-рантайм
+  для `Retention.kt:179-180` и harness-скриптов, а не что-то нужное opencode.
+  Реальные нативы на диске весят 314.1 MB, APK — 226.3 MB, разница сжатие.
+  Единственный оставшийся рычаг размера — `libsherpa-onnx-jni.so` + `libonnxruntime.so`
+  (44.2 MB) ради офлайн STT/TTS; это продуктовое решение, а не чистка.
+- Убрать v1-ветки из `ApiPaths` и `ServerFlavor`.
 - Прогнать JS-гейт: `node app\src\test\js\ynison-announce.test.mjs` и
   `ynison-goaway.test.mjs`. **Тесты режут код по якорям** (`function neutralState() {`,
   `async function openSessionOnce(seed = null)`) — смена сигнатуры ломает гейт.
 - Обновить `README.md` / `docs/ROADMAP.md` / `CHANGELOG.md` (версии, размеры).
 
-**Готово когда:** APK без v1-бинаря, весь гейт (`build.ps1 -Task jstest`) зелёный.
+**Готово когда:** весь гейт (`build.ps1 -Task verify`, `-Task jstest`) зелёный, в коде
+нет ни одного упоминания v1.
+
+### Что показала реализация этапа 7 (13.10.2026)
+
+v1-обвязка удалена целиком, контракт HTTP остался один:
+
+- `ApiPaths` — 189 строк превратились в 58: ушли `enum ServerFlavor`, интерфейс,
+  `ApiPathsV1`/`ApiPathsV2`, `LegacyV1`/`LegacyV2` и три пути (`status()`, `health()`,
+  `legacy`), у которых после чистки не осталось ни одного места вызова. Теперь это
+  объект с `SESSIONS`, `MCP` и четырьмя путями, собираемыми из идентификатора сессии.
+- `ServerFlavorProbe` больше не переключает вкус, а сверяет версию: `GET /api/info`
+  против `BuildConfig.OPENCODE_VERSION`, и при расхождении пишет предупреждение.
+  Эта проверка осталась не ради красоты — именно отказ сверяться показал бы
+  расхождение между бинарём в APK и тем, что реально запустился.
+- `ApiShape.messages` больше не смотрит на флаг версии: нормализация идёт всегда, а
+  разворот ленты по-прежнему определяется **формой ответа** (наличием обёртки `data`),
+  а не объявленной версией. Флаг врёт, форма — нет.
+- Удалены `OpenCodeQuestion.kt` и `OpenCodePermission.kt` с тестами: на v2 вопросы
+  приходят нативными формами, а разрешения имеют свой эндпоинт. Из `ChatOverlay.kt`
+  вырезано около 380 строк — карточки вопросов и разрешений, кэш разрешений,
+  `answerQuestion`/`rejectQuestion`/`respondPermission`, ветка ответа на вопрос в
+  `send()` и блокировка ввода, пока висит разрешение. Отдельно из `stopGen()` ушла
+  отправка `REJECT` перед `abort`.
+- Ошибки всё ещё видны: `asErrorText` даёт роль `error`, а не «Система», и причина
+  не попадает ни в озвучку, ни в счётчик ответов.
+
+Проверка на устройстве: APK 226.3 MB, `GET /api/info` → 2.0.27, ответ на промпт
+приходит с `finish=stop`, лента дорисовывается, падений нет.
 
 ---
 

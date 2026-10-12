@@ -1185,16 +1185,16 @@ internal class MoltbookTicker(
      * пользователя, а сессия удаляется, чтобы /session не пух от пустых «молотов».
      */
     private fun askModel(prompt: String): String? {
-        val sessionId = LocalOpenCodeClient.post(OPENCODE_PORT, ApiPaths.active.sessions(), "{}")?.let(::sessionIdOf)
+        val sessionId = LocalOpenCodeClient.post(OPENCODE_PORT, ApiPaths.SESSIONS, "{}")?.let(::sessionIdOf)
             ?: return null
         try {
             val body = ApiShape.promptBody(prompt)
-            if (!LocalOpenCodeClient.postAsync(OPENCODE_PORT, ApiPaths.active.prompt(sessionId), body.toString())) {
+            if (!LocalOpenCodeClient.postAsync(OPENCODE_PORT, ApiPaths.prompt(sessionId), body.toString())) {
                 return null
             }
             return awaitAssistantText(sessionId)
         } finally {
-            LocalOpenCodeClient.delete(OPENCODE_PORT, ApiPaths.active.session(sessionId))
+            LocalOpenCodeClient.delete(OPENCODE_PORT, ApiPaths.session(sessionId))
         }
     }
 
@@ -1208,7 +1208,7 @@ internal class MoltbookTicker(
     private fun awaitAssistantText(sessionId: String): String? {
         repeat(GENERATION_POLLS) {
             Thread.sleep(GENERATION_POLL_MS)
-            val raw = LocalOpenCodeClient.get(OPENCODE_PORT, ApiPaths.active.message(sessionId)) ?: return@repeat
+            val raw = LocalOpenCodeClient.get(OPENCODE_PORT, ApiPaths.message(sessionId)) ?: return@repeat
             val messages = ApiShape.messages(raw) ?: return@repeat
             val text = lastAssistantText(messages)
             if (!text.isNullOrBlank()) return text
@@ -1252,11 +1252,11 @@ internal class MoltbookTicker(
     private fun notifyChat(digest: String) {
         val sessionId = lastTouchedUserSession() ?: return
         val body = ApiShape.promptBody("Молтбук: $digest").toString()
-        LocalOpenCodeClient.postAsync(OPENCODE_PORT, ApiPaths.active.prompt(sessionId), body)
+        LocalOpenCodeClient.postAsync(OPENCODE_PORT, ApiPaths.prompt(sessionId), body)
     }
 
     private fun lastTouchedUserSession(): String? {
-        val raw = LocalOpenCodeClient.get(OPENCODE_PORT, ApiPaths.active.sessions()) ?: return null
+        val raw = LocalOpenCodeClient.get(OPENCODE_PORT, ApiPaths.SESSIONS) ?: return null
         val sessions = ApiShape.sessions(raw) ?: return null
         return (0 until sessions.length())
             .mapNotNull { sessions.optJSONObject(it) }

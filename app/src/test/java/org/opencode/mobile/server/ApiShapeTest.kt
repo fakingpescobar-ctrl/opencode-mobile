@@ -15,17 +15,6 @@ import org.junit.Test
  * вообще нет отдельного эндпоинта.
  */
 class ApiShapeTest {
-    /** Тело v1: голый массив, сообщение — конверт `info` + `parts`. */
-    private val v1Messages =
-        """
-        [
-          {"info":{"role":"user","time":{"created":10}},"parts":[{"type":"text","text":"привет"}]},
-          {"info":{"role":"assistant","providerID":"opencode","modelID":"big-pickle",
-                   "time":{"created":20,"completed":30}},
-           "parts":[{"type":"text","text":"ответ"},{"type":"tool","tool":"bash","state":{"output":"ok"}}]}
-        ]
-        """.trimIndent()
-
     /** Тело v2: конверт `data`, порядок от новых к старым, `content` вместо `parts`. */
     private val v2Messages =
         """
@@ -41,33 +30,13 @@ class ApiShapeTest {
         ],"cursor":{"previous":null,"next":"abc"}}
         """.trimIndent()
 
-    private fun withFlavor(
-        flavor: ServerFlavor,
-        block: () -> Unit,
-    ) {
-        val previous = ApiPaths.activeFlavor
-        try {
-            ApiPaths.install(flavor)
-            block()
-        } finally {
-            ApiPaths.install(previous)
-        }
-    }
+    private fun v2(block: () -> Unit) = block()
 
     // ---------- messages ----------
 
     @Test
-    fun `v1 messages stay untouched`() {
-        val arr = ApiShape.messages(v1Messages) ?: error("null")
-        assertEquals(2, arr.length())
-        val first = arr.getJSONObject(0)
-        assertEquals("user", first.getJSONObject("info").getString("role"))
-        assertEquals("привет", first.getJSONArray("parts").getJSONObject(0).getString("text"))
-    }
-
-    @Test
     fun `v2 messages are unwrapped and reversed to oldest first`() {
-        withFlavor(ServerFlavor.V2) {
+        v2 {
             val arr = ApiShape.messages(v2Messages) ?: error("null")
             // Три сообщения на входе, idle выброшен.
             assertEquals(2, arr.length())
@@ -78,7 +47,7 @@ class ApiShapeTest {
 
     @Test
     fun `v2 user text becomes a text part`() {
-        withFlavor(ServerFlavor.V2) {
+        v2 {
             val arr = ApiShape.messages(v2Messages) ?: error("null")
             val part = arr.getJSONObject(0).getJSONArray("parts").getJSONObject(0)
             assertEquals("text", part.getString("type"))
@@ -88,7 +57,7 @@ class ApiShapeTest {
 
     @Test
     fun `v2 assistant content maps onto v1 parts and carries model into info`() {
-        withFlavor(ServerFlavor.V2) {
+        v2 {
             val arr = ApiShape.messages(v2Messages) ?: error("null")
             val msg = arr.getJSONObject(1)
             val info = msg.getJSONObject("info")
@@ -107,7 +76,7 @@ class ApiShapeTest {
 
     @Test
     fun `completed appears only for a finished turn`() {
-        withFlavor(ServerFlavor.V2) {
+        v2 {
             val streaming =
                 ApiShape.messages(
                     """{"data":[{"id":"m","type":"assistant","time":{"created":5},"content":[
@@ -308,17 +277,6 @@ class ApiShapeTest {
     }
 
     @Test
-    fun `v1 лента остаётся в том же порядке что пришла`() {
-        // Второй край: разворот включается по наличию конверта data, а не по флагу
-        // версии. Иначе v1-сообщения уехали бы задом наперёд.
-        val raw =
-            """[{"info":{"role":"user","time":{"created":1}},"parts":[{"type":"text","text":"первый"}]},
-              {"info":{"role":"assistant","time":{"created":2,"completed":3}},
-               "parts":[{"type":"text","text":"второй"}]}]"""
-        assertEquals(listOf("первый", "второй"), textsOf(messagesOf(raw), "text"))
-    }
-
-    @Test
     fun `причина провала не дублируется в соседнем idle`() {
         // Реальная лента из живого провала: в v2 причина лежит И в assistant, И в
         // idle. Обход идёт от новых к старым, поэтому первым повстречается idle —
@@ -502,7 +460,7 @@ class ApiShapeTest {
 
     @Test
     fun `v2 busy record carries the session key`() {
-        withFlavor(ServerFlavor.V2) {
+        v2 {
             val raw = """{"data":[{"type":"assistant","time":{"created":1}}]}"""
             val record = ApiStatus.statusRecord(raw, "ses_1") ?: error("null")
             assertTrue(JSONObject(record).has("ses_1"))
@@ -511,7 +469,7 @@ class ApiShapeTest {
 
     @Test
     fun `v2 idle record is an empty map`() {
-        withFlavor(ServerFlavor.V2) {
+        v2 {
             val record = ApiStatus.statusRecord("""{"data":[{"type":"idle"}]}""", "ses_1") ?: error("null")
             assertEquals(0, JSONObject(record).length())
         }
@@ -519,16 +477,8 @@ class ApiShapeTest {
 
     @Test
     fun `v2 unknown record is null, not an empty map`() {
-        withFlavor(ServerFlavor.V2) {
+        v2 {
             assertNull(ApiStatus.statusRecord("<html>", "ses_1"))
-        }
-    }
-
-    @Test
-    fun `v1 status passes through untouched`() {
-        withFlavor(ServerFlavor.V1) {
-            val raw = """{"ses_1":{"a":1}}"""
-            assertEquals(raw, ApiStatus.statusRecord(raw, "ses_1"))
         }
     }
 
@@ -590,16 +540,8 @@ class ApiShapeTest {
     // ---------- prompt body ----------
 
     @Test
-    fun `v1 prompt keeps the parts envelope`() {
-        withFlavor(ServerFlavor.V1) {
-            val body = ApiShape.promptBody("привет")
-            assertEquals("привет", body.getJSONArray("parts").getJSONObject(0).getString("text"))
-        }
-    }
-
-    @Test
     fun `v2 prompt is a flat text field`() {
-        withFlavor(ServerFlavor.V2) {
+        v2 {
             val body = ApiShape.promptBody("привет")
             assertEquals("привет", body.getString("text"))
             assertFalse(body.has("parts"))

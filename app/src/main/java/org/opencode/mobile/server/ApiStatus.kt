@@ -4,31 +4,31 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Дорога до «занята ли сессия» — то, что в v1 было одним GET /session/status.
- *
- * В v2 этого эндпоинта нет, и состояние приходится собирать из лент сообщений,
- * где ход отмечается псевдо-сообщением `type:"idle"`. Разбор живёт в
+ * Дорога до «занята ли сессия». Отдельного эндпоинта статуса в v2 нет,
+ * состояние собирается из лент сообщений, где ход отмечается
+ * псевдо-сообщением `type:"idle"`. Разбор живёт в
  * [ApiShape] (чистый, под юнит-тест), здесь только поход по сети.
  *
  * Цена вопроса разная, поэтому методов три:
  *
- * - [reachable] — «сервер вообще отвечает». В v1 это стоило бы запроса карты
- *   статусов, а в v2 карта стоит ещё и N запросов по лентам, поэтому дешёвый
- *   ответ берём из списка сессий, который и так идёт каждый тик.
+ * - [reachable] — «сервер вообще отвечает». Карта статусов стоила бы 1 + N
+ *   запросов, поэтому дешёвый ответ берём из списка сессий, который и так идёт
+ *   каждый тик.
  * - [forSession] — состояние одной сессии. Основной потребитель: плашка
  *   «модель думает» и ожидание abort.
- * - [record] — карта занятых сессий целиком, как в v1. В v2 это 1 + N запросов,
- *   поэтому зовётся только там, где нужны все сразу: чистка сессий-сирот и
+ * - [record] — карта занятых сессий целиком. Это 1 + N запросов, поэтому
+ *   зовётся только там, где нужны все сразу: чистка сессий-сирот и
  *   планировщик moltbook.
  */
 internal object ApiStatus {
     /**
      * Отвечает ли сервер. Не «свободны ли сессии» — только факт связи.
      */
-    fun reachable(port: Int): Boolean = LocalOpenCodeClient.get(port, ApiPaths.active.sessions()) != null
+    fun reachable(port: Int): Boolean = LocalOpenCodeClient.get(port, ApiPaths.SESSIONS) != null
 
     /**
-     * Карта занятости в v1-виде для одной сессии: ключ есть ⇔ идёт ход.
+     * Карта занятости для одной сессии в виде, который ждали потребители v1:
+     * ключ есть ⇔ идёт ход.
      *
      * null — «не знаю»: сервер не ответил либо ленту разобрать не удалось.
      * Вызывающие обязаны трактовать null как отказ, а не как «сессия свободна»
@@ -37,21 +37,12 @@ internal object ApiStatus {
     fun forSession(
         port: Int,
         sessionId: String,
-    ): String? {
-        // v2 отдаёт состояние в ленте, v1 — отдельной картой.
-        val raw =
-            if (ApiPaths.activeFlavor == ServerFlavor.V2) {
-                LocalOpenCodeClient.get(port, ApiPaths.active.message(sessionId))
-            } else {
-                ApiPaths.active.status()?.let { LocalOpenCodeClient.get(port, it) }
-            }
-        return statusRecord(raw, sessionId)
-    }
+    ): String? = statusRecord(LocalOpenCodeClient.get(port, ApiPaths.message(sessionId)), sessionId)
 
     /**
-     * Идёт ли сейчас ход в сессии — то, что в v1 сообщала карта `/session/status`.
+     * Идёт ли сейчас ход в сессии.
      *
-     * В v2 отдельного эндпоинта нет, и вместо него в ленту кладётся
+     * Отдельного эндпоинта нет, и вместо него в ленту кладётся
      * псевдо-сообщение `type:"idle"`, когда ход закончен. Разбирать его по версии
      * на местах нельзя — сюда и сносят все потребители статуса.
      *
@@ -80,8 +71,8 @@ internal object ApiStatus {
     }
 
     /**
-     * Карта занятых сессий в том виде, в каком её ждал v1-потребитель:
-     * ключ есть ⇔ сессия занята. В v2 синтезируется из [isBusy].
+     * Карта занятости одной сессии для потребителей, ждавших её от v1:
+     * ключ есть ⇔ сессия занята. Синтезируется из [isBusy].
      *
      * null — как и раньше, «не знаю»: сервер не ответил ИЛИ ленту прочитать
      * не удалось. Потребитель в этом случае ничего не чистит.
@@ -89,14 +80,12 @@ internal object ApiStatus {
     fun statusRecord(
         rawMessages: String?,
         sessionId: String,
-    ): String? {
-        if (ApiPaths.activeFlavor != ServerFlavor.V2) return rawMessages
-        return when (isBusy(rawMessages)) {
+    ): String? =
+        when (isBusy(rawMessages)) {
             null -> null
             true -> JSONObject().put(sessionId, JSONObject()).toString()
             false -> "{}"
         }
-    }
 
     /**
      * Карта занятости всех сессий.
@@ -105,15 +94,11 @@ internal object ApiStatus {
      * неизвестная карта опаснее полностью неизвестной — под нож попала бы
      * живая сессия, которую посчитали свободной.
      */
-    fun record(port: Int): String? {
-        val direct = ApiPaths.active.status()
-        if (direct != null) return LocalOpenCodeClient.get(port, direct)
-        return sweep(port)
-    }
+    fun record(port: Int): String? = sweep(port)
 
-    /** Сборка карты по лентам — только для v2, где отдельного эндпоинта нет. */
+    /** Сборка карты по лентам — единственный способ в v2. */
     private fun sweep(port: Int): String? {
-        val sessions = ApiShape.sessions(LocalOpenCodeClient.get(port, ApiPaths.active.sessions())) ?: return null
+        val sessions = ApiShape.sessions(LocalOpenCodeClient.get(port, ApiPaths.SESSIONS)) ?: return null
         val busy = JSONObject()
         var unknown = false
         for (i in 0 until sessions.length()) {
@@ -129,7 +114,7 @@ internal object ApiStatus {
         sessionId: String,
         busy: JSONObject,
     ): Boolean {
-        val raw = LocalOpenCodeClient.get(port, ApiPaths.active.message(sessionId))
+        val raw = LocalOpenCodeClient.get(port, ApiPaths.message(sessionId))
         val running = isBusy(raw)
         if (running == null) return true
         if (running) busy.put(sessionId, JSONObject())

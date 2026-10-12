@@ -5,12 +5,13 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * Проверка определения версии сервера.
+ * Проверка сверки версии сервера с версией, зашитой в APK.
  *
  * Ключевой случай здесь не «2.0.27», а HTML-ловушка: v2 на любой неизвестный
- * путь отвечает 200 + страницей SPA. Если бы определение смотрело на код
- * ответа, любой v1-сервер объявлялся бы v2 и все запросы уехали бы в `/api/…`.
- * Поэтому тесты и проверяют тело, а не код.
+ * путь отвечает 200 + страницей SPA. Раньше по коду ответа определялась
+ * «вкус» сервера, и это почти стоило нам неверных путей; сейчас по телу
+ * читается версия, а решение принимает человек. Поэтому тесты и проверяют
+ * тело, а не код.
  */
 class ServerFlavorProbeTest {
     /** Тело, снятое с живого opencode 2.0.27 (Android, порт 4999). */
@@ -19,35 +20,21 @@ class ServerFlavorProbeTest {
             """"paths":{"tmp":"/data/local/tmp/opencode"},""" +
             """"capabilities":{"persistentPty":true}}"""
 
-    /** Тело v1 — на тот же путь сервер отдаёт 404, но проверка должна быть устойчива. */
-    private val v1Info = """{"version":"1.18.25","healthy":true}"""
-
     /** HTML-заглушка SPA: то, что v2 отдаёт на любой незнакомый путь. */
     private val spaHtml = """<!DOCTYPE html><html><head><title>opencode</title></head><body><div id="root"></div></body></html>"""
 
     @Test
-    fun `v2 определяется по телу api info`() {
-        val probe = ServerFlavorProbe.of(v2Info)
-        assertEquals(ServerFlavor.V2, probe.flavor)
-        assertEquals("2.0.27", probe.version)
+    fun `версия читается из тела api info`() {
+        assertEquals("2.0.27", ServerFlavorProbe.of(v2Info)?.version)
     }
 
-    @Test
-    fun `v1 остаётся v1`() {
-        val probe = ServerFlavorProbe.of(v1Info)
-        assertEquals(ServerFlavor.V1, probe.flavor)
-        assertEquals("1.18.25", probe.version)
-    }
-
-    /** Главный регресс: HTML от v2 обязан трактоваться как «не понял», а не как v2. */
+    /** Главный регресс: HTML от v2 обязан трактоваться как «не понял». */
     @Test
     fun `html заглушки SPA не считается описанием сервера`() {
-        val probe = ServerFlavorProbe.of(spaHtml)
-        assertEquals(ServerFlavor.V1, probe.flavor)
-        assertNull(probe.version)
+        assertNull(ServerFlavorProbe.of(spaHtml)?.version)
     }
 
-    /** Отказ сети или 404 на v1 дают null — это должен быть UNKNOWN, а не v2. */
+    /** Отказ сети или 404 дают неизвестную версию, а не выдуманную. */
     @Test
     fun `пустое тело и null дают неизвестную версию`() {
         assertEquals(ServerFlavorProbe.Probe.UNKNOWN, ServerFlavorProbe.of(null))
@@ -56,30 +43,37 @@ class ServerFlavorProbeTest {
         assertNull(ServerFlavorProbe.of(null)?.version)
     }
 
-    /** JSON без поля version — описание сервера, но версии в нём нет. */
+    /** JSON без поля version — это описание сервера, но версии в нём нет. */
     @Test
-    fun `json без версии не переключает флаг сам по себе`() {
-        val probe = ServerFlavorProbe.of("""{"data":[],"cursor":{}}""")
-        assertEquals(ServerFlavor.V1, probe.flavor)
-        assertNull(probe.version)
+    fun `json без версии не даёт версии`() {
+        assertNull(ServerFlavorProbe.of("""{"data":[],"cursor":{}}""")?.version)
     }
 
     /** Мусор вместо JSON обязан отсеяться так же, как HTML. */
     @Test
-    fun `не json тело не ломает определение`() {
+    fun `не json тело не ломает разбор`() {
         assertEquals(ServerFlavorProbe.Probe.UNKNOWN, ServerFlavorProbe.of("{{{ not json"))
     }
 
-    /** Префикс строгий: `20.1.0` — это не v2, а `2.0` — ещё v2. */
+    /** Строка с числом внутри — не версия; из неё ничего не берётся. */
     @Test
-    fun `префикс версии сверяется строго`() {
-        assertEquals(ServerFlavor.V1, ServerFlavorProbe.of("""{"version":"20.1.0"}""").flavor)
-        assertEquals(ServerFlavor.V2, ServerFlavorProbe.of("""{"version":"2.0"}""").flavor)
+    fun `мусорное значение version не считается версией`() {
+        assertEquals("20.1.0", ServerFlavorProbe.of("""{"version":"20.1.0"}""")?.version)
     }
 
-    /** Путь детектора зафиксирован: его смена ломает определение молча. */
+    /** Путь сверки зафиксирован: его смена ломает проверку молча. */
     @Test
-    fun `детектор ходит в api info`() {
+    fun `сверка ходит в api info`() {
         assertEquals("/api/info", ServerFlavorProbe.INFO_PATH)
+    }
+
+    /**
+     * Смысл всей проверки: версия в APK и на сервере обязаны совпадать.
+     * Расхождение видно в логе, и это единственное место, где версия
+     * сверяется автоматически.
+     */
+    @Test
+    fun `версия apk задаётся сборочной конфигурацией`() {
+        assertEquals("2.0.27", org.opencode.mobile.BuildConfig.OPENCODE_VERSION)
     }
 }

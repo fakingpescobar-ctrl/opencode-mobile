@@ -59,7 +59,7 @@ internal object MoltbookWake {
     /** Тело сообщения — ровно то, что уже умеет отправлять UI (форма различает v1/v2). */
     fun messageBody(text: String): String = ApiShape.promptBody(text).toString()
 
-    fun messagePath(sessionId: String): String = ApiPaths.active.prompt(sessionId)
+    fun messagePath(sessionId: String): String = ApiPaths.prompt(sessionId)
 
     /**
      * Строка журнала: одна попытка — одна строка.
@@ -109,7 +109,7 @@ internal object MoltbookWake {
                 // как "POST без тела, как abort-эндпоинт"). Валидатор opencode такую
                 // сессию не создаёт, post вернёт null, и Create навсегда останется
                 // мёртвой веткой с правдоподобной записью в журнале.
-                MoltbookWakePlan.parseCreated(LocalOpenCodeClient.post(OPENCODE_PORT, ApiPaths.active.sessions(), "{}"))
+                MoltbookWakePlan.parseCreated(LocalOpenCodeClient.post(OPENCODE_PORT, ApiPaths.SESSIONS, "{}"))
             } else {
                 null
             }
@@ -148,7 +148,7 @@ internal object MoltbookWake {
         // карта собирается из лент (ApiStatus). null — двусторонний отказ, и план
         // обязан трактовать его как «не знаю», а не как «никто не занят».
         return MoltbookWakePlan.planFor(
-            LocalOpenCodeClient.get(OPENCODE_PORT, ApiPaths.active.sessions()),
+            LocalOpenCodeClient.get(OPENCODE_PORT, ApiPaths.SESSIONS),
             ApiStatus.record(OPENCODE_PORT),
             now,
             lastWakeAt(context),

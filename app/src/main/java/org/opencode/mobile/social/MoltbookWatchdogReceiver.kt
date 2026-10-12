@@ -214,12 +214,12 @@ class MoltbookWatchdogReceiver : BroadcastReceiver() {
             return
         }
         val body = ApiShape.promptBody(text).toString()
-        LocalOpenCodeClient.postAsync(OPENCODE_PORT, ApiPaths.active.prompt(sessionId), body)
+        LocalOpenCodeClient.postAsync(OPENCODE_PORT, ApiPaths.prompt(sessionId), body)
     }
 
     /** Последняя сессия пользователя: её ChatOverlay обновляет сам раз в пару секунд. */
     private fun lastTouchedUserSession(): String? {
-        val raw = LocalOpenCodeClient.get(OPENCODE_PORT, ApiPaths.active.sessions()) ?: return null
+        val raw = LocalOpenCodeClient.get(OPENCODE_PORT, ApiPaths.SESSIONS) ?: return null
         val sessions = ApiShape.sessions(raw) ?: return null
         return (0 until sessions.length())
             .mapNotNull { sessions.optJSONObject(it) }

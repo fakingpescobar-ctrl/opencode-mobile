@@ -273,25 +273,22 @@ class MoltbookWakeTest {
     }
 
     @Test
-    fun `тело сообщения это ровно одна текстовая часть`() {
-        val body = MoltbookWake.messageBody("привет")
-        val obj = JSONObject(body)
-        val parts = obj.getJSONArray("parts")
-        assertEquals(1, parts.length())
-        assertEquals("text", parts.getJSONObject(0).getString("type"))
-        assertEquals("привет", parts.getJSONObject(0).getString("text"))
+    fun `тело сообщения это ровно одно поле text`() {
+        val obj = JSONObject(MoltbookWake.messageBody("привет"))
+        assertEquals(1, obj.length())
+        assertEquals("привет", obj.getString("text"))
     }
 
     @Test
     fun `тело сообщения переживает кавычки и переносы в тексте`() {
         val nasty = "кавычка \" и перенос\nвнутри"
         val obj = JSONObject(MoltbookWake.messageBody(nasty))
-        assertEquals(nasty, obj.getJSONArray("parts").getJSONObject(0).getString("text"))
+        assertEquals(nasty, JSONObject(MoltbookWake.messageBody(nasty)).getString("text"))
     }
 
     @Test
     fun `путь сообщения это сессия и её лента`() {
-        assertEquals("/session/ses_x/message", MoltbookWake.messagePath("ses_x"))
+        assertEquals("/api/session/ses_x/prompt", MoltbookWake.messagePath("ses_x"))
     }
 
     // ---- журнал ----

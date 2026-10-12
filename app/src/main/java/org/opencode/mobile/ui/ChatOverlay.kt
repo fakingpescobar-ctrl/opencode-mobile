@@ -136,12 +136,6 @@ import org.opencode.mobile.server.ApiShape
 import org.opencode.mobile.server.ApiStatus
 import org.opencode.mobile.server.LocalOpenCodeClient
 import org.opencode.mobile.server.MemoryMcp
-import org.opencode.mobile.server.OpenCodePermissionApi
-import org.opencode.mobile.server.OpenCodePermissionRequest
-import org.opencode.mobile.server.OpenCodeQuestionApi
-import org.opencode.mobile.server.OpenCodeQuestionPrompt
-import org.opencode.mobile.server.OpenCodeQuestionRequest
-import org.opencode.mobile.server.PermissionDecision
 import org.opencode.mobile.server.YnisonMcp
 import org.opencode.mobile.social.MoltbookScanClient
 import org.opencode.mobile.stt.NcnnModelValidator
@@ -299,7 +293,7 @@ private fun getMcpCached(port: Int): String? {
     val now = System.currentTimeMillis()
     val cached = McpCache.raw
     if (cached != null && now - McpCache.at < MCP_CACHE_MS) return cached
-    val fresh = LocalOpenCodeClient.get(port, ApiPaths.active.mcp())
+    val fresh = LocalOpenCodeClient.get(port, ApiPaths.MCP)
     if (fresh != null) {
         McpCache.raw = fresh
         McpCache.at = now
@@ -316,7 +310,6 @@ private fun getMcpCached(port: Int): String? {
 // отдельно, потому что заголовок/метки могут меняться независимо от ленты.
 private data class ChatParseResult(
     val messages: List<ChatMsg>,
-    val question: OpenCodeQuestionRequest?,
     val thinking: Boolean,
     val liveTool: ChatTool?,
     val contextTokens: Long,
@@ -328,63 +321,6 @@ private object ChatCache {
     @Volatile var rawHash: Int = 0
 
     @Volatile var result: ChatParseResult? = null
-}
-
-private data class PermissionCacheEntry(
-    val sessionId: String,
-    val raw: String,
-    val request: OpenCodePermissionRequest?,
-)
-
-private object PermissionCache {
-    private var entry: PermissionCacheEntry? = null
-    private var generation = 0L
-
-    fun get(
-        port: Int,
-        sessionId: String,
-    ): OpenCodePermissionRequest? {
-        val (cached, startedAt) =
-            synchronized(this) {
-                if (entry?.sessionId != sessionId) {
-                    entry = null
-                    generation++
-                }
-                entry to generation
-            }
-        val raw = ApiPaths.active.legacy
-            .permissionList()
-            ?.let { LocalOpenCodeClient.get(port, it) }
-        return synchronized(this) {
-            // Reply/session switch happened while GET was in flight. Its response describes
-            // already-mutated state and must not resurrect a permission card that was cleared.
-            if (generation != startedAt) {
-                null
-            } else if (raw == null) {
-                cached?.request
-            } else if (cached?.raw == raw) {
-                cached.request
-            } else {
-                val request = OpenCodePermissionApi.pendingForSession(raw, sessionId)
-                entry = PermissionCacheEntry(sessionId, raw, request)
-                request
-            }
-        }
-    }
-
-    fun clear(sessionId: String) {
-        synchronized(this) {
-            if (entry?.sessionId == sessionId) entry = null
-            generation++
-        }
-    }
-
-    fun clearAll() {
-        synchronized(this) {
-            entry = null
-            generation++
-        }
-    }
 }
 
 internal data class ChatMsg(
@@ -413,7 +349,6 @@ internal data class ChatSnapshot(
     val messages: List<ChatMsg>,
     val label: String,
     val activeId: String?,
-    val question: OpenCodeQuestionRequest? = null,
     val thinking: Boolean = false,
     val modelName: String = "Модель",
     val stalled: Boolean = false,
@@ -439,7 +374,6 @@ internal data class ChatSnapshot(
     val mcpTotal: Int = 0,
     // Полный список MCP-серверов (имя + статус) для выпадающего списка по тапу.
     val mcpServers: List<McpInfo> = emptyList(),
-    val permission: OpenCodePermissionRequest? = null,
     // Причина, по которой сервер сам не может продолжить ход (квота/ретрай).
     val notice: ChatNotice? = null,
 )
@@ -474,6 +408,8 @@ fun ChatOverlay(
     var noticeLatch by remember { mutableStateOf<ChatNotice?>(null) }
     var draft by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
+    var stopping by remember { mutableStateOf(false) }
+    var whisperRecorder: AudioRecorder? = null
     val listState = rememberLazyListState()
     var knownMsgs by remember { mutableIntStateOf(0) }
     // ИНДЕКС последнего завершённого ответа, на который уже сработала вибрация.
@@ -611,11 +547,6 @@ fun ChatOverlay(
     // Подтверждение сброса зависшей сессии из DeadRow. Удаление необратимо,
     // поэтому отдельный диалог, а не кнопка в один тап.
     var confirmResetDead by remember { mutableStateOf(false) }
-    var permissionRespondingId by remember { mutableStateOf<String?>(null) }
-    var permissionError by remember { mutableStateOf<String?>(null) }
-    var stopping by remember { mutableStateOf(false) }
-    var whisperRecorder: AudioRecorder? = null
-    val permissionActionBusy = permissionRespondingId != null || stopping
 
     // Активная выпадающая панель шапки; null — закрыты все. ОДНО состояние
     // вместо пяти флагов: панели взаимоисключающие СТРУКТУРНО, а не по
@@ -681,68 +612,10 @@ fun ChatOverlay(
     }
     val moltbookStats = rememberMoltbookState(moltbookRefresh)
 
-    /**
-     * Ответ на висящий вопрос. [answers] — по списку выбранных меток на каждый
-     * вопрос запроса, в том же порядке, что и `questions`: сервер сверяет
-     * позиции, поэтому ответ на один вопрос из нескольких иначе сдвинет
-     * остальные. [echo] — что показать в ленте как реплику пользователя.
-     */
-    fun answerQuestion(
-        q: OpenCodeQuestionRequest,
-        answers: List<List<String>>,
-        echo: String,
-    ) {
-        if (sending || snapshot?.permission != null) return
-        sending = true
-        userScrolledUp = false
-        scope.launch {
-            val ok =
-                withContext(Dispatchers.IO) {
-                    OpenCodeQuestionApi.reply(serverPort, q.id, answers)
-                }
-            sending = false
-            if (ok) {
-                draft = ""
-                keyboard?.hide()
-                focusManager.clearFocus()
-                snapshot = snapshot?.let { it.copy(question = null, messages = it.messages + ChatMsg("user", echo)) }
-                scrollToBottomFull(listState, (snapshot?.messages?.size ?: 0) - 1)
-            }
-        }
-    }
-
-    fun rejectQuestion(q: OpenCodeQuestionRequest) {
-        if (sending || snapshot?.permission != null) return
-        sending = true
-        userScrolledUp = false
-        scope.launch {
-            val ok =
-                withContext(Dispatchers.IO) {
-                    OpenCodeQuestionApi.reject(serverPort, q.id)
-                }
-            sending = false
-            // Отклонение сервером не подтверждается отдельным чтением, поэтому
-            // карточку снимаем только по успеху: иначе вопрос на экране пропадёт
-            // без ответа и ход модели останется висеть навсегда.
-            if (ok) {
-                snapshot = snapshot?.let { it.copy(question = null) }
-            }
-        }
-    }
-
     fun send() {
         val text = draft.trim()
-        if (text.isEmpty() || sending || snapshot?.permission != null) return
+        if (text.isEmpty() || sending) return
         val sessionId = snapshot?.activeId
-        val pending = snapshot?.question
-        // Вопрос на один prompt (обычный случай) — написанный текст это ответ на
-        // него. Несколько prompt'ов одним текстом не закрыть: сервер ждёт
-        // список на каждый, и подставить один и тот же текст значило бы соврать
-        // модели. Тогда текст уходит обычным сообщением, а вопрос висит дальше.
-        if (pending != null && pending.prompts.size == 1) {
-            answerQuestion(pending, listOf(listOf(text)), text)
-            return
-        }
         sending = true
         userScrolledUp = false
         scope.launch {
@@ -801,64 +674,24 @@ fun ChatOverlay(
         }
     }
 
-    fun respondPermission(
-        request: OpenCodePermissionRequest,
-        decision: PermissionDecision,
-    ) {
-        if (permissionRespondingId != null || stopping) return
-        permissionRespondingId = request.id
-        permissionError = null
-        scope.launch {
-            val replied = withContext(Dispatchers.IO) {
-                OpenCodePermissionApi.reply(serverPort, request.id, decision)
-            }
-            permissionRespondingId = null
-            if (!replied) {
-                permissionError = "Не удалось отправить ответ. Проверь сервер и повтори."
-                return@launch
-            }
-
-            PermissionCache.clear(request.sessionId)
-            snapshot =
-                snapshot?.let { current ->
-                    if (current.permission?.id == request.id) {
-                        current.copy(permission = null, stalled = false)
-                    } else {
-                        current
-                    }
-                }
-        }
-    }
-
     fun stopGen() {
-        if (permissionRespondingId != null || stopping) return
+        if (stopping) return
         val sessionId = snapshot?.activeId ?: return
-        val pendingPermission = snapshot?.permission
         stopping = true
         scope.launch {
             val ok =
                 try {
-                    withContext(Dispatchers.IO) {
-                        val rejected =
-                            pendingPermission?.let {
-                                OpenCodePermissionApi.reply(serverPort, it.id, PermissionDecision.REJECT)
-                            } ?: false
-                        val aborted = abortSession(serverPort, sessionId)
-                        (pendingPermission != null && rejected) || aborted
-                    }
+                    withContext(Dispatchers.IO) { abortSession(serverPort, sessionId) }
                 } finally {
                     stopping = false
                 }
             if (ok) {
-                PermissionCache.clear(sessionId)
-                permissionError = null
-                snapshot = snapshot?.copy(permission = null, stalled = false)
                 vibrate(context)
             }
             // Стоп генерации = стоп озвучки: иначе голос продолжал бы читать
             // уже отменённый ответ (очередь синтеза опустошается, игра гасится).
             TtsNarrator.stop()
-            // thinking сбросится сам на следующем поллинге: abort завершит
+            // thinking сбросится сам на следующом поллинге: abort завершит
             // стрим, и fetchChatSnapshot увидит step-finish → thinking=false.
         }
     }
@@ -909,7 +742,6 @@ fun ChatOverlay(
             // Сбрасываем кэш в любом случае: если удаление прошло, поллинг обязан
             // перечитать список и уйти на новую сессию, иначе вернёт удалённую.
             ChatCache.result = null
-            PermissionCache.clearAll()
             creatingSession = false
             if (ok) vibrate(context)
         }
@@ -931,7 +763,6 @@ fun ChatOverlay(
                         ChatCache.sessionId = null
                         ChatCache.rawHash = 0
                         ChatCache.result = null
-                        PermissionCache.clearAll()
                         // Подчищаем пустые сироты: новая сессия только что создана и
                         // тоже пуста, поэтому её id обязателен в keep.
                         pruneEmptySessions(serverPort, keep = setOf(id))
@@ -961,14 +792,13 @@ fun ChatOverlay(
                         ChatCache.sessionId = null
                         ChatCache.rawHash = 0
                         ChatCache.result = null
-                        PermissionCache.clearAll()
                         // Удаляем ВСЕ остальные сессии — чистый старт. DELETE сам по себе не
                         // обязан останавливать бегущую генерацию: модель может продолжать
                         // писать ответ в сессию, которую мы удаляем (CPU горит впустую, сервер
                         // «залипает»). Поэтому каждую умирающую сессию сначала глушим abort-ом
                         // (идемпотентен, безвреден для пустых/404) — независимо от того, была
                         // ли она активной на момент сброса.
-                        val raw = LocalOpenCodeClient.get(serverPort, ApiPaths.active.sessions())
+                        val raw = LocalOpenCodeClient.get(serverPort, ApiPaths.SESSIONS)
                         try {
                             val arr = ApiShape.sessions(raw) ?: org.json.JSONArray()
                             for (i in 0 until arr.length()) {
@@ -1342,19 +1172,14 @@ fun ChatOverlay(
                 val now = System.currentTimeMillis()
                 val completed = snap.messages.count { it.role == "assistant" && it.text.isNotBlank() && it.notice == null }
                 val old = snapshot
-                if (old?.permission?.id != snap.permission?.id) {
-                    permissionError = null
-                }
                 val madeProgress =
                     old != null &&
                         (
                             old.messages != snap.messages ||
                                 old.liveTool != snap.liveTool ||
-                                old.question != snap.question ||
-                                old.permission != snap.permission ||
                                 old.notice != snap.notice
                         )
-                if (madeProgress || snap.permission != null) {
+                if (madeProgress) {
                     stallSince = 0L
                     emptyStallSince = 0L
                 }
@@ -1454,8 +1279,6 @@ fun ChatOverlay(
                     old.stalled != final.stalled ||
                     old.stalledDead != final.stalledDead ||
                     old.liveTool != final.liveTool ||
-                    old.question != final.question ||
-                    old.permission != final.permission ||
                     old.notice != final.notice ||
                     latchBefore != noticeLatch
                 if (changed) {
@@ -2377,22 +2200,6 @@ fun ChatOverlay(
                     }
                 }
             }
-            snapshot?.question?.let { q ->
-                QuestionCard(
-                    request = q,
-                    busy = sending,
-                    onAnswer = { answers, echo -> answerQuestion(q, answers, echo) },
-                    onReject = { rejectQuestion(q) },
-                )
-            }
-            snapshot?.permission?.let { request ->
-                PermissionCard(
-                    request = request,
-                    responding = permissionActionBusy,
-                    error = permissionError,
-                    onDecision = { decision -> respondPermission(request, decision) },
-                )
-            }
             if (listening || speechError != null || whisperBusy) {
                 Text(
                     when {
@@ -2412,7 +2219,6 @@ fun ChatOverlay(
                         .padding(top = 8.dp),
                 verticalAlignment = Alignment.Bottom,
             ) {
-                val permissionBlocked = snapshot?.permission != null
                 BasicTextField(
                     value = draft,
                     onValueChange = { draft = it },
@@ -2424,7 +2230,6 @@ fun ChatOverlay(
                     textStyle = TextStyle(color = Color(0xFFF0F0F0), fontSize = 15.sp),
                     cursorBrush = SolidColor(Color(0xFF7BA6F8)),
                     maxLines = 4,
-                    enabled = !permissionBlocked,
                     keyboardOptions =
                         KeyboardOptions(
                             capitalization = KeyboardCapitalization.Sentences,
@@ -2435,11 +2240,7 @@ fun ChatOverlay(
                         Box {
                             if (draft.isEmpty()) {
                                 Text(
-                                    if (permissionBlocked) {
-                                        "Сначала ответь на запрос разрешения"
-                                    } else {
-                                        "Напиши сообщение…"
-                                    },
+                                    "Напиши сообщение…",
                                     color = Color(0xFF777777),
                                     fontSize = 15.sp,
                                 )
@@ -2489,9 +2290,9 @@ fun ChatOverlay(
                         Modifier
                             .padding(start = 8.dp)
                             .size(46.dp)
-                            .clickable(enabled = !permissionActionBusy) { stopGen() },
+                            .clickable(enabled = !stopping) { stopGen() },
                     shape = CircleShape,
-                    color = if (permissionActionBusy) Color(0xFF3A3A3A) else Color(0xFF9E1C1C),
+                    color = if (stopping) Color(0xFF3A3A3A) else Color(0xFF9E1C1C),
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Stop,
@@ -2505,9 +2306,9 @@ fun ChatOverlay(
                         Modifier
                             .padding(start = 8.dp)
                             .size(46.dp)
-                            .clickable(enabled = !permissionBlocked) { send() },
+                            .clickable(enabled = !sending) { send() },
                     shape = CircleShape,
-                    color = if (sending || permissionBlocked) Color(0xFF3A3A3A) else Color(0xFF2E5E8E),
+                    color = if (sending) Color(0xFF3A3A3A) else Color(0xFF2E5E8E),
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.Send,
@@ -2676,325 +2477,6 @@ private fun LiveToolRow(tool: ChatTool) {
                 fontSize = 12.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-            )
-        }
-    }
-}
-
-/**
- * Карточка висящего вопроса модели — второй источник запросов, требующих
- * ответа (после разрешений, см. [PermissionCard]), поэтому выглядит так же:
- * рамка, акцент, кнопки. Разница в содержимом: вариантов может быть много и
- * у каждого есть пояснение, поэтому метка и описание живут разными строками.
- *
- * Один вариант отвечает сразу по тапу. Несколько (`multiple`) — копятся
- * галочками и уходят кнопкой: молча отвечать одним таком здесь означало бы
- * выбросить остальные выборы, а сервер ждёт список на КАЖДЫЙ вопрос.
- */
-@Suppress("FunctionNaming", "LongMethod", "MagicNumber")
-@Composable
-private fun QuestionCard(
-    request: OpenCodeQuestionRequest,
-    busy: Boolean,
-    onAnswer: (List<List<String>>, String) -> Unit,
-    onReject: () -> Unit,
-) {
-    val accent = Color(0xFF5AA9E6)
-    val prompts = request.prompts
-    val anyMultiple = prompts.any { it.multiple }
-    // Выборы по индексу prompt'а, а не одним списком: ответ сервер сверяет
-    // позициями, и при нескольких вопросах общий список потерял бы, кто что выбрал.
-    var picked by remember(request.id) { mutableStateOf<Map<Int, List<String>>>(emptyMap()) }
-
-    Column(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .padding(top = 8.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xFF141E28))
-                .border(1.dp, accent.copy(alpha = 0.65f), RoundedCornerShape(12.dp))
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-    ) {
-        Text(
-            "Модель задаёт вопрос",
-            color = accent,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Bold,
-        )
-        Text(
-            "OpenCode ждёт ответа — ход не завершится, пока вопрос не закрыт.",
-            color = Color(0xFFCBD8E6),
-            fontSize = 12.sp,
-            modifier = Modifier.padding(top = 2.dp),
-        )
-        prompts.forEachIndexed { index, prompt ->
-            QuestionPromptCard(
-                prompt = prompt,
-                picked = picked[index].orEmpty(),
-                busy = busy,
-                emptyHint =
-                    if (prompts.size == 1) {
-                        "Вариантов нет — ответь своим текстом в поле ↓"
-                    } else {
-                        "Вариантов нет — на этот вопрос нужен свой текст"
-                    },
-                onClick = { label ->
-                    if (!prompt.multiple) {
-                        onAnswer(listOf(listOf(label)), label)
-                        return@QuestionPromptCard
-                    }
-                    val chosen = picked[index].orEmpty()
-                    val next =
-                        if (label in chosen) chosen - label else chosen + label
-                    picked = picked + (index to next)
-                },
-            )
-        }
-        if (anyMultiple) {
-            val answers = prompts.mapIndexed { index, _ -> picked[index].orEmpty() }
-            val ready = prompts.indices.all { answers[it].isNotEmpty() }
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                TextButton(
-                    onClick = onReject,
-                    enabled = !busy,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text("Отклонить", color = Color(0xFFFF8A75), fontSize = 12.sp)
-                }
-                TextButton(
-                    onClick = {
-                        onAnswer(answers, answers.flatten().joinToString(", "))
-                    },
-                    enabled = !busy && ready,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text("Ответить", color = accent, fontSize = 12.sp)
-                }
-            }
-        } else {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                TextButton(
-                    onClick = onReject,
-                    enabled = !busy,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text("Отклонить", color = Color(0xFFFF8A75), fontSize = 12.sp)
-                }
-                if (prompts.size == 1) {
-                    Text(
-                        "…или напиши свой ответ в поле ↓",
-                        color = Color(0xFF8A96A3),
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
-                }
-            }
-        }
-        if (busy) {
-            Text(
-                "Отправляю ответ…",
-                color = Color(0xFF9E9E9E),
-                fontSize = 11.sp,
-                modifier = Modifier.padding(top = 2.dp),
-            )
-        }
-    }
-}
-
-/**
- * Один вопрос карточки: заголовок, текст и его варианты. Вынесено из
- * [QuestionCard], потому что там же живут кнопки ответа — вместе они
- * переваливали за порог сложности, а по отдельности читаются честно.
- *
- * [picked] — уже выбранные метки этого вопроса. [onAnswer] срабатывает по
- * одиночному таку, [onToggle] — по переключению галочки у multiple.
- */
-@Suppress("FunctionNaming", "LongMethod", "MagicNumber")
-@Composable
-private fun QuestionPromptCard(
-    prompt: OpenCodeQuestionPrompt,
-    picked: List<String>,
-    busy: Boolean,
-    emptyHint: String,
-    onClick: (String) -> Unit,
-) {
-    val accent = Color(0xFF5AA9E6)
-    if (prompt.header.isNotBlank()) {
-        Text(
-            prompt.header,
-            color = accent,
-            fontSize = 11.sp,
-            fontFamily = FontFamily.Monospace,
-            modifier = Modifier.padding(top = 8.dp),
-        )
-    }
-    Text(
-        prompt.question,
-        color = Color(0xFFE8EEF5),
-        fontSize = 14.sp,
-        lineHeight = 19.sp,
-        modifier = Modifier.padding(top = 2.dp),
-    )
-    prompt.options.forEach { option ->
-        val on = option.label in picked
-        val mark = if (prompt.multiple) "☑" else "•"
-        Column(
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = 6.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(if (on) Color(0xFF1E3A5F) else Color(0xFF1B2430))
-                    .border(
-                        1.dp,
-                        if (on) accent.copy(alpha = 0.8f) else Color(0xFF2C3542),
-                        RoundedCornerShape(8.dp),
-                    ).clickable(enabled = !busy) { onClick(option.label) }
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-        ) {
-            Text(
-                "$mark ${option.label}",
-                color = Color(0xFFE6EDF5),
-                fontSize = 14.sp,
-                lineHeight = 18.sp,
-            )
-            if (option.description.isNotBlank()) {
-                Text(
-                    option.description,
-                    color = Color(0xFF9AA9B8),
-                    fontSize = 11.sp,
-                    lineHeight = 15.sp,
-                    modifier = Modifier.padding(top = 2.dp),
-                )
-            }
-        }
-    }
-    if (prompt.options.isEmpty()) {
-        Text(
-            emptyHint,
-            color = Color(0xFF8A96A3),
-            fontSize = 12.sp,
-            modifier = Modifier.padding(top = 6.dp),
-        )
-    }
-}
-
-@Suppress("FunctionNaming", "LongMethod", "MagicNumber")
-@Composable
-private fun PermissionCard(
-    request: OpenCodePermissionRequest,
-    responding: Boolean,
-    error: String?,
-    onDecision: (PermissionDecision) -> Unit,
-) {
-    val accent = Color(0xFFF2A93B)
-    Column(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .padding(top = 8.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xFF241D12))
-                .border(1.dp, accent.copy(alpha = 0.65f), RoundedCornerShape(12.dp))
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-    ) {
-        Text(
-            "Нужно разрешение",
-            color = accent,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Bold,
-        )
-        Text(
-            "OpenCode ждёт решения перед выполнением инструмента.",
-            color = Color(0xFFE8DCC8),
-            fontSize = 12.sp,
-            modifier = Modifier.padding(top = 2.dp),
-        )
-        if (request.command.isNotBlank()) {
-            Text(
-                request.command,
-                color = Color(0xFFF2E8D8),
-                fontSize = 12.sp,
-                lineHeight = 17.sp,
-                fontFamily = FontFamily.Monospace,
-                modifier = Modifier.padding(top = 6.dp),
-            )
-        }
-        Text(
-            "Инструмент: ${request.permission}",
-            color = Color(0xFFB9AA91),
-            fontSize = 11.sp,
-            fontFamily = FontFamily.Monospace,
-            modifier = Modifier.padding(top = 8.dp),
-        )
-        request.patterns.forEach { pattern ->
-            Text(
-                pattern,
-                color = Color(0xFFF2E8D8),
-                fontSize = 11.sp,
-                lineHeight = 15.sp,
-                fontFamily = FontFamily.Monospace,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-        }
-        if (request.alwaysPatterns.isNotEmpty()) {
-            Text(
-                "Всегда разрешит: ${request.alwaysPatterns.joinToString(" · ")}",
-                color = Color(0xFF9FB89A),
-                fontSize = 10.sp,
-                lineHeight = 14.sp,
-                modifier = Modifier.padding(top = 6.dp),
-            )
-        }
-        if (error != null) {
-            Text(
-                error,
-                color = Color(0xFFFF8A75),
-                fontSize = 11.sp,
-                modifier = Modifier.padding(top = 6.dp),
-            )
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            TextButton(
-                onClick = { onDecision(PermissionDecision.REJECT) },
-                enabled = !responding,
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Отклонить", color = Color(0xFFFF8A75), fontSize = 12.sp)
-            }
-            TextButton(
-                onClick = { onDecision(PermissionDecision.ALLOW_ONCE) },
-                enabled = !responding,
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Разрешить", color = Color(0xFF9BD4A2), fontSize = 12.sp)
-            }
-            if (request.alwaysPatterns.isNotEmpty()) {
-                TextButton(
-                    onClick = { onDecision(PermissionDecision.ALLOW_ALWAYS) },
-                    enabled = !responding,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text("Всегда", color = accent, fontSize = 12.sp)
-                }
-            }
-        }
-        if (responding) {
-            Text(
-                "Отправляю ответ…",
-                color = Color(0xFF9E9E9E),
-                fontSize = 11.sp,
-                modifier = Modifier.padding(top = 2.dp),
             )
         }
     }
@@ -3923,7 +3405,7 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             // тик. Отдельный /health-запрос не делаем — это лишний трафик и лишняя
             // нагрузка на сервер ради цифры в шапке.
             val pingStart = System.nanoTime()
-            val sessionsBody = LocalOpenCodeClient.get(p, ApiPaths.active.sessions())
+            val sessionsBody = LocalOpenCodeClient.get(p, ApiPaths.SESSIONS)
             val pingMs = (System.nanoTime() - pingStart) / NS_PER_MS
             if (sessionsBody == null) {
                 // Сервер не ответил. Снапшот строить не из чего, но сам факт
@@ -3953,7 +3435,6 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                 }
             }
             if (bestId == null) {
-                PermissionCache.clearAll()
                 return@withContext ChatSnapshot(
                     emptyList(),
                     "нет сессий",
@@ -3964,10 +3445,8 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             }
             val activeId = bestId
             val label = titleOf(sessions, activeId)
-            // /message (лента) и /permission стартуют параллельно: оба вызова
-            // блокирующие, поэтому async убирает их последовательную задержку.
-            val msgDeferred = async { LocalOpenCodeClient.get(p, ApiPaths.active.message(activeId)) }
-            val permissionDeferred = async { PermissionCache.get(p, activeId) }
+            // Лента — единственный блокирующий вызов, тянуть больше нечего.
+            val msgDeferred = async { LocalOpenCodeClient.get(p, ApiPaths.message(activeId)) }
             // Статус хода от сервера: квота/ретрай провайдера. Отдельным async,
             // чтобы не добавлять его задержку к ленте — оба вызова блокирующие.
             // Опрашиваем ТОЛЬКО пока ход незавершён: в покое статус не может дать
@@ -4007,7 +3486,6 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             } catch (_: Exception) {
                 // MCP недоступен — покажем 0 красным
             }
-            val permission = permissionDeferred.await()
             val notice = noticeDeferred.await()
             val msgRaw =
                 msgDeferred.await()
@@ -4017,18 +3495,16 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                         activeId,
                         pingMs = pingMs,
                         reachable = true,
-                        permission = permission,
                         notice = notice,
                     )
             // Инкрементальный кэш: если за этой сессией тот же самый сырой JSON /message
-            // (hash совпал) — лента и все производные (thinking/liveTool/ctxTokens/question)
+            // (hash совпал) — лента и все производные (thinking/liveTool/ctxTokens)
             // гарантированно идентичны. Переиспользуем готовые объекты, НЕ пересоздавая
             // их: это убирает самое тяжёлое — полный JSON-парсинг и построение строк —
             // на каждый тик поллинга (2.5 раза/с), пока контент чата статичен.
             val rawHash = msgRaw.hashCode()
             val cached = ChatCache.result
             if (ChatCache.sessionId == activeId && ChatCache.rawHash == rawHash && cached != null) {
-                val q = cached.question
                 val thinking = cached.thinking
                 val liveTool = cached.liveTool
                 val take = cached.messages
@@ -4037,7 +3513,6 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                         take,
                         "$label",
                         activeId,
-                        q,
                         thinking,
                         prettyModel(bestModelId),
                         liveTool = liveTool,
@@ -4053,13 +3528,12 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                         mcpConnected = mcpConnected,
                         mcpTotal = mcpTotal,
                         mcpServers = mcpServers,
-                        permission = permission,
                         notice = notice,
                     )
                 android.util.Log.d(
                     "ChatOverlay",
-                    "FETCH(cached) out=${take.size} thinking=$thinking q=${q != null} " +
-                        "permission=${permission != null} notice=${notice != null} label=$label model=$bestModelId",
+                    "FETCH(cached) out=${take.size} thinking=$thinking " +
+                        "notice=${notice != null} label=$label model=$bestModelId",
                 )
                 return@withContext snap
             }
@@ -4168,7 +3642,6 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                 out.add(ChatMsg(role, sb.toString(), notice.toString().ifBlank { null }))
             }
             val take = if (out.size > MAX_SHOWN) out.subList(out.size - MAX_SHOWN, out.size) else out
-            val q = questionOf(p, activeId)
             val last = out.lastOrNull()
             // «Думает» = последнее сырое сообщение открывает новый ответ. У завершённого
             // assistant проверяем даже скрытый tool-only шаг: после Stop opencode может
@@ -4176,13 +3649,12 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             // Провал — тоже конец хода, даже если opencode не проставил ни того,
             // ни другого: иначе «генерируется…» горит до общего таймаута.
             val thinking =
-                q == null &&
-                    when (latestRole) {
-                        null -> false
-                        "user" -> true
-                        "assistant" -> !latestFinish && !latestCompleted && !latestFailed
-                        else -> false
-                    }
+                when (latestRole) {
+                    null -> false
+                    "user" -> true
+                    "assistant" -> !latestFinish && !latestCompleted && !latestFailed
+                    else -> false
+                }
 
             // Live-чип показываем только пока модель ещё работает (thinking). Когда она
             // закончила (дала финальный ответ) — lastTool не показываем как «текущее».
@@ -4198,7 +3670,6 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             ChatCache.result =
                 ChatParseResult(
                     take,
-                    q,
                     thinking,
                     liveTool,
                     ctxTokens,
@@ -4208,7 +3679,6 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                     take,
                     "$label",
                     activeId,
-                    q,
                     thinking,
                     prettyModel(bestModelId),
                     liveTool = liveTool,
@@ -4221,7 +3691,6 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                     mcpConnected = mcpConnected,
                     mcpTotal = mcpTotal,
                     mcpServers = mcpServers,
-                    permission = permission,
                     notice = notice,
                 )
             // notice тоже печатаем: он уехал из text, и без него в логе не видно, что
@@ -4232,8 +3701,8 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             } ?: "null"
             android.util.Log.d(
                 "ChatOverlay",
-                "FETCH parse out=${out.size} take=${take.size} thinking=$thinking q=${q != null} " +
-                    "permission=${permission != null} label=$label " +
+                "FETCH parse out=${out.size} take=${take.size} thinking=$thinking " +
+                    "label=$label " +
                     "model=$bestModelId liveTool=${liveTool?.name} LAST=[$lastDiag] " +
                     "latestRole=$latestRole latestAct=$latestActivity latestFin=$latestFinish " +
                     "latestCompleted=$latestCompleted",
@@ -4257,20 +3726,6 @@ private fun titleOf(
         }
     }
     return "сессия"
-}
-
-/**
- * Висящий вопрос модели для активной сессии. Опрос общий на все сессии
- * каталога, поэтому фильтр по sessionID — обязательный, иначе карточка
- * вопроса из чужой сессии появилась бы здесь. Разбор ответа — в
- * [OpenCodeQuestionApi]: здесь только адрес и отсев по сессии.
- */
-private fun questionOf(
-    port: Int,
-    sessionId: String,
-): OpenCodeQuestionRequest? {
-    val path = ApiPaths.active.legacy.questionList() ?: return null
-    return OpenCodeQuestionApi.pendingForSession(LocalOpenCodeClient.get(port, path), sessionId)
 }
 
 private suspend fun scrollToBottomFull(
@@ -4331,7 +3786,7 @@ private fun playNotificationSound(context: Context) {
 }
 
 private fun createSession(port: Int): String? {
-    val body = LocalOpenCodeClient.post(port, ApiPaths.active.sessions(), "{}") ?: return null
+    val body = LocalOpenCodeClient.post(port, ApiPaths.SESSIONS, "{}") ?: return null
     return ApiShape.session(body)?.optString("id")?.takeIf(String::isNotBlank)
 }
 
@@ -4347,7 +3802,7 @@ private fun createSession(port: Int): String? {
 private fun abortSession(
     port: Int,
     sessionId: String,
-): Boolean = LocalOpenCodeClient.post(port, ApiPaths.active.interrupt(sessionId), "") != null
+): Boolean = LocalOpenCodeClient.post(port, ApiPaths.interrupt(sessionId), "") != null
 
 /**
  * Есть ли запись сессии в карте занятости, то есть считает ли сервер её ход
@@ -4378,7 +3833,7 @@ private fun sessionRunning(
 private fun deleteSession(
     port: Int,
     sessionId: String,
-): Boolean = LocalOpenCodeClient.delete(port, ApiPaths.active.session(sessionId))
+): Boolean = LocalOpenCodeClient.delete(port, ApiPaths.session(sessionId))
 
 /**
  * Есть ли в сессии хоть одно сообщение. Разделяет «сервер не получил запрос»
@@ -4390,7 +3845,7 @@ private fun sessionHasMessages(
     sessionId: String,
 ): Boolean =
     try {
-        val raw = LocalOpenCodeClient.get(port, ApiPaths.active.message(sessionId))
+        val raw = LocalOpenCodeClient.get(port, ApiPaths.message(sessionId))
         raw != null && (ApiShape.messages(raw)?.length() ?: 0) > 0
     } catch (_: Exception) {
         // Не смогли узнать — считаем, что сохранилось: на неопределённости не стираем.
@@ -4480,7 +3935,7 @@ private fun pruneEmptySessions(
     port: Int,
     keep: Set<String>,
 ) {
-    val raw = LocalOpenCodeClient.get(port, ApiPaths.active.sessions()) ?: return
+    val raw = LocalOpenCodeClient.get(port, ApiPaths.SESSIONS) ?: return
     val ids =
         try {
             val arr = ApiShape.sessions(raw) ?: JSONArray()
@@ -4525,7 +3980,7 @@ private fun postMessage(
     text: String,
 ): Boolean {
     val body = ApiShape.promptBody(text).toString()
-    return LocalOpenCodeClient.postAsync(port, ApiPaths.active.prompt(sessionId), body)
+    return LocalOpenCodeClient.postAsync(port, ApiPaths.prompt(sessionId), body)
 }
 
 /** Ряд-переключатель в стиле панели STT: активен или нет. */

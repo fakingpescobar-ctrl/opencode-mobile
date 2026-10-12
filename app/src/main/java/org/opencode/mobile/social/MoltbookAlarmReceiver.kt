@@ -149,7 +149,7 @@ class MoltbookAlarmReceiver : BroadcastReceiver() {
     }
 
     /** Проверка дешёвая и осмысленная: будить некого, если сервера нет. */
-    private fun isServerUp(): Boolean = LocalOpenCodeClient.get(OPENCODE_PORT, ApiPaths.active.sessions()) != null
+    private fun isServerUp(): Boolean = LocalOpenCodeClient.get(OPENCODE_PORT, ApiPaths.SESSIONS) != null
 
     private companion object {
         const val TAG = "MoltbookAlarm"

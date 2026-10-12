@@ -32,17 +32,8 @@ import org.json.JSONObject
  * в asJsonArray/asJsonObject.
  */
 internal object ApiShape {
-    /** Тело ответа на создание/отправку: v1 ждёт `parts`, v2 — плоский `text`. */
-    fun promptBody(text: String): JSONObject =
-        if (ApiPaths.activeFlavor == ServerFlavor.V2) {
-            JSONObject().put("text", text)
-        } else {
-            JSONObject()
-                .put(
-                    "parts",
-                    JSONArray().put(JSONObject().put("type", "text").put("text", text)),
-                )
-        }
+    /** Тело ответа на создание/отправку. В v2 это плоский `{"text":"…"}`. */
+    fun promptBody(text: String): JSONObject = JSONObject().put("text", text)
 
     /** Список сессий: снимает конверт `{data:[…]}`, если он есть. */
     fun sessions(raw: String?): JSONArray? {
@@ -57,19 +48,27 @@ internal object ApiShape {
     }
 
     /**
-     * Сообщения в виде, который ждёт существующий код: v1-конверт, от старых к
-     * новым.
+     * Сообщения в виде, который ждёт существующий код: конверт `info`/`parts`,
+     * от старых к новым.
      *
-     * `idle`-псевдо-сообщения v2 в ленте не место: это служебная отметка «ход
+     * Разбор всегда идёт через нормализацию, даже если конверта `{data:…}` не
+     * было. Отдельной «ветки для v1» больше нет по двум причинам. Во-первых,
+     * v1 в приложении не осталось. Во-вторых, сообщение без обёртки —
+     * не «формат v1», а неизвестная форма, и отношение к ней по версии нечестно:
+     * разворот порядка пришлось бы включать по флагу, а флаг врёт. Форма здесь
+     * честная — её смотрит сама функция, и обход от новых к старым нужен
+     * одинаково, чтобы подавить дубли ошибки.
+     *
+     * `idle`-псевдо-сообщения в ленте не место: это служебная отметка «ход
      * закончен», а не реплика. Но если у него `outcome:"failed"`, его `error` —
      * единственное место, где может оказаться причина, если провалиться случилось
      * ДО создания assistant-сообщения. Поэтому `idle` с ошибкой показываем, а
      * успешный по-прежнему выбрасываем.
      */
     fun messages(raw: String?): JSONArray? {
-        val wrapped = asJsonObject(raw)?.optJSONArray("data")
-        val arr = wrapped ?: asJsonArray(raw) ?: return null
-        return if (wrapped != null) normalizedFromV2(arr) else v1Passthrough(arr)
+        val obj = asJsonObject(raw)
+        val arr = obj?.optJSONArray("data") ?: asJsonArray(raw) ?: return null
+        return normalizedFromV2(arr)
     }
 
     /**

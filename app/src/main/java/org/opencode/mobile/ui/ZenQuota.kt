@@ -160,7 +160,7 @@ internal object ZenQuota {
         port: Int,
         nowMs: Long,
     ): Int? {
-        val sessionsRaw = LocalOpenCodeClient.get(port, ApiPaths.active.sessions())
+        val sessionsRaw = LocalOpenCodeClient.get(port, ApiPaths.SESSIONS)
         val arr = sessionsRaw?.let { ApiShape.sessions(it) }
         if (arr == null) {
             Log.d(TAG, "sessions fetch failed or bad json, keep last=$lastUsed")
@@ -192,7 +192,7 @@ internal object ZenQuota {
         val id = session?.optString("id", "").orEmpty()
         val updated = session?.optJSONObject("time")?.optLong("updated", 0L) ?: 0L
         val touchedToday = id.isNotBlank() && updated >= since
-        return if (touchedToday) LocalOpenCodeClient.get(port, ApiPaths.active.message(id)) else null
+        return if (touchedToday) LocalOpenCodeClient.get(port, ApiPaths.message(id)) else null
     }
 
     /** Элемент массива как объект; `null`, если это не объект (строка/число). */
