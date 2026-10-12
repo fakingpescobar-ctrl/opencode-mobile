@@ -44,13 +44,15 @@
     .\build.ps1 -Task utest
     .\build.ps1 -Task native -WhisperCppDir C:\src\whisper.cpp
     .\build.ps1 -Task release -SkipNative
+    .\build.ps1 -Task binary          # polozhit binayr opencode v jniLibs
 #>
 param(
-    [ValidateSet('verify', 'jstest', 'utest', 'debug', 'release', 'native')]
+    [ValidateSet('verify', 'jstest', 'utest', 'debug', 'release', 'native', 'binary')]
     [string]$Task = 'debug',
     [string]$WhisperCppDir = '',
     [string]$VulkanSdkDir = '',
     [switch]$SkipNative,
+    [switch]$SkipBinary,
     [string]$Log = ''
 )
 
@@ -104,6 +106,40 @@ if (-not $SkipNative -and ($Task -eq 'debug' -or $Task -eq 'release' -or $Task -
     $vcvars = Find-VcVars
     if (-not $vcvars) {
         throw 'Visual Studio Build Tools (VC++) ne naideny: nuzhny dlya vulkan-shaders-gen (host MSVC). Ustanovite VS s "Desktop development with C++"'
+    }
+}
+
+# ---- Binayr opencode: est li on voobsche ----
+# app/src/main/jniLibs v .gitignore, binayr opencode 2.x lezhit tolko tam
+# (195 MB v kazhdoy kopii, v etom smysla net). Obertka pri etom bessilna:
+# assembleDebug prosto ne naidot faila i sobiraet APK BEZ servera. Prilozhenie
+# posle ustanovki startuet, opencode ne zapuskaetsya, i prichina neochevidna.
+# Poetomu pered debug/release proverka zhestkaya i s ponyatnoy frazoy.
+$fetchBinary = Join-Path $Root 'tools\fetch-opencode-binary.ps1'
+if ($Task -eq 'binary') {
+    & pwsh -ExecutionPolicy Bypass -File $fetchBinary
+    exit $LASTEXITCODE
+}
+if (-not $SkipBinary -and ($Task -eq 'debug' -or $Task -eq 'release')) {
+    $problems = @()
+    & pwsh -ExecutionPolicy Bypass -File $fetchBinary -Check | Out-Null
+    if ($LASTEXITCODE -ne 0) { $problems += 'libopencode.so ne na meste ili ne ta versiya' }
+    $jni = Join-Path $Root 'app\src\main\jniLibs\arm64-v8a'
+    foreach ($so in @('libldmusl.so', 'libc_musl.so', 'libstdcxx.so', 'libgcc_s.so', 'libbun-musl.so')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $jni $so))) { $problems += "net $so" }
+    }
+    if ($problems.Count -gt 0) {
+        Write-Host ''
+        Write-Host "SBORKA OSTOROZHENA: ne polnyy komplekt nativnyh bibliotek:" -ForegroundColor Red
+        foreach ($p in $problems) { Write-Host "  - $p" -ForegroundColor Red }
+        Write-Host ''
+        Write-Host 'Binayr opencode kachaetsya odnoy komandoy:' -ForegroundColor Yellow
+        Write-Host '  pwsh -File tools\fetch-opencode-binary.ps1'
+        Write-Host 'Ostalnoe (musl-ranTAjm libstdcxx.so/libgcc_s.so, libldmusl.so, libbun-musl.so)'
+        Write-Host 'beretsya iz Alpine v3.22 i musl-tools - skript ikh ne kachaet.'
+        Write-Host 'Esli nativy na vashey mashine uzhe est, no sbori ne hochet nikh videt:'
+        Write-Host '  .\build.ps1 -Task debug -SkipBinary'
+        exit 1
     }
 }
 

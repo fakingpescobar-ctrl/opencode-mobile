@@ -23,6 +23,39 @@ $h = Get-OpencodeAuthHeader
 запушены: бинарь v2 в APK, детектор версии, слой форм ответа. Остались 5–7
 (удаление `OpenCodeQuestion.kt` в пользу нативных форм, WebView, чистка v1-веток).
 
+### Бинарь opencode не в git — сначала положи его, потом собирай
+
+`app/src/main/jniLibs/` в `.gitignore`, и туда кладутся **все** нативы: `libopencode.so`,
+`libldmusl.so`, `libc_musl.so`, `libstdcxx.so`, `libgcc_s.so`, `libbun-musl.so`
+(плюс sherpa/onnxruntime, если нужна локальная речь). Из свежего клона не соберётся
+рабочее приложение, а **сборка при этом не упадёт**: Gradle просто не найдёт файла и
+соберёт APK без сервера — приложение стартует, opencode не запустится, и причина
+неочевидна.
+
+Бинарь opencode ставится одной командой:
+
+```powershell
+pwsh -File tools\fetch-opencode-binary.ps1      # скачать и положить
+pwsh -File tools\fetch-opencode-binary.ps1 -Check   # только проверить
+.\build.ps1 -Task binary                       # то же через build.ps1
+```
+
+`debug` и `release` **проверяют комплектность нативов перед сборкой** и падают с
+понятным списком того, чего не хватает. Обойти — `-SkipBinary`.
+
+Версия живёт в `gradle.properties`, строкой `opencode.binaryVersion`. Это единственный
+источник правды: его читает скрипт загрузки (что качать), `app/build.gradle.kts`
+(`BuildConfig.OPENCODE_VERSION`, его показывает экран «О программе» — строка
+«Бинарь opencode») и `build.ps1` (какую версию ждать в `jniLibs`). Смена версии =
+смена этой строки + прогон скрипта. Штамп `opencode-binary.json` рядом с бинарём
+записывает версию, размер и sha256 — по нему `-Check` понимает, что лежит правильная
+сборка, а не windows-x64 или v1.
+
+Остальные нативы скрипт **не качает**: musl-рантайм (`libc_musl.so`, `libstdcxx.so` =
+Alpine `libstdc++.so.6.0.33`, `libgcc_s.so` = Alpine `libgcc_s.so.1`) берётся из
+Alpine v3.22, `libldmusl.so` — из musl-tools, `libbun-musl.so` — из Bun для
+`Retention.kt` и harness-скриптов.
+
 Что нужно помнить про v2 (всё замерено на живом сервере, не взято из документации):
 
 - Весь API под префиксом **`/api/`** (`/api/session`, `/api/info`, `/api/event`).

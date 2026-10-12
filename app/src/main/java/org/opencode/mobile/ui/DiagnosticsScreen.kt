@@ -476,6 +476,7 @@ fun DiagnosticsScreen(
                 // останется 0.1.0 - он про продукт, а не про конкретный APK.
                 // «Какая сборка стоит» отвечает только этот ряд.
                 InfoRow("Сборка", buildStampLabel())
+                InfoRow("Бинарь opencode", opencodeBinaryLabel())
                 InfoRow("SDK / ABI", "API ${Build.VERSION.SDK_INT} / ${Build.SUPPORTED_ABIS.firstOrNull() ?: "?"}")
                 InfoRow(
                     "RAM",
@@ -769,6 +770,7 @@ private fun buildDiagnosticsDump(
     val appInfo = runCatching { pm.getPackageInfo(context.packageName, 0) }.getOrNull()
     sb.append("Приложение: v${appInfo?.versionName ?: "?"} (code ${appInfo?.longVersionCode ?: 0})\n")
     sb.append("Сборка: ${buildStampLabel()}\n")
+    sb.append("Бинарь opencode: ${opencodeBinaryLabel()}\n")
     sb.append("SDK: API ${Build.VERSION.SDK_INT}, ABI: ${Build.SUPPORTED_ABIS.firstOrNull() ?: "?"}\n")
     val mi = ActivityManager.MemoryInfo()
     runCatching {
@@ -876,6 +878,16 @@ private fun buildStampLabel(): String {
     val dirty = if (BuildConfig.GIT_DIRTY) " · dirty" else ""
     return "${BuildConfig.GIT_SHA} · ${BuildConfig.BUILD_STAMP}$dirty"
 }
+
+/**
+ * Версия бинаря opencode, зашитого в этот APK, из gradle.properties.
+ *
+ * Не «версия, которая сейчас работает»: если в `jniLibs` положили не тот
+ * бинарь, экран обязан показать расхождение, а не молча показывать правильную
+ * с виду цифру. Живой источник правды — `GET /api/info` на локальном сервере,
+ * его значение стоит рядом отдельной строкой.
+ */
+private fun opencodeBinaryLabel(): String = "v${BuildConfig.OPENCODE_VERSION}"
 
 /** Человекочитаемый лейбл движка STT (stt_engine pref → русское имя). */
 private fun engineLabel(prefs: android.content.SharedPreferences): String =

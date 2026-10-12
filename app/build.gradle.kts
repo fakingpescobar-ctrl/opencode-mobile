@@ -97,6 +97,15 @@ val gitDirty: Boolean = gitStatus.isNotEmpty()
 // вклад даёт по имени и длине: этого хватает, чтобы отличить одно дерево от
 // другого, и не стоит ничего.
 val untrackedFileLimit = 1024L * 1024L
+// Версия бинаря opencode из gradle.properties. build.ps1 заранее проверяет,
+// что в jniLibs лежит именно она, но и здесь падать с внятной ошибкой
+// правильнее, чем собирать APK с молчаливо старой версией внутри.
+val opencodeBinaryVersion: String =
+    providers.gradleProperty("opencode.binaryVersion").orNull
+        ?: throw GradleException(
+            "net opencode.binaryVersion v gradle.properties. " +
+                "Ego chitaet tools/fetch-opencode-binary.ps1 i zapysevaet versiyu v APK.",
+        )
 val treeHash: String = runCatching {
     val md = MessageDigest.getInstance("MD5")
     val proc = ProcessBuilder("git", "diff", "HEAD")
@@ -232,6 +241,12 @@ android {
         buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
         buildConfigField("String", "BUILD_STAMP", "\"$buildStamp\"")
         buildConfigField("boolean", "GIT_DIRTY", "$gitDirty")
+        // Версия бинаря opencode, зашитого в APK. Источник - gradle.properties,
+        // его же проверяет build.ps1 через tools/fetch-opencode-binary.ps1 -Check.
+        // Значение НЕ подменяется на то, что реально запустилось: если
+        // положить в jniLibs не тот бинарь, приложение обязано показать
+        // расхождение, а не молча врать. Живой источник правды - GET /api/info.
+        buildConfigField("String", "OPENCODE_VERSION", "\"$opencodeBinaryVersion\"")
     }
 
     signingConfigs {
