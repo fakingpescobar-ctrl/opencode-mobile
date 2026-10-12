@@ -1,5 +1,6 @@
 package org.opencode.mobile.server
 
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -45,7 +46,54 @@ internal object ApiStatus {
             } else {
                 ApiPaths.active.status()?.let { LocalOpenCodeClient.get(port, it) }
             }
-        return ApiShape.statusRecord(raw, sessionId)
+        return statusRecord(raw, sessionId)
+    }
+
+    /**
+     * Идёт ли сейчас ход в сессии — то, что в v1 сообщала карта `/session/status`.
+     *
+     * В v2 отдельного эндпоинта нет, и вместо него в ленту кладётся
+     * псевдо-сообщение `type:"idle"`, когда ход закончен. Разбирать его по версии
+     * на местах нельзя — сюда и сносят все потребители статуса.
+     *
+     * null — определить нечем (лента не пришла или не разобралась). Это НЕ «свободна»:
+     * вызывающие обязаны трактовать это как «не знаю» и ничего не удалять.
+     *
+     * Важная деталь, найденная на живом сервере: в начале ленты может лежать
+     * сохранённое сообщение `type:"system"` («список инструментов изменился»), и
+     * `idle` при этом не появляется ВООБЩЕ. Наивная проверка «новейшее == idle»
+     * объявила бы такую сессию вечно занятой. Поэтому идём от новых к старым,
+     * системные пропускаем, и решение принимает первый «содержательный» тип.
+     * Пустая лента (или состоящая из одних system) — хода не было.
+     */
+    fun isBusy(rawMessages: String?): Boolean? {
+        val arr = asJsonArray(rawMessages) ?: asJsonObject(rawMessages)?.optJSONArray("data")
+        return if (arr == null) null else verdictIn(arr)
+    }
+
+    /** Ищем от новых к старым первый тип, который что-то значит. Не нашли — хода нет. */
+    private fun verdictIn(arr: JSONArray): Boolean {
+        for (i in 0 until arr.length()) {
+            val verdict = asBusyVerdict(arr.optJSONObject(i))
+            if (verdict != null) return verdict
+        }
+        return false
+    }
+
+    /**
+     * Карта занятых сессий в том виде, в каком её ждал v1-потребитель:
+     * ключ есть ⇔ сессия занята. В v2 синтезируется из [isBusy].
+     *
+     * null — как и раньше, «не знаю»: сервер не ответил ИЛИ ленту прочитать
+     * не удалось. Потребитель в этом случае ничего не чистит.
+     */
+    fun statusRecord(rawMessages: String?, sessionId: String): String? {
+        if (ApiPaths.activeFlavor != ServerFlavor.V2) return rawMessages
+        return when (isBusy(rawMessages)) {
+            null -> null
+            true -> JSONObject().put(sessionId, JSONObject()).toString()
+            false -> "{}"
+        }
     }
 
     /**
@@ -80,7 +128,7 @@ internal object ApiStatus {
         busy: JSONObject,
     ): Boolean {
         val raw = LocalOpenCodeClient.get(port, ApiPaths.active.message(sessionId))
-        val running = ApiShape.isBusy(raw)
+        val running = isBusy(raw)
         if (running == null) return true
         if (running) busy.put(sessionId, JSONObject())
         return false

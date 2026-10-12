@@ -4068,7 +4068,10 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                 for (ph in 0 until parts.length()) {
                     val part = parts.getJSONObject(ph)
                     val type = part.optString("type", "")
-                    if (type == "text") {
+                    // Часть типа error — это текст провалившийся хода (см.
+                    // ApiShape.roleFor): рисуем как обычный текст, иначе ход
+                    // выглядел бы пустым и был бы молча отфильтрован.
+                    if (type == "text" || type == ApiShape.ERROR_PART) {
                         hasText = true
                         val t = part.optString("text", "")
                         ctxChars += t.length

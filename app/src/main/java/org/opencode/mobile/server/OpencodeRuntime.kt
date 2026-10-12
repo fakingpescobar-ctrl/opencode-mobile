@@ -689,7 +689,46 @@ object OpencodeRuntime {
         val afterMusic = memoryReady && syncMusicEntry(file, file.readTextOrEmpty(), ynisonToken)
         // Плагин идет последним и читает файл после музыки. Отказ любого шага - отказ целого файла:
         // наполовину применённый конфиг хуже неверного, потому что агент увидит память без плагина и решит, что так и задумано.
-        return afterMusic && syncMoltbookEntry(file, file.readTextOrEmpty(), moltbookReady)
+        val afterMoltbook = afterMusic && syncMoltbookEntry(file, file.readTextOrEmpty(), moltbookReady)
+        // Модель закрепляется после всех, когда файл точно существует. Это НЕ часть готовности:
+        // без закреплённого дефолта сервер всё равно поднимается (opencode выберет модель сам),
+        // поэтому отказ здесь означает «оставим выбор opencode», а не «не запускаемся».
+        syncModelEntry(file, file.readTextOrEmpty())
+        return afterMoltbook
+    }
+
+    /**
+     * Закрепляет бесплатную модель по умолчанию.
+     *
+     * Зачем: если в конфиге нет `model`, opencode выбирает модель сам — по данным удалённого
+     * каталога. Каталог врёт (модель может быть помечена active/enabled, а провайдер на неё
+     * отвечает 410 ModelDeprecated), и тогда агент молчит: каждый ход заканчивается ошибкой,
+     * а в ленте не появляется ни слова. Строка `"model": "opencode/big-pickle"` снимает эту
+     * зависимость от каталога — провайдер `opencode` отдаёт её бесплатно и без ключа.
+     *
+     * Чужой выбор не трогаем: ключ `model` в конфиге может стоять внутри агента, и молча
+     * переписать решение пользователя опаснее, чем оставить как есть.
+     */
+    private fun syncModelEntry(
+        file: File,
+        text: String,
+    ) {
+        when (val plan = planModelEntry(text)) {
+            ModelConfigPlan.Keep -> Unit
+            is ModelConfigPlan.Write -> {
+                if (!writeMemoryConfigText(file, plan.text)) {
+                    android.util.Log.w(
+                        "OpencodeRuntime",
+                        "Could not pin the default model; opencode will pick one itself",
+                    )
+                }
+            }
+            ModelConfigPlan.Refuse ->
+                android.util.Log.w(
+                    "OpencodeRuntime",
+                    "Config shape is not recognised; leaving the model choice to opencode",
+                )
+        }
     }
 
     /**
@@ -1106,7 +1145,64 @@ internal data class YnisonHosts(
     val ynisonIp: String?,
 )
 
-/** Что делать с записью «music» в управляемом opencode.jsonc. */
+/**
+ * Модель, которую opencode рекомендует первой и которую провайдер `opencode`
+ * отдаёт бесплатно и без ключа (`https://opencode.ai/inference/v1/models`,
+ * apiKey "public"). Формат — `провайдер/идентификатор`.
+ */
+internal const val DEFAULT_FREE_MODEL = "opencode/big-pickle"
+
+/** Ключ верхнего уровня, которым opencode задаёт модель по умолчанию. */
+private const val MODEL_KEY = "\"model\""
+
+/** Что делать с записью `model` в управляемом opencode.jsonc. */
+internal sealed interface ModelConfigPlan {
+    /** Модель уже задана или ставить нечего — файл не трогаем. */
+    data object Keep : ModelConfigPlan
+
+    /** Дописать запись `model` в начало объекта. */
+    data class Write(
+        val text: String,
+    ) : ModelConfigPlan
+
+    /** Формат не узнан: оставляем как есть, opencode выберет модель сам. */
+    data object Refuse : ModelConfigPlan
+}
+
+/**
+ * Решает, что делать с записью `model`, ничего не записывая.
+ *
+ * Вынесено наружу по той же причине, что и [OpencodeRuntime.planMusicEntry]: правка
+ * управляемого конфига — единственное место, где легко тихо испортить работающую
+ * установку, и проверять его должен юнит-тест, а не устройство.
+ *
+ * Вставка идёт сразу после открывающей `{`, а не после строки `$schema` как в
+ * [OpencodeRuntime.writeManagedConfig]: у `$schema` есть запятая, который regex там
+ * съедает по желанию, из-за чего на некоторых конфигах получалось `,,`. Запятая
+ * после вставки ставится только когда дальше действительно есть ещё поля.
+ */
+internal fun OpencodeRuntime.planModelEntry(text: String): ModelConfigPlan =
+    when {
+        // Только ключ в корне: `model` внутри агента — это про того агента,
+        // а не про модель по умолчанию, и такой конфиг надо всё равно закрепить.
+        hasTopLevelKey(text, "model") -> ModelConfigPlan.Keep
+        // Корневая скобка ищется с пропуском строк и комментариев: первая `{`
+        // вообще может оказаться внутри `/* … {model} … */`, и тогда запись
+        // уехала бы в комментарий, а проверка looksLikeManagedConfig такой файл
+        // пропустила бы — сервер на нём не поднимется.
+        rootObjectStart(text) < 0 -> ModelConfigPlan.Refuse
+        else -> {
+            val entry = "$MODEL_KEY: \"$DEFAULT_FREE_MODEL\""
+            val brace = rootObjectStart(text)
+            val rest = text.substring(brace + 1)
+            // Пустой объект `{}` — единственный случай, когда запятая после записи не нужна.
+            // «Пустой» определяется по первому ЗНАЧАЩЕМУ символу: для `{ // TODO }`
+            // первым непробельным идёт `/`, и запись получила бы висячую запятую.
+            val closing = nextSignificant(text, brace + 1)
+            val tail = if (closing < text.length && text[closing] == '}') "\n  $entry\n" else "\n  $entry,"
+            ModelConfigPlan.Write(text.substring(0, brace + 1) + tail + rest)
+        }
+    }
 internal sealed interface MusicConfigPlan {
     /** Уже в нужном состоянии — файл не трогаем. */
     data object Keep : MusicConfigPlan

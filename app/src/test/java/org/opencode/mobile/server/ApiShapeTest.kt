@@ -120,9 +120,195 @@ class ApiShapeTest {
         }
     }
 
+    // ---------- ошибки провайдера ----------
+    //
+    // Тело ниже снято с живого устройства (12.10.2026): ход, который провалился
+    // на устаревшей модели. Раньше этот ход не давал в чате НИЧЕГО — assistant с
+    // пустым content и finish:error попадал под «пустой завершённый ход, пропустить»,
+    // а idle с ошибкой выбрасывался. Пользователь видел тишину.
+
+    /** Настоящий провалившийся ход: idle с ошибкой, assistant без content, user. */
+    private val failedTurn =
+        """
+        {"data":[
+          {"id":"msg_1","time":{"created":1791821271834},"type":"idle","outcome":"failed",
+           "error":{"type":"provider.invalid-request","message":"Model exo-free has been deprecated.",
+                    "status":410,"response":{"body":"{\"type\":\"error\"}"}}},
+          {"id":"msg_2","time":{"created":1791821270439,"completed":1791821271831},"type":"assistant",
+           "agent":"build","model":{"id":"exo-free","providerID":"opencode"},"content":[],
+           "finish":"error","error":{"type":"provider.invalid-request",
+                    "message":"Model exo-free has been deprecated.","status":410}},
+          {"id":"msg_3","time":{"created":1791821270000},"type":"user","text":"Напиши одним словом: работает"}
+        ]}
+        """.trimIndent()
+
+    private fun messagesOf(raw: String) = ApiShape.messages(raw) ?: error("null")
+
+    private fun textsOf(messages: org.json.JSONArray, type: String): List<String> =
+        (0 until messages.length()).mapNotNull { i ->
+            messages.getJSONObject(i).optJSONArray("parts")
+        }.flatMap { parts ->
+            (0 until parts.length()).mapNotNull { j ->
+                parts.optJSONObject(j)?.takeIf { it.optString("type") == type }?.optString("text")
+            }
+        }
+
+    /** Типы частей одного сообщения — в отличие от textsOf, не смешивает сообщения. */
+    private fun partTypesOf(message: org.json.JSONObject): List<String> {
+        val parts = message.optJSONArray("parts") ?: return emptyList()
+        return (0 until parts.length()).mapNotNull { parts.optJSONObject(it)?.optString("type") }
+    }
+
+    private fun roleOf(messages: org.json.JSONArray, index: Int) =
+        messages.getJSONObject(index).getJSONObject("info").getString("role")
+
+    @Test
+    fun `ошибка провайдера больше не молчит`() {
+        val messages = messagesOf(failedTurn)
+        // Порядок от старых к новым: user, провалившийся assistant. idle выкинут.
+        assertEquals(2, messages.length())
+        val errors = textsOf(messages, ApiShape.ERROR_PART)
+        assertEquals(1, errors.size)
+        assertTrue(errors.single().contains("Model exo-free has been deprecated."))
+        assertTrue(errors.single().contains("provider.invalid-request"))
+        assertTrue(errors.single().contains("410"))
+    }
+
+    @Test
+    fun `ошибка не прикидывается ответом ассистента`() {
+        val messages = messagesOf(failedTurn)
+        // Роль не assistant: иначе счётчик завершённых ответов и ожидание ответа
+        // в молтизме приняли бы диагностику за реплику.
+        assertEquals(ApiShape.ERROR_ROLE, roleOf(messages, 1))
+        // Части типа text в самом сообщении об ошибке нет — lastAssistantText берёт
+        // только их. (У соседнего user-сообщения текстовая часть, разумеется, есть.)
+        assertEquals(listOf(ApiShape.ERROR_PART), partTypesOf(messages.getJSONObject(1)))
+        // И настоящий текст реплики в ленте остаётся на месте.
+        assertEquals(listOf("Напиши одним словом: работает"), textsOf(messages, "text"))
+    }
+
+    @Test
+    fun `провал после своего текста всё равно показывает причину`() {
+        // Регрессия, найденная ревью: раньше текст ошибки добавлялся только когда
+        // своего текста не нашлось. Тогда флаг «ошибка уже показана» вставал в
+        // true, ничего не показав, и дубль в idle подавлялся — ход выглядел
+        // обычным успешным ответом без единого слова о провале.
+        val raw =
+            """{"data":[
+              {"id":"m1","time":{"created":3},"type":"idle","outcome":"failed",
+               "error":{"type":"provider.invalid-request","message":"quota exceeded","status":429}},
+              {"id":"m2","time":{"created":2,"completed":3},"type":"assistant","finish":"error",
+               "content":[{"type":"text","text":"начал отвечать и упал"}],
+               "error":{"type":"provider.invalid-request","message":"quota exceeded","status":429}},
+              {"id":"m3","time":{"created":1},"type":"user","text":"давай"}]}"""
+        val messages = messagesOf(raw)
+        val failed = messages.getJSONObject(1)
+        // Свой текст на месте И причина видна — обе части.
+        assertEquals(
+            listOf("text", ApiShape.ERROR_PART),
+            partTypesOf(failed),
+        )
+        assertTrue(textsOf(messages, "text").contains("начал отвечать и упал"))
+        assertEquals(1, textsOf(messages, ApiShape.ERROR_PART).size)
+        // И дубль из idle не добавился второй раз.
+        assertEquals(2, messages.length())
+    }
+
+    @Test
+    fun `голый массив без обёртки не рисует служебный idle пустой строкой`() {
+        // Ветка без `data` обходит toV1Envelope напрямую; раньше она превращала
+        // idle в сообщение роли system с пустым parts, то есть в пустую строку.
+        val raw = """[{"type":"idle","time":{"created":2},"outcome":"succeeded"}]"""
+        assertEquals(0, messagesOf(raw).length())
+    }
+
+    @Test
+    fun `пустой объект error не подавляет настоящую причину из idle`() {
+        // Тот же класс бага, что уже был здесь дважды: флаг «показано» ставился
+        // по наличию поля error, а не по факту показа. Пустой error даёт
+        // asErrorText == null, часть в ленту не попадает — и настоящая причина
+        // из соседнего idle молча пропадала.
+        val raw =
+            """{"data":[
+              {"id":"m2","time":{"created":2},"type":"idle","outcome":"failed",
+               "error":{"type":"e.real","message":"настоящая причина","status":503}},
+              {"id":"m1","time":{"created":1,"completed":2},"type":"assistant","finish":"error",
+               "content":[], "error":{}}]}"""
+        val errors = textsOf(messagesOf(raw), ApiShape.ERROR_PART)
+        assertEquals(listOf("⚠ настоящая причина (e.real, 503)"), errors)
+    }
+
+    @Test
+    fun `два провала подряд показывают обе причины`() {
+        // Флаг «ошибка уже показана» живёт на ход, а не на всю ленту: между
+        // ходами его сбрасывает user-сообщение, ошибки не несущее. Проверяем,
+        // что второй провал не выеден первым.
+        val raw =
+            """{"data":[
+              {"id":"m6","time":{"created":6},"type":"idle","outcome":"failed",
+               "error":{"type":"e.two","message":"second failed","status":500}},
+              {"id":"m5","time":{"created":5,"completed":6},"type":"assistant","finish":"error",
+               "content":[], "error":{"type":"e.two","message":"second failed","status":500}},
+              {"id":"m4","time":{"created":4},"type":"user","text":"ещё раз"},
+              {"id":"m3","time":{"created":3},"type":"idle","outcome":"failed",
+               "error":{"type":"e.one","message":"first failed","status":410}},
+              {"id":"m2","time":{"created":2,"completed":3},"type":"assistant","finish":"error",
+               "content":[], "error":{"type":"e.one","message":"first failed","status":410}},
+              {"id":"m1","time":{"created":1},"type":"user","text":"давай"}]}"""
+        val errors = textsOf(messagesOf(raw), ApiShape.ERROR_PART)
+        // Лента приводится к порядку v1 (старые к новым), поэтому и причины
+        // идут от первой ошибки ко второй. Показана ровно одна на ход: дубль
+        // из idle подавлен, обе причины не потеряны.
+        assertEquals(listOf("⚠ first failed (e.one, 410)", "⚠ second failed (e.two, 500)"), errors)
+    }
+
+    @Test
+    fun `успешный idle по-прежнему не показывается`() {
+        val raw =
+            """{"data":[{"type":"idle","time":{"created":3},"outcome":"succeeded"},
+               {"type":"assistant","time":{"created":2,"completed":3},"content":[{"type":"text","text":"готово"}]},
+               {"type":"user","time":{"created":1},"text":"привет"}]}"""
+        val messages = messagesOf(raw)
+        assertEquals(2, messages.length())
+        assertEquals("assistant", roleOf(messages, 1))
+    }
+
+    @Test
+    fun `ошибка видна даже когда assistant не был создан`() {
+        // Ход мог провалиться ДО появления assistant-сообщения — тогда причину
+        // несёт только idle.
+        val raw =
+            """{"data":[{"type":"idle","time":{"created":2},"outcome":"failed",
+               "error":{"type":"api.error","message":"connection reset"}},
+               {"type":"user","time":{"created":1},"text":"привет"}]}"""
+        val messages = messagesOf(raw)
+        assertEquals(2, messages.length())
+        assertEquals(1, textsOf(messages, ApiShape.ERROR_PART).size)
+        assertEquals(ApiShape.ERROR_ROLE, roleOf(messages, 1))
+    }
+
+    @Test
+    fun `ошибка не мешает нормальному ответу`() {
+        // Если у ассистента ЕСТЬ текст, ошибка не затирает его: текст остаётся
+        // текстом, а в ленту не добавляется ничего лишнего.
+        val raw =
+            """{"data":[{"type":"assistant","time":{"created":2,"completed":3},"finish":"stop",
+               "content":[{"type":"text","text":"всё нормально"}]}]}"""
+        val messages = messagesOf(raw)
+        assertEquals(1, messages.length())
+        assertEquals("assistant", roleOf(messages, 0))
+        assertTrue(textsOf(messages, ApiShape.ERROR_PART).isEmpty())
+    }
+
+    @Test
+    fun `isBusy по провалившейся ленте говорит что ход закончен`() {
+        // Ошибка не должна оставлять сессию «занятой» навсегда.
+        assertFalse(busyOf(failedTurn) ?: error("null"))
+    }
+
     // ---------- isBusy ----------
 
-    private fun busyOf(raw: String?): Boolean? = ApiShape.isBusy(raw)
+    private fun busyOf(raw: String?): Boolean? = ApiStatus.isBusy(raw)
 
     @Test
     fun `idle at head means the turn is over`() {
@@ -174,9 +360,9 @@ class ApiShapeTest {
     @Test
     fun `v1 feed parses as an array too`() {
         val finished = """[{"info":{"role":"assistant","time":{"created":1,"completed":2}}}]"""
-        assertFalse(ApiShape.isBusy(finished) == true)
+        assertFalse(ApiStatus.isBusy(finished) == true)
         val streaming = """[{"info":{"role":"assistant","time":{"created":1}}}]"""
-        assertTrue(ApiShape.isBusy(streaming) == true)
+        assertTrue(ApiStatus.isBusy(streaming) == true)
     }
 
     // ---------- statusRecord ----------
@@ -185,7 +371,7 @@ class ApiShapeTest {
     fun `v2 busy record carries the session key`() {
         withFlavor(ServerFlavor.V2) {
             val raw = """{"data":[{"type":"assistant","time":{"created":1}}]}"""
-            val record = ApiShape.statusRecord(raw, "ses_1") ?: error("null")
+            val record = ApiStatus.statusRecord(raw, "ses_1") ?: error("null")
             assertTrue(JSONObject(record).has("ses_1"))
         }
     }
@@ -193,7 +379,7 @@ class ApiShapeTest {
     @Test
     fun `v2 idle record is an empty map`() {
         withFlavor(ServerFlavor.V2) {
-            val record = ApiShape.statusRecord("""{"data":[{"type":"idle"}]}""", "ses_1") ?: error("null")
+            val record = ApiStatus.statusRecord("""{"data":[{"type":"idle"}]}""", "ses_1") ?: error("null")
             assertEquals(0, JSONObject(record).length())
         }
     }
@@ -201,7 +387,7 @@ class ApiShapeTest {
     @Test
     fun `v2 unknown record is null, not an empty map`() {
         withFlavor(ServerFlavor.V2) {
-            assertNull(ApiShape.statusRecord("<html>", "ses_1"))
+            assertNull(ApiStatus.statusRecord("<html>", "ses_1"))
         }
     }
 
@@ -209,7 +395,7 @@ class ApiShapeTest {
     fun `v1 status passes through untouched`() {
         withFlavor(ServerFlavor.V1) {
             val raw = """{"ses_1":{"a":1}}"""
-            assertEquals(raw, ApiShape.statusRecord(raw, "ses_1"))
+            assertEquals(raw, ApiStatus.statusRecord(raw, "ses_1"))
         }
     }
 

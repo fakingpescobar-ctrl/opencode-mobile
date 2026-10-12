@@ -58,125 +58,136 @@ internal object ApiShape {
 
     /**
      * Сообщения в виде, который ждёт существующий код: v1-конверт, от старых к
-     * новым. `idle`-псевдо-сообщения v2 выбрасываются — видимого текста у них
-     * нет, а как сообщение они выглядели бы пустым ходом ассистента.
+     * новым.
+     *
+     * `idle`-псевдо-сообщения v2 в ленте не место: это служебная отметка «ход
+     * закончен», а не реплика. Но если у него `outcome:"failed"`, его `error` —
+     * единственное место, где может оказаться причина, если провалиться случилось
+     * ДО создания assistant-сообщения. Поэтому `idle` с ошибкой показываем, а
+     * успешный по-прежнему выбрасываем.
      */
     fun messages(raw: String?): JSONArray? {
         val wrapped = asJsonObject(raw)?.optJSONArray("data")
         val arr = wrapped ?: asJsonArray(raw) ?: return null
+        return if (wrapped != null) normalizedFromV2(arr) else v1Passthrough(arr)
+    }
+
+    /**
+     * Лента v2: `{data:[…]}`, новые→старые, приводится к конверту v1 и разворачивается.
+     *
+     * Отдельная функция не ради красоты: вместе с веткой v1 она не влезала в
+     * лимит сложности, а заодно держала цикл с двумя `continue`.
+     */
+    /**
+     * Что показать из одного сообщения v2, либо null, если показывать нечего.
+     *
+     * Отдельная функция не только ради читаемости: все три отказа (сообщение не
+     * разобралось, дубль ошибки, пустой конверт) иначе требовали трёх `continue`
+     * в цикле, а detekt разрешает один.
+     */
+    private fun showable(src: JSONObject?, errorShown: Boolean): JSONObject? {
+        val error = src?.optJSONObject("error")
+        // В v2 текст ошибки дублируется в assistant-сообщении и в idle.
+        // Показываем первый (новый) раз и молчим про второй.
+        val dupError = src != null && src.optString("type") == IDLE_TYPE && (error == null || errorShown)
+        return if (src == null || dupError) null else toV1Envelope(src).takeUnless { isBlankEnvelope(it) }
+    }
+
+    private fun normalizedFromV2(arr: JSONArray): JSONArray {
         val out = JSONArray()
-        if (wrapped != null) {
-            for (i in arr.length() - 1 downTo 0) {
-                toV1Envelope(arr.optJSONObject(i))?.let { out.put(it) }
-            }
-        } else {
-            for (i in 0 until arr.length()) {
-                toV1Envelope(arr.optJSONObject(i))?.let { out.put(it) }
+        // Идём от новых к старым (v2 отдаёт в этом порядке), поэтому здесь же
+        // видно, показывал ли соседний assistant ту же ошибку.
+        var errorShown = false
+        for (i in arr.length() - 1 downTo 0) {
+            val src = arr.optJSONObject(i)
+            val envelope = showable(src, errorShown)
+            if (envelope != null) {
+                out.put(envelope)
+                // Показанная ошибка относится только к текущему ходу. Сброс
+                // здесь неявный: user-сообщение ошибки не несёт, поэтому на нём
+                // флаг сам собой обнуляется. Сделано явно, потому что такой
+                // молчаливый сброс легко сломать правкой строки выше — и тогда
+                // провал без assistant-сообщения стал бы пустым.
+                //
+                // Флаг ставится по errorText, а не по наличию поля error: пустой
+                // объект error даёт asErrorText == null, часть в ленту не
+                // попадает, и по «полю есть» флаг встал бы в true, подавив
+                // настоящую причину из соседнего idle. Это ровно тот класс бага,
+                // что уже был здесь один раз.
+                errorShown = asErrorText(src?.optJSONObject("error")) != null
             }
         }
         return out
     }
 
-    /**
-     * Идёт ли сейчас ход в сессии — то, что в v1 сообщала карта `/session/status`.
-     *
-     * В v2 отдельного эндпоинта нет, и вместо него в ленту кладётся
-     * псевдо-сообщение `type:"idle"`, когда ход закончен. Разбирать его по версии
-     * на местах нельзя — сюда и сносят все потребители статуса.
-     *
-     * null — определить нечем (лента не пришла или не разобралась). Это НЕ «свободна»:
-     * вызывающие обязаны трактовать это как «не знаю» и ничего не удалять.
-     *
-     * Важная деталь, найденная на живом сервере: в начале ленты может лежать
-     * сохранённое сообщение `type:"system"` («список инструментов изменился»), и
-     * `idle` при этом не появляется ВООБЩЕ. Наивная проверка «новейшее == idle»
-     * объявила бы такую сессию вечно занятой. Поэтому идём от новых к старым,
-     * системные пропускаем, и решение принимает первый «содержательный» тип.
-     * Пустая лента (или состоящая из одних system) — хода не было.
-     */
-    fun isBusy(rawMessages: String?): Boolean? {
-        val arr = asJsonArray(rawMessages) ?: asJsonObject(rawMessages)?.optJSONArray("data")
-        return if (arr == null) null else verdictIn(arr)
-    }
 
-    /** Ищем от новых к старым первый тип, который что-то значит. Не нашли — хода нет. */
-    private fun verdictIn(arr: JSONArray): Boolean {
-        for (i in 0 until arr.length()) {
-            val verdict = busyVerdict(arr.optJSONObject(i))
-            if (verdict != null) return verdict
-        }
-        return false
-    }
+
+    /** Тип части с текстом ошибки. Отдельный от `text` — см. [roleFor]. */
+    internal const val ERROR_PART = "error"
+
+    /** Роль сообщения об ошибке. Отдельная от `assistant` — см. [roleFor]. */
+    internal const val ERROR_ROLE = "error"
+
+    /** Значение `finish`, которым v2 помечает провалившийся ход. */
+    private const val FINISH_ERROR = "error"
 
     /**
-     * Что говорит одно сообщение: true — ход идёт, false — закончен,
-     * null — сообщение не показатель (system, мусор), искать дальше.
+     * Роль для готового конверта.
+     *
+     * Ошибка намеренно НЕ идёт под роль `assistant`. Ответ, который не пришёл,
+     * — не реплика модели, и если подставить его под `assistant`, в ловушку
+     * попадут все, кто ищет «последний ответ ассистента»: счётчик завершённых
+     * ответов, ожидание ответа в молтизме (lastAssistantText берёт только части
+     * типа `text`, поэтому туда ошибка не попадёт), экспорт переписки. Текст ошибки
+     * ушёл бы наружу как реплика вместо того, чтобы остаться диагностикой.
      */
-    private fun busyVerdict(msg: JSONObject?): Boolean? {
-        val obj = msg ?: return null
-        // v1-сообщение узнаётся по `info`: type лежит не на верхнем уровне.
-        val info = obj.optJSONObject("info")
-        val type = obj.optString("type").ifBlank { info?.optString("role") ?: "" }
-        val time = obj.optJSONObject("time") ?: info?.optJSONObject("time")
-        return when (type) {
-            "system" -> null
-            IDLE -> false
-            "assistant" -> (time?.optLong("completed") ?: 0L) <= 0L
-            // user или незнакомый тип: ход отправлен, ответа ещё нет.
-            else -> true
+    private fun roleFor(type: String, parts: JSONArray): String {
+        val errored = (0 until parts.length()).any { parts.optJSONObject(it)?.optString("type") == ERROR_PART }
+        return when {
+            errored -> ERROR_ROLE
+            type == "user" || type == "assistant" -> type
+            // `system`, `idle` и всё незнакомое рисуются служебной строкой.
+            else -> "system"
         }
     }
 
-    /**
-     * Карта занятых сессий в том виде, в каком её ждал v1-потребитель:
-     * ключ есть ⇔ сессия занята. В v2 синтезируется из [isBusy].
-     *
-     * null — как и раньше, «не знаю»: сервер не ответил ИЛИ ленту прочитать
-     * не удалось. Потребитель в этом случае ничего не чистит.
-     */
-    fun statusRecord(rawMessages: String?, sessionId: String): String? {
-        if (ApiPaths.activeFlavor != ServerFlavor.V2) return rawMessages
-        return when (isBusy(rawMessages)) {
-            null -> null
-            true -> JSONObject().put(sessionId, JSONObject()).toString()
-            false -> "{}"
-        }
-    }
-
-    private const val IDLE = "idle"
-
-    /** v2-сообщение → v1-конверт. null, если показывать нечего. */
-    private fun toV1Envelope(msg: JSONObject): JSONObject? {
-        // v1-сообщение уже в нужном виде: `role` и `parts` лежат внутри `info`.
-        if (msg.optJSONObject("info")?.has("role") == true) return msg
+    /** v2-сообщение → v1-конверт. */
+    /** Приводит одно сообщение v2 к конверту v1. Виден из [v1Passthrough]. */
+    internal fun toV1Envelope(msg: JSONObject): JSONObject {
         val type = msg.optString("type")
-        val envelope =
-            if (type == IDLE) {
-                null
-            } else {
-                val time = msg.optJSONObject("time")
-                val model = msg.optJSONObject("model")
-                // completed кладём ТОЛЬКО когда ход реально завершён. В v1 ключ
-                // появлялся тоже только к этому моменту, и на `has("completed")`
-                // завязаны потребители (lastAssistantText в MoltbookTicker) —
-                // положим ноль, и они примут недописанный ответ за законченный.
-                val v1Time = JSONObject().put("created", time?.optLong("created") ?: 0L)
-                if ((time?.optLong("completed") ?: 0L) > 0L) v1Time.put("completed", time?.optLong("completed"))
-                val info =
-                    JSONObject()
-                        .put("role", type)
-                        .put("time", v1Time)
-                // В v1 провайдер и модель лежали в info; в v2 они на верхнем
-                // уровне сообщения. Квота (ZenQuota) читает именно info.
-                info.put("providerID", model?.optString("providerID") ?: "")
-                info.put("modelID", model?.optString("id") ?: "")
-                JSONObject().put("info", info).put("parts", partsOf(msg))
-            }
-        return envelope
+        val error = asErrorText(msg.optJSONObject("error"))
+        val time = msg.optJSONObject("time")
+        val model = msg.optJSONObject("model")
+        // completed кладём ТОЛЬКО когда ход реально завершён. В v1 ключ
+        // появлялся тоже только к этому моменту, и на `has("completed")`
+        // завязаны потребители (lastAssistantText в MoltbookTicker) —
+        // положим ноль, и они примут недописанный ответ за законченный.
+        val completed = time?.optLong("completed") ?: 0L
+        val v1Time = JSONObject().put("created", time?.optLong("created") ?: 0L)
+        if (completed > 0L) v1Time.put("completed", completed)
+        val parts = partsOf(msg, error)
+        val info =
+            JSONObject()
+                .put("role", roleFor(type, parts))
+                .put("time", v1Time)
+        // В v1 провайдер и модель лежали в info; в v2 они на верхнем уровне
+        // сообщения. Квота (ZenQuota) читает именно info.
+        info.put("providerID", model?.optString("providerID") ?: "")
+        info.put("modelID", model?.optString("id") ?: "")
+        return JSONObject().put("info", info).put("parts", parts)
     }
 
-    /** Части v2-сообщения в v1-виде: `content[]` либо одиночный `text`. */
-    private fun partsOf(msg: JSONObject): JSONArray {
+    /**
+     * Части v2-сообщения в v1-виде: `content[]` либо одиночный `text`.
+     *
+     * Ошибка добавляется ВСЕГДА, когда она есть, даже если у сообщения нашёлся
+     * свой текст. Так было не сразу и получилось неверно: текст ошибки
+     * показывался только у ходов без своего текста, из-за чего флаг «ошибка уже
+     * показана» в [messages] вставал в true, ничего не показав, — и дубль той же
+     * ошибки в соседнем idle подавлялся. Итог: провалившийся ход с частичным
+     * текстом выглядел как обычный успешный ответ.
+     */
+    private fun partsOf(msg: JSONObject, error: String?): JSONArray {
         val out = JSONArray()
         val content = msg.optJSONArray("content")
         if (content != null) {
@@ -200,7 +211,13 @@ internal object ApiShape {
             if (text.isNotBlank()) out.put(JSONObject().put("type", "text").put("text", text))
         }
         // У v2 нет step-finish: его роль играет непустой finish.
-        if (msg.optString("finish").isNotBlank()) out.put(JSONObject().put("type", "step-finish"))
+        // finish:"error" — не «реплица завершена», а «ход провалился»: ставить
+        // step-finish значило бы объявить успех, которого не было.
+        val finish = msg.optString("finish")
+        if (finish.isNotBlank() && finish != FINISH_ERROR) {
+            out.put(JSONObject().put("type", "step-finish"))
+        }
+        if (error != null) out.put(JSONObject().put("type", ERROR_PART).put("text", error))
         return out
     }
 }
