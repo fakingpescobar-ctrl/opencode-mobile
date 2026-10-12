@@ -96,7 +96,7 @@ val gitDirty: Boolean = gitStatus.isNotEmpty()
 // читать сотни мегабайт на каждом запуске Gradle нельзя. Файл крупнее потолка
 // вклад даёт по имени и длине: этого хватает, чтобы отличить одно дерево от
 // другого, и не стоит ничего.
-val UNTRACKED_FILE_LIMIT = 1024L * 1024L
+val untrackedFileLimit = 1024L * 1024L
 val treeHash: String = runCatching {
     val md = MessageDigest.getInstance("MD5")
     val proc = ProcessBuilder("git", "diff", "HEAD")
@@ -123,7 +123,7 @@ val treeHash: String = runCatching {
             md.update(rel.toByteArray())
             if (!f.isFile) {
                 md.update("dir".toByteArray())
-            } else if (f.length() > UNTRACKED_FILE_LIMIT) {
+            } else if (f.length() > untrackedFileLimit) {
                 md.update("big:${f.length()}".toByteArray())
             } else {
                 md.update(f.readBytes())

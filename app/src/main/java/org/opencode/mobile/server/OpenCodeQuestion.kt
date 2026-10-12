@@ -75,11 +75,7 @@ internal object OpenCodeQuestionApi {
      * по нему — значит молча терять выбор пользователя и снова показывать ту же
      * плашку.
      */
-    fun reply(
-        port: Int,
-        requestId: String,
-        labelsPerPrompt: List<List<String>>,
-    ): Boolean {
+    fun reply(port: Int, requestId: String, labelsPerPrompt: List<List<String>>): Boolean {
         require(requestId.isNotBlank()) { "Question request id must not be blank" }
         val path = actionPath(requestId, REPLY) ?: return false
         return LocalOpenCodeClient.postAsync(port, path, replyBody(labelsPerPrompt))

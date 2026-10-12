@@ -992,10 +992,29 @@ class RuntimeManager(
     private suspend fun waitForHttp(port: Int): Boolean {
         repeat(60) {
             if (!currentCoroutineContext().isActive || !running || restartRequested) return false
-            if (pingOk(port)) return true
+            if (pingOk(port)) {
+                detectServerFlavor(port)
+                return true
+            }
             delay(500)
         }
         return false
+    }
+
+    /**
+     * Определяет версию поднявшегося сервера и переключает [ApiPaths].
+     *
+     * Сделано здесь, а не лениво при первом запросе: [ApiPaths.active]
+     * читается синхронно во многих местах, и решение «какая версия» должно
+     * быть принято до того, как начнут лететь запросы к сессиям. Отказ здесь
+     * не важен — [ServerFlavorProbe] сам вернёт V1, то есть прежнее поведение.
+     */
+    private fun detectServerFlavor(port: Int) {
+        try {
+            ServerFlavorProbe.detectAndInstall(port)
+        } catch (e: Exception) {
+            android.util.Log.w("OpencodeServer", "не удалось определить версию сервера: ${e.message}")
+        }
     }
 
     private fun pingOk(port: Int): Boolean =
