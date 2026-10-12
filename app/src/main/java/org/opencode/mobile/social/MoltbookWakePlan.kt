@@ -1,6 +1,5 @@
 package org.opencode.mobile.social
 
-import org.json.JSONArray
 import org.json.JSONObject
 import org.opencode.mobile.server.ApiShape
 
@@ -96,7 +95,11 @@ internal object MoltbookWakePlan {
      */
     fun parseCreated(raw: String?): String? {
         if (raw.isNullOrBlank()) return null
-        return ApiShape.session(raw)?.optString("id")?.trim()?.ifBlank { null }
+        return ApiShape
+            .session(raw)
+            ?.optString("id")
+            ?.trim()
+            ?.ifBlank { null }
     }
 
     /**

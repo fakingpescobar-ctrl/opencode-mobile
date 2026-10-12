@@ -39,18 +39,85 @@ class SystemSpeechSynth(
 
     override val sampleRate: Int get() = 44100
 
+    /**
+     * Синтез в WAV и чтение обратно.
+     *
+     * Разбито на шаги не ради длины: у одного тела было шесть `return` при лимите
+     * detekt два, и три из них отличались только «удалить файл и выйти». Теперь видно,
+     * что шагов ровно три — заговорить, дождаться, прочитать — и что отказ на любом из
+     * них сводится к одному и тому же: файла нет, значит и звука нет.
+     */
     override fun synthesize(
         text: String,
         sid: Int,
         speed: Float,
     ): TtsAudio? {
-        if (!isReady()) return null
-        val engine = tts ?: return null
+        val engine = tts?.takeIf { isReady() } ?: return null
         val out = File(appContext.cacheDir, "tts_line_${System.nanoTime()}.wav")
+        return if (spokenInto(engine, text, speed, out)) readWav(out) else null
+    }
+
+    /** Заговорить и дождаться конца. false — движок не ответил, файла можно не ждать. */
+    private fun spokenInto(
+        engine: TextToSpeech,
+        text: String,
+        speed: Float,
+        out: File,
+    ): Boolean {
         val done = CountDownLatch(1)
         var failed = false
-        engine.setSpeechRate(speed.coerceIn(0.5f, 2.0f))
-        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+        engine.setSpeechRate(speed.coerceIn(MIN_SPEED, MAX_SPEED))
+        engine.setOnUtteranceProgressListener(progress(done) { failed = true })
+        // Порядок как был: сперва «поехало ли вообще», потом ожидание, потом файл.
+        val spoken =
+            startSpeaking(engine, text, out) &&
+                awaitUtterance(engine, done) &&
+                !failed &&
+                out.length() >= WAV_HEADER_BYTES
+        if (!spoken) out.delete()
+        return spoken
+    }
+
+    private fun startSpeaking(
+        engine: TextToSpeech,
+        text: String,
+        out: File,
+    ): Boolean =
+        try {
+            engine.synthesizeToFile(text, null, out, UTTERANCE_ID) == TextToSpeech.SUCCESS
+        } catch (t: Throwable) {
+            Log.w(TAG, "synthesizeToFile упал: ${t.message}")
+            false
+        }
+
+    /** На таймауте движок останавливаем — иначе он будет говорить в никуда. */
+    private fun awaitUtterance(
+        engine: TextToSpeech,
+        done: CountDownLatch,
+    ): Boolean {
+        if (done.await(WAIT_SECONDS, TimeUnit.SECONDS)) return true
+        Log.w(TAG, "системный TTS не отдал результат за ${WAIT_SECONDS}с")
+        engine.stop()
+        return false
+    }
+
+    /** Файл удаляется в любом случае — и при неудачном чтении тоже, он больше не нужен. */
+    private fun readWav(out: File): TtsAudio? =
+        try {
+            PcmWav.readMonoFloat(out)
+        } catch (t: Throwable) {
+            Log.w(TAG, "WAV не прочитан: ${t.message}")
+            null
+        } finally {
+            out.delete()
+        }
+
+    /** [onFailed] ставится из [onError], [done] отпускается в любом исходе. */
+    private fun progress(
+        done: CountDownLatch,
+        onFailed: () -> Unit,
+    ): UtteranceProgressListener =
+        object : UtteranceProgressListener() {
             override fun onStart(id: String?) = Unit
 
             override fun onDone(id: String?) {
@@ -59,7 +126,7 @@ class SystemSpeechSynth(
 
             @Deprecated("required by API", ReplaceWith(""))
             override fun onError(id: String?) {
-                failed = true
+                onFailed()
                 done.countDown()
             }
 
@@ -67,39 +134,10 @@ class SystemSpeechSynth(
                 id: String?,
                 errorCode: Int,
             ) {
-                failed = true
+                onFailed()
                 done.countDown()
             }
-        })
-        val rc = try {
-            engine.synthesizeToFile(text, null, out, "tts_utterance")
-        } catch (t: Throwable) {
-            Log.w(TAG, "synthesizeToFile упал: ${t.message}")
-            -1
         }
-        if (rc != TextToSpeech.SUCCESS) {
-            out.delete()
-            return null
-        }
-        if (!done.await(30, TimeUnit.SECONDS)) {
-            Log.w(TAG, "системный TTS не отдал результат за 30с")
-            engine.stop()
-            out.delete()
-            return null
-        }
-        if (failed || !out.exists() || out.length() < 44) {
-            out.delete()
-            return null
-        }
-        return try {
-            PcmWav.readMonoFloat(out)
-        } catch (t: Throwable) {
-            Log.w(TAG, "WAV не прочитан: ${t.message}")
-            null
-        } finally {
-            out.delete()
-        }
-    }
 
     fun isReady(): Boolean {
         if (!ready) initLatch.await(3, TimeUnit.SECONDS)
@@ -115,6 +153,11 @@ class SystemSpeechSynth(
 
     private companion object {
         const val TAG = "TTS"
+        const val UTTERANCE_ID = "tts_utterance"
+        const val WAIT_SECONDS = 30L
+        const val WAV_HEADER_BYTES = 44L
+        const val MIN_SPEED = 0.5f
+        const val MAX_SPEED = 2.0f
     }
 }
 

@@ -72,27 +72,50 @@ class SupertonicTts private constructor(
         fun loadOrNull(
             modelDir: File,
             threads: Int = TtsConfig.NUM_THREADS,
-        ): SupertonicTts? {
-            if (!isSupportedAbi()) {
-                if (!unsupportedAbi) {
-                    unsupportedAbi = true
-                    Log.w(TAG, "sherpa-onnx: нет arm64, TTS недоступен на ${android.os.Build.SUPPORTED_ABIS}")
+        ): SupertonicTts? = if (blockedBy(modelDir) != null) null else build(modelDir, threads)
+
+        /**
+         * Причина, по которой движок сейчас поднимать нельзя, либо null — можно пробовать.
+         *
+         * Отдельная функция не ради красоты. Четыре ранних выхода подряд в одном теле
+         * давали четыре `return` и лимит detekt два на функцию, и читались как «что
+         * может пойти не так», а не как «что проверяем по порядку».
+         */
+        private fun blockedBy(modelDir: File): String? {
+            val missing = missingFiles(modelDir)
+            return when {
+                !isSupportedAbi() -> abiUnsupported()
+                missing.isNotEmpty() -> {
+                    Log.w(TAG, "sherpa-onnx: модель не установлена, нет ${missing.joinToString()}")
+                    "модель не установлена"
                 }
-                return null
+                failedLoad -> {
+                    Log.w(TAG, "sherpa-onnx: предыдущая загрузка упала, повтор запрещён до resetLoadAttempt")
+                    "предыдущая загрузка упала"
+                }
+                else -> null
             }
+        }
+
+        /** Причина возвращается наружу, потому что вызывающий ищет именно null. */
+        private fun abiUnsupported(): String {
+            if (!unsupportedAbi) {
+                unsupportedAbi = true
+                Log.w(TAG, "sherpa-onnx: нет arm64, TTS недоступен на ${android.os.Build.SUPPORTED_ABIS}")
+            }
+            return "нет arm64"
+        }
+
+        private fun missingFiles(modelDir: File): List<String> = TtsModels.SUPERTONIC_FILES.filter { !File(modelDir, it).exists() }
+
+        private fun build(
+            modelDir: File,
+            threads: Int,
+        ): SupertonicTts? {
             // Ноль или отрицательное — «потоки не заданы», а не «один поток»: движок на
             // numThreads=1 падает с Invalid OfflineTtsConfig, а на 2 даёт лучший RTF
             // (0.32 против 0.58 на 4, замер 03.10). Тесты зовут loadOrNull(dir, 0).
             val safeThreads = if (threads > 0) threads else TtsConfig.NUM_THREADS
-            val missing = TtsModels.SUPERTONIC_FILES.filter { !File(modelDir, it).exists() }
-            if (missing.isNotEmpty()) {
-                Log.w(TAG, "sherpa-onnx: модель не установлена, нет ${missing.joinToString()}")
-                return null
-            }
-            if (failedLoad) {
-                Log.w(TAG, "sherpa-onnx: предыдущая загрузка упала, повтор запрещён до resetLoadAttempt")
-                return null
-            }
             return try {
                 val tts = OfflineTts(
                     config = OfflineTtsConfig(

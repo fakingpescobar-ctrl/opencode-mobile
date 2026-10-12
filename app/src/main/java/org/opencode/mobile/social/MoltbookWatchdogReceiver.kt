@@ -4,8 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
-import org.json.JSONArray
-import org.json.JSONObject
 import org.opencode.mobile.server.ApiPaths
 import org.opencode.mobile.server.ApiShape
 import org.opencode.mobile.server.LocalOpenCodeClient

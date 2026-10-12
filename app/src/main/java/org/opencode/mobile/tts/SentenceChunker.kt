@@ -59,7 +59,7 @@ class SentenceChunker(
 
         // Граница предложения → разрез по пробелу (предложение не кончилось) →
         // весь остаток, но только когда пришёл конец ответа.
-        val boundary = findBoundary(text, limit) ?: if (text.length >= maxChars) {
+        val boundary = findSentenceBoundary(text, limit).takeIf { it > 0 } ?: if (text.length >= maxChars) {
             findSpace(text, maxChars)
         } else if (force) {
             text.length
@@ -77,42 +77,6 @@ class SentenceChunker(
         buffer = StringBuilder(text.substring(boundary))
         if (chunk.isNotBlank()) firstChunkDone = true
         return chunk
-    }
-
-    /** Конец предложения не дальше [limit]; `;` и `:` — только если предложение длинное. */
-    private fun findBoundary(
-        text: String,
-        limit: Int,
-    ): Int? {
-        var soft: Int? = null
-        var hard: Int? = null
-        var softish: Int? = null
-        var i = 0
-        while (i < text.length) {
-            val c = text[i]
-            if (c == '.' || c == '!' || c == '?') {
-                // Знак конца предложения, если дальше пробел или конец текста.
-                val next = text.getOrNull(i + 1)
-                if (next == null || next == ' ' || next == '\n') {
-                    hard = i + 1
-                    if (hard <= limit) return hard
-                    break
-                }
-            }
-            if (c == '\n') {
-                softish = i + 1
-                if (softish <= limit) return softish
-            }
-            if (c == ';' || c == ':') {
-                soft = i + 1
-                if (soft <= limit) return soft
-            }
-            i++
-        }
-        // Мягкие границы берём, только если до них не дотянуться жёсткой.
-        soft?.let { if (hard == null || it < hard) return it }
-        softish?.let { if (hard == null || it < hard) return it }
-        return hard
     }
 
     /** Последний пробел в пределах [limit], иначе сам [limit]. */

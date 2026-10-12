@@ -25,8 +25,7 @@ internal object ApiStatus {
     /**
      * Отвечает ли сервер. Не «свободны ли сессии» — только факт связи.
      */
-    fun reachable(port: Int): Boolean =
-        LocalOpenCodeClient.get(port, ApiPaths.active.sessions()) != null
+    fun reachable(port: Int): Boolean = LocalOpenCodeClient.get(port, ApiPaths.active.sessions()) != null
 
     /**
      * Карта занятости в v1-виде для одной сессии: ключ есть ⇔ идёт ход.
@@ -87,7 +86,10 @@ internal object ApiStatus {
      * null — как и раньше, «не знаю»: сервер не ответил ИЛИ ленту прочитать
      * не удалось. Потребитель в этом случае ничего не чистит.
      */
-    fun statusRecord(rawMessages: String?, sessionId: String): String? {
+    fun statusRecord(
+        rawMessages: String?,
+        sessionId: String,
+    ): String? {
         if (ApiPaths.activeFlavor != ServerFlavor.V2) return rawMessages
         return when (isBusy(rawMessages)) {
             null -> null

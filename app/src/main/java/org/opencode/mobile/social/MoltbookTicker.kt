@@ -2,7 +2,6 @@ package org.opencode.mobile.social
 
 import android.content.Context
 import android.util.Log
-import org.json.JSONObject
 import org.opencode.mobile.OpencodeApp
 import org.opencode.mobile.server.ApiPaths
 import org.opencode.mobile.server.ApiShape
@@ -1199,8 +1198,7 @@ internal class MoltbookTicker(
         }
     }
 
-    private fun sessionIdOf(created: String): String? =
-        ApiShape.session(created)?.optString("id")?.takeIf { it.isNotEmpty() }
+    private fun sessionIdOf(created: String): String? = ApiShape.session(created)?.optString("id")?.takeIf { it.isNotEmpty() }
 
     /**
      * opencode отвечает на POST /message только после конца генерации, поэтому ответ

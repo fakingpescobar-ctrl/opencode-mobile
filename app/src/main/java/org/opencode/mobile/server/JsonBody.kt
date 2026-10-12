@@ -43,7 +43,6 @@ internal fun asJsonObject(raw: String?): JSONObject? =
 /** Тип служебного сообщения «ход закончился» в v2. */
 internal const val IDLE_TYPE = "idle"
 
-
 /**
  * Что говорит одно сообщение: true — ход идёт, false — закончен,
  * null — сообщение не показатель (`system`, мусор), искать дальше.
@@ -88,7 +87,11 @@ internal fun asErrorText(error: JSONObject?): String? =
         if (message.isBlank()) {
             null
         } else {
-            val status = err.optLong("status", 0L).takeIf { it > 0L }?.toString().orEmpty()
+            val status = err
+                .optLong("status", 0L)
+                .takeIf { it > 0L }
+                ?.toString()
+                .orEmpty()
             val tail = listOf(err.optString("type"), status).filter { it.isNotBlank() }.joinToString(", ")
             "⚠ $message" + tail.takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty()
         }

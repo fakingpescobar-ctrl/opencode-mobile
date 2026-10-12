@@ -89,7 +89,10 @@ internal object ApiShape {
      * разобралось, дубль ошибки, пустой конверт) иначе требовали трёх `continue`
      * в цикле, а detekt разрешает один.
      */
-    private fun showable(src: JSONObject?, shownError: String?): JSONObject? =
+    private fun showable(
+        src: JSONObject?,
+        shownError: String?,
+    ): JSONObject? =
         src?.let { message ->
             val error = asErrorText(message.optJSONObject("error"))
             // Роль idle: она несёт ровно дубль уже показанного отказа. Показать имеет
@@ -130,8 +133,6 @@ internal object ApiShape {
         return out
     }
 
-
-
     /** Тип части с текстом ошибки. Отдельный от `text` — см. [roleFor]. */
     internal const val ERROR_PART = "error"
 
@@ -156,7 +157,10 @@ internal object ApiShape {
      *
      * Раньше ошибка всегда переименовывала роль, даже при своём тексте.
      */
-    private fun roleFor(type: String, parts: JSONArray): String {
+    private fun roleFor(
+        type: String,
+        parts: JSONArray,
+    ): String {
         val errored = (0 until parts.length()).any { parts.optJSONObject(it)?.optString("type") == ERROR_PART }
         return when {
             errored && !hasText(parts) -> ERROR_ROLE
@@ -172,7 +176,10 @@ internal object ApiShape {
         }
 
     /** Приводит одно сообщение v2 к конверту v1. Виден из [v1Passthrough]. */
-    internal fun toV1Envelope(msg: JSONObject, suppressError: Boolean = false): JSONObject {
+    internal fun toV1Envelope(
+        msg: JSONObject,
+        suppressError: Boolean = false,
+    ): JSONObject {
         val type = msg.optString("type")
         val error = asErrorText(msg.optJSONObject("error"))
         val time = msg.optJSONObject("time")
@@ -206,7 +213,10 @@ internal object ApiShape {
      * ошибки в соседнем idle подавлялся. Итог: провалившийся ход с частичным
      * текстом выглядел как обычный успешный ответ.
      */
-    private fun partsOf(msg: JSONObject, error: String?): JSONArray {
+    private fun partsOf(
+        msg: JSONObject,
+        error: String?,
+    ): JSONArray {
         val out = JSONArray()
         val content = msg.optJSONArray("content")
         if (content != null) {

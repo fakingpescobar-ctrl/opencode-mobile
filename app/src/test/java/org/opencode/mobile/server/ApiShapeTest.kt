@@ -144,14 +144,17 @@ class ApiShapeTest {
 
     private fun messagesOf(raw: String) = ApiShape.messages(raw) ?: error("null")
 
-    private fun textsOf(messages: org.json.JSONArray, type: String): List<String> =
-        (0 until messages.length()).mapNotNull { i ->
-            messages.getJSONObject(i).optJSONArray("parts")
-        }.flatMap { parts ->
-            (0 until parts.length()).mapNotNull { j ->
-                parts.optJSONObject(j)?.takeIf { it.optString("type") == type }?.optString("text")
+    private fun textsOf(
+        messages: org.json.JSONArray,
+        type: String,
+    ): List<String> =
+        (0 until messages.length())
+            .mapNotNull { i -> messages.getJSONObject(i).optJSONArray("parts") }
+            .flatMap { parts ->
+                (0 until parts.length()).mapNotNull { j ->
+                    parts.optJSONObject(j)?.takeIf { it.optString("type") == type }?.optString("text")
+                }
             }
-        }
 
     /** Типы частей одного сообщения — в отличие от textsOf, не смешивает сообщения. */
     private fun partTypesOf(message: org.json.JSONObject): List<String> {
@@ -159,8 +162,10 @@ class ApiShapeTest {
         return (0 until parts.length()).mapNotNull { parts.optJSONObject(it)?.optString("type") }
     }
 
-    private fun roleOf(messages: org.json.JSONArray, index: Int) =
-        messages.getJSONObject(index).getJSONObject("info").getString("role")
+    private fun roleOf(
+        messages: org.json.JSONArray,
+        index: Int,
+    ) = messages.getJSONObject(index).getJSONObject("info").getString("role")
 
     @Test
     fun `ошибка провайдера больше не молчит`() {

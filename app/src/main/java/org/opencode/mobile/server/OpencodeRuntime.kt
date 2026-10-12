@@ -1203,6 +1203,7 @@ internal fun OpencodeRuntime.planModelEntry(text: String): ModelConfigPlan =
             ModelConfigPlan.Write(text.substring(0, brace + 1) + tail + rest)
         }
     }
+
 internal sealed interface MusicConfigPlan {
     /** Уже в нужном состоянии — файл не трогаем. */
     data object Keep : MusicConfigPlan

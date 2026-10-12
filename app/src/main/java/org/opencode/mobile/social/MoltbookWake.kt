@@ -2,7 +2,6 @@ package org.opencode.mobile.social
 
 import android.content.Context
 import android.util.Log
-import org.json.JSONObject
 import org.opencode.mobile.server.ApiPaths
 import org.opencode.mobile.server.ApiShape
 import org.opencode.mobile.server.ApiStatus
