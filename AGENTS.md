@@ -1,25 +1,44 @@
 # opencode-mobile — правила для ассистента
 
-## Версия opencode и миграция на v2
+## Версия opencode: в APK уже v2
 
-Приложение **пакует бинарник opencode внутрь APK**:
-`app/src/main/jniLibs/arm64-v8a/libopencode.so` (184.7 MB, opencode **1.18.25**),
-запуск через `nativeLibraryDir` + `libldmusl.so`. Это не «подключение к
-установленному opencode» — апгрейд означает замену бинаря **и** перенос HTTP-слоя.
+Приложение **пакует бинарь opencode внутрь APK**:
+`app/src/main/jniLibs/arm64-v8a/libopencode.so` — сейчас **opencode 2.0.27**
+(204 999 888 б ≈ 195.5 MB), запуск через `nativeLibraryDir` + `libldmusl.so`.
 
-План миграции на **opencode 2.0.27** — `docs/MIGRATION-V2.md` (7 этапов, ~8-10 дней).
-Читать перед любыми правками `LocalOpenCodeClient` / эндпоинтов.
+**Не отвечай на вопрос «какая версия opencode» по документации.** Проверяй живой
+сервер — единственный источник истины:
 
-Коротко о v2, что нужно помнить:
+```powershell
+. "C:\Projects\opencode-mobile\tools\adb-auth-common.ps1"
+$h = Get-OpencodeAuthHeader
+(Invoke-WebRequest "http://127.0.0.1:4098/api/info" -Headers $h).Content
+# {"version":"2.0.27","pid":9064,"urls":["http://127.0.0.1:4096"],...}
+```
+
+`GET /global/health` на v2 **отвечает 200, но это HTML-заглушка SPA**, а не здоровье
+сервера. Никогда не суди о версии и о живости по коду ответа на неизвестный путь.
+
+**Миграция на v2 (план — `docs/MIGRATION-V2.md`, 7 этапов).** Этапы 0–4 закрыты и
+запушены: бинарь v2 в APK, детектор версии, слой форм ответа. Остались 5–7
+(удаление `OpenCodeQuestion.kt` в пользу нативных форм, WebView, чистка v1-веток).
+
+Что нужно помнить про v2 (всё замерено на живом сервере, не взято из документации):
 
 - Весь API под префиксом **`/api/`** (`/api/session`, `/api/info`, `/api/event`).
-- `GET /session/status` **удалён** — замена `GET /api/experimental/session/{id}/wait`.
-- `abort` → `interrupt`, `POST .../message` → `prompt`, `GET .../message` → `view`.
+- `GET /session/status` **удалён**. Замена — псевдо-сообщение `{"type":"idle"}`
+  внутри `GET /api/session/{id}/message`. Эндпоинта `.../wait` в 2.0.27 **нет**
+  (404), как и `GET /api/session/{id}/view` — сообщения остались на `/message`.
+- `abort` → `POST .../interrupt`, `POST .../message` → `POST .../prompt`.
+  Тело промпта — `{text: "..."}`, а не `{parts:[...]}`.
+- Ответы обёрнуты в `{"data":[...]}`; сообщения приходят **новыми → старыми**.
 - GitHub-релизов для v2 **нет**, бинарь только из npm
   (`@opencode/cli-linux-arm64-musl`). `ci.yml` качать бинарь из
   `registry.npmjs.org`, не из `github.com/anomalyco/.../releases`.
-- Главный риск миграции — **WebView** (`MainActivity.kt:309-441`) грузит SPA
-  opencode целиком; в v2 она переписана.
+- v2-бинарь **не статический**: нужны Alpine v3.22 aarch64 `libstdc++.so.6` и
+  `libgcc_s.so.1`, они уже лежат в APK как `libstdcxx.so` / `libgcc_s.so`.
+- WebView (`MainActivity.kt:309-441`) **работает**: SPA v2 грузится и отдаёт
+  `<title>OpenCode</title>`, ассеты переехали в `/_assets/*`. Снимать его не нужно.
 
 ## Как говорить с агентом на телефоне (НЕ через UI)
 

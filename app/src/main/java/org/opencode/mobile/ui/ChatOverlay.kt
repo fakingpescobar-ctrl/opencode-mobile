@@ -445,7 +445,7 @@ internal data class ChatSnapshot(
 )
 
 /**
- * Полноэкранный чат поверх WebView. WebView (SPA opencode 1.18.25) не рендерит ленту
+ * Полноэкранный чат поверх WebView. WebView (SPA opencode) не рендерит ленту
  * в WebView-окружении — поэтому чат реализован здесь, нативно: опрос локального
  * сервера каждые 2с + отправка через POST /session/{id}/message.
  * Поле ввода внизу, лента наверху, клавиатура не перекрывает поле (imePadding).

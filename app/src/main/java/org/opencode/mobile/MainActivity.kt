@@ -315,7 +315,7 @@ fun OpencodeWebView(paused: Boolean = false) {
                     javaScriptEnabled = true
                     domStorageEnabled = true
                     javaScriptCanOpenWindowsAutomatically = false
-                    // SPA opencode 1.18.25 имеет ВСТРОЕННЫЙ звук уведомления: при приходе
+                    // SPA opencode имеет ВСТРОЕННЫЙ звук уведомления: при приходе
                     // ответа модели через Web Audio (AAudio, USAGE_MEDIA) играет свой
                     // тон — это «первый непонятный звук» из двух. Второй — наш
                     // playNotificationSound (USAGE_NOTIFICATION). Убираем WebView-звук
