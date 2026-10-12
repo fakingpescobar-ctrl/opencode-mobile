@@ -15,14 +15,18 @@ HTTP-слоя.
 | Параметр | Сейчас (v1) | Цель (v2) |
 |---|---|---|
 | Версия | **1.18.25** (захардкожена) | **2.0.27** |
-| Бинарь в APK | `libopencode.so`, 184.7 MB | `@opencode/cli-linux-arm64-musl@2.0.27`, **195.5 MB**, 2 файла |
+| Бинарь в APK | `libopencode.so` + `libbun-musl.so`, 184.7 + 70.2 MB | `@opencode/cli-linux-arm64-musl@2.0.27`, **один** `libopencode.so` 195.5 MB, `libbun-musl.so` больше нет |
+| musl-рантайм | `libldmusl.so` (0.7 MB) | плюс Alpine `libstdc++.so.6` (2.63 MB) + `libgcc_s.so.1` (0.13 MB) — **в v2 бинарь не статический** |
 | Источник бинаря | GitHub release tarball | **npm** (GitHub-релизов для v2 нет, `releases/tags/v2.0.27` → 404) |
 | musl ARM64 | есть | есть ✅ |
 | Префикс API | `/session*` | `/api/*` |
-| Поток событий | **не используется**, чистый поллинг | `/api/event` + `/api/experimental/session/{id}/wait` |
+| Порт по умолчанию | 4096 | **4099** (замерено) |
+| Поток событий | **не используется**, чистый поллинг | `/api/event` SSE доступен; `/api/experimental/session/{id}/wait` в 2.0.27 **отсутствует** (404) |
 | Установка в v2 | `opencode-ai` | `@opencode/cli` |
 
-Размер бинаря растёт всего на ~11 MB — миграция технически возможна.
+Размер бинаря растёт всего на ~11 MB, а `libbun-musl.so` (70.2 MB) из APK
+выпадает; взамен приходит 2.76 MB musl-рантайма GCC — миграция технически
+возможна.
 
 **Что v2 НЕ ломает:** конфиг (`~/.config/opencode/opencode.json`,
 `<project>/opencode.json`, `.opencode/`), агенты, скиллы, команды, MCP. Формат v1
@@ -33,11 +37,11 @@ HTTP-слоя.
 2. Server API и клиенты — новые контракты.
 3. TUI-конфиг: слоёный `tui.json(c)` → один глобальный `cli.json`.
 
-> Приложение использует плагины? Проверить на этапе 0. В `~/.config/opencode/opencode.json`
-> есть `@tarquinen/opencode-dcp`, `opencode-worktree`, `opencode-quota`, `claude-smart`,
-> `opencode-claude-auth` — но они живут на **десктопной** машине, а не на телефоне.
-> Для APK-контура (bundled `serve`) вопрос снимается сам, если сервер на телефоне
-> не подхватывает пользовательский конфиг с хоста.
+> **Ответ на вопрос про плагины (замерено 12.10.2026):** приложение плагинов
+> не использует вообще — работает через MCP из конфига, и v2 их поднимает как есть.
+> В десктопном `~/.config/opencode/opencode.json` есть `@tarquinen/opencode-dcp`,
+> `opencode-worktree`, `opencode-quota`, `claude-smart`, `opencode-claude-auth` —
+> но это десктопная машина, в APK-контур они не попадают.
 
 ---
 
@@ -51,10 +55,58 @@ HTTP-слоя.
 | `GET /session` | `GET /api/session` | `ChatOverlay.kt:946`, `:3853`, `:4396`, `MoltbookAlarmReceiver.kt:1189` |
 | `POST /session` | `POST /api/session` | `ChatOverlay.kt:4243`, `MoltbookTicker.kt:1189` |
 | `DELETE /session/{id}` | `DELETE /api/session/{id}` | `ChatOverlay.kt:4294` |
-| `GET /session/{id}/message` | `GET /api/session/{id}/view` | `ChatOverlay.kt:4306`, `MoltbookTicker.kt:1215` |
+| `GET /session/{id}/message` | **путь тот же**, только `/api/` + новая форма ответа | `ChatOverlay.kt:4306`, `MoltbookTicker.kt:1215` |
 | `POST /session/{id}/message` | `POST /api/session/{id}/prompt` | `ChatOverlay.kt:4441`, `MoltbookTicker.kt:1195` |
 | `POST /session/{id}/abort` | `POST /api/session/{id}/interrupt` | `ChatOverlay.kt:4263` |
-| `GET /session/status` | **удалён в v2** | `ChatNotice.kt` (целиком), `ChatOverlay.kt:3843/4277/4320/4366/4416`, `ZenQuota.kt` |
+| `GET /session/status` | **удалён**, замена — `type:"idle"` в списке сообщений | `ChatNotice.kt` (целиком), `ChatOverlay.kt:3843/4277/4320/4366/4416`, `ZenQuota.kt` |
+
+### Что показала разведка (замерено на живом v2.0.27, 12.10.2026)
+
+**Ловушка, ломающая всю диагностику:** любой неизвестный GET-путь отдаёт **HTTP 200 + HTML SPA**
+(catch-all). Проверено: `/global/health` → 200 + html, `/session/status` → 200 + html,
+`/doc` → 200 + html. На POST неизвестный путь → **405**. Значит проверка «жив ли сервер»
+по HTTP-коду в v2 не работает вообще — надо смотреть тело ответа.
+
+| Путь | Ответ v2.0.27 (реально) |
+|---|---|
+| `GET /api/info` | `{version, pid, urls[], paths{tmp}, capabilities{persistentPty}}`. Поля `healthy` **нет** |
+| `GET /api/session` | `{data:[…]}` — **обёртка `data`**, в v1 был голый массив |
+| `POST /api/session` | тело `{}` достаточно. Ответ `{data:{id, projectID, cost, tokens, time, location}}` |
+| `GET /api/session/{id}` | тот же объект сессии. **После завершения** появляются `outcome` и `time.idle` |
+| `GET /api/session/{id}/message` | `{data:[…], cursor:{previous,next}}`. **Порядок — от новых к старым** |
+| `POST /api/session/{id}/prompt` | тело `{text:"…"}`, **не** `{parts:[…]}`. Ответ `{data:{…,type:"user",payload:{text},delivery:"steer"}}` |
+| `POST /api/session/{id}/interrupt` | `{interrupted:true\|false}` |
+| `DELETE /api/session/{id}` | 204, тела нет |
+| `GET /api/event` | SSE. Первое событие `{type:"server.connected"}`, дальше `: heartbeat` |
+| `GET /api/mcp` | `{location, data:[{name, status{status:"connected"}}]}` |
+| `GET /api/agent` | `{location, data:[…]}` |
+
+Сообщения в v2 (объекты в `data`):
+
+```jsonc
+// пользовательское — text НА ВЕРХНЕМ УРОВНЕ, а не в parts[]
+{ "id": "msg_…", "time": {"created": 1791…}, "text": "…", "type": "user" }
+
+// ассистентское — content[] вместо parts[]
+{ "id": "msg_…", "time": {"created":…, "streamed":…, "completed":…},
+  "type": "assistant", "agent": "build", "model": {"id":…, "providerID":…},
+  "content": [{"type":"text","text":"OK"}],
+  "snapshot": {"start":…, "end":…, "files":[]},
+  "finish": "stop", "rawFinish": "stop", "cost": 0,
+  "tokens": {"input":…, "output":…, "reasoning":…, "cache":{"read":…,"write":…}} }
+
+// НОВЫЙ псевдо-тип — замена /session/status
+{ "id": "msg_…", "time": {"created":…}, "type": "idle", "outcome": "succeeded" }
+```
+
+Эндпоинты из официальной таблицы, **которых нет в 2.0.27** (проверено руками, отдают 404):
+
+| Из документации v2 | Реальность 2.0.27 |
+|---|---|
+| `GET /api/session/{id}/view` | **404.** Сообщения читаются через `/api/session/{id}/message` |
+| `GET /api/experimental/session/{id}/wait` | **404.** Замена status — `type:"idle"` в списке сообщений |
+| `/api/session/{id}/summarize` → `/compact` | не проверялось |
+| `GET /api/openapi`, `/api/openapi.json`, `/api/spec` | все **404**, спеки в рантайме нет |
 
 Файлы с вызовами `LocalOpenCodeClient` (по убыванию):
 
@@ -71,7 +123,15 @@ HTTP-слоя.
 | `OpenCodePermission.kt` | 1 |
 
 **Удалённые в v2 без замены:** `/tui/*`, `/instance/dispose`, `/doc`,
-`/global/event` (слит в `/api/event`), `/session/status`.
+`/global/event` (слит в `/api/event`).
+
+**Не 404, а ловушка:** удалённые v1-пути под GET отдают 200 + HTML (catch-all SPA),
+под POST — 405. Нельзя отличить «эндпоинта нет» от «эндпоинт есть» по коду ответа.
+
+**Ошибки формата — полезны.** Валидация v2 отдаёт точный путь до проблемы:
+`{"_tag":"InvalidRequestError","message":"Expected a string starting with \"ses\"\n  at [\"sessionID\"]","kind":"Params"}`
+и `{"_tag":"InvalidRequestError","message":"Missing key\n  at [\"text\"]","kind":"Payload"}`.
+Именно так был найден реальный формат `prompt` — по `Missing key at ["text"]`.
 
 ---
 
@@ -80,8 +140,7 @@ HTTP-слоя.
 | Эндпоинт | Что закрывает в текущем коде |
 |---|---|
 | `POST /api/session/{id}/background` | Сессия живёт при закрытом оверлее. Убирает блок `paused`/WebView (`MainActivity.kt:208-212`) |
-| `GET /api/experimental/session/{id}/wait` | Замена поллингу `GET /session/status` в `ChatNotice.kt` |
-| `POST /api/session/{id}/inbox` | Очередь сообщений — снимает блокировку «агент занят → нельзя отправить» |
+| `POST /api/session/{id}/inbox` | Очередь сообщений — снимает блокировку «агент занят → нельзя отправить». Уже есть частично: `prompt` возвращает `delivery:"steer"` |
 | `POST /api/session/{id}/form/{formID}/reply` | **Удаляет хак `OpenCodeQuestion.kt`** — там~200 строк парсинга текста вопроса агента, потому что v1 отдавал 404 на `/api/session/{id}/question/{id}/reply` |
 | `GET/POST /api/session/{id}/permission` | Нативные permission-промпты вместо разбора текста в `OpenCodePermission.kt` |
 | `GET /api/pair` + команда `opencode pair` | Раздача URL + логин/пароль — можно уйти от ручного adb port-forward |
@@ -93,17 +152,57 @@ HTTP-слоя.
 
 ## Этап 0 — Разведка (0.5 дня)
 
-**Боль:** неизвестно, запускается ли v2-бинарь на Android и какие реальные схемы
-у ответов.
+**Статус: выполнен на ПК 12.10.2026.** Осталась только проверка бинаря на телефоне.
 
-- Скачать `@opencode/cli-linux-arm64-musl@2.0.27` из npm, распаковать, проверить
-  `file` / `ldd` (реально ли musl + arm64), посмотреть что за 2 файла в tarball.
-- Запустить на устройстве под `libldmusl.so`, снять `opencode --version`.
-- Поднять v2 `serve` локально на десктопе и **снять руками** фактические ответы по
-  8 эндпоинтам. Докам не доверять: часть расхождений уже видна (см. таблицу выше).
-- Проверить порт по умолчанию (`4096` захардкожен в `ServerConfig.PORT`).
-- Проверить, грузит ли bundled-сервер пользовательский конфиг — от этого зависит,
-  нужна ли миграция плагинов вообще.
+### Что сделано и измерено
+
+- Скачаны `@opencode/cli-linux-arm64-musl@2.0.27` (91.2 MB) и
+  `@opencode/cli-windows-x64@2.0.27` (95.2 MB), распакованы в
+  `%TEMP%\opencode\ocv2\`.
+- **v2 — один статический бинарь, а не тройка .so.** Внутри tarball ровно
+  `package/bin/opencode`: 195.50 MB для musl-arm64 и `opencode.exe` 202.97 MB для
+  windows-x64. **`libbun-musl.so` в v2 не существует.** Нынешняя схема
+  `libopencode.so` + `libbun-musl.so` + `libldmusl.so` превращается максимум в два
+  файла: `libopencode.so` + `libldmusl.so`.
+- `opencode.exe --version` → `opencode v2.0.27`.
+- **Порт по умолчанию — `4099`, не `4096`.** `ServerConfig.PORT` в приложении
+  придётся либо переопределять флагом `--port`, либо принимать 4099.
+- Сервер печатает пароль в stdout: `server password <32 симв.>` и
+  `server listening on http://127.0.0.1:4099`.
+- Все 8 эндпоинтов сняты руками, схемы — в таблице «Что показала разведка» выше.
+
+**Главный вопрос этапа закрыт: плагины портировать НЕ нужно.**
+`GET /api/config` показал, что v2 читает `~/.config/opencode/opencode.json`
+и видит определённых там агентов; `GET /api/mcp` вернул все пять серверов из моего
+конфига в статусе `connected` (`codebase-memory-mcp`, `context7`, `gh_grep`,
+`local-memory`, `playwright`). То есть MCP из конфига запускается как есть.
+
+**Пути тоже не нужно переделывать:** `opencode debug paths` подчиняется тем же
+`XDG_CONFIG_HOME` / `XDG_DATA_HOME`, которые приложение уже выставляет в
+`OpencodeRuntime.kt:170-171` и `:583-584`. Значит приватный
+`files/opencode-config/opencode/` продолжает работать.
+
+### Что осталось
+
+- [ ] Запустить musl-arm64 бинарь на устройстве под `libldmusl.so`,
+      снять `opencode --version`. Единственный гейт «миграция отменяется / идём дальше».
+- [ ] Проверить, что `serve` на Android не пытается лезть в сеть за
+      `bin` / `repos` и не ломается без `persistentPty`
+      (на Windows `capabilities.persistentPty=false`).
+
+### Найденный баг v2, ломающий логи
+
+Флаг `--standalone` объявлен в `opencode --help`, но **`serve` его не принимает**:
+
+```
+$ opencode --standalone serve --port 4999
+ERROR  Unrecognized flag: --standalone in command opencode serve
+```
+
+Проверено и до `serve` (root-флаг), и в позиции после. При этом
+`--print-logs` в help гласит «server logs require --standalone» — то есть
+**логи сервера в 2.0.27 получить нельзя**. Наш `RuntimeValidation`/`RuntimeManager`
+не должен полагаться на серверные логи.
 
 **Готово когда:** бинарь v2 запускается на телефоне и `GET /api/info` отвечает.
 Если не запускается — миграция отменяется, дальше не идём.
@@ -131,8 +230,13 @@ HTTP-слоя.
 **Боль:** 1.18.25 и 2.0.27 должны работать в одном APK, иначе нечем откатываться.
 
 - `ServerConfig` → `ServerFlavor.V1 | ServerFlavor.V2`.
-- Детектор: пробуем `GET /api/info` — ответил → v2; нет → v1.
+- Детектор: `GET /api/info` и **проверка тела** — на v2 это JSON с полем `version`.
+  Проверять только HTTP-код нельзя: неизвестный путь на v2 отдаёт 200 + HTML SPA,
+  то есть такой детектор объявит v1 сервером v2. Критерий: тело парсится как JSON
+  и содержит `version` вида `2.x`.
 - `ApiPaths` становится функцией от `ServerFlavor`.
+- Учесть порт: v2 по умолчанию слушает **4099**. Либо всегда передаём `--port`,
+  либо храним порт в одном месте и для v1, и для v2.
 
 **Готово когда:** на устройстве с v1 всё работает как раньше, флаг не переключён.
 
@@ -142,12 +246,30 @@ HTTP-слоя.
 
 - `ci.yml:62-75` — сменить источник с GitHub release на npm:
   `https://registry.npmjs.org/@opencode/cli-linux-arm64-musl/-/cli-linux-arm64-musl-2.0.27.tgz`
+- **Схема .so меняется:** в v2 один бинарь, `libbun-musl.so` не нужна.
+  Значит `OpencodeRuntime.kt` (`BIN_NAME`/`BUN_NAME`/`LOADER_NAME`) и проверки в
+  `RuntimeValidation.kt`/`RuntimeManager.kt:720` надо править — иначе APK продолжит
+  тащить 70 MB мёртвого веса и ждать файла, которого больше нет.
+- **Бинарь v2 не статический — нужны ещё два .so из Alpine.** Под родным
+  `libldmusl.so` он падает с `Error loading shared library libstdc++.so.6`.
+  Системные библиотеки Android не подходят: `libc++.so`/`libgcc_s.so` связаны с
+  bionic, а не с musl (нет `__register_atfork`, `_Unwind_*`, `__errno`).
+  Рабочий рецепт — взять musl-линкованный GCC-рантайм Alpine v3.22 aarch64
+  (проверено на устройстве, `opencode --version` → `opencode v2.0.27`):
+  - `https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64/libstdc%2B%2B-14.2.0-r6.apk`
+    → `usr/lib/libstdc++.so.6.0.33` (2 754 992 b) → в APK как `libstdc++.so.6`
+  - `https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64/libgcc-14.2.0-r6.apk`
+    → `usr/lib/libgcc_s.so.1` (133 008 b) → в APK как `libgcc_s.so.1` + симлинк `libgcc_s.so`
+  Alpine `.apk` — это multi-stream gz tar, распаковывается обычным `tar -xzf`.
+  Установщик v2 (`https://opencode.ai/v2/install`) их не везёт: он рассчитывает
+  на хост Alpine. Итого в APK: `libopencode.so` 195.5 MB + 2.63 MB рантайма GCC.
 - Положить v2-бинарь рядом со старым (`libopencode.so`), чтобы старые установки
   не сломались до этапа 7.
 - Проверить `RuntimeValidation.kt:12,35` и `RuntimeManager.kt:720` — они валидируют
   связку `libopencode.so` + musl и печатают имя бинаря в диагностике.
 - Проверить `OpencodeRuntime.startServe` (`server/OpencodeRuntime.kt:112`) — флаги
-  запуска могли поменяться.
+  запуска могли поменяться. Учесть: `--standalone` в v2 объявлен, но `serve` его
+  отвергает, так что флаг запускать нельзя.
 - Переключить флаг на V2 на тестовом устройстве.
 
 **Готово когда:** сервер стартует, `/api/info` отвечает. **SPA в WebView пока
@@ -167,8 +289,21 @@ HTTP-слоя.
 Его в v2 нет вообще, а на нём построен `ChatNotice.kt` целиком (детект
 занятости) и логика prune в `ChatOverlay.kt:4416`.
 
-- Шаг 1: перевести на `GET /api/experimental/session/{id}/wait` (long-poll).
-- Шаг 2: когда `wait` выйдет из experimental — перевести на push `/api/event`.
+**Замена нашлась в списке сообщений, а не в отдельном эндпоинте.** В v2 в потоке
+сообщений появляется псевдо-сообщение:
+
+```json
+{ "id": "msg_…", "time": {"created": …}, "type": "idle", "outcome": "succeeded" }
+```
+
+Пока такого сообщения в последних N записях нет — сессия занята. Дополнительно у
+объекта сессии после завершения появляются `outcome` (`succeeded` / `failed`) и
+`time.idle`.
+
+- Шаг 1: детект занятости перевести на «есть ли `type:"idle"` новее последнего
+  сообщения пользователя».
+- Шаг 2 (позже, по желанию): перейти с поллинга на SSE `GET /api/event` — поток
+  живой, отдаёт `server.connected` и heartbeat.
 - Переписать `MoltbookWakePlan.kt:133` и `MoltbookWakeTest.kt:74`.
 
 **Тесты, завязанные на v1-пути:** `ChatNoticeTest.kt`, `MoltbookWakeTest.kt`,
@@ -212,7 +347,11 @@ HTTP-слоя.
 
 ## Этап 7 — Чистка (0.5 дня)
 
-- Удалить v1-бинарь из `jniLibs` → **экономия ~184 MB в APK**.
+- Удалить v1-бинарь из `jniLibs` → **экономия ~255 MB в APK** (184.7 MB
+  `libopencode.so` + 70.2 MB `libbun-musl.so`).
+- Чистая экономия на финальном APK ≈ **−57 MB**: `−184.7 −70.2 +195.5 +2.63 +0.13`
+  (v1-бинарь, `libbun-musl.so`, v2-бинарь, Alpine `libstdc++.so.6`, Alpine `libgcc_s.so.1`).
+  Переезд на v2 сам по себе APK почти не раздувает — выигрывает этап 7.
 - Удалить v1-ветки из `ApiPaths` и `ServerFlavor`.
 - Прогнать JS-гейт: `node app\src\test\js\ynison-announce.test.mjs` и
   `ynison-goaway.test.mjs`. **Тесты режут код по якорям** (`function neutralState() {`,
