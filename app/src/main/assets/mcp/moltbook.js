@@ -1456,30 +1456,72 @@ export async function postRaw(key, path, payload) {
  * замерено, что сортировки `new`, `old` и `best` возвращают разные первые элементы.
  * Второе представление - независимая проверка, а не повтор того же чтения.
  */
-export async function confirmComment(get, key, postId, commentId, parentId) {
+export async function confirmComment(get, key, postId, commentId, parentId, options) {
+  // Платформа снимает `pending` асинхронно: сразу после POST комментарий уже виден,
+  // но ещё не подтверждён. Одна перечитка ловит это как «не опубликован». Поэтому
+  // повторяем чтение с паузой, пока статус не станет подтверждённым или не выйдет срок.
+  //
+  // Повтор делается и когда комментария нет в выдаче ВООБЩЕ - не только когда он
+  // есть, но ещё pending. Это не перестраховка: замерено на 156bd4a9/pennyworth,
+  // что платформа ответила «ок», а в перечитке комментария не было, и он появился
+  // позже. Без повтора такой случай даёт ложный «не опубликован».
+  //
+  // Цена этого решения - 2 GET на попытку (сортировки new и best), до 8 за вызов,
+  // и повторы идут даже когда комментарий не найден ни разу. Поэтому число
+  // попыток мало и повтор упирается в дедлайн вызова: см. проверку callDeadlineAt
+  // перед паузой.
+  const opts = options || {};
+  // 3 попытки по 3 с = 6 с чистого сна. Этого хватает на снятие pending (замерено
+  // на pennyworth: комментарий появился в выдаче за несколько секунд), и при этом
+  // серия публикаций не упирается в MOLTBOOK_CALL_BUDGET_MS: дедлайн ставится на
+  // ВЕСЬ вызов, а не на один confirm, и 4 попытки по 4 с съедали бы четверть
+  // общего бюджета даже тогда, когда комментарий так и не появился.
+  const attempts = Number.isFinite(opts.attempts) && opts.attempts > 0 ? opts.attempts : 3;
+  const pauseMs = Number.isFinite(opts.pauseMs) && opts.pauseMs >= 0 ? opts.pauseMs : 3000;
+  const wait = typeof opts.sleep === "function" ? opts.sleep : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const views = [];
   let undecided = null;
-  for (const sort of ["new", "best"]) {
-    const raw = await get(key, "/api/v1/posts/" + postId + "/comments?sort=" + sort + "&limit=100");
-    views.push({ sort, status: raw.status, ok: raw.ok });
-    const parsed = parseComments(raw.body);
-    if (!parsed.ok) continue;
-    const hit = parsed.comments.find((comment) => comment.id === commentId);
-    if (!hit) continue;
-    const seen = {
-      found: true,
-      sort,
-      status: hit.verification_status,
-      published: isAffirmativelyPublished(hit.verification_status),
-      // Разрывный parent_id — это незнание, а не доказательство расхождения.
-      parentUnknown: !hit.parent_id,
-      parentMatches: !parentId || hit.parent_id === parentId,
-      actualParent: hit.parent_id || null,
-      parent: parentMeta(parsed.comments, parentId),
-      views: views.slice(),
-    };
-    if (seen.published && seen.parentMatches) return seen;
-    if (!undecided) undecided = seen;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    for (const sort of ["new", "best"]) {
+      const raw = await get(key, "/api/v1/posts/" + postId + "/comments?sort=" + sort + "&limit=100");
+      views.push({ sort, status: raw.status, ok: raw.ok, attempt });
+      const parsed = parseComments(raw.body);
+      if (!parsed.ok) continue;
+      const hit = parsed.comments.find((comment) => comment.id === commentId);
+      if (!hit) continue;
+      // Статус нормализуем сразу: платформа присылает и "", и undefined (поле
+      // просто отсутствует). Сравнение со "" ни одну из этих форм не ловит, и
+      // «оставить самое информативное» молча не срабатывало - наружу уходил
+      // первый, худший, объект.
+      const status = typeof hit.verification_status === "string" ? hit.verification_status : "";
+      const seen = {
+        found: true,
+        sort,
+        status,
+        published: isAffirmativelyPublished(status),
+        // Разрывный parent_id — это незнание, а не доказательство расхождения.
+        parentUnknown: !hit.parent_id,
+        parentMatches: !parentId || hit.parent_id === parentId,
+        actualParent: hit.parent_id || null,
+        parent: parentMeta(parsed.comments, parentId),
+        views: views.slice(),
+      };
+      if (seen.published && seen.parentMatches) return seen;
+      // Повтор имеет смысл только пока исход ещё может измениться. Опубликованный
+      // комментарий с ЧУЖИМ parent_id - это уже окончательный MISMATCH: сколько ни
+      // жди, статус останется тем же. Без этой остановки каждая такая ветка жгла
+      // 12 с сна и четверть бюджета вызова ради того же самого ответа.
+      if (seen.published && !seen.parentUnknown && !seen.parentMatches) return seen;
+      // Держим самое информативное «ещё не подтверждено»: со статусом важнее пустого.
+      if (!undecided || (undecided.status === "" && seen.status !== "")) undecided = seen;
+    }
+    // Пауза не должна съесть бюджет вызова: пока ждём, дедлайн стоит. Если
+    // после паузы времени на ещё одну попытку не осталось, повторять бессмысленно
+    // - fetch всё равно получит limit = 1 мс и вернёт "время вызова вышло",
+    // то есть подтверждённый комментарий превратится в found: false.
+    if (attempt >= attempts) break;
+    if (callDeadlineAt > 0 && callDeadlineAt - Date.now() <= pauseMs) break;
+    await wait(pauseMs);
   }
   return undecided || {
     found: false,

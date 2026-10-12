@@ -76,6 +76,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -548,6 +549,12 @@ fun ChatOverlay(
     // Настройки живут в том же prefs "chat_overlay": tts_engine/tts_model/tts_sid.
     var ttsConfig by remember { mutableStateOf(TtsConfig.read(context)) }
     var ttsOn by remember { mutableStateOf(TtsConfig.read(context).isEnabled) }
+// Причина отката движка, если озвучка пошла не тем голосом, что выбран.
+    // Источник - поток TtsNarrator: движок грузится лениво на первом ответе, то
+    // есть задолго после открытия панели, и опрос с потолком в несколько секунд
+    // показывал бы причину отката через раз. collectAsState перерисовывает панель
+    // и когда движок пересобрался сам (докачали модель, вставили ключ).
+val ttsFallback by TtsNarrator.fallbackReason.collectAsState()
     // Черновик ключа намеренно НЕ восстанавливается из хранилища: в поле
     // лежит только то, что юзер вводит прямо сейчас. Сам ключ читает
     // движок из ElevenLabsSecret, и в UI он не показывается никогда.
@@ -2013,6 +2020,26 @@ fun ChatOverlay(
                             ttsConfig = ttsConfig.copy(engine = TtsEngine.ElevenLabs)
                             TtsConfig.save(context, ttsConfig)
                             TtsNarrator.stop()
+                        }
+                        // Что СЕЙЧАС реально озвучит, если выбранный движок не поднялся.
+                        // Без этой строки юзер выбирает облако, слышит системный голос
+                        // и гадает почему: откат был только в Log.w и в UI не попадал.
+                        // Текст приходит из ttsFallback - состояния, которое
+                        // LaunchedEffect выше подтягивает из TtsNarrator. Считать его
+                        // здесь нельзя: панель перерисовывается на каждый кадр, а
+                        // File.length() по модели - это I/O на main thread.
+                        // Локальная копия: ttsFallback - делегированное свойство, и Kotlin
+                        // не smart-cast'ит такие (значение может измениться между
+                        // проверкой и использованием).
+                        val notice = ttsFallback
+                        if (notice != null) {
+                            Text(
+                                notice,
+                                color = Color(0xFFFFB74D),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(start = 20.dp, top = 2.dp),
+                            )
                         }
                         if (ttsConfig.engine.isCloud) {
                             // Облако идёт в сеть, поэтому честно предупреждаем про VPN:

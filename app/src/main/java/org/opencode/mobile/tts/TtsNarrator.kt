@@ -3,6 +3,9 @@ package org.opencode.mobile.tts
 import android.content.Context
 import android.util.Log
 import java.util.concurrent.Executors
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Мост между лентой чата и озвучкой: принимает текст assistant-сообщения
@@ -28,6 +31,23 @@ object TtsNarrator {
     private var chunker = SentenceChunker()
     private var consumedPrefix = ""
     private var loadedFor = ""
+
+    /**
+     * Почему поднятый движок отличается от выбранного.
+     *
+     * Поток, а не поле по двум причинам. Первая: движок грузится лениво на первом
+     * [onAssistantText], то есть через десятки секунд после открытия панели - опрос
+     * с потолком в несколько секунд успевал бы только в одном случае из десяти.
+     * Вторая: причина меняется сама (юзер докачал модель, вставил ключ, движок
+     * пересобрался) - UI обязан увидеть это без перезапуска экрана.
+     *
+     * Значение пишет тот, кто реально грузил движок (см. [SpeechFactory.Resolved]),
+     * а не пересчёт по наличию файлов: файл модели может быть, а читать его нечем,
+     * и предсказание такое сказало бы «всё в порядке».
+     */
+    private val fallback = MutableStateFlow<String?>(null)
+
+    val fallbackReason: StateFlow<String?> = fallback.asStateFlow()
 
     /**
      * Текст, который пришёл, пока движок грузился: пара «текст, ответ дописан».
@@ -164,6 +184,10 @@ object TtsNarrator {
         consumedPrefix = ""
         chunker.reset()
         deferred = null
+        // Причину отката здесь НЕ трогаем: stop() зовут из radio-строк и при тапе по
+        // уже выбранному движку, где ключ не меняется и движок не пересобирается -
+        // сброс стёр бы причину навсегда. Сбрасывает её ensureSpeaker, то есть
+        // ровно тогда, когда движок правда собирается заново.
         speaker?.stop(fadeOutMs = STOP_FADE_MS)
     }
 
@@ -220,8 +244,18 @@ object TtsNarrator {
         // не запустили две загрузки модели. Но если загрузка провалилась,
         // ключ снимаем — иначе движок больше не попробует подняться.
         loadedFor = key
+        // Причину отката сбрасываем ЗДЕСЬ, а не в stop(): stop() зовут из radio-строк
+        // даже при тапе по уже выбранному движку, когда ключ не меняется и движок
+        // не пересобирается — сброс в stop() стёр бы причину навсегда, до смены
+        // движка/модели/ключа. Здесь сброс привязан к реальной пересборке.
+        fallback.value = null
         loader.execute {
-            val synth = SpeechFactory.build(context, cfg)
+            val resolved = SpeechFactory.build(context, cfg)
+            val synth = resolved.synth
+            // Пока грузились (~2 с на Supertonic), юзер мог сменить движок, и ключ
+            // уехал вперёд. Тогда причина отката уже не про текущий движок, и в UI
+            // её показывать нельзя - следующая загрузка запишет свою.
+            if (loadedFor == key) fallback.value = resolved.reason
             if (synth == null) {
                 Log.w(TAG, "движок ${cfg.engine.label} недоступен, озвучка выключена")
                 // Снимаем ключ: следующий вызов попробует снова (пользователь мог
@@ -229,7 +263,7 @@ object TtsNarrator {
                 if (loadedFor == key) loadedFor = ""
                 return@execute
             }
-            Log.i(TAG, "движок готов: ${cfg.engine.label}")
+            Log.i(TAG, "движок готов: ${resolved.effective.label}")
             speaker?.release()
             speaker = TtsSpeaker(synth)
             applyDumpPref(context)
