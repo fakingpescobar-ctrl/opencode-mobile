@@ -635,7 +635,12 @@ object OpencodeRuntime {
         runCatching {
             require(memoryToken.isNotBlank()) { "MCP memory token is empty" }
             val cfg = OpencodeApp.ServerConfig
-            val file = File(File(cfg.opencodeConfig, "opencode"), "opencode.jsonc")
+            val configHome = File(cfg.opencodeConfig, "opencode")
+            // Мусор от v1 убираем до подготовки конфига: пока node_modules на месте,
+            // в нём лежит package.json со строкой "1.18.25", и агент, спрашивающий
+            // версию, читает её вместо живого /api/info.
+            V1Leftovers.purge(configHome)
+            val file = File(configHome, "opencode.jsonc")
             val ok = ensureMcpConfigFile(file, ynisonToken, moltbookReady)
             // Эталон в Documents пишем только после успеха: копия неразобранного
             // конфига хуже отсутствия копии — потом её не отличить от рабочей.
