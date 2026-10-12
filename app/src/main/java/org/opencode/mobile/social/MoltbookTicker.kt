@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import org.json.JSONObject
 import org.opencode.mobile.OpencodeApp
+import org.opencode.mobile.server.ApiPaths
 import org.opencode.mobile.server.LocalOpenCodeClient
 import java.io.File
 import java.io.IOException
@@ -1088,7 +1089,7 @@ internal class MoltbookTicker(
             val ok =
                 try {
                     client.verify(challenge.verificationCode, answer)
-} catch (e: MoltbookHttpException) {
+                } catch (e: MoltbookHttpException) {
                     if (e.isTransient) {
                         // Сервер не рассмотрел запрос по существу: код проверки
                         // жив, повтор осмыслен. Раньше любой не-2xx переводил
@@ -1124,8 +1125,6 @@ internal class MoltbookTicker(
         val lastSpace = cut.lastIndexOf(' ')
         return cut.take(if (lastSpace > budget / 2) lastSpace else budget).trimEnd() + "…"
     }
-
-
 
     /**
      * Один запрос на два решения: какие посты поддержать и когда вернуться.
@@ -1186,18 +1185,18 @@ internal class MoltbookTicker(
      * пользователя, а сессия удаляется, чтобы /session не пух от пустых «молотов».
      */
     private fun askModel(prompt: String): String? {
-        val sessionId = LocalOpenCodeClient.post(OPENCODE_PORT, "/session", "{}")?.let(::sessionIdOf)
+        val sessionId = LocalOpenCodeClient.post(OPENCODE_PORT, ApiPaths.active.sessions(), "{}")?.let(::sessionIdOf)
             ?: return null
         try {
             val body = JSONObject().apply {
                 put("parts", org.json.JSONArray().put(JSONObject().put("type", "text").put("text", prompt)))
             }
-            if (!LocalOpenCodeClient.postAsync(OPENCODE_PORT, "/session/$sessionId/message", body.toString())) {
+            if (!LocalOpenCodeClient.postAsync(OPENCODE_PORT, ApiPaths.active.message(sessionId), body.toString())) {
                 return null
             }
             return awaitAssistantText(sessionId)
         } finally {
-            LocalOpenCodeClient.delete(OPENCODE_PORT, "/session/$sessionId")
+            LocalOpenCodeClient.delete(OPENCODE_PORT, ApiPaths.active.session(sessionId))
         }
     }
 
@@ -1212,7 +1211,7 @@ internal class MoltbookTicker(
     private fun awaitAssistantText(sessionId: String): String? {
         repeat(GENERATION_POLLS) {
             Thread.sleep(GENERATION_POLL_MS)
-            val raw = LocalOpenCodeClient.get(OPENCODE_PORT, "/session/$sessionId/message") ?: return@repeat
+            val raw = LocalOpenCodeClient.get(OPENCODE_PORT, ApiPaths.active.message(sessionId)) ?: return@repeat
             val messages = runCatching { org.json.JSONArray(raw) }.getOrNull() ?: return@repeat
             val text = lastAssistantText(messages)
             if (!text.isNullOrBlank()) return text
@@ -1268,11 +1267,11 @@ internal class MoltbookTicker(
                         ),
                 )
             }
-        LocalOpenCodeClient.postAsync(OPENCODE_PORT, "/session/$sessionId/message", body.toString())
+        LocalOpenCodeClient.postAsync(OPENCODE_PORT, ApiPaths.active.message(sessionId), body.toString())
     }
 
     private fun lastTouchedUserSession(): String? {
-        val raw = LocalOpenCodeClient.get(OPENCODE_PORT, "/session") ?: return null
+        val raw = LocalOpenCodeClient.get(OPENCODE_PORT, ApiPaths.active.sessions()) ?: return null
         val sessions = runCatching { org.json.JSONArray(raw) }.getOrNull() ?: return null
         return (0 until sessions.length())
             .mapNotNull { sessions.optJSONObject(it) }
@@ -1511,7 +1510,7 @@ internal class MoltbookTicker(
 
         const val DIGEST_PATH = "moltbook-digest.md"
 
-    const val MOLTBOOK_MEMORY_TAG = "MOLTBOOK-SUMMARY"
+        const val MOLTBOOK_MEMORY_TAG = "MOLTBOOK-SUMMARY"
         const val POSTS_PER_TICK = 3
 
         /**
@@ -1582,6 +1581,7 @@ internal class MoltbookTicker(
          * тем же текстом; длиннее — человек, задавший вопрос, ждёт слишком долго.
          */
         const val RETRY_COOLDOWN_MS = 6 * 60 * 60 * 1000L
+
         /**
          * Правило о чужом тексте для [draftPrompt].
          *

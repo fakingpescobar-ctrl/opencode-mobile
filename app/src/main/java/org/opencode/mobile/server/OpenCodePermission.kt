@@ -2,8 +2,6 @@ package org.opencode.mobile.server
 
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
 
 internal data class OpenCodePermissionRequest(
     val id: String,
@@ -45,10 +43,10 @@ internal object OpenCodePermissionApi {
         decision: PermissionDecision,
     ): Boolean {
         require(requestId.isNotBlank()) { "Permission request id must not be blank" }
-        val encodedId = URLEncoder.encode(requestId, StandardCharsets.UTF_8.name())
+        val path = ApiPaths.active.legacy.permissionReply(requestId) ?: return false
         return LocalOpenCodeClient.post(
             port = port,
-            path = "/permission/$encodedId/reply",
+            path = path,
             body = replyBody(decision),
         ) != null
     }

@@ -4,6 +4,7 @@ import android.util.Log
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
+import org.opencode.mobile.server.ApiPaths
 import org.opencode.mobile.server.LocalOpenCodeClient
 import java.time.Instant
 import java.time.ZoneOffset
@@ -161,7 +162,7 @@ internal object ZenQuota {
         port: Int,
         nowMs: Long,
     ): Int? {
-        val sessionsRaw = LocalOpenCodeClient.get(port, "/session")
+        val sessionsRaw = LocalOpenCodeClient.get(port, ApiPaths.active.sessions())
         val arr = sessionsRaw?.let { parseArray(it) }
         if (arr == null) {
             Log.d(TAG, "sessions fetch failed or bad json, keep last=$lastUsed")
@@ -193,7 +194,7 @@ internal object ZenQuota {
         val id = session?.optString("id", "").orEmpty()
         val updated = session?.optJSONObject("time")?.optLong("updated", 0L) ?: 0L
         val touchedToday = id.isNotBlank() && updated >= since
-        return if (touchedToday) LocalOpenCodeClient.get(port, "/session/$id/message") else null
+        return if (touchedToday) LocalOpenCodeClient.get(port, ApiPaths.active.message(id)) else null
     }
 
     /** Элемент массива как объект; `null`, если это не объект (строка/число). */

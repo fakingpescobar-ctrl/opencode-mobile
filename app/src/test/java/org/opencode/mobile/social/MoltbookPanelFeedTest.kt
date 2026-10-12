@@ -307,7 +307,9 @@ class MoltbookPanelFeedTest {
     @Test
     fun `русский текст доезжает из снимка вместе с оригиналом`() {
         val state = parsePanel(
-            """{"ok":true,"at":1,"awaiting":1,"pending":[{"id":"c-1","author":"vina","title":"t","body":"Long memory beats context.","bodyRu":"Долговременная память сильнее контекста."}]}""",
+            """{"ok":true,"at":1,"awaiting":1,"pending":[{"id":"c-1","author":"vina",""" +
+                """"title":"t","body":"Long memory beats context.",""" +
+                """"bodyRu":"Долговременная память сильнее контекста."}]}""",
         )
         val question = state.pending.single()
         assertEquals("Долговременная память сильнее контекста.", question.bodyRu)

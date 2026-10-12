@@ -2,8 +2,6 @@ package org.opencode.mobile.server
 
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
 
 /**
  * Один вариант ответа, предложенный моделью. [label] уходит в сервер дословно —
@@ -83,7 +81,8 @@ internal object OpenCodeQuestionApi {
         labelsPerPrompt: List<List<String>>,
     ): Boolean {
         require(requestId.isNotBlank()) { "Question request id must not be blank" }
-        return LocalOpenCodeClient.postAsync(port, actionPath(requestId, REPLY), replyBody(labelsPerPrompt))
+        val path = actionPath(requestId, REPLY) ?: return false
+        return LocalOpenCodeClient.postAsync(port, path, replyBody(labelsPerPrompt))
     }
 
     /** Отклонение вопроса — аналог REJECT у разрешений, ход модели продолжается. */
@@ -95,7 +94,8 @@ internal object OpenCodeQuestionApi {
         // Тела у reject нет (в спеке requestBody отсутствует), а postAsync требует
         // строку — шлём пустой объект, чтобы не выдумывать поля, которых сервер
         // не читает.
-        return LocalOpenCodeClient.postAsync(port, actionPath(requestId, REJECT), "{}")
+        val path = actionPath(requestId, REJECT) ?: return false
+        return LocalOpenCodeClient.postAsync(port, path, "{}")
     }
 
     /**
@@ -107,8 +107,7 @@ internal object OpenCodeQuestionApi {
     internal fun actionPath(
         requestId: String,
         action: String,
-    ): String =
-        "/question/${URLEncoder.encode(requestId, StandardCharsets.UTF_8.name())}/$action"
+    ): String? = ApiPaths.active.legacy.questionAction(requestId, action)
 
     private const val REPLY = "reply"
 
@@ -139,8 +138,7 @@ internal object OpenCodeQuestionApi {
         }.getOrDefault(emptyList())
     }
 
-    private fun JSONArray.objects(): List<JSONObject> =
-        (0 until length()).mapNotNull(::optJSONObject)
+    private fun JSONArray.objects(): List<JSONObject> = (0 until length()).mapNotNull(::optJSONObject)
 
     private fun JSONObject.toQuestionRequest(): OpenCodeQuestionRequest? {
         val requestId = optString("id")

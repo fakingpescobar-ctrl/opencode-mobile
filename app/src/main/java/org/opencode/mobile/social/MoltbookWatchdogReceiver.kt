@@ -6,6 +6,7 @@ import android.content.Intent
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import org.opencode.mobile.server.ApiPaths
 import org.opencode.mobile.server.LocalOpenCodeClient
 import org.opencode.mobile.social.MoltbookWatchdog.Verdict
 import java.io.File
@@ -156,6 +157,7 @@ class MoltbookWatchdogReceiver : BroadcastReceiver() {
      * поэтому ограничение переживает перезапуск процесса и не плодит второе
      * состояние на диске.
      */
+
     /**
      * Вид записи журнала для вердикта: порванная цепочка - `tamper`, затишье - `stale`.
      *
@@ -216,12 +218,12 @@ class MoltbookWatchdogReceiver : BroadcastReceiver() {
             JSONObject()
                 .put("parts", JSONArray().put(JSONObject().put("type", "text").put("text", text)))
                 .toString()
-        LocalOpenCodeClient.postAsync(OPENCODE_PORT, "/session/$sessionId/message", body)
+        LocalOpenCodeClient.postAsync(OPENCODE_PORT, ApiPaths.active.message(sessionId), body)
     }
 
     /** Последняя сессия пользователя: её ChatOverlay обновляет сам раз в пару секунд. */
     private fun lastTouchedUserSession(): String? {
-        val raw = LocalOpenCodeClient.get(OPENCODE_PORT, "/session") ?: return null
+        val raw = LocalOpenCodeClient.get(OPENCODE_PORT, ApiPaths.active.sessions()) ?: return null
         val sessions = runCatching { JSONArray(raw) }.getOrNull() ?: return null
         return (0 until sessions.length())
             .mapNotNull { sessions.optJSONObject(it) }

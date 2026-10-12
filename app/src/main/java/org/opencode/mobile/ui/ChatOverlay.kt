@@ -130,6 +130,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import org.opencode.mobile.R
+import org.opencode.mobile.server.ApiPaths
 import org.opencode.mobile.server.LocalOpenCodeClient
 import org.opencode.mobile.server.MemoryMcp
 import org.opencode.mobile.server.OpenCodePermissionApi
@@ -274,6 +275,9 @@ private const val STABLE_POLL_ROUNDS = 3
 // с задержкой ≤3с — некритично.
 private const val MCP_CACHE_MS = 3_000L
 
+/** Оранжевый плашки «озвучка переехала на другой движок»: предупреждение, не ошибка. */
+private const val TTS_FALLBACK_NOTICE_COLOR = 0xFFFFB74D
+
 private object McpCache {
     @Volatile var raw: String? = null
 
@@ -285,7 +289,7 @@ private fun getMcpCached(port: Int): String? {
     val now = System.currentTimeMillis()
     val cached = McpCache.raw
     if (cached != null && now - McpCache.at < MCP_CACHE_MS) return cached
-    val fresh = LocalOpenCodeClient.get(port, "/mcp")
+    val fresh = LocalOpenCodeClient.get(port, ApiPaths.active.mcp())
     if (fresh != null) {
         McpCache.raw = fresh
         McpCache.at = now
@@ -338,7 +342,9 @@ private object PermissionCache {
                 }
                 entry to generation
             }
-        val raw = LocalOpenCodeClient.get(port, "/permission")
+        val raw = ApiPaths.active.legacy
+            .permissionList()
+            ?.let { LocalOpenCodeClient.get(port, it) }
         return synchronized(this) {
             // Reply/session switch happened while GET was in flight. Its response describes
             // already-mutated state and must not resurrect a permission card that was cleared.
@@ -554,7 +560,7 @@ fun ChatOverlay(
     // есть задолго после открытия панели, и опрос с потолком в несколько секунд
     // показывал бы причину отката через раз. collectAsState перерисовывает панель
     // и когда движок пересобрался сам (докачали модель, вставили ключ).
-val ttsFallback by TtsNarrator.fallbackReason.collectAsState()
+    val ttsFallback by TtsNarrator.fallbackReason.collectAsState()
     // Черновик ключа намеренно НЕ восстанавливается из хранилища: в поле
     // лежит только то, что юзер вводит прямо сейчас. Сам ключ читает
     // движок из ElevenLabsSecret, и в UI он не показывается никогда.
@@ -950,7 +956,7 @@ val ttsFallback by TtsNarrator.fallbackReason.collectAsState()
                         // «залипает»). Поэтому каждую умирающую сессию сначала глушим abort-ом
                         // (идемпотентен, безвреден для пустых/404) — независимо от того, была
                         // ли она активной на момент сброса.
-                        val raw = LocalOpenCodeClient.get(serverPort, "/session") ?: "[]"
+                        val raw = LocalOpenCodeClient.get(serverPort, ApiPaths.active.sessions()) ?: "[]"
                         try {
                             val arr = org.json.JSONArray(raw)
                             for (i in 0 until arr.length()) {
@@ -2035,7 +2041,7 @@ val ttsFallback by TtsNarrator.fallbackReason.collectAsState()
                         if (notice != null) {
                             Text(
                                 notice,
-                                color = Color(0xFFFFB74D),
+                                color = Color(TTS_FALLBACK_NOTICE_COLOR),
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Medium,
                                 modifier = Modifier.padding(start = 20.dp, top = 2.dp),
@@ -3867,7 +3873,19 @@ private fun MessageRow(
 private suspend fun fetchNotice(
     port: Int,
     sessionId: String,
-): ChatNotice? = noticeFromStatus(LocalOpenCodeClient.get(port, "/session/status"), sessionId)
+): ChatNotice? = noticeFromStatus(statusBody(port), sessionId)
+
+/**
+ * Тело карты занятых сессий.
+ *
+ * null — двусторонний отказ, и это ровно то, что отдаём вызывающему: сервер
+ * не ответил ИЛИ в v2 такого пути нет вовсе. Второе — не «сессии свободны»,
+ * поэтому вызывающие обязаны трактовать null как «не знаю», а не как «idle».
+ */
+private fun statusBody(port: Int): String? {
+    val path = ApiPaths.active.status() ?: return null
+    return LocalOpenCodeClient.get(port, path)
+}
 
 private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
     withContext(Dispatchers.IO) {
@@ -3877,7 +3895,7 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             // тик. Отдельный /health-запрос не делаем — это лишний трафик и лишняя
             // нагрузка на сервер ради цифры в шапке.
             val pingStart = System.nanoTime()
-            val sessionsBody = LocalOpenCodeClient.get(p, "/session")
+            val sessionsBody = LocalOpenCodeClient.get(p, ApiPaths.active.sessions())
             val pingMs = (System.nanoTime() - pingStart) / NS_PER_MS
             if (sessionsBody == null) {
                 // Сервер не ответил. Снапшот строить не из чего, но сам факт
@@ -3920,7 +3938,7 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             val label = titleOf(sessions, activeId)
             // /message (лента) и /permission стартуют параллельно: оба вызова
             // блокирующие, поэтому async убирает их последовательную задержку.
-            val msgDeferred = async { LocalOpenCodeClient.get(p, "/session/$activeId/message") }
+            val msgDeferred = async { LocalOpenCodeClient.get(p, ApiPaths.active.message(activeId)) }
             val permissionDeferred = async { PermissionCache.get(p, activeId) }
             // Статус хода от сервера: квота/ретрай провайдера. Отдельным async,
             // чтобы не добавлять его задержку к ленте — оба вызова блокирующие.
@@ -4207,7 +4225,10 @@ private fun titleOf(
 private fun questionOf(
     port: Int,
     sessionId: String,
-): OpenCodeQuestionRequest? = OpenCodeQuestionApi.pendingForSession(LocalOpenCodeClient.get(port, "/question"), sessionId)
+): OpenCodeQuestionRequest? {
+    val path = ApiPaths.active.legacy.questionList() ?: return null
+    return OpenCodeQuestionApi.pendingForSession(LocalOpenCodeClient.get(port, path), sessionId)
+}
 
 private suspend fun scrollToBottomFull(
     state: LazyListState,
@@ -4267,7 +4288,7 @@ private fun playNotificationSound(context: Context) {
 }
 
 private fun createSession(port: Int): String? {
-    val body = LocalOpenCodeClient.post(port, "/session", "{}") ?: return null
+    val body = LocalOpenCodeClient.post(port, ApiPaths.active.sessions(), "{}") ?: return null
     return try {
         JSONObject(body).optString("id").takeIf(String::isNotBlank)
     } catch (_: Exception) {
@@ -4287,7 +4308,7 @@ private fun createSession(port: Int): String? {
 private fun abortSession(
     port: Int,
     sessionId: String,
-): Boolean = LocalOpenCodeClient.post(port, "/session/$sessionId/abort", "") != null
+): Boolean = LocalOpenCodeClient.post(port, ApiPaths.active.interrupt(sessionId), "") != null
 
 /**
  * Есть ли запись сессии в /session/status, то есть считает ли сервер её ход
@@ -4301,7 +4322,7 @@ private fun sessionRunning(
     port: Int,
     sessionId: String,
 ): Boolean {
-    val raw = LocalOpenCodeClient.get(port, "/session/status") ?: return false
+    val raw = statusBody(port) ?: return false
     return try {
         JSONObject(raw).has(sessionId)
     } catch (_: Exception) {
@@ -4318,7 +4339,7 @@ private fun sessionRunning(
 private fun deleteSession(
     port: Int,
     sessionId: String,
-): Boolean = LocalOpenCodeClient.delete(port, "/session/$sessionId")
+): Boolean = LocalOpenCodeClient.delete(port, ApiPaths.active.session(sessionId))
 
 /**
  * Есть ли в сессии хоть одно сообщение. Разделяет «сервер не получил запрос»
@@ -4330,7 +4351,7 @@ private fun sessionHasMessages(
     sessionId: String,
 ): Boolean =
     try {
-        val raw = LocalOpenCodeClient.get(port, "/session/$sessionId/message")
+        val raw = LocalOpenCodeClient.get(port, ApiPaths.active.message(sessionId))
         raw != null && JSONArray(raw).length() > 0
     } catch (_: Exception) {
         // Не смогли узнать — считаем, что сохранилось: на неопределённости не стираем.
@@ -4344,7 +4365,7 @@ private fun sessionHasMessages(
  */
 private fun busySessionIds(port: Int): Set<String>? =
     try {
-        val raw = LocalOpenCodeClient.get(port, "/session/status") ?: return null
+        val raw = statusBody(port) ?: return null
         val obj = JSONObject(raw)
         val out = LinkedHashSet<String>()
         for (k in obj.keys()) {
@@ -4390,7 +4411,7 @@ private suspend fun stopAndPurge(
             tries++
         }
     }
-    val reachable = LocalOpenCodeClient.get(port, "/session/status") != null
+    val reachable = statusBody(port) != null
     if (!purgeAllowed(reachable, sessionRunning(port, sessionId))) {
         android.util.Log.w(
             "ChatOverlay",
@@ -4420,7 +4441,7 @@ private fun pruneEmptySessions(
     port: Int,
     keep: Set<String>,
 ) {
-    val raw = LocalOpenCodeClient.get(port, "/session") ?: return
+    val raw = LocalOpenCodeClient.get(port, ApiPaths.active.sessions()) ?: return
     val ids =
         try {
             val arr = JSONArray(raw)
@@ -4465,7 +4486,7 @@ private fun postMessage(
     text: String,
 ): Boolean {
     val body = "{\"parts\":[{\"type\":\"text\",\"text\":${JSONObject.quote(text)}}]}"
-    return LocalOpenCodeClient.postAsync(port, "/session/$sessionId/message", body)
+    return LocalOpenCodeClient.postAsync(port, ApiPaths.active.message(sessionId), body)
 }
 
 /** Ряд-переключатель в стиле панели STT: активен или нет. */

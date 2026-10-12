@@ -3,10 +3,10 @@ package org.opencode.mobile.social
 import android.content.Context
 import android.util.Log
 import org.json.JSONObject
+import org.opencode.mobile.server.ApiPaths
 import org.opencode.mobile.server.LocalOpenCodeClient
 import org.opencode.mobile.server.wakeLog
 import org.opencode.mobile.server.wakeStamp
-import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 
@@ -28,7 +28,7 @@ internal object MoltbookWake {
      */
     const val FILE_NAME_WAKE_STAMP: String = "last-wake"
 
-const val FILE_NAME_WAKE_LOG: String = "wake.log"
+    const val FILE_NAME_WAKE_LOG: String = "wake.log"
 
     /**
      * Что именно сказать агенту.
@@ -58,7 +58,7 @@ const val FILE_NAME_WAKE_LOG: String = "wake.log"
     /** Тело сообщения — ровно то, что уже умеет отправлять UI. */
     fun messageBody(text: String): String = "{\"parts\":[{\"type\":\"text\",\"text\":${JSONObject.quote(text)}}]}"
 
-    fun messagePath(sessionId: String): String = "/session/$sessionId/message"
+    fun messagePath(sessionId: String): String = ApiPaths.active.message(sessionId)
 
     /**
      * Строка журнала: одна попытка — одна строка.
@@ -108,7 +108,7 @@ const val FILE_NAME_WAKE_LOG: String = "wake.log"
                 // как "POST без тела, как abort-эндпоинт"). Валидатор opencode такую
                 // сессию не создаёт, post вернёт null, и Create навсегда останется
                 // мёртвой веткой с правдоподобной записью в журнале.
-                MoltbookWakePlan.parseCreated(LocalOpenCodeClient.post(OPENCODE_PORT, SESSION_PATH, "{}"))
+                MoltbookWakePlan.parseCreated(LocalOpenCodeClient.post(OPENCODE_PORT, ApiPaths.active.sessions(), "{}"))
             } else {
                 null
             }
@@ -142,13 +142,19 @@ const val FILE_NAME_WAKE_LOG: String = "wake.log"
     private fun plan(
         context: Context,
         now: Long,
-    ): MoltbookWakePlan.Plan =
-        MoltbookWakePlan.planFor(
-            LocalOpenCodeClient.get(OPENCODE_PORT, SESSION_PATH),
-            LocalOpenCodeClient.get(OPENCODE_PORT, STATUS_PATH),
+    ): MoltbookWakePlan.Plan {
+        // Тело карты занятых сессий. null — двусторонний отказ: сервер не ответил
+        // ИЛИ в v2 такого пути нет вовсе. Второе — не «сессии свободны», поэтому
+        // план обязан трактовать null как «не знаю» (этап 4 плана миграции).
+        val statusPath = ApiPaths.active.status()
+        val statusBody = statusPath?.let { LocalOpenCodeClient.get(OPENCODE_PORT, it) }
+        return MoltbookWakePlan.planFor(
+            LocalOpenCodeClient.get(OPENCODE_PORT, ApiPaths.active.sessions()),
+            statusBody,
             now,
             lastWakeAt(context),
         )
+    }
 
     /**
      * Метка последнего УСПЕШНОГО будильника. На отказе она не двигается:
@@ -191,6 +197,4 @@ const val FILE_NAME_WAKE_LOG: String = "wake.log"
 
     private const val TAG: String = "MoltbookWake"
     private const val OPENCODE_PORT: Int = 4096
-    private const val SESSION_PATH: String = "/session"
-    private const val STATUS_PATH: String = "/session/status"
 }

@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import org.opencode.mobile.server.ApiPaths
 import org.opencode.mobile.server.LocalOpenCodeClient
 import org.opencode.mobile.server.keyFile
 import java.util.concurrent.Executors
@@ -148,7 +149,7 @@ class MoltbookAlarmReceiver : BroadcastReceiver() {
     }
 
     /** Проверка дешёвая и осмысленная: будить некого, если сервера нет. */
-    private fun isServerUp(): Boolean = LocalOpenCodeClient.get(OPENCODE_PORT, "/session") != null
+    private fun isServerUp(): Boolean = LocalOpenCodeClient.get(OPENCODE_PORT, ApiPaths.active.sessions()) != null
 
     private companion object {
         const val TAG = "MoltbookAlarm"
