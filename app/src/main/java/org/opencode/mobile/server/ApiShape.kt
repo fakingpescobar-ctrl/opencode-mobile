@@ -73,48 +73,58 @@ internal object ApiShape {
     }
 
     /**
-     * Лента v2: `{data:[…]}`, новые→старые, приводится к конверту v1 и разворачивается.
-     *
-     * Отдельная функция не ради красоты: вместе с веткой v1 она не влезала в
-     * лимит сложности, а заодно держала цикл с двумя `continue`.
-     */
-    /**
      * Что показать из одного сообщения v2, либо null, если показывать нечего.
      *
-     * Отдельная функция не только ради читаемости: все три отказа (сообщение не
+     * [shownError] — текст ошибки, который в ленте ниже по времени уже показан.
+     * В v2 причина дублируется в assistant-сообщении и в idle. Обход идёт от
+     * старых к новым (сервер отдаёт наоборот), поэтому первым носителем причины
+     * оказывается assistant, а дублирующий его idle подавляется. Подавлять умелось
+     * только idle — и тогда одна и та же строка «⚠ …» попадала в ленту дважды:
+     * один раз из idle, второй раз из assistant. Поэтому подавляется любое
+     * сообщение с ТЕМ ЖЕ текстом ошибки, а не по типу сообщения. Сравнение идёт
+     * по тексту, а не по факту наличия ошибки: у соседних ходов причины разные,
+     * и обе должны быть видны.
+     *
+     * Отдельная функция не только ради читаемости: все отказы (сообщение не
      * разобралось, дубль ошибки, пустой конверт) иначе требовали трёх `continue`
      * в цикле, а detekt разрешает один.
      */
-    private fun showable(src: JSONObject?, errorShown: Boolean): JSONObject? {
-        val error = src?.optJSONObject("error")
-        // В v2 текст ошибки дублируется в assistant-сообщении и в idle.
-        // Показываем первый (новый) раз и молчим про второй.
-        val dupError = src != null && src.optString("type") == IDLE_TYPE && (error == null || errorShown)
-        return if (src == null || dupError) null else toV1Envelope(src).takeUnless { isBlankEnvelope(it) }
-    }
+    private fun showable(src: JSONObject?, shownError: String?): JSONObject? =
+        src?.let { message ->
+            val error = asErrorText(message.optJSONObject("error"))
+            // Роль idle: она несёт ровно дубль уже показанного отказа. Показать имеет
+            // смысл, только если собственной причины у неё нет.
+            val idleDuplicate = message.optString("type") == IDLE_TYPE && error == shownError
+            val silentFailure = message.optString("type") == IDLE_TYPE && error == null
+            if (idleDuplicate || silentFailure) {
+                null
+            } else {
+                toV1Envelope(message, suppressError = error != null && error == shownError)
+                    .takeUnless { isBlankEnvelope(it) }
+            }
+        }
 
     private fun normalizedFromV2(arr: JSONArray): JSONArray {
         val out = JSONArray()
-        // Идём от новых к старым (v2 отдаёт в этом порядке), поэтому здесь же
-        // видно, показывал ли соседний assistant ту же ошибку.
-        var errorShown = false
+        // v2 отдаёт ленту новыми→старыми, а существующий код ждёт хронологическую.
+        // Порядок всегда был таким, но проверить его было нечем: ни один тест на
+        // порядок не смотрел, и когда рядом чинили дубли, пришлось гадать, не
+        // перевернулось ли что-то здесь.
+        //
+        // Побочный плюс обхода от старых к новым: носителем причины оказывается
+        // assistant (у него есть и свой текст, и error), а дублирующий его idle
+        // идёт следом и подавляется — вместо служебной строки с причиной и
+        // реплики модели рядом.
+        var shownError: String? = null
         for (i in arr.length() - 1 downTo 0) {
             val src = arr.optJSONObject(i)
-            val envelope = showable(src, errorShown)
+            val envelope = showable(src, shownError)
             if (envelope != null) {
                 out.put(envelope)
-                // Показанная ошибка относится только к текущему ходу. Сброс
-                // здесь неявный: user-сообщение ошибки не несёт, поэтому на нём
-                // флаг сам собой обнуляется. Сделано явно, потому что такой
-                // молчаливый сброс легко сломать правкой строки выше — и тогда
-                // провал без assistant-сообщения стал бы пустым.
-                //
-                // Флаг ставится по errorText, а не по наличию поля error: пустой
-                // объект error даёт asErrorText == null, часть в ленту не
-                // попадает, и по «полю есть» флаг встал бы в true, подавив
-                // настоящую причину из соседнего idle. Это ровно тот класс бага,
-                // что уже был здесь один раз.
-                errorShown = asErrorText(src?.optJSONObject("error")) != null
+                // Показанная ошибка относится только к текущему ходу. Сброс здесь
+                // неявный: user-сообщение ошибки не несёт, поэтому на нём флаг сам
+                // собой обнуляется.
+                shownError = asErrorText(src?.optJSONObject("error"))
             }
         }
         return out
@@ -134,26 +144,35 @@ internal object ApiShape {
     /**
      * Роль для готового конверта.
      *
-     * Ошибка намеренно НЕ идёт под роль `assistant`. Ответ, который не пришёл,
-     * — не реплика модели, и если подставить его под `assistant`, в ловушку
-     * попадут все, кто ищет «последний ответ ассистента»: счётчик завершённых
-     * ответов, ожидание ответа в молтизме (lastAssistantText берёт только части
-     * типа `text`, поэтому туда ошибка не попадёт), экспорт переписки. Текст ошибки
-     * ушёл бы наружу как реплика вместо того, чтобы остаться диагностикой.
+     * Ошибка подменяет роль на [ERROR_ROLE] ТОЛЬКО когда у хода не осталось своего
+     * текста: тогда показать нечего, кроме причины, и она должна быть отдельной
+     * служебной строкой.
+     *
+     * Когда текст есть — например модель ответила и упала на середине, или
+     * наговорила «посмотрел конфиги» перед обрывом — роль остаётся `assistant`.
+     * Иначе собственная реплика модели переезжает под служебную строку и в чате
+     * выглядит так, будто её прислала система, а это ровно то, что пользователь
+     * замечал как «то же самое продублировалось под системой».
+     *
+     * Раньше ошибка всегда переименовывала роль, даже при своём тексте.
      */
     private fun roleFor(type: String, parts: JSONArray): String {
         val errored = (0 until parts.length()).any { parts.optJSONObject(it)?.optString("type") == ERROR_PART }
         return when {
-            errored -> ERROR_ROLE
+            errored && !hasText(parts) -> ERROR_ROLE
             type == "user" || type == "assistant" -> type
             // `system`, `idle` и всё незнакомое рисуются служебной строкой.
             else -> "system"
         }
     }
 
-    /** v2-сообщение → v1-конверт. */
+    private fun hasText(parts: JSONArray): Boolean =
+        (0 until parts.length()).any {
+            parts.optJSONObject(it)?.let { it.optString("type") == "text" && it.optString("text").isNotBlank() } == true
+        }
+
     /** Приводит одно сообщение v2 к конверту v1. Виден из [v1Passthrough]. */
-    internal fun toV1Envelope(msg: JSONObject): JSONObject {
+    internal fun toV1Envelope(msg: JSONObject, suppressError: Boolean = false): JSONObject {
         val type = msg.optString("type")
         val error = asErrorText(msg.optJSONObject("error"))
         val time = msg.optJSONObject("time")
@@ -165,7 +184,7 @@ internal object ApiShape {
         val completed = time?.optLong("completed") ?: 0L
         val v1Time = JSONObject().put("created", time?.optLong("created") ?: 0L)
         if (completed > 0L) v1Time.put("completed", completed)
-        val parts = partsOf(msg, error)
+        val parts = partsOf(msg, if (suppressError) null else error)
         val info =
             JSONObject()
                 .put("role", roleFor(type, parts))

@@ -281,6 +281,13 @@ private const val MCP_CACHE_MS = 3_000L
 /** Оранжевый плашки «озвучка переехала на другой движок»: предупреждение, не ошибка. */
 private const val TTS_FALLBACK_NOTICE_COLOR = 0xFFFFB74D
 
+/** Отдельная роль для сообщения об ошибке — иначе она уезжает в «Система». */
+private const val ERROR_ROLE_ARGB = 0xFFE05B5B
+
+/** Сколько символов текста реплики и сколько — причины отказа попадает в отладочную строку. */
+private const val DIAG_TEXT_CHARS = 30
+private const val DIAG_NOTICE_CHARS = 40
+
 private object McpCache {
     @Volatile var raw: String? = null
 
@@ -383,6 +390,8 @@ private object PermissionCache {
 internal data class ChatMsg(
     val role: String,
     val text: String,
+    /** Причина отказа провайдера — показывается, но не читается вслух и не считается ответом. */
+    val notice: String? = null,
 )
 
 // Один вызов инструмента модели (tool) для live-чипа «что делает сейчас».
@@ -1259,7 +1268,7 @@ fun ChatOverlay(
     // (композиция/измерение заняли время), вибрируем строго после показа текста.
     // knownRendered — индекс последнего, на который уже «вибрировали» (высчитывается
     // как количество завершённых ответов на момент последней вибрации).
-    val lastResp = snapshot?.messages?.indexOfLast { it.role == "assistant" && it.text.isNotBlank() }
+    val lastResp = snapshot?.messages?.indexOfLast { it.role == "assistant" && it.text.isNotBlank() && it.notice == null }
     LaunchedEffect(lastResp) {
         val idx = lastResp ?: return@LaunchedEffect
         if (idx < 0) return@LaunchedEffect
@@ -1331,7 +1340,7 @@ fun ChatOverlay(
             var changed = false
             if (snap != null) {
                 val now = System.currentTimeMillis()
-                val completed = snap.messages.count { it.role == "assistant" && it.text.isNotBlank() }
+                val completed = snap.messages.count { it.role == "assistant" && it.text.isNotBlank() && it.notice == null }
                 val old = snapshot
                 if (old?.permission?.id != snap.permission?.id) {
                     permissionError = null
@@ -1508,6 +1517,15 @@ fun ChatOverlay(
                         // user-реплики. Фильтр по всей ленте читал вслух историю
                         // сессии заново на каждом новом вопросе, а при переключении
                         // сессий — прочитанное из чужой переписки.
+                        //
+                        // Список НЕ фильтруется по наличию диагностики. Причина отказа
+                        // лежит в отдельном поле notice, в text её нет, поэтому читать
+                        // вслух нечего. А фильтр сдвигал бы индексы на ходу: пока ход
+                        // стримится, error в нём ещё нет и сообщение в список попадает,
+                        // а после проваза исчезает — хвост списка отъезжал назад, и
+                        // последнее предложение начинало читаться заново с предыдущей
+                        // реплики. Ошибок без своего текста в этот список не попадают
+                        // вовсе: у них роль error.
                         val lastUserIdx = final.messages.indexOfLast { it.role == "user" }
                         val assistants = final.messages
                             .drop(lastUserIdx + 1)
@@ -1534,15 +1552,16 @@ fun ChatOverlay(
                         }
                     }
                 }
-                if (completed > knownMsgs) {
-                    // Ответ появился в сессии (модель завершила, `completed` считает
-                    // ассистентов с текстом). ЗВУК НЕ играем здесь: snapshot ещё не
-                    // отрисован — иначе вибрация опережала бы рендер сообщения на
-                    // 1-2с (Compose-композиция + скролл отстают от записи данных).
-                    // Вибрация перенесена в отдельный LaunchedEffect, привязанный
-                    // к фактической видимости ответа. Здесь только фиксируем факт.
-                    knownMsgs = completed
-                } else if (knownMsgs == 0 && snap.messages.isNotEmpty()) {
+                // База уведомлений двигается в ОБЕ стороны. Счётчик исключает
+                // провалившиеся ходы (у них появляется диагностика), поэтому он может
+                // уменьшиться: ход, который при стриминге шёл как обычный ответ, после
+                // отказа провайдера перестаёт в нём учитываться. Если бы база только
+                // росла, следующий настоящий ответ не дал бы completed > knownMsgs —
+                // и уведомление пропало бы. ЗВУК НЕ играем здесь: snapshot ещё не
+                // отрисован — иначе вибрация опережала бы рендер сообщения на 1-2с.
+                // Вибрация живёт в отдельном LaunchedEffect, привязанном к фактической
+                // видимости ответа; здесь только фиксируем факт.
+                if (completed != knownMsgs && (completed > knownMsgs || snap.messages.isNotEmpty())) {
                     knownMsgs = completed
                 }
                 // Базовая линия на ПЕРВОМ поллинге приложения: фиксируем ИНДЕКС
@@ -1552,7 +1571,7 @@ fun ChatOverlay(
                 // (idx > knownRendered) завибрируют строго после отрисовки.
                 if (!baselineDone) {
                     baselineDone = true
-                    knownRendered = snap.messages.indexOfLast { it.role == "assistant" && it.text.isNotBlank() }
+                    knownRendered = snap.messages.indexOfLast { it.role == "assistant" && it.text.isNotBlank() && it.notice == null }
                 }
             }
 
@@ -3838,12 +3857,17 @@ private fun MessageRow(
         when (m.role) {
             "user" -> Color(0xFF8AB4F8)
             "assistant" -> Color(0xFF9C27B0)
+            "error" -> Color(ERROR_ROLE_ARGB)
             else -> Color(0xFFB0B0B0)
         }
     val roleLabel =
         when (m.role) {
             "user" -> "Ты"
             "assistant" -> modelName
+            // Отдельная роль, а не «Система»: ход, у которого осталась только
+            // причина отказа, показываем как отказ, иначе он читается как
+            // служебная реплика приложения.
+            "error" -> "Ошибка"
             else -> "Система"
         }
     Column(Modifier.fillMaxWidth()) {
@@ -3863,6 +3887,19 @@ private fun MessageRow(
                     fontFamily = if (isModel) modelFont else FontFamily.Default,
                     fontSize = 14.sp,
                     lineHeight = 19.sp,
+                )
+            }
+        }
+        // Причина отказа лежит отдельно от текста, поэтому и рисуется отдельно:
+        // под репликой модели её не спутать с самим ответом.
+        if (m.notice != null) {
+            SelectionContainer {
+                Text(
+                    m.notice,
+                    color = Color(ERROR_ROLE_ARGB),
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp,
+                    modifier = Modifier.padding(top = 4.dp),
                 )
             }
         }
@@ -4035,6 +4072,11 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             var latestRole: String? = null
             var latestActivity = false
             var latestFinish = false
+            // Ход с причиной отказа закончен по определению: ни step-finish, ни
+            // time.completed в v2 у него не бывает (finish:"error" это не завершение).
+            // Без этого признака лента с провалившимся ответом светила бы «генерируется…»
+            // до общего таймаута.
+            var latestFailed = false
             var latestCompleted = false
             // Живой инструмент, вызываемый моделью в ТЕКУЩЕМ ответе. Накопительный по
             // assistant-шагам одного ответа (сбрасывается на новом user-сообщении), поэтому
@@ -4055,6 +4097,12 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                 val messageCompleted =
                     info.optJSONObject("time")?.optLong("completed", 0L)?.let { it > 0L } == true
                 val sb = StringBuilder()
+                // Причина отказа идёт отдельным полем, а не в текст: озвучка читает
+                // только text, и диагностику «модель устарела» не должно произносить
+                // вслух; счётчик ответов тоже смотрит на text. Здесь hasText всё
+                // равно ставится — иначе ход с одной лишь причиной был бы выброшен
+                // как пустой завершённый.
+                val notice = StringBuilder()
                 var hasText = false
                 var finish = false
                 var activity = false
@@ -4071,12 +4119,18 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                     // Часть типа error — это текст провалившийся хода (см.
                     // ApiShape.roleFor): рисуем как обычный текст, иначе ход
                     // выглядел бы пустым и был бы молча отфильтрован.
-                    if (type == "text" || type == ApiShape.ERROR_PART) {
+                    if (type == "text") {
                         hasText = true
                         val t = part.optString("text", "")
                         ctxChars += t.length
                         if (sb.isNotEmpty() && t.isNotEmpty()) sb.append("\n")
                         sb.append(t)
+                    } else if (type == ApiShape.ERROR_PART) {
+                        hasText = true
+                        val t = part.optString("text", "")
+                        ctxChars += t.length
+                        if (notice.isNotEmpty() && t.isNotEmpty()) notice.append("\n")
+                        notice.append(t)
                     } else if (type == "step-finish") {
                         finish = true
                     } else if (type == "tool") {
@@ -4104,13 +4158,14 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                 latestRole = role
                 latestActivity = activity
                 latestFinish = finish
+                latestFailed = notice.isNotEmpty()
                 latestCompleted = messageCompleted
                 // Завершённый tool-only шаг (step-start->tool...->step-finish без text)
                 // не должен отображаться как «… генерируется …» — это не зависание,
                 // а просто шаг без текста. Фильтруем его из ленты. ДУМАЮЩИЙ assistant
                 // (без step-finish) остаётся, чтобы UI показал «генерируется».
                 if (role == "assistant" && !hasText && finish) continue
-                out.add(ChatMsg(role, sb.toString()))
+                out.add(ChatMsg(role, sb.toString(), notice.toString().ifBlank { null }))
             }
             val take = if (out.size > MAX_SHOWN) out.subList(out.size - MAX_SHOWN, out.size) else out
             val q = questionOf(p, activeId)
@@ -4118,12 +4173,14 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             // «Думает» = последнее сырое сообщение открывает новый ответ. У завершённого
             // assistant проверяем даже скрытый tool-only шаг: после Stop opencode может
             // завершить его без step-finish, но с info.time.completed.
+            // Провал — тоже конец хода, даже если opencode не проставил ни того,
+            // ни другого: иначе «генерируется…» горит до общего таймаута.
             val thinking =
                 q == null &&
                     when (latestRole) {
                         null -> false
                         "user" -> true
-                        "assistant" -> !latestFinish && !latestCompleted
+                        "assistant" -> !latestFinish && !latestCompleted && !latestFailed
                         else -> false
                     }
 
@@ -4167,7 +4224,12 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                     permission = permission,
                     notice = notice,
                 )
-            val lastDiag = last?.let { "role=${it.role} text='${it.text.take(30)}'" } ?: "null"
+            // notice тоже печатаем: он уехал из text, и без него в логе не видно, что
+// причина отказа вообще доехала до экрана, а не потерялась по дороге.
+            val lastDiag = last?.let {
+                "role=${it.role} text='${it.text.take(DIAG_TEXT_CHARS)}' " +
+                    "notice='${it.notice?.take(DIAG_NOTICE_CHARS) ?: ""}'"
+            } ?: "null"
             android.util.Log.d(
                 "ChatOverlay",
                 "FETCH parse out=${out.size} take=${take.size} thinking=$thinking q=${q != null} " +

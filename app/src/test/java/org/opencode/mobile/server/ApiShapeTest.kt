@@ -288,6 +288,134 @@ class ApiShapeTest {
     }
 
     @Test
+    fun `v2 лента разворачивается в хронологический порядок`() {
+        // Порядок НИКОГДА не был предметом проверки — из-за этого уехали и
+        // дубли, и лишняя строка «Система». Сервер отдаёт newest→oldest,
+        // лента чата обязана быть oldest→newest, иначе переписка выглядит
+        // перевёрнутой, а «последний ответ» оказывается первым словом.
+        val raw =
+            """{"data":[
+              {"id":"m3","type":"user","time":{"created":3},"text":"третий"},
+              {"id":"m2","type":"assistant","time":{"created":2,"completed":3},"finish":"stop",
+               "content":[{"type":"text","text":"второй"}]},
+              {"id":"m1","type":"user","time":{"created":1},"text":"первый"}]}"""
+        assertEquals(listOf("первый", "второй", "третий"), textsOf(messagesOf(raw), "text"))
+    }
+
+    @Test
+    fun `v1 лента остаётся в том же порядке что пришла`() {
+        // Второй край: разворот включается по наличию конверта data, а не по флагу
+        // версии. Иначе v1-сообщения уехали бы задом наперёд.
+        val raw =
+            """[{"info":{"role":"user","time":{"created":1}},"parts":[{"type":"text","text":"первый"}]},
+              {"info":{"role":"assistant","time":{"created":2,"completed":3}},
+               "parts":[{"type":"text","text":"второй"}]}]"""
+        assertEquals(listOf("первый", "второй"), textsOf(messagesOf(raw), "text"))
+    }
+
+    @Test
+    fun `причина провала не дублируется в соседнем idle`() {
+        // Реальная лента из живого провала: в v2 причина лежит И в assistant, И в
+        // idle. Обход идёт от новых к старым, поэтому первым повстречается idle —
+        // и раньше именно он показывал причину, а потом её же добавлял assistant,
+        // и пользователь видел одну и ту же строку дважды.
+        val raw =
+            """{"data":[
+              {"type":"idle","time":{"created":4},"outcome":"failed",
+               "error":{"type":"provider.invalid-request","message":"context overflow","status":400}},
+              {"type":"assistant","time":{"created":3},"finish":"error",
+               "content":[{"type":"text","text":"посмотрел конфиги"}],
+               "error":{"type":"provider.invalid-request","message":"context overflow","status":400}},
+              {"type":"user","time":{"created":2},"text":"как настроен роутинг"}]}"""
+        val messages = messagesOf(raw)
+        // Порядок хронологический, и отдельной служебной строки с причиной нет вовсе:
+        // причину несёт сама реплика модели, а дублирующий idle отброшен.
+        assertEquals(listOf("как настроен роутинг", "посмотрел конфиги"), textsOf(messages, "text"))
+        assertEquals(2, messages.length())
+        assertEquals("assistant", roleOf(messages, 1))
+        assertEquals(
+            listOf("text", ApiShape.ERROR_PART),
+            partTypesOf(messages.getJSONObject(1)),
+        )
+        assertEquals(1, textsOf(messages, ApiShape.ERROR_PART).size)
+    }
+
+    @Test
+    fun `причина видна даже когда у хода не осталось своего текста`() {
+        // Обратный случай: assistant без content несёт только причину. Тогда она
+        // обязана занять отдельную служебную строку — больше её показать нечем.
+        val raw =
+            """{"data":[
+              {"type":"idle","time":{"created":3},"outcome":"failed",
+               "error":{"type":"provider.invalid-request","message":"model gone","status":410}},
+              {"type":"assistant","time":{"created":2},"finish":"error","content":[],
+               "error":{"type":"provider.invalid-request","message":"model gone","status":410}},
+              {"type":"user","time":{"created":1},"text":"да"}]}"""
+        val messages = messagesOf(raw)
+        assertEquals(2, messages.length())
+        assertEquals("error", roleOf(messages, 1))
+        assertEquals(1, textsOf(messages, ApiShape.ERROR_PART).size)
+    }
+
+    @Test
+    fun `причина из idle доезжает когда у assistant ошибки нет`() {
+        // Обратный дубль: assistant пустой и без error, причину несёт только idle.
+        // Раньше порядок обхода позволял потерять её как «уже показанную».
+        val raw =
+            """{"data":[
+              {"type":"idle","time":{"created":3},"outcome":"failed",
+               "error":{"type":"provider.invalid-request","message":"only here","status":500}},
+              {"type":"assistant","time":{"created":2},"finish":"error","content":[]},
+              {"type":"user","time":{"created":1},"text":"да"}]}"""
+        val messages = messagesOf(raw)
+        assertEquals(2, messages.length())
+        assertEquals("error", roleOf(messages, 1))
+        assertTrue(textsOf(messages, ApiShape.ERROR_PART).single().contains("only here"))
+    }
+
+    @Test
+    fun `провал со своим текстом остаётся репликой модели`() {
+        // Ответ без причины не должен переезжать под служебную строку: собственная
+        // реплика модели, пусть и оборванная, остаётся репликой модели. Причина
+        // добавляется к ней строкой.
+        val raw =
+            """{"data":[
+              {"type":"idle","time":{"created":3},"outcome":"succeeded"},
+              {"type":"assistant","time":{"created":2},"finish":"error",
+               "content":[{"type":"text","text":"всё увидел"}],
+               "error":{"type":"provider.invalid-request","message":"boom","status":500}},
+              {"type":"user","time":{"created":1},"text":"проверь"}]}"""
+        val messages = messagesOf(raw)
+        assertEquals(2, messages.length())
+        assertEquals("assistant", roleOf(messages, 1))
+        assertEquals(
+            listOf("text", ApiShape.ERROR_PART),
+            partTypesOf(messages.getJSONObject(1)),
+        )
+    }
+
+    @Test
+    fun `разные причины у соседних ходов показываются обе`() {
+        // Подавление идёт по ТЕКСТУ ошибки, а не по факту её наличия: у двух соседних
+        // ходов причины разные, и обе обязаны быть видны.
+        val raw =
+            """{"data":[
+              {"type":"idle","time":{"created":5},"outcome":"failed",
+               "error":{"type":"e2","message":"second","status":502}},
+              {"type":"assistant","time":{"created":4},"finish":"error",
+               "error":{"type":"e2","message":"second","status":502}},
+              {"type":"idle","time":{"created":3},"outcome":"failed",
+               "error":{"type":"e1","message":"first","status":400}},
+              {"type":"assistant","time":{"created":2},"finish":"error",
+               "error":{"type":"e1","message":"first","status":400}},
+              {"type":"user","time":{"created":1},"text":"давай"}]}"""
+        val errors = textsOf(messagesOf(raw), ApiShape.ERROR_PART)
+        assertEquals(2, errors.size)
+        assertTrue(errors.any { it.contains("first") })
+        assertTrue(errors.any { it.contains("second") })
+    }
+
+    @Test
     fun `ошибка не мешает нормальному ответу`() {
         // Если у ассистента ЕСТЬ текст, ошибка не затирает его: текст остаётся
         // текстом, а в ленту не добавляется ничего лишнего.
