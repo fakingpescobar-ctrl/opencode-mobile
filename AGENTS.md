@@ -1,5 +1,26 @@
 # opencode-mobile — правила для ассистента
 
+## Версия opencode и миграция на v2
+
+Приложение **пакует бинарник opencode внутрь APK**:
+`app/src/main/jniLibs/arm64-v8a/libopencode.so` (184.7 MB, opencode **1.18.25**),
+запуск через `nativeLibraryDir` + `libldmusl.so`. Это не «подключение к
+установленному opencode» — апгрейд означает замену бинаря **и** перенос HTTP-слоя.
+
+План миграции на **opencode 2.0.27** — `docs/MIGRATION-V2.md` (7 этапов, ~8-10 дней).
+Читать перед любыми правками `LocalOpenCodeClient` / эндпоинтов.
+
+Коротко о v2, что нужно помнить:
+
+- Весь API под префиксом **`/api/`** (`/api/session`, `/api/info`, `/api/event`).
+- `GET /session/status` **удалён** — замена `GET /api/experimental/session/{id}/wait`.
+- `abort` → `interrupt`, `POST .../message` → `prompt`, `GET .../message` → `view`.
+- GitHub-релизов для v2 **нет**, бинарь только из npm
+  (`@opencode/cli-linux-arm64-musl`). `ci.yml` качать бинарь из
+  `registry.npmjs.org`, не из `github.com/anomalyco/.../releases`.
+- Главный риск миграции — **WebView** (`MainActivity.kt:309-441`) грузит SPA
+  opencode целиком; в v2 она переписана.
+
 ## Как говорить с агентом на телефоне (НЕ через UI)
 
 Агент на телефоне — это `opencode serve` на порту **4096**. К нему есть прямой REST.
