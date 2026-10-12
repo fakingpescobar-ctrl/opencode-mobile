@@ -2,6 +2,7 @@ package org.opencode.mobile.social
 
 import org.json.JSONArray
 import org.json.JSONObject
+import org.opencode.mobile.server.ApiShape
 
 /**
  * Решение будильника: кого, когда и можно ли вообще будить.
@@ -95,7 +96,7 @@ internal object MoltbookWakePlan {
      */
     fun parseCreated(raw: String?): String? {
         if (raw.isNullOrBlank()) return null
-        return runCatching { JSONObject(raw).optString("id").trim().ifBlank { null } }.getOrNull()
+        return ApiShape.session(raw)?.optString("id")?.trim()?.ifBlank { null }
     }
 
     /**
@@ -112,9 +113,12 @@ internal object MoltbookWakePlan {
      * берётся как 0, а не выбрасывает запись: сортировать по мусору нельзя,
      * а терять сессию из выбора — можно.
      */
-    private fun sessionsOrNull(raw: String): List<Session>? =
-        runCatching {
-            val array = JSONArray(raw)
+    private fun sessionsOrNull(raw: String): List<Session>? {
+        // null от ApiShape — тело есть, но списка в нём нет (HTML от прокси, `{}`
+        // от ошибки). Это ровно тот «сервера мы не видели», который обязан отличаться
+        // от честного `[]`.
+        val array = ApiShape.sessions(raw) ?: return null
+        return runCatching {
             (0 until array.length()).mapNotNull { i ->
                 val obj = array.optJSONObject(i) ?: return@mapNotNull null
                 val id = obj.optString("id").trim()
@@ -123,6 +127,7 @@ internal object MoltbookWakePlan {
                 Session(id, updated)
             }
         }.getOrNull()
+    }
 
     /** То же, что [sessionsOrNull], но без «не разобралось»: пустой список на любой мусор. */
     fun parseSessions(raw: String?): List<Session> = raw?.takeIf { it.isNotBlank() }?.let { sessionsOrNull(it) } ?: emptyList()

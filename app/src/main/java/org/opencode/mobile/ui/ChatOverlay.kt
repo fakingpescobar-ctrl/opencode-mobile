@@ -130,7 +130,10 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import org.opencode.mobile.R
+import org.opencode.mobile.server.ApiMcp
 import org.opencode.mobile.server.ApiPaths
+import org.opencode.mobile.server.ApiShape
+import org.opencode.mobile.server.ApiStatus
 import org.opencode.mobile.server.LocalOpenCodeClient
 import org.opencode.mobile.server.MemoryMcp
 import org.opencode.mobile.server.OpenCodePermissionApi
@@ -956,9 +959,9 @@ fun ChatOverlay(
                         // «залипает»). Поэтому каждую умирающую сессию сначала глушим abort-ом
                         // (идемпотентен, безвреден для пустых/404) — независимо от того, была
                         // ли она активной на момент сброса.
-                        val raw = LocalOpenCodeClient.get(serverPort, ApiPaths.active.sessions()) ?: "[]"
+                        val raw = LocalOpenCodeClient.get(serverPort, ApiPaths.active.sessions())
                         try {
-                            val arr = org.json.JSONArray(raw)
+                            val arr = ApiShape.sessions(raw) ?: org.json.JSONArray()
                             for (i in 0 until arr.length()) {
                                 val sid = arr.getJSONObject(i).optString("id").takeIf(String::isNotBlank) ?: continue
                                 if (sid != id) {
@@ -3873,19 +3876,7 @@ private fun MessageRow(
 private suspend fun fetchNotice(
     port: Int,
     sessionId: String,
-): ChatNotice? = noticeFromStatus(statusBody(port), sessionId)
-
-/**
- * Тело карты занятых сессий.
- *
- * null — двусторонний отказ, и это ровно то, что отдаём вызывающему: сервер
- * не ответил ИЛИ в v2 такого пути нет вовсе. Второе — не «сессии свободны»,
- * поэтому вызывающие обязаны трактовать null как «не знаю», а не как «idle».
- */
-private fun statusBody(port: Int): String? {
-    val path = ApiPaths.active.status() ?: return null
-    return LocalOpenCodeClient.get(port, path)
-}
+): ChatNotice? = noticeFromStatus(ApiStatus.forSession(port, sessionId), sessionId)
 
 private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
     withContext(Dispatchers.IO) {
@@ -3911,7 +3902,7 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                 )
             }
             val sessionsRaw = sessionsBody
-            val sessions = JSONArray(sessionsRaw)
+            val sessions = ApiShape.sessions(sessionsRaw) ?: JSONArray()
             var bestId: String? = null
             var bestTs = -1L
             var bestModelId = ""
@@ -3964,9 +3955,8 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             try {
                 val mcpRaw = getMcpCached(p)
                 if (mcpRaw != null) {
-                    val trimmed = mcpRaw.trim()
-                    if (trimmed.startsWith("[")) {
-                        val marr = JSONArray(trimmed)
+                    val marr = ApiMcp.servers(mcpRaw)
+                    if (marr != null) {
                         mcpTotal = marr.length()
                         for (i in 0 until marr.length()) {
                             val ms = marr.optJSONObject(i)
@@ -3974,18 +3964,6 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                             val status = ms?.optString("status", "") ?: ""
                             if (status == "connected") mcpConnected++
                             if (name.isNotBlank()) mcpServers.add(McpInfo(name, status, mcpToolCounts[name]))
-                        }
-                    } else if (trimmed.startsWith("{")) {
-                        val mobj = JSONObject(trimmed)
-                        val names = mobj.keys()
-                        while (names.hasNext()) {
-                            mcpTotal++
-                            val key = names.next()
-                            val ms = mobj.optJSONObject(key)
-                            val status = ms?.optString("status", "") ?: ""
-                            if (status == "connected") mcpConnected++
-                            val name = ms?.optString("name", "")?.takeIf { it.isNotBlank() } ?: key
-                            mcpServers.add(McpInfo(name, status, mcpToolCounts[name]))
                         }
                     }
                 }
@@ -4048,7 +4026,7 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                 )
                 return@withContext snap
             }
-            val arr = JSONArray(msgRaw)
+            val arr = ApiShape.messages(msgRaw) ?: JSONArray()
             val out = ArrayList<ChatMsg>(arr.length())
             // Состояние последнего сырого сообщения нужно отдельно от видимых строк:
             // assistant с одним tool-чатом и step-finish скрывается из ленты ниже, но всё
@@ -4289,11 +4267,7 @@ private fun playNotificationSound(context: Context) {
 
 private fun createSession(port: Int): String? {
     val body = LocalOpenCodeClient.post(port, ApiPaths.active.sessions(), "{}") ?: return null
-    return try {
-        JSONObject(body).optString("id").takeIf(String::isNotBlank)
-    } catch (_: Exception) {
-        null
-    }
+    return ApiShape.session(body)?.optString("id")?.takeIf(String::isNotBlank)
 }
 
 /**
@@ -4311,7 +4285,7 @@ private fun abortSession(
 ): Boolean = LocalOpenCodeClient.post(port, ApiPaths.active.interrupt(sessionId), "") != null
 
 /**
- * Есть ли запись сессии в /session/status, то есть считает ли сервер её ход
+ * Есть ли запись сессии в карте занятости, то есть считает ли сервер её ход
  * незавершённым.
  *
  * Нужна потому, что по коду ответа abort узнать «прервалось ли» нельзя (см.
@@ -4322,7 +4296,7 @@ private fun sessionRunning(
     port: Int,
     sessionId: String,
 ): Boolean {
-    val raw = statusBody(port) ?: return false
+    val raw = ApiStatus.forSession(port, sessionId) ?: return false
     return try {
         JSONObject(raw).has(sessionId)
     } catch (_: Exception) {
@@ -4352,20 +4326,20 @@ private fun sessionHasMessages(
 ): Boolean =
     try {
         val raw = LocalOpenCodeClient.get(port, ApiPaths.active.message(sessionId))
-        raw != null && JSONArray(raw).length() > 0
+        raw != null && (ApiShape.messages(raw)?.length() ?: 0) > 0
     } catch (_: Exception) {
         // Не смогли узнать — считаем, что сохранилось: на неопределённости не стираем.
         true
     }
 
 /**
- * Множество сессий, занятых сервером прямо сейчас (значения из
- * /session/status). null — статус не прочитался, и это НЕ то же самое, что
+ * Множество сессий, занятых сервером прямо сейчас (значения из карты
+ * занятости). null — статус не прочился, и это НЕ то же самое, что
  * «никто не занят»: удалять сессии вслепую нельзя (см. [purgeAllowed]).
  */
 private fun busySessionIds(port: Int): Set<String>? =
     try {
-        val raw = statusBody(port) ?: return null
+        val raw = ApiStatus.record(port) ?: return null
         val obj = JSONObject(raw)
         val out = LinkedHashSet<String>()
         for (k in obj.keys()) {
@@ -4411,7 +4385,7 @@ private suspend fun stopAndPurge(
             tries++
         }
     }
-    val reachable = statusBody(port) != null
+    val reachable = ApiStatus.reachable(port)
     if (!purgeAllowed(reachable, sessionRunning(port, sessionId))) {
         android.util.Log.w(
             "ChatOverlay",
@@ -4444,7 +4418,7 @@ private fun pruneEmptySessions(
     val raw = LocalOpenCodeClient.get(port, ApiPaths.active.sessions()) ?: return
     val ids =
         try {
-            val arr = JSONArray(raw)
+            val arr = ApiShape.sessions(raw) ?: JSONArray()
             (0 until arr.length())
                 .mapNotNull { arr.getJSONObject(it).optString("id").takeIf(String::isNotBlank) }
         } catch (_: Exception) {
@@ -4485,8 +4459,8 @@ private fun postMessage(
     sessionId: String,
     text: String,
 ): Boolean {
-    val body = "{\"parts\":[{\"type\":\"text\",\"text\":${JSONObject.quote(text)}}]}"
-    return LocalOpenCodeClient.postAsync(port, ApiPaths.active.message(sessionId), body)
+    val body = ApiShape.promptBody(text).toString()
+    return LocalOpenCodeClient.postAsync(port, ApiPaths.active.prompt(sessionId), body)
 }
 
 /** Ряд-переключатель в стиле панели STT: активен или нет. */

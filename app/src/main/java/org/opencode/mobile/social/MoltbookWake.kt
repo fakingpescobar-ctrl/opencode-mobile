@@ -4,6 +4,8 @@ import android.content.Context
 import android.util.Log
 import org.json.JSONObject
 import org.opencode.mobile.server.ApiPaths
+import org.opencode.mobile.server.ApiShape
+import org.opencode.mobile.server.ApiStatus
 import org.opencode.mobile.server.LocalOpenCodeClient
 import org.opencode.mobile.server.wakeLog
 import org.opencode.mobile.server.wakeStamp
@@ -55,10 +57,10 @@ internal object MoltbookWake {
         Чего не делать: не править файлы репозитория, не запускать старый тикер, не публиковать один и тот же текст повторно.
         """.trimIndent()
 
-    /** Тело сообщения — ровно то, что уже умеет отправлять UI. */
-    fun messageBody(text: String): String = "{\"parts\":[{\"type\":\"text\",\"text\":${JSONObject.quote(text)}}]}"
+    /** Тело сообщения — ровно то, что уже умеет отправлять UI (форма различает v1/v2). */
+    fun messageBody(text: String): String = ApiShape.promptBody(text).toString()
 
-    fun messagePath(sessionId: String): String = ApiPaths.active.message(sessionId)
+    fun messagePath(sessionId: String): String = ApiPaths.active.prompt(sessionId)
 
     /**
      * Строка журнала: одна попытка — одна строка.
@@ -143,14 +145,12 @@ internal object MoltbookWake {
         context: Context,
         now: Long,
     ): MoltbookWakePlan.Plan {
-        // Тело карты занятых сессий. null — двусторонний отказ: сервер не ответил
-        // ИЛИ в v2 такого пути нет вовсе. Второе — не «сессии свободны», поэтому
-        // план обязан трактовать null как «не знаю» (этап 4 плана миграции).
-        val statusPath = ApiPaths.active.status()
-        val statusBody = statusPath?.let { LocalOpenCodeClient.get(OPENCODE_PORT, it) }
+        // Карта занятости: в v1 это GET /session/status, в v2 пути нет вовсе и
+        // карта собирается из лент (ApiStatus). null — двусторонний отказ, и план
+        // обязан трактовать его как «не знаю», а не как «никто не занят».
         return MoltbookWakePlan.planFor(
             LocalOpenCodeClient.get(OPENCODE_PORT, ApiPaths.active.sessions()),
-            statusBody,
+            ApiStatus.record(OPENCODE_PORT),
             now,
             lastWakeAt(context),
         )

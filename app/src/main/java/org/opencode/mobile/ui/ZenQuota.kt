@@ -5,6 +5,7 @@ import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import org.opencode.mobile.server.ApiPaths
+import org.opencode.mobile.server.ApiShape
 import org.opencode.mobile.server.LocalOpenCodeClient
 import java.time.Instant
 import java.time.ZoneOffset
@@ -97,7 +98,13 @@ internal object ZenQuota {
         nowMs: Long,
     ): Int {
         val since = dayStartMs(nowMs)
-        val arr = parseArray(rawJson) ?: return 0
+        // Форму ответа снимает ApiShape: в v2 лента обёрнута в {data:[…]} и
+        // отдаётся от новых к старым, а считаем мы всё равно по info-перебору.
+        val arr = ApiShape.messages(rawJson)
+        if (arr == null) {
+            Log.d(TAG, "messages unparsable, keep last=$lastUsed")
+            return 0
+        }
         var used = 0
         for (i in 0 until arr.length()) {
             val info = infoOf(arr, i)
@@ -105,15 +112,6 @@ internal object ZenQuota {
         }
         return used
     }
-
-    /** Разбор массива сообщений; `null` при негодном JSON — считаем как ноль. */
-    private fun parseArray(rawJson: String): JSONArray? =
-        try {
-            JSONArray(rawJson)
-        } catch (e: JSONException) {
-            Log.d(TAG, "json unparsable: ${e.message}")
-            null
-        }
 
     /** Блок `info` сообщения по индексу; `null`, если элемент не объект или битый. */
     private fun infoOf(
@@ -163,7 +161,7 @@ internal object ZenQuota {
         nowMs: Long,
     ): Int? {
         val sessionsRaw = LocalOpenCodeClient.get(port, ApiPaths.active.sessions())
-        val arr = sessionsRaw?.let { parseArray(it) }
+        val arr = sessionsRaw?.let { ApiShape.sessions(it) }
         if (arr == null) {
             Log.d(TAG, "sessions fetch failed or bad json, keep last=$lastUsed")
             return null

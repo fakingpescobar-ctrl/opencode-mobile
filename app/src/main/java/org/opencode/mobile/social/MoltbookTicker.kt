@@ -5,6 +5,7 @@ import android.util.Log
 import org.json.JSONObject
 import org.opencode.mobile.OpencodeApp
 import org.opencode.mobile.server.ApiPaths
+import org.opencode.mobile.server.ApiShape
 import org.opencode.mobile.server.LocalOpenCodeClient
 import java.io.File
 import java.io.IOException
@@ -1188,10 +1189,8 @@ internal class MoltbookTicker(
         val sessionId = LocalOpenCodeClient.post(OPENCODE_PORT, ApiPaths.active.sessions(), "{}")?.let(::sessionIdOf)
             ?: return null
         try {
-            val body = JSONObject().apply {
-                put("parts", org.json.JSONArray().put(JSONObject().put("type", "text").put("text", prompt)))
-            }
-            if (!LocalOpenCodeClient.postAsync(OPENCODE_PORT, ApiPaths.active.message(sessionId), body.toString())) {
+            val body = ApiShape.promptBody(prompt)
+            if (!LocalOpenCodeClient.postAsync(OPENCODE_PORT, ApiPaths.active.prompt(sessionId), body.toString())) {
                 return null
             }
             return awaitAssistantText(sessionId)
@@ -1201,7 +1200,7 @@ internal class MoltbookTicker(
     }
 
     private fun sessionIdOf(created: String): String? =
-        runCatching { JSONObject(created).optString("id").takeIf { it.isNotEmpty() } }.getOrNull()
+        ApiShape.session(created)?.optString("id")?.takeIf { it.isNotEmpty() }
 
     /**
      * opencode отвечает на POST /message только после конца генерации, поэтому ответ
@@ -1212,7 +1211,7 @@ internal class MoltbookTicker(
         repeat(GENERATION_POLLS) {
             Thread.sleep(GENERATION_POLL_MS)
             val raw = LocalOpenCodeClient.get(OPENCODE_PORT, ApiPaths.active.message(sessionId)) ?: return@repeat
-            val messages = runCatching { org.json.JSONArray(raw) }.getOrNull() ?: return@repeat
+            val messages = ApiShape.messages(raw) ?: return@repeat
             val text = lastAssistantText(messages)
             if (!text.isNullOrBlank()) return text
         }
@@ -1254,25 +1253,13 @@ internal class MoltbookTicker(
     /** Последняя сессия пользователя: её ChatOverlay обновляет сам раз в пару секунд. */
     private fun notifyChat(digest: String) {
         val sessionId = lastTouchedUserSession() ?: return
-        val body =
-            JSONObject().apply {
-                put(
-                    "parts",
-                    org.json
-                        .JSONArray()
-                        .put(
-                            JSONObject()
-                                .put("type", "text")
-                                .put("text", "Молтбук: $digest"),
-                        ),
-                )
-            }
-        LocalOpenCodeClient.postAsync(OPENCODE_PORT, ApiPaths.active.message(sessionId), body.toString())
+        val body = ApiShape.promptBody("Молтбук: $digest").toString()
+        LocalOpenCodeClient.postAsync(OPENCODE_PORT, ApiPaths.active.prompt(sessionId), body)
     }
 
     private fun lastTouchedUserSession(): String? {
         val raw = LocalOpenCodeClient.get(OPENCODE_PORT, ApiPaths.active.sessions()) ?: return null
-        val sessions = runCatching { org.json.JSONArray(raw) }.getOrNull() ?: return null
+        val sessions = ApiShape.sessions(raw) ?: return null
         return (0 until sessions.length())
             .mapNotNull { sessions.optJSONObject(it) }
             .maxByOrNull { it.optJSONObject("time")?.optLong("updated") ?: 0L }
