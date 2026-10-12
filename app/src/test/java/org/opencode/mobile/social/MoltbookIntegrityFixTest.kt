@@ -138,14 +138,34 @@ class MoltbookIntegrityFixTest {
     @Test
     fun `повторный отчёт о порче троттлится по своему виду записи`() {
         val now = startedAt
-        val recentTamper = listOf(Entry(seq = 0, at = now - 10 * 60 * 1000L, kind = MoltbookWitness.KIND_TAMPER, payload = "цепь порвана", prevHash = MoltbookWitness.GENESIS_HASH, hash = "x"))
+        val recentTamper =
+            listOf(
+                Entry(
+                    seq = 0,
+                    at = now - 10 * 60 * 1000L,
+                    kind = MoltbookWitness.KIND_TAMPER,
+                    payload = "цепь порвана",
+                    prevHash = MoltbookWitness.GENESIS_HASH,
+                    hash = "x"
+                )
+            )
         val window = setOf(MoltbookWitness.KIND_TAMPER)
 
         assertFalse(
             "через 10 минут повторный отчёт о порче не должен проходить",
             MoltbookWatchdog.shouldReportStale(recentTamper, now, kinds = window),
         )
-        val oldTamper = listOf(Entry(seq = 0, at = now - 61 * 60 * 1000L, kind = MoltbookWitness.KIND_TAMPER, payload = "цепь порвана", prevHash = MoltbookWitness.GENESIS_HASH, hash = "x"))
+        val oldTamper =
+            listOf(
+                Entry(
+                    seq = 0,
+                    at = now - 61 * 60 * 1000L,
+                    kind = MoltbookWitness.KIND_TAMPER,
+                    payload = "цепь порвана",
+                    prevHash = MoltbookWitness.GENESIS_HASH,
+                    hash = "x"
+                )
+            )
         assertTrue(
             "старая запись порчи окна не держит",
             MoltbookWatchdog.shouldReportStale(oldTamper, now, kinds = window),

@@ -9,7 +9,10 @@ import com.k2fsa.sherpa.onnx.OfflineTtsSupertonicModelConfig
 import java.io.File
 
 /** Один кусок синтезированной речи: сэмплы [-1..1] и частота. */
-data class TtsAudio(val samples: FloatArray, val sampleRate: Int) {
+data class TtsAudio(
+    val samples: FloatArray,
+    val sampleRate: Int,
+) {
     val durationSec: Float get() = samples.size.toFloat() / sampleRate
     val isEmpty: Boolean get() = samples.isEmpty()
 }
@@ -25,7 +28,11 @@ class SupertonicTts private constructor(
     val sampleRate: Int,
     val numSpeakers: Int,
 ) {
-    fun synthesize(text: String, sid: Int, speed: Float): TtsAudio {
+    fun synthesize(
+        text: String,
+        sid: Int,
+        speed: Float,
+    ): TtsAudio {
         if (text.isBlank()) return TtsAudio(FloatArray(0), sampleRate)
         val audio: GeneratedAudio = tts.generate(text, sid.coerceIn(0, numSpeakers - 1), speed)
         return TtsAudio(audio.samples, audio.sampleRate)
@@ -40,7 +47,10 @@ class SupertonicTts private constructor(
          * Ошибка загрузки движка: нет нативной библиотеки (x86), нет модели,
          * либо модель повреждена. Разрешается в TtsEngine.system.
          */
-        class LoadFailed(message: String, cause: Throwable? = null) : Exception(message, cause)
+        class LoadFailed(
+            message: String,
+            cause: Throwable? = null,
+        ) : Exception(message, cause)
 
         /**
          * Запрет на повторную загрузку — только после НЕУДАЧИ.
@@ -55,10 +65,14 @@ class SupertonicTts private constructor(
 
         /** Нативная библиотека есть только для arm64 — на эмуляторе деградируем. */
         fun isSupportedAbi(): Boolean =
-            android.os.Build.SUPPORTED_ABIS.any { it.startsWith("arm64") }
+            android.os.Build.SUPPORTED_ABIS
+                .any { it.startsWith("arm64") }
 
         /** null — движок недоступен, вызывающий переходит на system. */
-        fun loadOrNull(modelDir: File, threads: Int = TtsConfig.NUM_THREADS): SupertonicTts? {
+        fun loadOrNull(
+            modelDir: File,
+            threads: Int = TtsConfig.NUM_THREADS,
+        ): SupertonicTts? {
             if (!isSupportedAbi()) {
                 if (!unsupportedAbi) {
                     unsupportedAbi = true

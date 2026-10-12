@@ -13,12 +13,14 @@ import org.junit.Test
  * таким, эти тесты падают первыми.
  */
 class MoltbookDedupCheckTest {
-    private fun duplicate(parentId: String?, id: String = "c-1") =
-        MoltbookClient.CommentOutcome.Duplicate(
-            existingCommentId = id,
-            existingParentId = parentId,
-            status = "verified",
-        )
+    private fun duplicate(
+        parentId: String?,
+        id: String = "c-1",
+    ) = MoltbookClient.CommentOutcome.Duplicate(
+        existingCommentId = id,
+        existingParentId = parentId,
+        status = "verified",
+    )
 
     @Test
     fun `тот же родитель это наш ответ на этот вопрос`() {

@@ -1,7 +1,6 @@
 package org.opencode.mobile.social
 
 import android.content.Context
-import org.opencode.mobile.server.MoltbookMcp
 import org.opencode.mobile.server.panelFile
 import org.opencode.mobile.server.wakeLog
 import java.io.File

@@ -80,7 +80,10 @@ class SentenceChunker(
     }
 
     /** Конец предложения не дальше [limit]; `;` и `:` — только если предложение длинное. */
-    private fun findBoundary(text: String, limit: Int): Int? {
+    private fun findBoundary(
+        text: String,
+        limit: Int,
+    ): Int? {
         var soft: Int? = null
         var hard: Int? = null
         var softish: Int? = null
@@ -113,7 +116,10 @@ class SentenceChunker(
     }
 
     /** Последний пробел в пределах [limit], иначе сам [limit]. */
-    private fun findSpace(text: String, limit: Int): Int? {
+    private fun findSpace(
+        text: String,
+        limit: Int,
+    ): Int? {
         if (text.length <= limit) return null
         val idx = text.lastIndexOf(' ', limit - 1)
         return if (idx > 0) idx + 1 else limit

@@ -2,10 +2,10 @@ package org.opencode.mobile.server
 
 import android.content.Context
 import android.content.ContextWrapper
-import java.io.File
-import java.io.IOException
 import org.opencode.mobile.social.MoltbookLedger
 import org.opencode.mobile.social.MoltbookWake
+import java.io.File
+import java.io.IOException
 
 /**
  * Где физически лежит состояние Moltbook: журнал, ключ, снимок панели, отпечаток
@@ -82,8 +82,7 @@ internal object MoltbookPaths {
      * Общий каталог: тот же, что у памяти и opencode-данных, - иначе «переживает
      * переустановку» значило бы разное для разных файлов одного плагина.
      */
-    private fun base(context: Context): File =
-        if (external(context)) File(Workspace.resolve(context), "opencode") else context.filesDir
+    private fun base(context: Context): File = if (external(context)) File(Workspace.resolve(context), "opencode") else context.filesDir
 
     /**
      * Контекст, у которого база открывается по нашему пути, а не там, где решил
@@ -127,13 +126,15 @@ internal object MoltbookPaths {
             failed += dir(context).absolutePath
         } else {
             val targets = migrationTargets(context.filesDir, File(context.applicationInfo.dataDir), base(context))
-            for ((from, to) in
-                migrationPlan(
-                    oldState = targets.oldState,
-                    oldLedger = targets.oldLedger,
-                    newState = targets.newState,
-                    newLedger = targets.newLedger,
-                )) {
+            for (
+            (from, to) in
+            migrationPlan(
+                oldState = targets.oldState,
+                oldLedger = targets.oldLedger,
+                newState = targets.newState,
+                newLedger = targets.newLedger,
+            )
+            ) {
                 copyMissing(from, to)
                 // Проверяем результат, а не возвращаемое значение копирования:
                 // copyRecursively молча пропускает уже существующие файлы и при этом
@@ -150,7 +151,10 @@ internal object MoltbookPaths {
 }
 
 /** Один файл состояния по имени: `panel.json`, `wake.log`, `last-wake`, `moltkey`. */
-internal fun stateFile(context: Context, name: String): File = File(MoltbookPaths.dir(context), name)
+internal fun stateFile(
+    context: Context,
+    name: String,
+): File = File(MoltbookPaths.dir(context), name)
 
 /** Ключ API. Без него плагин не публикует ничего, но читать журнал может. */
 internal fun keyFile(context: Context): File = stateFile(context, MoltbookMcp.KEY_FILE)
@@ -195,10 +199,14 @@ internal sealed interface LedgerReady {
     data object Exists : LedgerReady
 
     /** Создана. [ledger] открыт, вызывающий обязан его закрыть. */
-    data class Created(val ledger: MoltbookLedger) : LedgerReady
+    data class Created(
+        val ledger: MoltbookLedger,
+    ) : LedgerReady
 
     /** Не вышло. [cause] - причина, её показывают, а не прячут. */
-    data class Failed(val cause: Throwable) : LedgerReady
+    data class Failed(
+        val cause: Throwable,
+    ) : LedgerReady
 }
 
 /**

@@ -133,8 +133,10 @@ internal const val RETRY_BUDGET_MS = 600_000L
  * признака, потому что каждый из них покрывает свой отказ: счётчик растёт при
  * ответах провайдера, таймер — при молчании.
  */
-internal fun retryExhausted(held: ChatNotice?, elapsedMs: Long): Boolean =
-    held != null && (held.attempt >= RETRY_ATTEMPT_LIMIT || elapsedMs >= RETRY_BUDGET_MS)
+internal fun retryExhausted(
+    held: ChatNotice?,
+    elapsedMs: Long,
+): Boolean = held != null && (held.attempt >= RETRY_ATTEMPT_LIMIT || elapsedMs >= RETRY_BUDGET_MS)
 
 /**
  * Защёлка плашки повторов с учётом того, что ход уже остановили мы.

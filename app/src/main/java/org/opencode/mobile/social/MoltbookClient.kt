@@ -256,6 +256,7 @@ internal class MoltbookClient(
      * - `already_existed: true` стоит в КОРНЕ: нового комментария нет, сервер вернул
      *   старый. Читать его id как успех — значит врать в логе и в дайджесте.
      */
+
     /** Путь комментариев поста: адрес публикации, по которому и идёт независимая сверка. */
     fun commentsPath(postId: String): String = "/api/v1/posts/$postId/comments"
 
@@ -387,7 +388,7 @@ internal class MoltbookClient(
             } catch (e: Exception) {
                 return ReplyProbe.Unknown("${e.javaClass.simpleName}: ${e.message}")
             }
-return probeIn(loaded, parentId)
+        return probeIn(loaded, parentId)
     }
 
     /**

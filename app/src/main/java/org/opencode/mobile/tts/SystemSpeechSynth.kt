@@ -1,7 +1,6 @@
 package org.opencode.mobile.tts
 
 import android.content.Context
-import android.media.AudioFormat
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -15,7 +14,10 @@ import java.util.concurrent.TimeUnit
  * зависит от установленного движка. Синтезируем в WAV и читаем тем же
  * плеером, что и Supertonic, чтобы отмена и fade-out работали одинаково.
  */
-class SystemSpeechSynth(context: Context) : TextToSpeech.OnInitListener, SpeechSynth {
+class SystemSpeechSynth(
+    context: Context,
+) : TextToSpeech.OnInitListener,
+    SpeechSynth {
     private val appContext = context.applicationContext
     private var tts: TextToSpeech? = null
     private var ready = false
@@ -37,7 +39,11 @@ class SystemSpeechSynth(context: Context) : TextToSpeech.OnInitListener, SpeechS
 
     override val sampleRate: Int get() = 44100
 
-    override fun synthesize(text: String, sid: Int, speed: Float): TtsAudio? {
+    override fun synthesize(
+        text: String,
+        sid: Int,
+        speed: Float,
+    ): TtsAudio? {
         if (!isReady()) return null
         val engine = tts ?: return null
         val out = File(appContext.cacheDir, "tts_line_${System.nanoTime()}.wav")
@@ -46,6 +52,7 @@ class SystemSpeechSynth(context: Context) : TextToSpeech.OnInitListener, SpeechS
         engine.setSpeechRate(speed.coerceIn(0.5f, 2.0f))
         engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(id: String?) = Unit
+
             override fun onDone(id: String?) {
                 done.countDown()
             }
@@ -56,7 +63,10 @@ class SystemSpeechSynth(context: Context) : TextToSpeech.OnInitListener, SpeechS
                 done.countDown()
             }
 
-            override fun onError(id: String?, errorCode: Int) {
+            override fun onError(
+                id: String?,
+                errorCode: Int,
+            ) {
                 failed = true
                 done.countDown()
             }
@@ -159,12 +169,20 @@ object PcmWav {
         return TtsAudio(out, rate)
     }
 
-    private fun littleInt(b: ByteArray, i: Int): Int =
+    private fun littleInt(
+        b: ByteArray,
+        i: Int,
+    ): Int =
         (b[i].toInt() and 0xFF) or ((b[i + 1].toInt() and 0xFF) shl 8) or
             ((b[i + 2].toInt() and 0xFF) shl 16) or ((b[i + 3].toInt() and 0xFF) shl 24)
 
-    private fun littleShort(b: ByteArray, i: Int): Int =
-        (b[i].toInt() and 0xFF) or ((b[i + 1].toInt() and 0xFF) shl 8)
+    private fun littleShort(
+        b: ByteArray,
+        i: Int,
+    ): Int = (b[i].toInt() and 0xFF) or ((b[i + 1].toInt() and 0xFF) shl 8)
 
-    private fun floatLe(b: ByteArray, i: Int): Float = java.lang.Float.intBitsToFloat(littleInt(b, i))
+    private fun floatLe(
+        b: ByteArray,
+        i: Int,
+    ): Float = java.lang.Float.intBitsToFloat(littleInt(b, i))
 }

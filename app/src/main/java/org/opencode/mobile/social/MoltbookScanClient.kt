@@ -2,6 +2,10 @@ package org.opencode.mobile.social
 
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.job
+import kotlinx.coroutines.withContext
 import org.opencode.mobile.server.MoltbookMcp
 import org.opencode.mobile.server.MoltbookToken
 import java.io.BufferedReader
@@ -9,10 +13,6 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.cancellation.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.job
-import kotlinx.coroutines.withContext
 
 /**
  * Просьба плагину молтбука перечитать ленту, из приложения и без агента.
@@ -87,7 +87,10 @@ internal object MoltbookScanClient {
      * держал очередь вызовов тулов плагина всё это время. То есть отменённый
      * скан стоил бы дороже, чем нужный.
      */
-    suspend fun requestScan(context: Context, port: Int = MoltbookMcp.PORT): ScanOutcome =
+    suspend fun requestScan(
+        context: Context,
+        port: Int = MoltbookMcp.PORT,
+    ): ScanOutcome =
         withContext(Dispatchers.IO) {
             // Чтение токена - тоже работа с диском, поэтому внутри, а не до
             // `withContext`: иначе файл читался бы на потоке вызывающего.

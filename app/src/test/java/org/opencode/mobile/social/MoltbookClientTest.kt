@@ -947,7 +947,6 @@ class MoltbookClientTest {
         const val OWN = "opencodekz"
     }
 
-
     // ---- сверка двух представлений ветки ----
 
     @Test

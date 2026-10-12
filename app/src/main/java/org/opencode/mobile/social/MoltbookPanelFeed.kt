@@ -209,8 +209,7 @@ internal fun cadenceHint(state: MoltbookPanelState): String =
  * «сколько показали» стало бы невидимым - а это ровно тот случай, где молчать
  * вредно.
  */
-internal fun pendingHeadline(hidden: Int): String =
-    if (hidden > 0) "$PENDING_HEAD · ЕЩЁ $hidden" else PENDING_HEAD
+internal fun pendingHeadline(hidden: Int): String = if (hidden > 0) "$PENDING_HEAD · ЕЩЁ $hidden" else PENDING_HEAD
 
 private const val PENDING_HEAD = "ЖДУТ ОТВЕТА"
 

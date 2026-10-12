@@ -1,6 +1,5 @@
 package org.opencode.mobile.social
 
-import java.io.File
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -10,6 +9,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.io.File
 
 /**
  * Архив сырых ответов и независимый разбор.
@@ -156,7 +156,10 @@ class MoltbookRawArchiveTest {
         assertEquals(MoltbookRawVerifier.Verdict.Confirmed, MoltbookRawVerifier.verdict(data, "мой ответ"))
 
         val camelCase =
-            JSONObject().put("commentId", "c-c").put("verificationStatus", "pending").put("content", "мой ответ")
+            JSONObject()
+                .put("commentId", "c-c")
+                .put("verificationStatus", "pending")
+                .put("content", "мой ответ")
                 .toString()
         val camel = MoltbookRawVerifier.receipt(camelCase)
         assertEquals("c-c", camel!!.commentId)

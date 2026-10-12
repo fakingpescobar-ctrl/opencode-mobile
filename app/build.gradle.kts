@@ -51,7 +51,10 @@ val gitSha: String =
             .directory(rootProject.projectDir)
             .redirectErrorStream(true)
             .start()
-        val out = proc.inputStream.bufferedReader().use { it.readText() }.trim()
+        val out = proc.inputStream
+            .bufferedReader()
+            .use { it.readText() }
+            .trim()
         if (proc.waitFor() != 0) throw IllegalStateException("git rev-parse -> $out")
         out
     }.getOrElse { "nogit" }
@@ -69,7 +72,10 @@ val gitStatus: String =
             .directory(rootProject.projectDir)
             .redirectErrorStream(true)
             .start()
-        val out = proc.inputStream.bufferedReader().use { it.readText() }.trim()
+        val out = proc.inputStream
+            .bufferedReader()
+            .use { it.readText() }
+            .trim()
         if (proc.waitFor() != 0) throw IllegalStateException("git status -> $out")
         out
     }.getOrElse { "" }
@@ -151,7 +157,8 @@ val treeHash: String = runCatching {
 val stampCache = rootProject.file("build/build-stamp.txt")
 val forceStamp = (findProperty("forceBuildStamp") as String?)?.toBoolean() == true
 val stampKey = "$gitSha/$treeHash"
-val nowStamp = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mmxxx")
+val nowStamp = DateTimeFormatter
+    .ofPattern("yyyy-MM-dd'T'HH:mmxxx")
     .withZone(ZoneId.of("Asia/Almaty"))
     .format(Instant.now())
 val buildStamp: String = run {

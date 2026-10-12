@@ -4,8 +4,8 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
-import java.security.MessageDigest
 import org.opencode.mobile.server.MoltbookPaths
+import java.security.MessageDigest
 
 /**
  * Локальный учёт Moltbook. До него «сколько не отвечено» вычислялось пересчётом
@@ -17,6 +17,7 @@ import org.opencode.mobile.server.MoltbookPaths
  * двигается только вперёд (NEW → POSTED/SKIPPED/FAILED) и никогда не откатывается,
  * поэтому повторный проход по той же ленте не может «разбудить» уже закрытый коммент.
  */
+
 /**
  * @param context база открывается НЕ там, где решил Android, а там, где её ищет
  *   плагин: [MoltbookPaths.ledgerContext]. Без этого подменённого контекста SQLiteOpenHelper
@@ -55,7 +56,9 @@ internal class MoltbookLedger(
      * Пустое значение в базе (строки, записанные до v5) = «не знаем» и в счётчик не
      * попадает: пересчёт должен быть консервативным, иначе он врёт на старой базе.
      */
-    enum class ReplyOutcome(val wire: String) {
+    enum class ReplyOutcome(
+        val wire: String,
+    ) {
         /** Создали новый комментарий, id получили. Ждёт verification или уже verified. */
         CREATED("created"),
 
@@ -323,22 +326,24 @@ internal class MoltbookLedger(
      * с одним и тем же `now` не должны разъезжаться.
      */
     fun createdRepliesSince(since: Long): Int =
-        readableDatabase.rawQuery(
-            CREATED_SQL,
-            arrayOf(
-                CommentStatus.POSTED.name,
-                ReplyOutcome.CREATED.wire,
-                ReplyOutcome.VERIFIED.wire,
-                since.toString(),
-            ),
-        ).use { rows -> if (rows.moveToFirst()) rows.getInt(0) else 0 }
+        readableDatabase
+            .rawQuery(
+                CREATED_SQL,
+                arrayOf(
+                    CommentStatus.POSTED.name,
+                    ReplyOutcome.CREATED.wire,
+                    ReplyOutcome.VERIFIED.wire,
+                    since.toString(),
+                ),
+            ).use { rows -> if (rows.moveToFirst()) rows.getInt(0) else 0 }
 
     /** Ответов, прошедших проверку. Считается так же, как [createdRepliesSince]. */
     fun verifiedRepliesSince(since: Long): Int =
-        readableDatabase.rawQuery(
-            VERIFIED_SQL,
-            arrayOf(CommentStatus.POSTED.name, ReplyOutcome.VERIFIED.wire, since.toString()),
-        ).use { rows -> if (rows.moveToFirst()) rows.getInt(0) else 0 }
+        readableDatabase
+            .rawQuery(
+                VERIFIED_SQL,
+                arrayOf(CommentStatus.POSTED.name, ReplyOutcome.VERIFIED.wire, since.toString()),
+            ).use { rows -> if (rows.moveToFirst()) rows.getInt(0) else 0 }
 
     fun recordUpvote(
         postId: String,
@@ -962,30 +967,31 @@ internal class MoltbookLedger(
         private const val KEY_REPOST_SEEN = "repost_seen:"
         const val OUR_AGENT = "opencodekz"
         private const val DB_NAME = "moltbook.db"
+
         /** Счётчик наблюдений: отдельная ветка миграции, см. [onUpgrade]. */
-    private const val ADD_HITS_COLUMN_V4 =
-        "ALTER TABLE seen ADD COLUMN hits INTEGER NOT NULL DEFAULT 1"
+        private const val ADD_HITS_COLUMN_V4 =
+            "ALTER TABLE seen ADD COLUMN hits INTEGER NOT NULL DEFAULT 1"
 
-    /** Чем закончился ответ: created/verified/reused, см. [ReplyOutcome]. */
-    private const val ADD_REPLY_OUTCOME_COLUMN_V5 =
-        "ALTER TABLE comments ADD COLUMN reply_outcome TEXT NOT NULL DEFAULT ''"
+        /** Чем закончился ответ: created/verified/reused, см. [ReplyOutcome]. */
+        private const val ADD_REPLY_OUTCOME_COLUMN_V5 =
+            "ALTER TABLE comments ADD COLUMN reply_outcome TEXT NOT NULL DEFAULT ''"
 
-    /** Схема v3: журнал прочитанного, [CREATE_SEEN_TABLE_V3]. */
-    private const val SCHEMA_V3 = 3
+        /** Схема v3: журнал прочитанного, [CREATE_SEEN_TABLE_V3]. */
+        private const val SCHEMA_V3 = 3
 
-    /** Схема v4: счётчик наблюдений, [ADD_HITS_COLUMN_V4]. */
-    private const val SCHEMA_V4 = 4
+        /** Схема v4: счётчик наблюдений, [ADD_HITS_COLUMN_V4]. */
+        private const val SCHEMA_V4 = 4
 
-    /**
-     * Схема v5: чем закончился ответ, [ADD_REPLY_OUTCOME_COLUMN_V5].
-     *
-     * Ровно то же число, что [DB_VERSION]: последняя ветка миграции обязана
-     * срабатывать при обновлении на текущую версию, иначе новая колонка
-     * появится только у тех, кто перескочит через две версии сразу.
-     */
-    private const val SCHEMA_V5 = 5
+        /**
+         * Схема v5: чем закончился ответ, [ADD_REPLY_OUTCOME_COLUMN_V5].
+         *
+         * Ровно то же число, что [DB_VERSION]: последняя ветка миграции обязана
+         * срабатывать при обновлении на текущую версию, иначе новая колонка
+         * появится только у тех, кто перескочит через две версии сразу.
+         */
+        private const val SCHEMA_V5 = 5
 
-    private const val DB_VERSION = 5
+        private const val DB_VERSION = 5
 
         /**
          * Ключ под отпечаток последнего тика. Пишет и сверяет его ИНТЕГРАЦИЯ
@@ -994,18 +1000,18 @@ internal class MoltbookLedger(
          */
         const val KEY_LAST_DIGEST = "last_digest"
 
-    /**
-     * Время тика, который начал работу и не дописал её до конца.
-     *
-     * Нужен, чтобы отличать чужую правку базы от своего же оборванного тика.
-     * Отпечаток [KEY_LAST_DIGEST] писался только на успешном пути, а база менялась
-     * намного раньше (карма, скан, `markComment`, `forgetOurReply`), поэтому любой
-     * сбой после первой записи гарантировал ложное «отпечаток базы не совпал» на
-     * следующем тике — и запись `KIND_TAMPER` в журнал свидетеля о порче, которой
-     * не было. Маркер ставится ДО первой записи и снимается в конце: оставшийся
-     * маркер означает «тик не дописал сам», а не «прав был кто-то ещё».
-     */
-    const val KEY_TICK_OPENED = "tick_opened"
+        /**
+         * Время тика, который начал работу и не дописал её до конца.
+         *
+         * Нужен, чтобы отличать чужую правку базы от своего же оборванного тика.
+         * Отпечаток [KEY_LAST_DIGEST] писался только на успешном пути, а база менялась
+         * намного раньше (карма, скан, `markComment`, `forgetOurReply`), поэтому любой
+         * сбой после первой записи гарантировал ложное «отпечаток базы не совпал» на
+         * следующем тике — и запись `KIND_TAMPER` в журнал свидетеля о порче, которой
+         * не было. Маркер ставится ДО первой записи и снимается в конце: оставшийся
+         * маркер означает «тик не дописал сам», а не «прав был кто-то ещё».
+         */
+        const val KEY_TICK_OPENED = "tick_opened"
 
         /**
          * Схема таблицы прочитанного. `IF NOT EXISTS` — не формальность: `onCreate`

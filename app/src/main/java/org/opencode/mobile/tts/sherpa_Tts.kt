@@ -71,24 +71,24 @@ data class OfflineTtsKittenModelConfig(
  * @property tokenScoresJson Path to token scores JSON file
  */
 data class OfflineTtsPocketModelConfig(
-  var lmFlow: String = "",
-  var lmMain: String = "",
-  var encoder: String = "",
-  var decoder: String = "",
-  var textConditioner: String = "",
-  var vocabJson: String = "",
-  var tokenScoresJson: String = "",
-  var voiceEmbeddingCacheCapacity: Int = 50,
+    var lmFlow: String = "",
+    var lmMain: String = "",
+    var encoder: String = "",
+    var decoder: String = "",
+    var textConditioner: String = "",
+    var vocabJson: String = "",
+    var tokenScoresJson: String = "",
+    var voiceEmbeddingCacheCapacity: Int = 50,
 )
 
 data class OfflineTtsSupertonicModelConfig(
-  var durationPredictor: String = "",
-  var textEncoder: String = "",
-  var vectorEstimator: String = "",
-  var vocoder: String = "",
-  var ttsJson: String = "",
-  var unicodeIndexer: String = "",
-  var voiceStyle: String = "",
+    var durationPredictor: String = "",
+    var textEncoder: String = "",
+    var vectorEstimator: String = "",
+    var vocoder: String = "",
+    var ttsJson: String = "",
+    var unicodeIndexer: String = "",
+    var voiceStyle: String = "",
 )
 
 data class OfflineTtsModelConfig(
@@ -99,7 +99,6 @@ data class OfflineTtsModelConfig(
     var kitten: OfflineTtsKittenModelConfig = OfflineTtsKittenModelConfig(),
     var pocket: OfflineTtsPocketModelConfig = OfflineTtsPocketModelConfig(),
     var supertonic: OfflineTtsSupertonicModelConfig = OfflineTtsSupertonicModelConfig(),
-
     var numThreads: Int = 1,
     var debug: Boolean = false,
     var provider: String = "cpu",
@@ -117,13 +116,12 @@ class GeneratedAudio(
     val samples: FloatArray,
     val sampleRate: Int,
 ) {
-    fun save(filename: String) =
-        saveImpl(filename = filename, samples = samples, sampleRate = sampleRate)
+    fun save(filename: String) = saveImpl(filename = filename, samples = samples, sampleRate = sampleRate)
 
     private external fun saveImpl(
         filename: String,
         samples: FloatArray,
-        sampleRate: Int
+        sampleRate: Int,
     ): Boolean
 }
 
@@ -135,7 +133,7 @@ data class GenerationConfig(
     var referenceSampleRate: Int = 0,
     var referenceText: String? = null,
     var numSteps: Int = 5,
-    var extra: Map<String, String>? = null
+    var extra: Map<String, String>? = null,
 )
 
 class OfflineTts(
@@ -162,40 +160,33 @@ class OfflineTts(
     fun generate(
         text: String,
         sid: Int = 0,
-        speed: Float = 1.0f
-    ): GeneratedAudio {
-        return generateImpl(ptr, text = text, sid = sid, speed = speed)
-    }
+        speed: Float = 1.0f,
+    ): GeneratedAudio = generateImpl(ptr, text = text, sid = sid, speed = speed)
 
     fun generateWithCallback(
         text: String,
         sid: Int = 0,
         speed: Float = 1.0f,
-        callback: (samples: FloatArray) -> Int
-    ): GeneratedAudio {
-        return generateWithCallbackImpl(
+        callback: (samples: FloatArray) -> Int,
+    ): GeneratedAudio =
+        generateWithCallbackImpl(
             ptr,
             text = text,
             sid = sid,
             speed = speed,
             callback = callback
         )
-    }
 
     fun generateWithConfig(
-      text: String,
-      config: GenerationConfig
-    ): GeneratedAudio {
-        return generateWithConfigImpl(ptr, text, config, null)
-    }
+        text: String,
+        config: GenerationConfig,
+    ): GeneratedAudio = generateWithConfigImpl(ptr, text, config, null)
 
     fun generateWithConfigAndCallback(
         text: String,
         config: GenerationConfig,
-        callback: (samples: FloatArray) -> Int
-    ): GeneratedAudio {
-        return generateWithConfigImpl(ptr, text, config, callback)
-    }
+        callback: (samples: FloatArray) -> Int,
+    ): GeneratedAudio = generateWithConfigImpl(ptr, text, config, callback)
 
     fun allocate(assetManager: AssetManager? = null) {
         if (ptr == 0L) {
@@ -231,12 +222,12 @@ class OfflineTts(
         config: OfflineTtsConfig,
     ): Long
 
-    private external fun newFromFile(
-        config: OfflineTtsConfig,
-    ): Long
+    private external fun newFromFile(config: OfflineTtsConfig): Long
 
     private external fun delete(ptr: Long)
+
     private external fun getSampleRate(ptr: Long): Int
+
     private external fun getNumSpeakers(ptr: Long): Int
 
     // The returned array has two entries:
@@ -247,7 +238,7 @@ class OfflineTts(
         ptr: Long,
         text: String,
         sid: Int = 0,
-        speed: Float = 1.0f
+        speed: Float = 1.0f,
     ): GeneratedAudio
 
     private external fun generateWithCallbackImpl(
@@ -255,15 +246,14 @@ class OfflineTts(
         text: String,
         sid: Int = 0,
         speed: Float = 1.0f,
-        callback: (samples: FloatArray) -> Int
+        callback: (samples: FloatArray) -> Int,
     ): GeneratedAudio
-
 
     private external fun generateWithConfigImpl(
         ptr: Long,
         text: String,
         config: GenerationConfig,
-        callback: ((samples: FloatArray) -> Int)?
+        callback: ((samples: FloatArray) -> Int)?,
     ): GeneratedAudio
 
     companion object {

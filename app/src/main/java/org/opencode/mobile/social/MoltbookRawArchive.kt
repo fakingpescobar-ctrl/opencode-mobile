@@ -1,8 +1,8 @@
 package org.opencode.mobile.social
 
+import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
-import org.json.JSONObject
 
 /**
  * Сырое тело каждого ответа Moltbook, сохранённое на диск ДО разбора.
@@ -129,7 +129,6 @@ internal object MoltbookRawArchive {
  * с клиентом и есть тот сигнал, который стоит показать.
  */
 internal object MoltbookRawVerifier {
-
     /** Ключи, под которыми ответ называет id опубликованного комментария. */
     private val ID_KEYS = arrayOf("id", "comment_id", "commentId")
 
@@ -140,6 +139,7 @@ internal object MoltbookRawVerifier {
 
     /** Глубина вложенности `data`, в которой ещё ищется наш комментарий. */
     private const val SCAN_DEPTH = 3
+
     /**
      * Что удалось вытащить из тела ответа, и ничего больше.
      *
@@ -180,9 +180,7 @@ internal object MoltbookRawVerifier {
      * напишет «сервер не дал доказательства публикации» (ровно тот ложный
      * вывод, который ревью справедливо отметило).
      */
-    fun receipt(
-        rawBody: String,
-    ): Receipt? {
+    fun receipt(rawBody: String): Receipt? {
         val root =
             try {
                 JSONObject(rawBody)
@@ -233,9 +231,7 @@ internal object MoltbookRawVerifier {
     }
 
     /** SHA-256 от того, что мы отправили: подпись версии, а не подпись успеха. */
-    fun contentHash(
-        text: String,
-    ): String =
+    fun contentHash(text: String): String =
         MessageDigest
             .getInstance("SHA-256")
             .digest(text.trim().toByteArray(Charsets.UTF_8))
