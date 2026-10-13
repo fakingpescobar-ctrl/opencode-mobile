@@ -46,6 +46,39 @@ class ApiAskTest {
             """.trimIndent(),
         )
 
+    /** Настоящий вызов, где модель задала два вопроса одним инструментом. */
+    private fun feedWithTwoQuestions(callId: String): JSONArray =
+        JSONArray(
+            """
+            [{"info":{"role":"assistant","time":{"created":1}},
+            "parts":[{"type":"tool","id":"$callId","tool":"question",
+            "state":{"status":"running","input":{"questions":[
+            {"question":"Kakoy variant: A ili B?","header":"Variant A/B",
+            "options":[{"label":"A"},{"label":"B"}]},
+            {"question":"Chto delat dalshe?","header":"Dalneyshie deystviya",
+            "options":[{"label":"Prodolzhit"},{"label":"Ostanovitsya"}]}]}}}]}]
+            """.trimIndent(),
+        )
+
+    /** Второй вопрос пришёл без текста, но с вариантами — терять его нельзя. */
+    private fun feedWithBlankSecondQuestion(callId: String): JSONArray =
+        JSONArray(
+            """
+            [{"info":{"role":"assistant","time":{"created":1}},
+            "parts":[{"type":"tool","id":"$callId","tool":"question",
+            "state":{"status":"running","input":{"questions":[
+            {"question":"Kakoy variant: A ili B?","header":"Variant A/B",
+            "options":[{"label":"A"},{"label":"B"}]},
+            {"question":"","header":"Dalneyshie deystviya",
+            "options":[{"label":"Prodolzhit"}]}]}}}]}]
+            """.trimIndent(),
+        )
+
+    /** Отдельные функции вместо `block.options.map { it.label }`: ktlint не даёт цепочек из трёх звеньев. */
+    private fun labelsOf(block: AskQuestion): List<String> = block.options.map { it.label }
+
+    private fun descriptionsOf(block: AskQuestion): List<String> = block.options.map { it.description }
+
     @Test
     fun `pustoy spisok znachit sprashivat nechego`() {
         assertEquals(emptyList<PendingAsk>(), ApiAsk.pending("""{"data":[]}"""))
@@ -81,9 +114,39 @@ class ApiAskTest {
 
         val card = ApiAsk.card(ask, feedWithQuestion("call_q1"))
         assertEquals("Vybor", card.title)
-        assertEquals("Kakoy variant: A ili B?", card.body)
-        assertEquals(listOf("A", "B"), card.options.map { it.label })
-        assertEquals(listOf("pervyy", "vtoroy"), card.options.map { it.description })
+        val only = card.questions.single()
+        assertEquals("Kakoy variant: A ili B?", only.text)
+        assertEquals(listOf("A", "B"), labelsOf(only))
+        assertEquals(listOf("pervyy", "vtoroy"), descriptionsOf(only))
+    }
+
+    @Test
+    fun `neskolko voprosov v odnom vyzove ne poteryany`() {
+        // Живой вызов, в котором модель задала ДВА вопроса разом.
+        val ask = ApiAsk.pending(questionPermission)!!.single()
+        val card = ApiAsk.card(ask, feedWithTwoQuestions("call_q1"))
+        assertEquals(2, card.questions.size)
+        val first = card.questions[0]
+        val second = card.questions[1]
+        assertEquals("Kakoy variant: A ili B?", first.text)
+        assertEquals("Chto delat dalshe?", second.text)
+        assertEquals(listOf("A", "B"), labelsOf(first))
+        assertEquals(listOf("Prodolzhit", "Ostanovitsya"), labelsOf(second))
+        // Заголовок карточки один, а вопросов два — значит это не «Выбор».
+        assertEquals("Variant A/B", card.title)
+    }
+
+    @Test
+    fun `vopros bez teksta poluchen ostatetsya v spiske`() {
+        // Второй вопрос может прийти без текста. Убрать его — значит потерять
+        // варианты, которые в нём были.
+        val ask = ApiAsk.pending(questionPermission)!!.single()
+        val card = ApiAsk.card(ask, feedWithBlankSecondQuestion("call_q1"))
+        assertEquals(2, card.questions.size)
+        val second = card.questions[1]
+        assertEquals("Dalneyshie deystviya", second.header)
+        assertEquals(ApiAsk.NO_TEXT_HINT, second.text)
+        assertEquals(listOf("Prodolzhit"), labelsOf(second))
     }
 
     @Test
@@ -94,8 +157,10 @@ class ApiAskTest {
         // CHASTA S DRUGIM ID: the join fails, so the question text is unknown.
         // An empty body would look broken and would leave nothing to react to,
         // so the card must explain itself instead of showing a blank bubble.
-        assertTrue(card.body.isNotBlank())
-        assertTrue(card.options.isEmpty())
+        assertEquals(1, card.questions.size)
+        val only = card.questions.single()
+        assertTrue(only.text.isNotBlank())
+        assertTrue(only.options.isEmpty())
     }
 
     @Test
@@ -106,14 +171,16 @@ class ApiAskTest {
         val card = ApiAsk.card(ask, null)
         assertEquals("Вопрос", card.title)
         assertEquals(ask.id, card.ask.id)
+        assertEquals(1, card.questions.size)
     }
 
     @Test
     fun `razreshenie risuetsya iz samogo zaprosa bez lenty`() {
         val card = ApiAsk.card(ApiAsk.pending(shellPermission)!!.single(), null)
         assertEquals("shell", card.title)
-        assertEquals("date", card.body)
-        assertTrue(card.options.isEmpty())
+        val only = card.questions.single()
+        assertEquals("date", only.text)
+        assertTrue(only.options.isEmpty())
     }
 
     @Test

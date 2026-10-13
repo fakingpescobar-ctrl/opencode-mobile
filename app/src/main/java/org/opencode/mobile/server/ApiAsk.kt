@@ -4,18 +4,10 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Один вариант ответа на вопрос, предложенный инструментом `question`.
- */
-internal data class AskOption(
-    val label: String,
-    val description: String,
-)
-
-/**
  * Запрос, на котором сервер ждёт ответа пользователя.
  *
  * [callId] — идентификатор вызова инструмента из `source.id`. Он же `id` части
- * ленты сообщений; по нему добывается текст вопроса, см. [ApiAsk.card].
+ * ленты сообщений; по нему добываются вопросы, см. [ApiAsk.card].
  */
 internal data class PendingAsk(
     val id: String,
@@ -25,14 +17,16 @@ internal data class PendingAsk(
 )
 
 /**
- * Что показать в карточке. [options] пуст у любого запроса, кроме `question`:
- * варианты придумал инструмент, а не сервер.
+ * Что показать в карточке.
+ *
+ * [questions] — всегда непустой список блоков. У вопроса их столько, сколько
+ * элементов в `questions[]` инструмента; у разрешения на действие ровно один,
+ * и в нём только то, что просят (для команды это `resources`).
  */
 internal data class AskCard(
     val ask: PendingAsk,
     val title: String,
-    val body: String,
-    val options: List<AskOption>,
+    val questions: List<AskQuestion>,
 )
 
 /**
@@ -163,37 +157,45 @@ internal object ApiAsk {
     }
 
     /**
-     * Карточка вопроса. Текст и варианты берутся из части ленты; если её ещё
-     * нет (гонка: запрос пришёл раньше, чем часть успела долететь, либо лента
-     * временно недоступна), показывается то, что есть. Но пустое тело молча
-     * выглядит как поломка, поэтому подставляем объяснение: без него
-     * «Разрешить» остаётся заблокированной (для вопроса нужен непустой ответ)
-     * и непонятно, что вообще печатать.
+     * Карточка вопроса. Тексты и варианты берутся из части ленты, и вопросов
+     * там может быть несколько — каждый становится отдельным блоком. Если
+     * части ещё нет (гонка: запрос пришёл раньше, чем часть успела долететь,
+     * либо лента временно недоступна), показывается то, что есть. Но пустое
+     * тело молча выглядит как поломка, поэтому подставляем объяснение: без
+     * него «Разрешить» остаётся заблокированной (для вопроса нужен непустой
+     * ответ) и непонятно, что вообще печатать.
      */
     private fun questionCard(
         ask: PendingAsk,
         input: JSONObject?,
     ): AskCard {
-        val first = input?.optJSONArray("questions")?.optJSONObject(0)
-        val body = first?.optString("question").orEmpty()
+        val arr = input?.optJSONArray("questions")
+        val list =
+            (0 until (arr?.length() ?: 0)).mapNotNull { i ->
+                val item = arr?.optJSONObject(i) ?: return@mapNotNull null
+                val block = questionOf(item)
+                // Вопрос без текста всё равно должен что-то показывать.
+                if (block.text.isBlank()) block.copy(text = NO_TEXT_HINT) else block
+            }
         return AskCard(
             ask = ask,
-            title = first?.optString("header")?.takeIf { it.isNotBlank() } ?: "Вопрос",
-            body = body.ifBlank { NO_TEXT_HINT },
-            options = optionsOf(first),
+            title = list.firstOrNull()?.header?.ifBlank { DEFAULT_TITLE } ?: DEFAULT_TITLE,
+            questions = list.ifEmpty { listOf(AskQuestion("", NO_TEXT_HINT, emptyList())) },
         )
     }
 
+    /** Заголовок карточки, когда вопросов несколько: их не назовёшь одним. */
+    private const val DEFAULT_TITLE = "Вопрос"
+
     /** Подсказка вместо текста вопроса, которого у нас нет. */
-    private const val NO_TEXT_HINT = "Текст вопроса не долетел — ответь своим текстом ниже."
+    internal const val NO_TEXT_HINT = "Текст вопроса не долетел — ответь своим текстом ниже."
 
     /** Карточка разрешения на действие: в ней есть только то, что просят. */
     private fun actionCard(ask: PendingAsk): AskCard =
         AskCard(
             ask = ask,
             title = ask.action,
-            body = ask.resources.joinToString("\n"),
-            options = emptyList(),
+            questions = listOf(AskQuestion("", ask.resources.joinToString("\n"), emptyList())),
         )
 
     /** `state.input` части инструмента с указанным id вызова. */
@@ -211,14 +213,5 @@ internal object ApiAsk {
             }
         }
         return null
-    }
-
-    private fun optionsOf(question: JSONObject?): List<AskOption> {
-        val arr = question?.optJSONArray("options")
-        return (0 until (arr?.length() ?: 0)).mapNotNull { i ->
-            val option = arr?.optJSONObject(i)
-            val label = option?.optString("label").orEmpty()
-            if (label.isEmpty()) null else AskOption(label, option?.optString("description").orEmpty())
-        }
     }
 }

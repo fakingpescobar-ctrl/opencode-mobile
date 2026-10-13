@@ -23,11 +23,15 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -61,7 +65,6 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.InvertColors
@@ -136,7 +139,6 @@ import org.opencode.mobile.server.ApiPaths
 import org.opencode.mobile.server.ApiShape
 import org.opencode.mobile.server.ApiStatus
 import org.opencode.mobile.server.AskCard
-import org.opencode.mobile.server.AskOption
 import org.opencode.mobile.server.LocalOpenCodeClient
 import org.opencode.mobile.server.MemoryMcp
 import org.opencode.mobile.server.PendingAsk
@@ -2168,6 +2170,14 @@ fun ChatOverlay(
                 }
             }
             val msgs = snapshot?.messages ?: emptyList()
+            // The empty-state art fades out on the first message instead of
+            // blinking off. It is driven here rather than inside the branch that
+            // draws it, because a branch flip cannot be animated.
+            val emptyAlpha by animateFloatAsState(
+                targetValue = if (msgs.isEmpty()) 1f else 0f,
+                animationSpec = tween(durationMillis = 450),
+                label = "empty-art",
+            )
             LaunchedEffect(msgs.size, snapshot?.thinking, snapshot?.liveTool) {
                 android.util.Log.d(
                     "ChatOverlay",
@@ -2220,58 +2230,64 @@ fun ChatOverlay(
                     }
                 }
             }
-            if (msgs.isEmpty()) {
-                Text(
-                    "Сообщений пока нет — напиши в поле внизу.",
-                    color = Color(0xFF8A8A8A),
-                    fontSize = 14.sp,
-                    modifier = Modifier.padding(vertical = 16.dp),
-                )
-            } else {
-                LazyColumn(
-                    state = listState,
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .padding(top = 6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    // Позиционный ключ (без кастомного key). Кастомный key из контента
-                    // крашил LazyColumn (Key "…was already used") при дубликатах сообщений
-                    // (например, дважды отправленная команда «Стой»). Лента append-only,
-                    // добавление в конец не трогает существующие позиции — позиционный
-                    // ключ безопасен и полностью устраняет этот краш.
-                    items(msgs) { m ->
-                        MessageRow(m, snapshot?.modelName ?: "Модель", modelFont, modelColor)
-                    }
-                    if (snapshot?.thinking == true) {
-                        val snap = requireNotNull(snapshot)
-                        item(key = if (snap.stalled) "stalled" else "thinking") {
-                            when {
-                                snap.stalledDead ->
-                                    DeadRow(
-                                        onAbort = { snap.activeId?.let(::recoverDeadTurn) },
-                                        onReset = { snap.activeId?.let { confirmResetDead = true } },
-                                    )
-                                snap.stalled -> StalledRow()
-                                else -> ThinkingRow()
+            // The box keeps weight(1f) whatever is inside it: it is what pins
+            // the input row with the mic and Stop to the bottom of the screen.
+            // Without a flexible child the column collapses to its content and
+            // the input rides to the top, which is what a new or cleared session
+            // used to do.
+            //
+            // The octopus is composed even while the feed has messages, so it can
+            // fade out instead of blinking off. It sits under the feed.
+            Box(
+                modifier = Modifier.weight(1f),
+                contentAlignment = Alignment.Center,
+            ) {
+                EmptyChatArt(alpha = emptyAlpha)
+                if (msgs.isNotEmpty()) {
+                    LazyColumn(
+                        state = listState,
+                        modifier =
+                            Modifier
+                                .fillMaxSize()
+                                .padding(top = 6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        // Позиционный ключ (без кастомного key). Кастомный key из контента
+                        // крашил LazyColumn (Key "…was already used") при дубликатах сообщений
+                        // (например, дважды отправленная команда «Стой»). Лента append-only,
+                        // добавление в конец не трогает существующие позиции — позиционный
+                        // ключ безопасен и полностью устраняет этот краш.
+                        items(msgs) { m ->
+                            MessageRow(m, snapshot?.modelName ?: "Модель", modelFont, modelColor)
+                        }
+                        if (snapshot?.thinking == true) {
+                            val snap = requireNotNull(snapshot)
+                            item(key = if (snap.stalled) "stalled" else "thinking") {
+                                when {
+                                    snap.stalledDead ->
+                                        DeadRow(
+                                            onAbort = { snap.activeId?.let(::recoverDeadTurn) },
+                                            onReset = { snap.activeId?.let { confirmResetDead = true } },
+                                        )
+                                    snap.stalled -> StalledRow()
+                                    else -> ThinkingRow()
+                                }
+                            }
+                            // Живой чип «какой тул выполняет модель» — поверх индикатора думания.
+                            snap.liveTool?.let { t ->
+                                item(key = "livetool_${t.name}_${t.detail.hashCode()}") {
+                                    LiveToolRow(t)
+                                }
                             }
                         }
-                        // Живой чип «какой тул выполняет модель» — поверх индикатора думания.
-                        snap.liveTool?.let { t ->
-                            item(key = "livetool_${t.name}_${t.detail.hashCode()}") {
-                                LiveToolRow(t)
+                        // Причина отказа сервера (квота/ретрай) — всегда последняя строка,
+                        // чтобы её не съедал автоскролл вниз и она читалась как вывод.
+                        // Рендерим защёлку: плашка должна висеть, пока сервер держит
+                        // ту же причину, даже если конкретный тик опроса её не увидел.
+                        (noticeLatch ?: snapshot?.notice)?.let { n ->
+                            item(key = "notice_${n.title}_${n.attempt}") {
+                                NoticeRow(n, context)
                             }
-                        }
-                    }
-                    // Причина отказа сервера (квота/ретрай) — всегда последняя строка,
-                    // чтобы её не съедал автоскролл вниз и она читалась как вывод.
-                    // Рендерим защёлку: плашка должна висеть, пока сервер держит
-                    // ту же причину, даже если конкретный тик опроса её не увидел.
-                    (noticeLatch ?: snapshot?.notice)?.let { n ->
-                        item(key = "notice_${n.title}_${n.attempt}") {
-                            NoticeRow(n, context)
                         }
                     }
                 }
@@ -2296,7 +2312,7 @@ fun ChatOverlay(
             // скроллить его не нужно вовсе.
             snapshot?.ask?.firstOrNull()?.let { card ->
                 Box(modifier = Modifier.padding(top = 8.dp)) {
-                    AskRow(
+                    AskCardView(
                         card = card,
                         busy = askBusy,
                         error = askError,
@@ -2310,70 +2326,92 @@ fun ChatOverlay(
                     Modifier
                         .fillMaxWidth()
                         .padding(top = 8.dp),
-                verticalAlignment = Alignment.Bottom,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                BasicTextField(
-                    value = draft,
-                    onValueChange = { draft = it },
+                // Поле ввода с микрофоном внутри. Раньше три круга по 46 dp стояли
+                // в одном ряду и съедали 162 dp из 339: на текст оставалось меньше
+                // половины ширины экрана. Микрофон переехал внутрь поля — высота
+                // блока не изменилась (46 dp), а текст стал шире на 46 dp.
+                Row(
                     modifier =
                         Modifier
                             .weight(1f)
                             .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                    textStyle = TextStyle(color = Color(0xFFF0F0F0), fontSize = 15.sp),
-                    cursorBrush = SolidColor(Color(0xFF7BA6F8)),
-                    maxLines = 4,
-                    keyboardOptions =
-                        KeyboardOptions(
-                            capitalization = KeyboardCapitalization.Sentences,
-                            imeAction = ImeAction.Send,
-                        ),
-                    keyboardActions = KeyboardActions(onSend = { send() }),
-                    decorationBox = { inner ->
-                        Box {
-                            if (draft.isEmpty()) {
-                                Text(
-                                    "Напиши сообщение…",
-                                    color = Color(0xFF777777),
-                                    fontSize = 15.sp,
-                                )
-                            }
-                            inner()
-                        }
-                    },
-                )
-                Surface(
-                    modifier =
-                        Modifier
-                            .padding(start = 8.dp)
-                            .size(46.dp)
-                            .pointerInput(Unit) {
-                                detectTapGestures(
-                                    onPress = {
-                                        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
-                                            PackageManager.PERMISSION_GRANTED
-                                        ) {
-                                            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                        } else {
-                                            startVoice()
-                                        }
-                                        try {
-                                            awaitRelease()
-                                        } finally {
-                                            stopVoice()
-                                        }
-                                    },
-                                )
-                            },
-                    shape = CircleShape,
-                    color = if (listening) Color(0xFFB71C1C) else Color(0xFF252525),
+                            .padding(horizontal = 5.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.Mic,
-                        contentDescription = "Голосовой ввод (удерживай для записи)",
-                        tint = if (listening) Color.White else Color(0xFFE0E0E0),
-                        modifier = Modifier.size(26.dp),
+                    BasicTextField(
+                        value = draft,
+                        onValueChange = { draft = it },
+                        modifier =
+                            Modifier
+                                .weight(1f)
+                                .padding(start = 8.dp, end = 4.dp),
+                        textStyle = TextStyle(color = Color(0xFFF0F0F0), fontSize = 15.sp),
+                        cursorBrush = SolidColor(Color(0xFF7BA6F8)),
+                        maxLines = 4,
+                        keyboardOptions =
+                            KeyboardOptions(
+                                capitalization = KeyboardCapitalization.Sentences,
+                                imeAction = ImeAction.Send,
+                            ),
+                        keyboardActions = KeyboardActions(onSend = { send() }),
+                        decorationBox = { inner ->
+                            Box {
+                                if (draft.isEmpty()) {
+                                    Text(
+                                        "Напиши сообщение…",
+                                        color = Color(0xFF777777),
+                                        fontSize = 15.sp,
+                                    )
+                                }
+                                inner()
+                            }
+                        },
                     )
+// Микрофон живёт в поле, а не рядом с ним, и уходит, как только
+                    // пользователь начал печатать: в пустом поле он занимает
+                    // место, в котором нет смысла держать голосовой ввод.
+                    // Пока идёт запись (listening) он остаётся — иначе нечем
+                    // остановить её.
+                    AnimatedVisibility(
+                        visible = draft.isEmpty() || listening,
+                        enter = fadeIn(),
+                        exit = fadeOut(),
+                    ) {
+                        Surface(
+                            modifier =
+                                Modifier
+                                    .size(38.dp)
+                                    .pointerInput(Unit) {
+                                        detectTapGestures(
+                                            onPress = {
+                                                if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
+                                                    PackageManager.PERMISSION_GRANTED
+                                                ) {
+                                                    micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                                } else {
+                                                    startVoice()
+                                                }
+                                                try {
+                                                    awaitRelease()
+                                                } finally {
+                                                    stopVoice()
+                                                }
+                                            },
+                                        )
+                                    },
+                            shape = CircleShape,
+                            color = if (listening) Color(0xFFB71C1C) else Color(0xFF252525),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Mic,
+                                contentDescription = "Голосовой ввод (удерживай для записи)",
+                                tint = if (listening) Color.White else Color(0xFFE0E0E0),
+                                modifier = Modifier.fillMaxSize().padding(8.dp),
+                            )
+                        }
+                    }
                 }
                 // Кнопка Stop: ВСЕГДА видна рядом с микрофоном.
                 // Прерывает текущую генерацию модели (POST /session/{id}/abort).
@@ -2382,7 +2420,7 @@ fun ChatOverlay(
                     modifier =
                         Modifier
                             .padding(start = 8.dp)
-                            .size(46.dp)
+                            .size(38.dp)
                             .clickable(enabled = !stopping) { stopGen() },
                     shape = CircleShape,
                     color = if (stopping) Color(0xFF3A3A3A) else Color(0xFF9E1C1C),
@@ -2391,23 +2429,7 @@ fun ChatOverlay(
                         imageVector = Icons.Filled.Stop,
                         contentDescription = "Прервать генерацию",
                         tint = Color.White,
-                        modifier = Modifier.size(26.dp),
-                    )
-                }
-                Surface(
-                    modifier =
-                        Modifier
-                            .padding(start = 8.dp)
-                            .size(46.dp)
-                            .clickable(enabled = !sending) { send() },
-                    shape = CircleShape,
-                    color = if (sending) Color(0xFF3A3A3A) else Color(0xFF2E5E8E),
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Отправить сообщение",
-                        tint = Color.White,
-                        modifier = Modifier.size(24.dp),
+                        modifier = Modifier.fillMaxSize().padding(8.dp),
                     )
                 }
             }
@@ -2671,152 +2693,6 @@ private fun StalledRow() {
             "Нет ответа (зависло) — проверь сеть/провайдера",
             color = Color(0xFFE25822),
             fontSize = 13.sp,
-        )
-    }
-}
-
-private const val ASK_BORDER = 0xFF8A6D3B
-private const val ASK_ALLOW = 0xFF2E5E8E
-private const val ASK_REJECT = 0xFF5A3B3B
-private const val ASK_ERROR = 0xFFE05B5B
-private const val ASK_CORNER = 10
-private const val ASK_FIELD_BG = 0xFF1E1E1E
-private const val ASK_HINT = 0xFF707070
-private const val ASK_BUSY = 0xFF505050
-
-/**
- * Карточка запроса, на котором сервер ждёт пользователя.
- *
- * Один композабл на оба вида запроса — команды и вопросы. Различает их
- * только `action`: у команды нечего выбирать, у вопроса есть варианты
- * и свободный текст. Две карточки означали бы две копии отправки ответа,
- * а ответ уходит на один и тот же маршрут.
- */
-@Composable
-private fun AskRow(
-    card: AskCard,
-    busy: Boolean,
-    error: String?,
-    onReply: (String?) -> Unit,
-    onReject: () -> Unit,
-) {
-    val question = card.ask.action == ApiAsk.QUESTION
-    var answer by remember(card.ask.id) { mutableStateOf("") }
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-            .border(1.dp, Color(ASK_BORDER), RoundedCornerShape(ASK_CORNER.dp))
-            .padding(12.dp),
-    ) {
-        Text(
-            card.title,
-            color = Color(ASK_BORDER),
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold,
-        )
-        if (card.body.isNotBlank()) {
-            Spacer(Modifier.height(4.dp))
-            Text(card.body, color = Color(0xFFE0E0E0), fontSize = 13.sp)
-        }
-        card.options.forEach { opt ->
-            AskOptionRow(opt, busy) { onReply(opt.label) }
-        }
-        if (question) {
-            Spacer(Modifier.height(8.dp))
-            AskField(answer, busy) { answer = it }
-        }
-        Spacer(Modifier.height(10.dp))
-        AskActions(busy, canReply = !question || answer.isNotBlank(), onReply, onReject, answer.trim().ifBlank { null })
-        if (error != null) {
-            Spacer(Modifier.height(6.dp))
-            Text(error, color = Color(ASK_ERROR), fontSize = 11.sp)
-        }
-    }
-}
-
-/** Вариант ответа на вопрос агента: тап отправляет подпись варианта. */
-@Composable
-private fun AskOptionRow(
-    opt: AskOption,
-    busy: Boolean,
-    onPick: () -> Unit,
-) {
-    Spacer(Modifier.height(6.dp))
-    Text(
-        if (opt.description.isBlank()) opt.label else "${opt.label} — ${opt.description}",
-        color = Color(0xFFE0E0E0),
-        fontSize = 13.sp,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(enabled = !busy, onClick = onPick)
-            .padding(vertical = 4.dp),
-    )
-}
-
-/** Свободный ответ на вопрос. Для команды не рисуется — отвечать нечем. */
-@Composable
-private fun AskField(
-    value: String,
-    busy: Boolean,
-    onChange: (String) -> Unit,
-) {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .background(Color(ASK_FIELD_BG), RoundedCornerShape(ASK_CORNER.dp))
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-    ) {
-        BasicTextField(
-            value = value,
-            onValueChange = onChange,
-            enabled = !busy,
-            textStyle = androidx.compose.ui.text
-                .TextStyle(color = Color(0xFFE0E0E0), fontSize = 13.sp),
-            modifier = Modifier.fillMaxWidth(),
-            decorationBox = { inner ->
-                if (value.isEmpty()) {
-                    Text("Свой ответ…", color = Color(ASK_HINT), fontSize = 13.sp)
-                }
-                inner()
-            },
-        )
-    }
-}
-
-/**
- * Кнопки ответа. [message] уходит на сервер, если пользователь что-то ввёл.
- *
- * [canReply] для вопроса без текста и без выбранного варианта выключает
- * «Разрешить»: отправить нечего, а жмущий без ответа всё равно закрыл бы
- * вопрос молча. Варианты идут мимо кнопки и работают как раньше.
- */
-@Composable
-private fun AskActions(
-    busy: Boolean,
-    canReply: Boolean,
-    onReply: (String?) -> Unit,
-    onReject: () -> Unit,
-    message: String?,
-) {
-    val enabled = !busy && canReply
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            text = if (busy) "Отправляю…" else "Разрешить",
-            color = if (enabled) Color(ASK_ALLOW) else Color(ASK_BUSY),
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier
-                .clickable(enabled = enabled) { onReply(message) }
-                .padding(vertical = 4.dp),
-        )
-        Text(
-            text = "Отклонить",
-            color = Color(ASK_REJECT),
-            fontSize = 13.sp,
-            modifier = Modifier
-                .clickable(enabled = !busy) { onReject() }
-                .padding(vertical = 4.dp),
         )
     }
 }
