@@ -9,6 +9,15 @@ package org.opencode.mobile.engine
  * скачивания. Повторный хеш 49 МБ на телефоне стоит сотни миллисекунд,
  * а готовность спрашивают постоянно; результат проверки хеша закрепляется
  * маркером `.ok`, который [EngineStore.isReady] тоже учитывает.
+ *
+ * ВАЖНО, из-за чего проверка размера строгая: она же объявляет движок
+ * «не установлен». Значит зашитый тут размер обязан совпадать с той
+ * сборкой, которую мы реально гоняем на устройстве, а не с той, что была
+ * опубликована в релиз при первом раскладе. Меняем движок - правим
+ * размер и хеш здесь И перезаливаем файл в релиз `engines-v1`, иначе
+ * приложение скачает старую сборку, а покажет «не установлена».
+ * Сверяется так: размер и sha256 файла из каталога сборки `obj/arm64-v8a/`
+ * внутри `whisperlib/build/intermediates/cxx/Release/`.
  */
 internal data class EngineFile(
     val name: String,
@@ -55,7 +64,7 @@ internal enum class Engine(
         files = listOf(
             EngineFile("libSPIRV.so", 6_168, "e7cca3626841ad42a9927b0c3efd9f3a70d2ab13746436762a92ca14bcd3f11c"),
             EngineFile("libglslang.so", 33_817_456, "e56ae5af09e16d7325d03e608bf9039fffa4e6347f08d16c132e8f344ba89235"),
-            EngineFile("libncnnwhisper.so", 49_538_104, "88afa46692409c21e591200e056845efd7b0c1bc248a0d435df5085fd2830fd2"),
+            EngineFile("libncnnwhisper.so", 49_972_488, "9a0b4b1c5097abe58e59205871c9753fbb5b765efe5b7c68fbae0951613ca4b4"),
         ),
     ),
 
@@ -85,7 +94,7 @@ internal enum class Engine(
             EngineFile("libggml-cpu.so", 4_225_832, "e001d6ed5b62518be6599fce14a3b78a18cfa5d8255791fa2987252955e0d2df"),
             EngineFile("libggml-vulkan.so", 71_780_504, "082d1d01ecd41def08fa5317b22db8d78722141dd49d09b1f7b11cdb3dc429bd"),
             EngineFile("libggml.so", 617_400, "90af33ff6d79805cbe55557fba3ca26143c53391dc67abf30d266baa289224b3"),
-            EngineFile("libwhisper.so", 6_087_088, "757ef10c4e1ada41cb8b876ec18e90f4ac6a7e557b502b61f02611e0342e4ab9"),
+            EngineFile("libwhisper.so", 6_086_864, "2a67d53df815e30965639515621095ab9b9850ef17c673d842339d033bfd60e3"),
         ),
     ),
 
