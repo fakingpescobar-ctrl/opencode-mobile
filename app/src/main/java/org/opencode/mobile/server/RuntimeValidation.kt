@@ -3,15 +3,15 @@ package org.opencode.mobile.server
 import android.content.Context
 import org.opencode.mobile.OpencodeApp
 import org.opencode.mobile.stt.ModelDownloader
-import org.opencode.mobile.stt.NcnnModelValidator
+import org.opencode.mobile.stt.SttModels
 
 /**
  * Единый контракт проверки готовности runtime-слоя (PR4).
  *
 * Один отчёт вместо разрозненных проверок в разных углах UI: нативный бинарь
  * (libopencode.so + musl), Basic-аутентификация serve, живой HTTP/TCP serve,
- * протокольно живой локальный MCP-сервер памяти (GET /mcp → 2xx), полный набор
- * ncnn-модели и свободное место на хранилище моделей. Используется диагностикой
+ * протокольно живой локальный MCP-сервер памяти (GET /mcp → 2xx), готовая модель
+ * распознавания из каталога и свободное место на хранилище моделей. Используется диагностикой
  * (секция «Валидация») и будет переиспользован вебхуками/бутстрапом.
  *
  * Все проверки — файловые/TCP, безопасны для Dispatchers.IO.
@@ -48,13 +48,13 @@ object RuntimeValidation {
          * отсутствие не должно красить весь отчёт; поэтому здесь true.
          */
         val musicMcp: Boolean,
-        /** Полный набор файлов ncnn-turbo на месте (NcnnModelValidator). */
-        val ncnnTurbo: Boolean,
+        /** Модель из каталога распознавания на месте и цела ([SttModels]). */
+        val sttModelReady: Boolean,
         /** Свободно байт на хранилище моделей. */
         val storageFreeBytes: Long,
     ) {
         val allOk: Boolean
-            get() = nativeRuntime && serverAuth && serverHttp && memoryMcp && musicMcp && ncnnTurbo
+            get() = nativeRuntime && serverAuth && serverHttp && memoryMcp && musicMcp && sttModelReady
     }
 
 /** Текущий отчёт. Вызывать вне main-потока (файловые проверки). */
@@ -67,7 +67,10 @@ object RuntimeValidation {
             // Музыка проверяется только когда ожидалась (см. KDoc поля): без bearer'а
             // витка проверять нечего, и `true` отражает «опциональна, требований нет».
             musicMcp = YnisonAuth.bearerHeader()?.let { probeMcp(YNISON_PORT, it) } ?: true,
-            ncnnTurbo = NcnnModelValidator.checkTurbo(context).ok,
+            sttModelReady =
+                SttModels.all.all { spec ->
+                    spec.isReady(context) && ModelDownloader.checkIntegrity(spec.fileOf(context)) != ModelDownloader.ModelIntegrity.CORRUPT
+                },
             storageFreeBytes = ModelDownloader.freeBytes(context),
         )
 

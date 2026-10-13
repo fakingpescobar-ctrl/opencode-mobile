@@ -7,7 +7,7 @@
 Android-приложение, которое запускает **opencode serve** прямо на устройстве
 (без Termux, без root) и даёт полноценный чат с AI-моделью в нативном интерфейсе.
 
-`Kotlin` · `Jetpack Compose` · `WebView` · `ncnn`(STT)` · `musl`
+`Kotlin` · `Jetpack Compose` · `WebView` · `whisper.cpp`+Vulkan (STT) · `musl`
 
 ---
 
@@ -113,10 +113,16 @@ Android-приложение, которое запускает **opencode serve
 ### Голосовой ввод (STT) — два движка
 1. **Системный Android (Google)** — встроенный распознаватель, не требует
    загрузки моделей, нужен доступ к сети.
-2. **NCNN (локально, int8-encoder)** — тот же whisper через ncnn, офлайн:
-   CPU int8 encoder (block-quant) ~2× быстрее fp32, KV-cache в decoder.
-   Движок **whisper.cpp/ggml убран из настроек** (legacy: `use_gpu=false`,
-   скрыт) — рабочий локальный путь только через ncnn.
+2. **Whisper.cpp (GGML Vulkan)** — офлайн, уходит на GPU телефона
+   (`GGML_VULKAN=ON` + `flash_attn`), 8 потоков. Движок и модель скачиваются
+   отдельно: движок 86 МБ в `files/engines/whisper/`, модель 465 МБ в
+   `filesDir/models/`. Кнопки — в **Настройки → Диагностика**.
+
+**Модель одна: `small`.** Все её замеры, сравнение с turbo/medium/base/tiny и
+разбор того, почему ncnn выпилен, — в [docs/VOICE-REPORT.md](./docs/VOICE-REPORT.md).
+Коротко: WER 11,3 % за 2,0–2,2 с на GPU (против 4,7–4,9 с на CPU при том же
+качестве). Нескачанная модель в пикере **не выбирается** — об этом прямо
+написано в подписи строки.
 
 Движок выбирается в настройках (шестерёнка в шапке чата).
 
@@ -126,9 +132,10 @@ Android-приложение, которое запускает **opencode serve
 Классы: `SpeechSegmenter`, `ChunkedTranscriber`. Подробности —
 `docs/EXPERIMENTS-STT-LATENCY.md`.
 
-**Сегментация и цена encoder'а.** ncnn-encoder платит фиксированные ~6–12 с
-на **любой** вход, поэтому количество сегментов — прямое умножение этой цены.
-Порог разрыва вынесен в `SpeechSegmenter.splitGapMs` (900 мс): раньше
+**Сегментация и цена прохода.** Whisper всегда кодирует окно 30 секунд, поэтому
+короткая фраза платит за тишину: у `small` проход занимает ~2 с **независимо**
+от длины клипа. Из этого следует практическое правило — количество сегментов
+умножается на цену одного прохода. Порог разрыва вынесен в `SpeechSegmenter.splitGapMs` (900 мс): раньше
 `PAD_MS=450` служил и порогом разрыва, и padding'ом, из-за чего запись в
 37 с резалась на 12 сегментов (145616 мс) вместо 9 (**60070 мс**, замер
 27.09.2026). Девять сегментов на настоящей записи — корректное разбиение, а не
@@ -171,19 +178,20 @@ Android-приложение, которое запускает **opencode serve
 `jfk.wav`), так что этот фикст подавление повторов не проверяет; нужен
 отдельный wav, где фраза звучит один раз.
 
-> Статус: правки собраны, гейт зелёный (ktlint + detekt + 179 unit-тестов).
-> **Device-верификация выполнена 27.09.2026**, 4/4 тестов, `BUILD SUCCESSFUL`:
-> чанкинг `long.wav` 60070 мс / 9 сегментов, авто-язык `en` на обоих клипах,
-> int8 быстрее fp32 в 1.50×–1.70× (конфиги чередуются, иначе троттлинг рисует
-> ложные 2–4×), lazy-регрессия выгрузки модели устранена. Ручных WER-эталонов
-> по-прежнему нет — WER остаётся `-`.
+> Статус: гейт зелёный (ktlint + detekt + unit-тесты).
+> **Device-верификация 27.09.2026** (чанкинг, авто-язык), **13–14.10.2026** —
+> движок и модель переведены на GPU (см. [docs/VOICE-REPORT.md](./docs/VOICE-REPORT.md)).
 
 ### Модель STT
-- **large-v3-turbo (574 МБ)** — единственная рабочая модель; скачивается по
-  требованию из панели настроек (прогресс, докачка при разрыве, проверка
+- **small (465 МБ, f16)** — **единственная модель в приложении.** Скачивается
+  по требованию из панели настроек (прогресс, докачка при разрыве, проверка
   целостности — SHA-256 + размер в sidecar `.size`).
-- **base (141 МБ)** — **убрана/не выбирается**: конвертация в ncnn даёт мусор
-  на выходе; код остался в `ModelDownloader`, но в UI отсутствует.
+- Каталог моделей живёт в одном месте — `stt/SttModels.kt`. base, medium, turbo
+  и tiny вычеркнуты **с замерами и причинами** (см. KDoc каталога и отчёт):
+  turbo даёт +3,7 п.п. WER за ×5 времени, medium — почти ту же точность за ×3
+  времени, base ошибается в каждой трети слов, tiny хуже base.
+- Из ncnn-движка не осталось ничего: его Vulkan-путь стабильно падает
+  `SIGSEGV` на Adreno 840 (<https://github.com/Tencent/ncnn/issues/7097>).
 
 ### Настройки чата
 - **Шрифт ответов модели** — 20+ встроенных шрифтов (тап по образцу — сразу
@@ -206,7 +214,7 @@ Android-приложение, которое запускает **opencode serve
   переустановку приложения (в отличие от prefs/моделей).
 - Уведомление с кнопкой «Stop» и статусом процесса.
 - Диагностика (`RuntimeValidation`): порты serve/память, протокольная
-  проверка MCP (`/api/mcp` → 2xx), наличие и валидность ncnn-моделей — экран
+  проверка MCP (`/api/mcp` → 2xx), наличие и валидность модели STT — экран
   «Диагностика» в настройках.
 - Приложение само закрепляет в управляемом конфиге бесплатную модель
   (`opencode/big-pickle`) и ключ `"question": "ask"` в разделе `permission`.
@@ -286,22 +294,24 @@ Android-ядро позволяет `execve` только с **PIE**-бинар�
 - Память хранится в `$XDG_CONFIG_HOME/opencode/memory/` (json-каталог прошлых
   сессий), переживает переустановку приложения.
 
-### STT на CPU (ncnn, int8)
+### STT: foreground-сервис и GPU
 
 На ColorOS/OPPO фоновые compute-потоки душатся до 1–5% CPU. Поэтому
 распознавание выполняется в **foreground-сервисе** (`WhisperTranscribeService`) —
-так ОС даёт процессу нормальный приоритет. Модель кэшируется в память между
-вызовами (грузится один раз), что критично для тяжёлого turbo (574 МБ).
+так ОС даёт процессу нормальный приоритет. Модель кэшируется в памяти между
+вызовами (грузится один раз).
 
-Производительность (OPPO, 02.09.2026): **encoder int8 ≈ 8.82 s** (fp32 — 17.9 s;
-Vulkan-эксперимент 6.45 s — стабилен, но в проде выключен), decoder с KV-cache
-~0.5–0.6 s → полное распознавание ~10 s.
-Бенч 27.09.2026 с **чередованием** конфигов: int8 6.5–8.2 s vs fp32 11.0–13.2 s,
-то есть **1.50×–1.70×**. Блоковый порядок («все int8, потом все fp32») давал
-2.0×–3.9×, но это был троттлинг: fp32 всегда шёл вторым на горячем телефоне и
-деградировал 37 с → 69 с по ходу прогона. Подробности:
-`docs/EXPERIMENTS-STT-LATENCY.md`, `docs/stt-bench-2026-09-24.csv`,
-`docs/stt-bench-2026-09-27.csv`.
+Сам whisper считает на **GPU** телефона: `GGML_VULKAN=ON`, `flash_attn=true`,
+8 потоков. Модель `small` (465 МБ) на OnePlus CPH2747 / Adreno 840:
+
+| бэкенд | проход | rtf | WER (7 клипов) |
+|---|---|---|---|
+| **GPU** | **~2 с** | 0,20–0,37 | **11,3 %** |
+| CPU | ~4,8 с | 0,46–0,86 | 11,3 % |
+
+Качественно GPU и CPU дают **одинаковый** результат, разница только в
+скорости (×2,2). Полные таблицы по всем моделям и разбор выбора —
+[docs/VOICE-REPORT.md](./docs/VOICE-REPORT.md).
 
 Запись: `AudioRecord` → PCM16 16кГц → нормализация пика (телефоны пишут тихо) →
 подкладка тишины (whisper врёт на очень коротких клипах) → распознавание →
@@ -406,9 +416,10 @@ Vulkan-эксперимент 6.45 s — стабилен, но в проде в
   отключается, всё остальное работает.
   Проверено: `git clone` + скрипт нативов + `build.ps1 -Task debug -SkipNative`
   даёт рабочий APK, сервер отвечает, агент отвечает.
-- Модели whisper (turbo) в assets **не хранятся** — качаются по требованию через
-  `ModelDownloader` в `filesDir/models/` (ncnn-формат: `.ncnn.param/.bin`,
-  int8-вариант энкодера — automatically).
+- Модель STT (`ggml-small.bin`) в assets **не хранится** — качается по требованию
+  через `ModelDownloader` в `filesDir/models/`. Движок whisper.cpp (86 МБ) тоже
+  качается отдельно, в `filesDir/engines/whisper/` — оба набора берутся из
+  GitHub-релиза движков и проверяются по размеру и SHA-256.
 
 ---
 
@@ -475,8 +486,7 @@ Keep-правила — в `app/proguard-minverify-rules.pro`, на release он
 
 Перед выкладкой стоит убедиться, что JNI-класс уцелел при обфускации:
 ```bash
-# Lcom/whispercpp/whisper/NcnnWhisperLib; должен ПРИСУТСТВОВАТЬ в classes.dex
-# Lcom/whispercpp/whisper/NcnnWhisperContext; будет обфусцирован - это нормально
+# Lcom/whispercpp/whisper/WhisperLib$Companion; должен ПРИСУТСТВОВАТЬ в classes.dex
 ```
 Его спасает правило из дефолтного `proguard-android-optimize.txt`:
 `-keepclasseswithmembernames,includedescriptorclasses class * { native <methods>; }`
@@ -490,7 +500,7 @@ adb logcat -s OpencodeRuntime OpencodeServerService OpencodeWebView VOICE Runtim
 
 > ⚠️ **После переустановки (uninstall → install)**: сессии/история/память на
 > внешнем хранилище сохраняются, но **авторизация сбрасывается** — serve
-> сгенерирует новый пароль, и ncnn-модели STT нужно раскатать заново
+> сгенерирует новый пароль, и движок с моделью STT нужно скачать заново
 > (`filesDir` стирается). Проверка: «OpenCode server — Running», мониторинг
 > чата работает с новым паролем автоматически.
 
@@ -530,35 +540,40 @@ app/
         WhisperTranscribeService.kt  # foreground-сервис распознавания
         SpeechSegmenter.kt           # VAD-сегментация речи (ЭКСП-5)
         ChunkedTranscriber.kt        # чанкинг: сегменты → отдельные распознавания
-        NcnnModelValidator.kt        # валидация набора ncnn-моделей
-        ModelDownloader.kt           # скачивание turbo (lazy, resume, integrity SHA-256)
-        NcnnModelDownloader.kt       # ncnn-turbo набор (16 файлов) из GitHub Releases
+        SttModels.kt                 # каталог моделей (сейчас одна — small) + замеры
+        ModelDownloader.kt           # скачивание ggml-small (lazy, resume, integrity SHA-256)
+        SttBenchReceiver.kt          # отладочный вход: WAV → та же очередь (для бенчей)
+        SttWav.kt                    # разбор RIFF/WAVE
+      engine/
+        EngineCatalog.kt             # состав и размеры скачиваемых движков
+        EngineStore.kt               # скачивание движка (resume, SHA-256, chmod +x)
+        EngineLibs.kt                # System.load в порядке зависимостей
       ui/
         ChatOverlay.kt           # нативный чат поверх WebView + настройки
         AskCardView.kt           # вёрстка карточки вопроса/разрешения
+        SttModelPicker.kt        # выбор модели STT (нескачанная не выбирается)
         EmptyChatArt.kt          # дождь на пустом экране (рисуется кодом)
-        DiagnosticsScreen.kt     # экран диагностики (порты/MCP/модели)
+        DiagnosticsScreen.kt     # экран диагностики (порты/MCP/движки/модели)
         theme/Theme.kt
       tts/                      # озвучка: SpeechFactory, TtsNarrator, Supertonic/ElevenLabs
       social/                   # мобильный агент moltbook: тик, будильник, watchdog
     assets/                       # шрифты, MCP-ассеты (memory/moltbook/ynison), harness
     jniLibs/arm64-v8a/           # нативы НЕ в git: opencode + musl/Bun/GCC + sherpa (см. fetch-opencode-binary.ps1)
-whisperlib/                      # JNI-обёртки: ncnn (рабочий) + whisper.cpp (legacy)
-  src/main/jni/
-    whisper/                     # whisper.cpp-gw (использует ggml; use_gpu=false)
-    whisper/CMakeLists.txt       # переменные внешних путей: WHISPER_LIB_DIR, NCNN_DIR
-    ncnn/                        # ncnn-whisper (int8 encoder, KV-cache) — основной путь
+ whisperlib/                      # JNI-обёртки whisper.cpp
+   src/main/jni/
+     whisper/                     # whisper.cpp (ggml; use_gpu + flash_attn + квант-гейт)
+     whisper/CMakeLists.txt       # переменные внешних путей: WHISPER_LIB_DIR
 docs/
   MIGRATION-V2.md                # переход на opencode 2: что поменялось, что отменили
   ROADMAP.md                     # треки к релизу + статусы
-  EXPERIMENTS-STT-LATENCY.md     # замеры ncnn: int8/Vulkan/KV, ЭКСП-5 (чанкинг)
+  VOICE-REPORT.md                # голос: замеры всех моделей, выбор small, разбор краша ncnn
+  ncnn-vulkan-crash-report.md    # баг-репорт в ncnn (Adreno 840, SIGSEGV)
+  EXPERIMENTS-STT-LATENCY.md     # замеры STT-латентности, ЭКСП-5 (чанкинг)
   stt-bench-2026-09-24.csv       # бенч int8 vs fp32 (24.09.2026)
 tools/
   fetch-opencode-binary.ps1      # скачать все 8 нативов (opencode, musl, Bun, GCC, sherpa) — в git их нет
   adb-auth-common.ps1            # пароль serve из /proc + готовый Basic-заголовок
-  ncnn-whisper-plan.md           # план интеграции ncnn-whisper
-  ncnn-int8-plan.md              # int8-квантование (внедрено) + тулзы квантования
-  ncnn-int8/                     # quantize_block.py, compare_encoder.cpp (хост-бенч)
+  stt-accuracy.ps1               # бенч точности STT без участия человека (WER по эталону)
 build.ps1                        # сборка на Windows: debug/release (Android Studio JDK)
 ```
 
@@ -578,6 +593,8 @@ build.ps1                        # сборка на Windows: debug/release (And
 | 6 | Все UI-кнопки на готовых Material-иконках (extended) | Микрофон, отправка, stop, шестерёнка, шрифт, цвет — векторные, читаемые |
 | 7 | R8-минификация + shrinkResources в release | APK 374 → 274 MB (R8), затем lazy-вынос base → **147 MB** (release-подпись; пакет чистый `org.opencode.mobile`) |
 | 8 | base-модель вынесена из assets в lazy-скачивание | base/turbo качаются по требованию; APK больше не тащит 141MB whisper |
+| 9 | whisper.cpp переведён на GPU (`GGML_VULKAN` + `flash_attn`), квант-гейт | base: rtf 0,38 → 0,06–0,12 на том же тексте |
+| 10 | ncnn выпилен, движки и модель качаются отдельно, осталась одна модель `small` | APK −33 МБ, WER 11,3 % за 2 с |
 
 **Итог:** UI CPU ~38% → ~1.5-8% (×5–25), рендер 99-перц. 9 мс, janky 0.33%,
 фон ~0%. Единственный хвост — внутренний `opencode serve` (~35%, код движка, не наш).
@@ -614,31 +631,20 @@ build.ps1                        # сборка на Windows: debug/release (And
 - **SELinux**: маппинг либ из `filesDir` (`mmap PROT_EXEC`) может быть ограничен
   политикой `untrusted_app` — проверено на реальном OPPO, на других устройствах
   стоит делать smoke-тест.
-- **Performance STT**: полное распознавание turbo ncnn ~10 s (encoder int8 8.82 s).
-  Внедрены foreground-сервис + int8-encoder + **VAD-чанкинг** (первые слова 1–2 s);
-  бенч на устройстве: int8 ~2.1× fp32 (см. `docs/EXPERIMENTS-STT-LATENCY.md`,
-  `docs/stt-bench-2026-09-24.csv`). Осталось: наполнить корпус эталонами (см. WER ниже).
-- **WER**: счётка готова и покрыта юнит-тестами (`stt/Wer.kt`), но **эталонных
-  транскриптов в репозитории нет**, поэтому реальных цифр WER пока не существует.
-  Чтобы получить их:
-  1. Положить wav в `app/src/androidTest/assets/bench/`.
-  2. Положить **вручную написанную** расшифровку этого wav в
-     `app/src/androidTest/assets/bench/reference/<имя wav без .txt>.txt`.
-  3. Запустить `BenchSttTest.benchInt8AndFp32` на устройстве; в CSV появится колонка `wer`.
-
-  Тест требует **обе** модели: `ncnn-turbo` (int8) и `ncnn-bench-fp32`. Отсутствие
-  fp32 раньше логалось warning'ом и тест рапортовался зелёным при двух фактических
-  конфигах («3/3 passed») — теперь это падение. Дополнительно проверяется, что в
-  каталоге fp32 нет int8-файлов: иначе ncnn загрузил бы int8, и строка `fp32` в CSV
-  была бы ложью. Вариант энкодера доступен как `NcnnModelValidator.EncoderVariant`.
-
-  Эталон должен быть написан **до** прогона, независимо от вывода модели. Если составить
-  его по выводу модели, WER получится около нуля и будет выглядеть как отличный результат,
-  не измеряя ничего. Пустые файлы и эталоны без парного wav отбрасываются с warning.
-  Сравнение word-level, текст нормализуется (регистр, `ё`→`е`, пунктуация); слова-паразиты
-  (`ну`, `вот`, `это`) сохраняются, иначе метрика подгоняется под удобный результат.
-- **Vulkan (GPU)**: экспериментально (int8-Vulkan 6.45 s, стабилен), но в проде
-  выключен — включение = `encoder.opt.use_vulkan_compute=true` в `ncnn_jni.cpp`.
+- **Performance STT**: модель `small` на GPU — проход ~2 с на любой длине клипа
+  (whisper всегда кодирует окно 30 с, поэтому короткая фраза платит за тишину).
+  Полные замеры — [docs/VOICE-REPORT.md](./docs/VOICE-REPORT.md).
+- **WER посчитан**: эталонные транскрипты взяты из набора
+  `C:\Projects\MyFLOW\data\eval_wispr` (624 фразы), движок — `tools/stt-accuracy.ps1`.
+  `small`: **11,3 % на 7 клипах**, **17,4 % на 40 фразах с человеческим эталоном**
+  (и 3,1 % на фразах до 4 секунд). Оговорка: `their_edited` заполнен лишь у 88
+  записей из 624, у остальных эталон — вывод чужого ASR, поэтому абсолютные
+  проценты смещены неизвестно на сколько.
+- **Квантованные модели на GPU не работают** (turbo q5_0 → мусор, rtf 47–58).
+  В `jni.c` стоит квант-гейт по имени файла; отладочный обход — метка `quant_gpu`
+  рядом с моделью.
+- **Vulkan (GPU) у whisper.cpp — рабочий и включён по умолчанию**
+  (`GGML_VULKAN=ON`). Квант-гейт — единственное, что держит его в порядке.
 
 ### Ограничения сервера opencode 2.0.27 (замерено на устройстве)
 

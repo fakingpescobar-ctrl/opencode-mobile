@@ -9,46 +9,18 @@ import android.util.Log
  * → склейка текстов.
  *
  * Зачем (см. [SpeechSegmenter]):
- * - клип > 30 с у ncnn-encoder обрезает хвост — сегменты ≤ 28 с;
- * - тишина/шум не попадают в движок — галлюцинации («Продолжение следует…»)
+ * - тишина и шум не попадают в движок — галлюцинации («Продолжение следует…»)
  *   отсекаются до распознавания;
- * - клипы ≤ 28 с (ncnn) выполняются ОДНИМ прогоном без VAD — encoder ncnn берёт
- *   фиксированные ~6.5с на любой вход, делить короткую речь на сегменты дороже
- *   (R5-бенч, 25.09.2026); «живость» первых частичек приносится в жертву скорости.
+ * - короткая речь не делится на сегменты: whisper.cpp врёт на клипах короче
+ *   трёх секунд, поэтому [prepareAudio] добивает их нулями до минимума.
  *
- * Склейка — простая конкатенация с пробелом: ncnn-адаптация не умеет
- * initial_prompt (декодер запускается с фиксированного [sot, lang, transcribe,
- * notimestamps]), поэтому контекст между сегментами не переносится. Для набора
- * артефактов на стыках это приемлемо (проверено в benchChunkedLong).
+ * Склейка — простая конкатенация с пробелом: контекст между сегментами не
+ * переносится, для набора артефактов на стыках это приемлемо (проверено в
+ * benchChunkedLong).
  */
 object ChunkedTranscriber {
     private const val TAG = "CHUNKED"
     private const val SAMPLE_RATE = 16_000
-
-    /**
-     * Клипы не длиннее этого — НЕ сегментируются: вся запись гонится в движок
-     * одним прогоном. Плюс (R5-бенч, 25.09.2026): ncnn-encoder платит
-     * фиксированные ~6.5с на ЛЮБОЙ вход, а VAD-разбиение короткой фразы с
-     * микропаузами на 2+ сегмента умножает эту стоимость (8с фраза → 2×encoder
-     * ≈ 15с).
-     *
-     * ПОРОГ ИЗМЕРЕН, а не выбран «на глаз» (29.09.2026,
-     * BenchSttTest#benchLongSinglePassTruncation). Прежние 28с обосновывались
-     * словами «запас под 30с-лимит ncnn» — и это обоснование ОКАЗАЛОСЬ ЛОЖНЫМ.
-     * Замер по long.wav (37с; по данным VAD фразы стоят на 5.2 / 18.2 / 31.2с):
-     * single-pass возвращает всё при 11 / 15 / 18с, но уже на 22с теряет ВТОРУЮ
-     * фразу (marker 2 → 1), а на 37с отдаёт 1 из 3. То есть дело не в окне 30с:
-     * энкодер режет по 480000 сэмплов (cnn_jni.cpp:658), но контент начинает
-     * теряться сильно раньше. Механизм (штраф за повтор, cnn_jni.cpp:633,
-     * гасит тождественную фразу — либо модель сама ставит EOT) не разведён,
-     * и на константу это не влияет: 18с — последнее измеренное полное
-     * значение, 22с уже нет.
-     *
-     * Цена отката с 28с на 18с — длинные клипы идут через VAD-чанки и платят
-     * encoder дважды. Размен осознанный: лишний encoder виден в логе, а
-     * потерянная половина диктовки не видна нигде.
-     */
-    private const val MAX_SINGLE_PASS_SAMPLES = 18 * SAMPLE_RATE
 
     /**
      * Сегментирует клип и транскрибирует каждый сегмент через сервис.
@@ -59,7 +31,6 @@ object ChunkedTranscriber {
         context: Context,
         samples: FloatArray,
         model: String,
-        engine: String,
     ): String {
         if (samples.isEmpty()) {
             return "ОШИБКА WHISPER: пустые сэмплы"
@@ -72,46 +43,14 @@ object ChunkedTranscriber {
         // утекал бы во все следующие до перезапуска процесса.
         WhisperTranscribeService.resetLanguageLatch()
 
-        // Lazy-путь: короткий клип → один прогон без VAD (энкодер ncnn — константа
-        // ~6.5с, сегментирование короткой речи только умножает её). Для whisper.cpp
-        // сохраняем прежнее поведение (ему нужен padToMin > 3с и чанкинг привычен).
-        return when {
-            shouldUseSinglePass(engine, samples.size) -> {
-                Log.d(
-                    TAG,
-                    "lazy single-pass: ${samples.size / SAMPLE_RATE}с ≤ " +
-                        "${MAX_SINGLE_PASS_SAMPLES / SAMPLE_RATE}с — без VAD-сегментации",
-                )
-                WhisperTranscribeService.transcribe(
-                    context = context,
-                    samples = samples,
-                    model = model,
-                    engine = engine,
-                )
-            }
-            else -> {
-                val segments = SpeechSegmenter().split(samples)
-                val speech = segments.map { segment -> prepareAudio(segment.samples, engine) }
-                logSegments(speech, samples.size)
-                transcribeSegments(context, segments, speech, model, engine)
-            }
-        }
+        val segments = SpeechSegmenter().split(samples)
+        val speech = segments.map { segment -> prepareAudio(segment.samples) }
+        logSegments(speech, samples.size)
+        return transcribeSegments(context, segments, speech, model)
     }
 
-    private fun shouldUseSinglePass(
-        engine: String,
-        sampleCount: Int,
-    ): Boolean = engine == WhisperTranscribeService.ENGINE_NCNN && sampleCount <= MAX_SINGLE_PASS_SAMPLES
-
-    private fun prepareAudio(
-        samples: FloatArray,
-        engine: String,
-    ): FloatArray =
-        if (engine == WhisperTranscribeService.ENGINE_WHISPER) {
-            padToMin(samples, minSamples = 3 * SAMPLE_RATE)
-        } else {
-            samples
-        }
+    /** whisper.cpp врёт на клипах короче 3 секунд — всегда добиваем нулями до минимума. */
+    private fun prepareAudio(samples: FloatArray): FloatArray = padToMin(samples, minSamples = 3 * SAMPLE_RATE)
 
     private fun logSegments(
         speech: List<FloatArray>,
@@ -130,7 +69,6 @@ object ChunkedTranscriber {
         segments: List<SpeechSegmenter.Segment>,
         speech: List<FloatArray>,
         model: String,
-        engine: String,
     ): String {
         val parts = ArrayList<String>()
         val plan = planParts(segments, speech)
@@ -139,7 +77,6 @@ object ChunkedTranscriber {
                 context = context,
                 samples = part.audio,
                 model = model,
-                engine = engine,
             )
             if (text.startsWith("ОШИБКА")) return text
 

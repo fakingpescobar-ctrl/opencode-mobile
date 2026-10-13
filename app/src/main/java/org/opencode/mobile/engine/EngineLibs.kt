@@ -13,7 +13,7 @@ import java.io.File
  *
  * Порядок важен и задан в [Engine.files]: файлы перечислены так, что
  * зависимости идут раньше зависимых. Если сначала загрузить
- * libncnnwhisper.so, линкер не найдёт libglslang.so и упадёт с
+ * libwhisper.so, линкер не найдёт libggml-base.so и упадёт с
  * «cannot locate symbol» уже во время dlopen.
  *
  * Повторный вызов безопасен: System.load для уже загруженного soname

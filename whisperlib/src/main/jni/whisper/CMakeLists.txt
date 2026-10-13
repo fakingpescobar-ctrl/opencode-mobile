@@ -92,39 +92,3 @@ include_directories(${WHISPER_LIB_DIR}/ggml/src/ggml-cpu)
 # build from whisper.cpp v1.9.3 tag
 # rebuild from master 08/30/2026 03:39:49
 
-# ===================== ncnn whisper (Vulkan) =====================
-# Adds a separate ncnnwhisper shared library built against static ncnn (Vulkan).
-# Existing whisper / whisper_v8fp16_va targets are untouched -> engine-selection
-# by loading libwhisper.so (whisper.cpp) vs libncnnwhisper.so (ncnn).
-
-# ncnn — в репо (third_party/ncnn): путь ОТНОСИТЕЛЬНЫЙ от этого файла
-# (whisperlib/src/main/jni/whisper → корень репо = 5 уровней вверх), а не
-# абсолютный C:/... — иначе сборка непереносима (CI-17).
-set(NCNN_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../../../third_party/ncnn")
-
-set(NCNN_VULKAN ON CACHE BOOL "" FORCE)
-set(NCNN_RUNTIME_CPU ON CACHE BOOL "" FORCE)
-set(NCNN_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-set(NCNN_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(NCNN_BUILD_BENCHMARK OFF CACHE BOOL "" FORCE)
-set(NCNN_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(NCNN_PYTHON OFF CACHE BOOL "" FORCE)
-set(NCNN_SHARED OFF CACHE BOOL "" FORCE)
-
-add_subdirectory(${NCNN_DIR} ${CMAKE_CURRENT_BINARY_DIR}/ncnn)
-
-add_library(
-    ncnnwhisper
-    SHARED
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ncnn/ncnn_jni.cpp
-)
-
-target_include_directories(ncnnwhisper PRIVATE ${NCNN_DIR}/src ${NCNN_DIR}/src/layer ${NCNN_DIR}/src/layer/vulkan)
-
-if (NOT ${CMAKE_BUILD_TYPE} STREQUAL "Debug")
-    target_compile_options(ncnnwhisper PRIVATE -O3)
-    target_compile_options(ncnnwhisper PRIVATE -fvisibility=hidden -fvisibility-inlines-hidden)
-    target_link_options(ncnnwhisper PRIVATE -Wl,--gc-sections)
-endif()
-
-target_link_libraries(ncnnwhisper ncnn log android)

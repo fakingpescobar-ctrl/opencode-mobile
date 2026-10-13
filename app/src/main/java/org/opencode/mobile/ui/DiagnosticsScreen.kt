@@ -10,7 +10,6 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -74,8 +73,6 @@ import org.opencode.mobile.server.RuntimeError
 import org.opencode.mobile.server.RuntimeStage
 import org.opencode.mobile.server.RuntimeValidation
 import org.opencode.mobile.stt.ModelDownloader
-import org.opencode.mobile.stt.NcnnModelDownloader
-import org.opencode.mobile.stt.NcnnModelValidator
 import org.opencode.mobile.stt.SttModels
 import java.io.File
 import java.text.SimpleDateFormat
@@ -98,9 +95,6 @@ private const val PERCENT_MAX = 100
 
 /** Сколько строк вывода retention показывать на экране (хвост, не дамп). */
 private const val RETENTION_OUTPUT_TAIL_LINES = 12
-private const val PROGRESS_TRACK_COLOR = 0xFF2A2A2AL
-
-/** Состояние скачивания ncnn-набора (кнопка в секции «Голосовое распознавание»). */
 
 /** Состояние скачивания нативного движка. Отделено от моделей: те идут своим каналом. */
 /** Приглушённый серо-голубой для пояснений. Константой, потому что detekt
@@ -140,25 +134,10 @@ private sealed interface GgmlDownloadState {
     ) : GgmlDownloadState
 }
 
-private sealed interface NcnnDownloadState {
-    data object Idle : NcnnDownloadState
-
-    data class Running(
-        val done: Long,
-        val total: Long,
-    ) : NcnnDownloadState
-
-    data class Failed(
-        val message: String,
-    ) : NcnnDownloadState
-}
-
 /** Снапшот моделей и хранилища, собранный один раз на IO при открытии. */
 private data class StorageSnapshot(
     val free: Long,
     val used: Long,
-    val ncnnTurboReady: Boolean,
-    val ncnnTurboSize: Long,
     /**
      * Готовые ggml-модели движка whisper.cpp: идентификатор -> размер на диске.
      * Считается в IO-ветке снапшота, потому что isReady() хеширует файл целиком
@@ -199,44 +178,19 @@ fun DiagnosticsScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // Снапшот собирается ОДИН раз при открытии, на IO-диспатчере: проверка
-    // ncnn-каталога (полный набор файлов — NcnnModelValidator, тот же, что в
-    // obtainNcnnContext), суммарный размер файлов, хвост лога serve. В
-    // композиции эти вызовы выполнялись бы на main при КАЖДОЙ рекомпозиции
-    // (серверный StateFlow тикает) — фризы. Здесь всё собрано в один IO-блок.
+    // Снапшот собирается ОДИН раз при открытии, на IO-диспатчере: готовность
+    // ggml-моделей (isReady хеширует файл целиком), суммарный размер файлов,
+    // хвост лога serve. В композиции эти вызовы выполнялись бы на main при
+    // КАЖДОЙ рекомпозиции (серверный StateFlow тикает) — фризы.
     var snap by remember { mutableStateOf<StorageSnapshot?>(null) }
     // Кнопка «Проверить сейчас» инкрементит ключ — LaunchedEffect пересобирает снапшот.
     var refreshKey by remember { mutableIntStateOf(0) }
-    // Состояние скачивания ncnn-моделей. Обновляется из IO-корутины (snapshot-state
-    // потокобезопасен); выход с экрана отменяет корутину (CancellationException
-    // проходит сквозь downloadTurbo через ensureActive) — .part остаётся для resume.
-    var ncnnDl by remember { mutableStateOf<NcnnDownloadState>(NcnnDownloadState.Idle) }
     // Вывод последнего ручного прогона retention (расчёт или обрезка).
     var retentionOut by remember { mutableStateOf<String?>(null) }
-    val startNcnnDownload: () -> Unit = {
-        if (ncnnDl !is NcnnDownloadState.Running) {
-            ncnnDl = NcnnDownloadState.Running(0L, NcnnModelDownloader.TOTAL_BYTES)
-            scope.launch {
-                try {
-                    withContext(Dispatchers.IO) {
-                        NcnnModelDownloader.downloadTurbo(context) { done, total ->
-                            ncnnDl = NcnnDownloadState.Running(done, total)
-                        }
-                    }
-                    ncnnDl = NcnnDownloadState.Idle
-                    refreshKey++ // пересобрать снапшот: строка «ncnn-turbo» станет «✔ готов»
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e // уход с экрана — не трогаем состояние
-                } catch (e: Exception) {
-                    ncnnDl = NcnnDownloadState.Failed(e.message ?: e.javaClass.simpleName)
-                }
-            }
-        }
-    }
-    // Модель для whisper.cpp. Это ДРУГАЯ модель, чем ncnn-turbo: turbo на 1.2 ГБ
-    // ncnn-формата движку whisper.cpp не годится, ему нужен свой ggml. Поэтому
-    // отдельное состояние и отдельная кнопка — иначе выбрал движок, а скачивать
-    // нечего, ровно как вышло в первый раз.
+    // Состояние скачивания ggml-модели. Обновляется из IO-корутины
+    // (snapshot-state потокобезопасен); выход с экрана отменяет корутину
+    // (CancellationException проходит сквозь загрузку через ensureActive) —
+    // .part остаётся для докачки.
     var ggmlDl by remember { mutableStateOf<GgmlDownloadState>(GgmlDownloadState.Idle) }
     val startGgmlDownload: (String) -> Unit = { model ->
         if (ggmlDl !is GgmlDownloadState.Running) {
@@ -251,8 +205,9 @@ fun DiagnosticsScreen(
                         // не растёт вслед за списком: раньше здесь стояла цепочка
                         // if/else и кнопки существовали ровно для двух моделей.
                         // error(), а не throw: detekt ограничивает число throw в
-                        // функции, а здесь их уже два (ncnn и движок). Идентификатор
-                        // приходит из каталога, так что это страховка от правки UI.
+                        // функции, а здесь их уже два (модель и движок).
+                        // Идентификатор приходит из каталога, так что это
+                        // страховка от правки UI.
                         SttModels.byId(model)?.fetch(context, onProgress)
                             ?: error("в каталоге нет модели: $model")
                     }
@@ -286,7 +241,8 @@ fun DiagnosticsScreen(
         }
     }
     // Движок (нативная библиотека) качается отдельно от моделей: без него
-    // ncnn не грузится вообще, а модели бесполезны. Порядок и хеши - в Engine.
+    // whisper.cpp не грузится вообще, а модели бесполезны. Порядок и хеши -
+    // в Engine.
     var engineDl by remember { mutableStateOf<EngineDownloadState>(EngineDownloadState.Idle) }
     val startEngineDownload = { engine: Engine ->
         // Движок из APK качать нечего: повторная запись заняла бы
@@ -314,21 +270,13 @@ fun DiagnosticsScreen(
             withContext(Dispatchers.IO) {
                 val modelsDir = ModelDownloader.modelsDir(context)
 
-                // Готовность ncnn-каталога — тот же критерий, что в
-                // WhisperTranscribeService.obtainNcnnContext (полный набор сетей,
-                // а не только fbank+vocab: декодер/embed/proj_out обязательны).
-                val turboDir = File(modelsDir, "ncnn-turbo")
-                val tReady = NcnnModelValidator.checkModelDir(turboDir).ok
-                val tSize = turboDir.listFiles()?.sumOf { it.length() } ?: 0L
-                // Готовность ggml для движка whisper.cpp. Именно здесь, а не в теле
-                // композабла: baseReady() считает sha256 файла в 141 МБ, и на главном
-                // потоке это повесило бы экран настроек на секунды.
+                // Готовность ggml-моделей для движка whisper.cpp. Именно здесь, а не
+                // в теле композабла: isReady() считает sha256 файла в 465 МБ, и на
+                // главном потоке это повесило бы экран настроек на секунды.
                 val ggmlReady = SttModels.snapshotOf(context)
                 StorageSnapshot(
                     free = ModelDownloader.freeBytes(context),
                     used = ModelDownloader.modelsUsedBytes(context),
-                    ncnnTurboReady = tReady,
-                    ncnnTurboSize = tSize,
                     ggmlReady = ggmlReady,
                     logTail = readLogTail(File(context.filesDir, "opencode.log")),
                     validation = RuntimeValidation.run(context),
@@ -496,54 +444,14 @@ fun DiagnosticsScreen(
 
                 sectionHeader("Голосовое распознавание")
                 InfoRow("Движок", engineLabel(prefs))
-                // Модель зависит от движка: у ncnn всегда turbo, у whisper.cpp — свой ggml.
+                // Модель — выбор пользователя из каталога.
                 InfoRow("Модель", currentModelLabel(prefs))
                 if (snap == null) {
                     InfoRow("Модели", "загрузка…")
                 } else {
                     val s = requireNotNull(snap)
-                    InfoRow(
-                        "ncnn-turbo",
-                        (if (s.ncnnTurboReady) "✔ готов" else "✘ отсутствует") + " · " + fmtBytes(s.ncnnTurboSize),
-                        if (s.ncnnTurboReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A),
-                    )
                     InfoRow("Модели заняли", fmtBytes(s.used))
                     InfoRow("Свободно", fmtBytes(s.free))
-                    when (val dl = ncnnDl) {
-                        is NcnnDownloadState.Running -> {
-                            val ratio = if (dl.total > 0) (dl.done.toFloat() / dl.total).coerceIn(0f, 1f) else 0f
-                            InfoRow(
-                                "Загрузка ncnn-моделей",
-                                "${(ratio * PERCENT_MAX).toInt()}% · ${fmtBytes(dl.done)} из ${fmtBytes(dl.total)}",
-                                Color(0xFFFFC107),
-                            )
-                            Spacer(Modifier.height(3.dp))
-                            Box(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .height(3.dp)
-                                    .clip(RoundedCornerShape(2.dp))
-                                    .background(Color(PROGRESS_TRACK_COLOR)),
-                            ) {
-                                Box(
-                                    Modifier
-                                        .fillMaxWidth(ratio)
-                                        .height(3.dp)
-                                        .background(Color(0xFF7BD88F)),
-                                )
-                            }
-                            Spacer(Modifier.height(6.dp))
-                        }
-                        is NcnnDownloadState.Failed -> {
-                            InfoRow("Скачивание не удалось", dl.message, Color(0xFFFF6F5A))
-                            downloadButton("Повторить (докачка)") { startNcnnDownload() }
-                        }
-                        NcnnDownloadState.Idle -> {
-                            if (!s.ncnnTurboReady) {
-                                downloadButton("Скачать ncnn-модели (~1.2 ГБ)") { startNcnnDownload() }
-                            }
-                        }
-                    }
                 }
 
                 if (droppedModels.isNotEmpty()) {
@@ -588,11 +496,6 @@ fun DiagnosticsScreen(
                         "Локальная память (MCP)",
                         if (v.memoryMcp) "✔ отвечает (/mcp 200)" else "✘ не отвечает по HTTP",
                         if (v.memoryMcp) ok else bad,
-                    )
-                    InfoRow(
-                        "ncnn-turbo",
-                        if (v.ncnnTurbo) "✔ полный набор" else "✘ файлов не хватает",
-                        if (v.ncnnTurbo) ok else bad,
                     )
                 }
 
@@ -903,8 +806,8 @@ private fun buildDiagnosticsDump(
     sb.append("===== opencode-mobile диагностика =====\n")
     sb.append("Сформировано: $stamp\n")
 
-    // raw engine значение в dump неинформативно ("ncnn" → "ncnn (локально)"): дублируем
-    // human-readable лейбл из UI, чтобы дамп читался без второй отгадки.
+    // raw engine значение в dump неинформативно ("whisper" → "Whisper (локально)"):
+    // дублируем human-readable лейбл из UI, чтобы дамп читался без второй отгадки.
     val engineLabel = engineLabel(prefs)
 
     val pm = context.packageManager
@@ -930,12 +833,11 @@ private fun buildDiagnosticsDump(
     dumpValidationSection(sb, snap)
 
     sb.append("\n--- Голосовое распознавание ---\n")
-    sb.append("Движок: $engineLabel; модель: turbo (единственная, base удалён)\n")
+    sb.append("Движок: $engineLabel; модель: ${currentModelLabel(prefs)}\n")
     if (snap == null) {
         sb.append("Модели: (не загружено)\n")
     } else {
         val s = snap
-        sb.append("ncnn-turbo: ${if (s.ncnnTurboReady) "готов" else "отсутствует"}, ${fmtBytes(s.ncnnTurboSize)}\n")
         sb.append("Модели заняли: ${fmtBytes(s.used)}; свободно: ${fmtBytes(s.free)}\n")
     }
 
@@ -995,7 +897,6 @@ private fun dumpValidationSection(
             "Музыка MCP: (Яндекс не подключён - не проверяется)\n"
         },
     )
-    sb.append("ncnn-turbo: ${v.ncnnTurbo}\n")
 }
 
 /**
@@ -1030,27 +931,32 @@ private fun buildStampLabel(): String {
  */
 private fun opencodeBinaryLabel(): String = "v${BuildConfig.OPENCODE_VERSION}"
 
-/** Человекочитаемый лейбл движка STT (stt_engine pref → русское имя). */
+/**
+ * Человекочитаемый лейбл движка STT (stt_engine pref → русское имя).
+ *
+ * Значение `ncnn` в pref осталось у пользователей с прошлых сборок: движок
+ * выпилен, и [org.opencode.mobile.ui.ChatOverlay] при чтении подставляет вместо
+ * него `whisper`. Здесь то же правило — иначе диагностика врала бы, называя
+ * whisper.cpp «системным Android».
+ */
 private fun engineLabel(prefs: android.content.SharedPreferences): String =
     when (prefs.getString("stt_engine", "system")) {
-        "ncnn" -> "ncnn (локально)"
-        "whisper" -> "Whisper (локально)"
+        "whisper", "ncnn" -> "Whisper (локально)"
         else -> "Системный Android"
     }
 
 /**
- * Какая модель выбрана ПРАКТИЧЕСКИ. У ncnn модель своя и жёсткая (ncnn-turbo),
- * у whisper.cpp — выбор пользователя из каталога. Раньше строка показывала
- * жёстко «ggml-base» для whisper, даже когда выбран turbo: диагностика врала
- * про работающую конфигурацию, а это худший вид неправды.
+ * Какая модель выбрана ПРАКТИЧЕСКИ — выбор пользователя из каталога.
+ * Раньше строка показывала жёстко «ggml-base» для whisper, даже когда была
+ * выбрана другая: диагностика врала про работающую конфигурацию, а это худший
+ * вид неправды.
  *
- * Ключ модели whisper.cpp — `stt_model_whisper`, отдельный от `stt_model`
- * движка ncnn: общий ключ означал, что переключение движка молча меняло модель.
+ * `ncnn` из старых сборок читаем как `whisper` — тот же движок, который
+ * приложение подставит вместо него при разборе pref.
  */
 private fun currentModelLabel(prefs: android.content.SharedPreferences): String =
     when (prefs.getString("stt_engine", "system")) {
-        "ncnn" -> "ncnn-turbo"
-        "whisper" -> "ggml-" + SttModels.labelOf(prefs.getString("stt_model_whisper", SttModels.DEFAULT_ID) ?: SttModels.DEFAULT_ID)
+        "whisper", "ncnn" -> "ggml-" + SttModels.labelOf(prefs.getString("stt_model_whisper", SttModels.DEFAULT_ID) ?: SttModels.DEFAULT_ID)
         else -> "системный Android"
     }
 

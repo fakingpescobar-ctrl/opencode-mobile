@@ -12,8 +12,6 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
-import com.whispercpp.whisper.FAILED_LANG
-import com.whispercpp.whisper.NcnnWhisperContext
 import com.whispercpp.whisper.WhisperContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -59,31 +57,17 @@ class WhisperTranscribeService : Service() {
         private const val TAG = "VOICE"
 
         /**
-         * Идентификаторы моделей ggml для движка whisper.cpp. Список, порядок,
-         * описания и скачивание живут в [SttModels]; здесь только идентификаторы,
-         * потому что их знают prefs и UI.
+         * Идентификатор модели ggml для движка whisper.cpp. Модель в
+         * приложении одна, список, описание и скачивание живут в [SttModels].
          *
-         * Модели turbo q5_0 и tiny вычеркнуты 14.10.2026 после замеров: на Adreno
-         * 840 квантованная turbo даёт мусор (rtf 47,64), на CPU — rtf 6,25, а tiny
-         * ошибается в 60 % слов и проигрывает даже base. ncnn-turbo — отдельная
-         * модель в ncnn-формате, к этому перечню отношения не имеет.
+         * Остальные варианты (base, medium, turbo f16, turbo q5_0, tiny и
+         * ncnn-turbo) вычеркнуты 14.10.2026 после замеров на 40 клипах:
+         * полные таблицы и причины — в `docs/VOICE-REPORT.md`.
          */
-        const val MODEL_BASE = "base"
-        const val MODEL_TURBO_F16 = "turbo-f16"
-        const val MODEL_MEDIUM = "medium"
         const val MODEL_SMALL = "small"
 
-        /**
-         * Модель ncnn-движка — отдельная сущность, к каталогу ggml не имеет
-         * отношения: это веса `whisper_turbo` в ncnn-формате (1,2 ГБ), а не
-         * turbo f16/q5_0 из HuggingFace. Именно поэтому её не было в
-         * `SttModels` и не стало, когда оттуда вычеркнули квантованную turbo.
-         */
-        const val MODEL_NCNN_TURBO = "turbo"
-
-        /** Движки распознавания. */
+        /** Движок распознавания. Системный Android живёт отдельно, в UI. */
         const val ENGINE_WHISPER = "whisper"
-        const val ENGINE_NCNN = "ncnn"
 
         /** Максимум задач в очереди. Клип 30-60с PCM ≈ 2.6-5.3MB — ограничиваем память. */
         private const val MAX_QUEUE_SIZE = 4
@@ -114,19 +98,8 @@ class WhisperTranscribeService : Service() {
         private val queue = ArrayDeque<SttTask>()
         private val taskIdGen = AtomicLong(0)
 
-        /** Кэши контекстов: модель грузится один раз за процесс. */
+        /** Кэш контекстов: модель грузится один раз за процесс. */
         private val whisperCtxCache = HashMap<String, WhisperContext>()
-
-        /**
-         * Кэш ncnn-контекстов. Именно он, в отличие от [whisperCtxCache],
-         * пишется не только из worker-корутины: releaseNcnnContext() дёргает
-         * instrumentation-поток (см. BenchSttTest), то есть доступ из двух
-         * потоков реален. Поэтому ConcurrentHashMap, а не HashMap — обычный
-         * HashMap при параллельном put/remove пережигает внутренний массив.
-         * Контракт "не вызывать во время транскрипции" при этом остаётся, но
-         * теперь хотя бы не приводит к битой структуре данных.
-         */
-        private val ncnnCtxCache = ConcurrentHashMap<String, NcnnWhisperContext>()
 
         /**
          * Tombstone удалённых моделей (thread-safe): модели, чей файл удалён с диска
@@ -144,17 +117,6 @@ class WhisperTranscribeService : Service() {
         /** Приложение-контекст для работы со статиками (кэши/очередь переживают
          *  смерть инстанса сервиса). Устанавливается каждым вызовом transcribe(). */
         @Volatile private var appContext: Context? = null
-
-        /**
-         * Язык текущей сессии диктовки. null — ещё не определён.
-         *
-         * Защёлка нужна потому, что whisper гоняет encoder на КАЖДЫЙ сегмент
-         * (~6.5 с на телефоне) ради определения языка. В сессии язык не меняется,
-         * поэтому определяем один раз на первом длинном сегменте и дальше
-         * передаём токен напрямую. Без защёлки английский текст посреди русской
-         * реплики распознавался как русский — это хуже, чем каша.
-         */
-        @Volatile private var latchedLang: String? = null
 
         /**
          * Язык, заданный пользователем явно (например "en" или "ru").
@@ -178,24 +140,27 @@ class WhisperTranscribeService : Service() {
         const val MIN_LANG_DETECT_SECONDS = 3.0
         private const val SAMPLE_RATE_HZ = 16_000
 
-/** Миллисекунд в секунде — переводит «сэмплы» в «мс» для отчёта о скорости. */
+        /** Миллисекунд в секунде - переводит «сэмплы» в «мс» для отчёта о скорости. */
         private const val MS_PER_SECOND = 1000L
 
-        /** Сброс защёлки в начале новой сессии диктовки. */
+        /** Сброс состояния языка в начале новой сессии диктовки. */
         fun resetLanguageLatch() {
-            latchedLang = null
+            languageOverride = null
         }
 
         /**
-         * Язык для этой сессии уже решён (пользователем или защёлкой)?
-         * Нужен вызывающему, чтобы не склеивать сегменты под детекцию заново.
-         * Сравнивать currentLang() с DEFAULT_LANG нельзя: защёлка может
-         * законно стоять в "ru", и это не то же самое, что "язык не решали".
+         * Язык для этой сессии уже решён явно? Нужен вызывающему, чтобы не
+         * склеивать сегменты под детекцию заново.
+         *
+         * Раньше здесь была ещё и автоопределённая защёлка: ncnn-движок гонял
+         * encoder на каждый сегмент ради определения языка, поэтому язык
+         * защёлкивался на первом длинном куске. ncnn выпилен 14.10.2026, whisper.cpp
+         * определяет язык один раз сам, и защёлкивать больше нечего.
          */
-        fun languageDecided(): Boolean = languageOverride != null || latchedLang != null
+        fun languageDecided(): Boolean = languageOverride != null
 
-        /** Текущий язык: явный override, иначе защёлка, иначе дефолт. */
-        fun currentLang(): String = languageOverride ?: latchedLang ?: DEFAULT_LANG
+        /** Текущий язык: явный override, иначе дефолт. */
+        fun currentLang(): String = languageOverride ?: DEFAULT_LANG
 
         /**
          * Пометить модель удалённой (вызывается из UI после фактического удаления
@@ -233,9 +198,11 @@ class WhisperTranscribeService : Service() {
         /**
          * Блокирующий (suspend) запуск распознавания через foreground-сервис.
          * Кладёт задачу в очередь; сервис считает её в порядке FIFO.
-         * @param model MODEL_SMALL (по умолчанию) или MODEL_MEDIUM/MODEL_TURBO_F16/MODEL_BASE
-         *   из каталога [SttModels] — движок whisper.cpp, файлы в filesDir/models.
-         * @param engine ENGINE_WHISPER (whisper.cpp CPU) или ENGINE_NCNN (ncnn CPU).
+         * @param model [SttModels.DEFAULT_ID] либо любой другой id из каталога
+         *   [SttModels] — движок whisper.cpp, файлы в filesDir/models.
+         * @param engine [ENGINE_WHISPER]. Параметр оставлен ради вызывающего кода:
+         *   модель в приложении одна, но «системный Android» переключается в UI
+         *   и до этого сервиса не доходит.
          * Возвращает текст либо строку "ОШИБКА WHISPER: ..." (в т.ч. по таймауту/переполнению).
          */
         suspend fun transcribe(
@@ -407,93 +374,30 @@ class WhisperTranscribeService : Service() {
          * проход и во сколько раз он длиннее звука. */
         private suspend fun transcribeTask(task: SttTask): String =
             try {
-                if (task.engine == ENGINE_NCNN) {
-                    val loadStart = SystemClock.elapsedRealtime()
-                    val ctx = obtainNcnnContext(task.model)
-                    val loaded = SystemClock.elapsedRealtime()
-                    val audioMs = task.samples.size * MS_PER_SECOND / SAMPLE_RATE_HZ
-                    val text = transcribeNcnn(ctx, task.samples).trim()
-                    val done = SystemClock.elapsedRealtime()
-                    val rtf = if (audioMs > 0) (done - loaded).toFloat() / audioMs else 0f
-                    Log.i(
-                        TAG,
-                        "ncnn: загрузка ${loaded - loadStart} мс, " +
-                            "проход ${done - loaded} мс, звук $audioMs мс, rtf ${"%.2f".format(rtf)}"
-                    )
-                    text
-                } else {
-                    val app = requireAppContext()
-                    if (!EngineLibs.load(app, Engine.WHISPER)) {
-                        error(EngineLibs.reasonOf(app, Engine.WHISPER) ?: "движок whisper.cpp не загрузился")
-                    }
-                    // Замеры — те же, что в ncnn-ветке, иначе скорость приходится
-                    // считать по меткам logcat вручную. Здесь загрузка движка и
-                    // модели видна отдельно от самого прохода.
-                    val loadStart = SystemClock.elapsedRealtime()
-                    val ctx = obtainContext(task.model)
-                    val loaded = SystemClock.elapsedRealtime()
-                    val text = ctx.transcribeData(task.samples, printTimestamp = false).trim()
-                    val done = SystemClock.elapsedRealtime()
-                    val wAudioMs = task.samples.size * MS_PER_SECOND / SAMPLE_RATE_HZ
-                    val wRtf = if (wAudioMs > 0) (done - loaded).toFloat() / wAudioMs else 0f
-                    Log.i(
-                        TAG,
-                        "whisper: загрузка ${loaded - loadStart} мс, " +
-                            "проход ${done - loaded} мс, звук $wAudioMs мс, rtf ${"%.2f".format(wRtf)}"
-                    )
-                    text
+                val app = requireAppContext()
+                if (!EngineLibs.load(app, Engine.WHISPER)) {
+                    error(EngineLibs.reasonOf(app, Engine.WHISPER) ?: "движок whisper.cpp не загрузился")
                 }
+                // Замеры не украшение: без них «распознавание медленное» нечем
+                // подтвердить. Загрузка движка и модели видна отдельно от
+                // самого прохода.
+                val loadStart = SystemClock.elapsedRealtime()
+                val ctx = obtainContext(task.model)
+                val loaded = SystemClock.elapsedRealtime()
+                val text = ctx.transcribeData(task.samples, printTimestamp = false).trim()
+                val done = SystemClock.elapsedRealtime()
+                val wAudioMs = task.samples.size * MS_PER_SECOND / SAMPLE_RATE_HZ
+                val wRtf = if (wAudioMs > 0) (done - loaded).toFloat() / wAudioMs else 0f
+                Log.i(
+                    TAG,
+                    "whisper: загрузка ${loaded - loadStart} мс, " +
+                        "проход ${done - loaded} мс, звук $wAudioMs мс, rtf ${"%.2f".format(wRtf)}"
+                )
+                text
             } catch (e: Throwable) {
                 Log.e(TAG, "распознавание упало (в сервисе)", e)
                 "ОШИБКА WHISPER: ${e.message}"
             }
-
-        /**
-         * Транскрипция ncnn с учётом языка сессии.
-         *
-         * Язык передаётся токеном в НАЧАЛО декодера, а не меняет препроцессинг:
-         * encoder_states — самый дорогой артефакт (~6.5 с на телефоне) и он от
-         * языка не зависит вообще. Поэтому «язык известен -> один вызов»,
-         * «язык неизвестен -> один вызов с автоопределением», а не два вызова
-         * (определить, потом распознать), которые платили бы за encoder дважды.
-         */
-        private suspend fun transcribeNcnn(
-            ctx: NcnnWhisperContext,
-            samples: FloatArray,
-        ): String {
-            val known = languageOverride ?: latchedLang
-            return if (known != null) {
-                ctx.transcribeData(samples, lang = known)
-            } else {
-                detectLangAndTranscribe(ctx, samples)
-            }
-        }
-
-        /**
-         * Первый сегмент сессии: определяем язык и защёлкиваем его.
-         * Стоит одну авто-транскрипцию; все остальные сегменты идут с токеном.
-         */
-        private suspend fun detectLangAndTranscribe(
-            ctx: NcnnWhisperContext,
-            samples: FloatArray,
-        ): String {
-            val minSamples = (MIN_LANG_DETECT_SECONDS * SAMPLE_RATE_HZ).toInt()
-            if (samples.size < minSamples) {
-                // Короткий клип: язык не решаем, но и не защёлкиваем - если
-                // клип был лишь вступлением, язык определится на следующем.
-                Log.d(TAG, "язык не определяем: ${samples.size} сэмплов < $minSamples")
-                return ctx.transcribeData(samples, lang = DEFAULT_LANG)
-            }
-            val res = ctx.transcribeAuto(samples)
-            return if (res.lang.isBlank() || res.lang == FAILED_LANG) {
-                Log.w(TAG, "определение языка не удалось, беру $DEFAULT_LANG")
-                ctx.transcribeData(samples, lang = DEFAULT_LANG)
-            } else {
-                latchedLang = res.lang
-                Log.i(TAG, "язык сессии: ${res.lang} (${samples.size} сэмплов)")
-                res.text
-            }
-        }
 
         private fun enqueue(task: SttTask): Boolean =
             synchronized(queue) {
@@ -538,8 +442,9 @@ class WhisperTranscribeService : Service() {
 
         /**
          * Возвращает (и кэширует) контекст whisper под выбранную модель.
-         * base — из assets, turbo — с файла в filesDir (предполагается, что
-         * уже скачана через ModelDownloader; если нет — понятная ошибка).
+         * Модель лежит файлом в filesDir — её качает ModelDownloader по данным
+         * каталога [SttModels]; если файла нет, loadContextLocked даёт понятную
+         * ошибку со ссылкой на настройки.
          */
         private fun obtainContext(model: String): WhisperContext {
             // Tombstone: файл модели удалён через UI — не загружаем «контекст из
@@ -625,69 +530,6 @@ class WhisperTranscribeService : Service() {
                     "$label повреждена (SHA-256 не совпал — файл испорчен или подменён). Удали модель и перекачай заново в настройках STT"
                 )
             }
-        }
-
-        /**
-         * Возвращает (и кэширует) контекст ncnn-движка. Модель — ВСЕГДА turbo
-         * (models/ncnn-turbo/, whisper_turbo_*.ncnn.{param,bin}): base-конверт
-         * битый (декодер петляет, мусор) и из программы удалён, выбирать нечего.
-         * Доставка моделей — adb push или ModelDownloader.
-         */
-        // computeIfAbsent, а не getOrPut: у ConcurrentHashMap getOrput остаётся
-        // неатомарным (get, потом put), и два потока создали бы два контекста
-        // на одну модель. computeIfAbsent держит бин-лок, поэтому контекст
-        // создаётся ровно один раз даже при гонке.
-        private fun obtainNcnnContext(model: String): NcnnWhisperContext =
-            ncnnCtxCache.computeIfAbsent(MODEL_NCNN_TURBO) {
-                val app = requireAppContext()
-                // Движок лежит в filesDir/engines/stt, а не в APK, поэтому
-                // System.loadLibrary его не видит - грузим по абсолютному
-                // пути и только потом разрешаем нативные вызовы.
-                if (!EngineLibs.load(app, Engine.STT)) {
-                    error(EngineLibs.reasonOf(app, Engine.STT) ?: "движок ncnn не загрузился")
-                }
-                NcnnWhisperContext.markEngineReady()
-                val dir = File(ModelDownloader.modelsDir(app), "ncnn-turbo")
-                val baseName = "whisper_turbo"
-                val check = NcnnModelValidator.checkModelDir(dir, baseName)
-                val missing = check.missing.size
-                val ofTotal = NcnnModelDownloader.FILE_COUNT
-                val size = NcnnModelDownloader.SIZE_LABEL
-                check(check.ok) {
-                    // Не перечисляем все 15 имён: в чат это уходит строкой
-                    // ответа, и она обрезается по длине. Причина одна -
-                    // набор не скачан, и пользователю нужно знать куда
-                    // идти, а не что именно отсутствует.
-                    "ncnn-модели не скачаны — Настройки -> Диагностика -> " +
-                        "«Скачать ncnn-модели» (~$size, отсутствует $missing из $ofTotal)"
-                }
-                Log.d(TAG, "гружу ncnn-модель из $dir ($baseName)")
-                val t0 = SystemClock.elapsedRealtime()
-                val created = NcnnWhisperContext.createFromFilesDir(dir, baseName)
-                Log.i(TAG, "ncnn-модель загружена за ${SystemClock.elapsedRealtime() - t0} мс")
-                created
-            }
-
-        /**
-         * Отпускает кэшированный ncnn-контекст, если он есть.
-         *
-         * Зачем, если onDestroy намеренно НЕ трогает кэши: без этого метода
-         * контекст живёт весь процесс. В бенче это значило, что первый удержал
-         * turbo, а матрица int8/fp32 уже не могла загрузить свою модель — C++
-         * -синглтон на процесс. Теперь nativeInit отказывает, если модель ещё
-         * кем-то держится (см. ncnn_jni.cpp), и чтобы прогон был честным,
-         * тест должен сам освободить контекст ДО смены модели.
-         *
-         * ВАЖНО (тот же инвариант, что у [obtainNcnnContext]): кэш
-         * потокобезопасен, но вызывать можно ТОЛЬКО когда ни одна транскрипция
-         * не идёт. Иначе release() выгрузит модель из-под работающего
-         * контекста - нативный мьютекс защищает структуры данных, но не
-         * гарантирует, что модель не нужна прямо сейчас.
-         */
-        suspend fun releaseNcnnContext() {
-            val ctx = ncnnCtxCache.remove(MODEL_NCNN_TURBO) ?: return
-            Log.d(TAG, "отпускаю кэшированный ncnn-контекст (модель освободится нативно)")
-            ctx.release()
         }
     }
 

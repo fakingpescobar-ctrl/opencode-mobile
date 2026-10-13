@@ -4,27 +4,31 @@ import android.content.Context
 import java.io.File
 
 /**
- * Каталог ggml-моделей для whisper.cpp — единственный источник правды сразу для
- * трёх мест: список выбора модели в настройках голоса, кнопки скачивания в
- * диагностике и проверка «какая модель лежит на диске».
+ * Каталог ggml-моделей для whisper.cpp.
  *
- * До этого файла модели были размазаны по константам [ModelDownloader], и
- * интерфейс знал ровно про две из них: base и turbo q5_0. Small, medium и
- * turbo f16 были замерены, но скачать их было нечем — кнопок не существовало.
- * Каталог закрывает эту дыру: добавить модель теперь значит дописать одну
- * строку, а не править UI в трёх местах.
+ * Сейчас в нём ровно одна модель — small — и это результат измерений, а не
+ * недосмотр. Все варианты замерены на одном и том же устройстве
+ * (OnePlus CPH2747, Snapdragon 8 Elite, Adreno 840) и на одном наборе из 40
+ * клипов с человеческим эталоном; полные таблицы, методика и то, что
+ * вычеркнуто и почему, лежат в `docs/VOICE-REPORT.md`.
  *
- * Цифры в [SttModel.note] — замеры 14.10.2026 на OnePlus CPH2747 (Snapdragon 8
- * Elite, Adreno 840): whisper.cpp собран с GGML_VULKAN=ON и flash attention,
- * один и тот же набор из 7 клипов, WER по расстоянию Левенштейна к общему
- * эталону. Время не зависит от длины записи — whisper всегда кодирует окно
- * 30 секунд, поэтому короткая фраза платит за тишину в остальных.
+ * Коротко, почему осталась одна:
  *
- * Квантованные модели сюда НЕ входят: на Adreno 840 ggml-vulkan для квантов
- * даёт мусор (turbo q5_0 — WER ~3500 % и rtf 47,64), поэтому `jni.c` вообще
- * не пускает кванты на GPU. А tiny (WER 60 %) и turbo q5_0 вычеркнуты как
- * бесполезные: первую обгоняет даже base, вторую turbo f16 при втрое меньшем
- * времени.
+ * - tiny (74 МБ) — 60 % ошибок, хуже base в 1,6 раза, мимо;
+ * - base (141 МБ) — 38 % ошибок, треть слов неверных, для диктовки мусор;
+ * - medium (1,46 ГБ) — 11 % ошибок, но 6,5 секунды: та же точность, что у
+ *   small, втрое дороже по времени и втрое тяжелее;
+ * - turbo f16 (1,55 ГБ) — 7 % ошибок, но 11 секунд: выигрыш 3 процентных
+ *   пункта не окупает пятикратного времени;
+ * - turbo q5_0 (574 МБ) — на GPU Adreno кванты дают мусор (WER ~3500 %),
+ *   поэтому в приложении их нет вообще, а `jni.c` не пускает кванты на GPU;
+ * - ncnn-turbo — отдельный движок, его Vulkan-путь падает в SIGSEGV на этом
+ *   Adreno (см. `docs/VOICE-REPORT.md` и issue Tencent/ncnn#7097), CPU-путь
+ *   в 11 раз медленнее small. Движок выпилен из приложения целиком.
+ *
+ * Каталог остаётся файлом, а не константой, потому что список моделей, кнопки
+ * скачивания и проверка «что лежит на диске» читаются из одного места. Когда
+ * появится модель, достойная внимания, это одна запись здесь.
  */
 @Suppress("LongParameterList")
 internal data class SttModel(
@@ -46,54 +50,32 @@ internal data class SttModel(
 
 internal object SttModels {
     /**
-     * Модель по умолчанию. small — единственная из всех, что попадает в бюджет
-     * «2–3 секунды на раздумье» (2,0–2,2 с) и при этом ошибается не чаще, чем
-     * turbo: 11,3 % против 7,4 % на общем эталоне. Полпроцента не окупают ни
-     * трёхкратного времени turbo, ни трёхкратного веса.
+     * Модель по умолчанию, и она же единственная.
+     *
+     * На контрольном прогоне 40 клипов small дал 3,1 % ошибок на фразах
+     * 1,5–4 секунды (десять из двенадцати дословно) и 2,3 секунды на
+     * распознавание. Это единственная из всех моделей, что попадает в бюджет
+     * «2–3 секунды на раздумье» и при этом не ошибается в каждой трети слов.
+     *
+     * Время не зависит от длины записи: whisper всегда кодирует окно 30 секунд,
+     * поэтому короткая фраза платит за тишину в остальных. Отсюда и две
+     * границы применимости: огрызки короче 1,5 секунды дают высокую долю ошибок
+     * (одно слово из двух = 100 %), а длинные развёрнутые фразы модель
+     * перефразирует своими словами — смысл сохранён, но текст чужой.
      */
     const val DEFAULT_ID = WhisperTranscribeService.MODEL_SMALL
 
-    /**
-     * Порядок — от рекомендуемой к более точной и тяжёлой: список читается как
-     * «вот что стоит взять по умолчанию, а вот чем можно заплатить точностью».
-     */
+    /** Все модели, которые приложение умеет предложить. Сейчас ровно одна. */
     val all: List<SttModel> =
         listOf(
             SttModel(
                 id = WhisperTranscribeService.MODEL_SMALL,
-                note = "2 с · ошибка в 11 % слов · рекомендуется",
+                note = "2,3 с · ошибка в 3 % слов на фразе до 4 секунд",
                 bytes = ModelDownloader.SMALL_BYTES,
                 isReady = ModelDownloader::smallReady,
                 fileOf = ModelDownloader::smallFile,
                 fetch = { ctx, on -> ModelDownloader.downloadSmall(ctx, on) },
                 sizeLabel = "465 МБ",
-            ),
-            SttModel(
-                id = WhisperTranscribeService.MODEL_MEDIUM,
-                note = "6,5 с · ошибка в 11 % слов · та же точность вдвое дороже",
-                bytes = ModelDownloader.MEDIUM_BYTES,
-                isReady = ModelDownloader::mediumReady,
-                fileOf = ModelDownloader::mediumFile,
-                fetch = { ctx, on -> ModelDownloader.downloadMedium(ctx, on) },
-                sizeLabel = "1,46 ГБ",
-            ),
-            SttModel(
-                id = WhisperTranscribeService.MODEL_TURBO_F16,
-                note = "11 с · ошибка в 7 % слов · самое точное",
-                bytes = ModelDownloader.TURBO_F16_BYTES,
-                isReady = ModelDownloader::turboF16Ready,
-                fileOf = ModelDownloader::turboF16File,
-                fetch = { ctx, on -> ModelDownloader.downloadTurboF16(ctx, on) },
-                sizeLabel = "1,55 ГБ",
-            ),
-            SttModel(
-                id = WhisperTranscribeService.MODEL_BASE,
-                note = "0,6 с · ошибка в 38 % слов · только ради экономии места",
-                bytes = ModelDownloader.BASE_BYTES,
-                isReady = ModelDownloader::baseReady,
-                fileOf = ModelDownloader::baseFile,
-                fetch = { ctx, on -> ModelDownloader.downloadBase(ctx, on) },
-                sizeLabel = "141 МБ",
             ),
         )
 
@@ -110,9 +92,6 @@ internal object SttModels {
     val fileNames: Set<String> =
         setOf(
             ModelDownloader.SMALL_FILE,
-            ModelDownloader.MEDIUM_FILE,
-            ModelDownloader.TURBO_F16_FILE,
-            ModelDownloader.BASE_FILE,
         )
 
     /** Готовность и размер всех моделей разом — только из IO-ветки (модель хешируется). */

@@ -144,7 +144,6 @@ import org.opencode.mobile.server.MemoryMcp
 import org.opencode.mobile.server.PendingAsk
 import org.opencode.mobile.server.YnisonMcp
 import org.opencode.mobile.social.MoltbookScanClient
-import org.opencode.mobile.stt.NcnnModelValidator
 import org.opencode.mobile.stt.SttModels
 import org.opencode.mobile.stt.WhisperTranscribeService
 import org.opencode.mobile.tts.ElevenLabsSecret
@@ -473,30 +472,20 @@ fun ChatOverlay(
     var listening by remember { mutableStateOf(false) }
     var speechError by remember { mutableStateOf<String?>(null) }
     var whisperBusy by remember { mutableStateOf(false) }
-    // Настройки голоса: движок распознавания ("system" | "ncnn").
-    // Миграция: движок whisper.cpp (ggml) убран из продукта — ранее сохранённый
-    // "whisper" переключаем на ncnn (быстрый локальный путь по тестам).
-    // Пишем prefs НЕ в композиции (UI-21: побочный эффект выполнялся бы на каждый
-    // рекомпоз до первого обновления ключа) — один раз через LaunchedEffect.
-    // Дефолт движка: явно сохранённая настройка выигрывает; иначе — ncnn, если
-    // локальная модель готова (переустановка сбрасывает prefs: system-Google на
-    // OPPO работает странно, а ncnn — единственный отлаженный путь).
-    val defaultEngine =
-        if (prefs.contains("stt_engine")) {
-            prefs.getString("stt_engine", "system")!!
-        } else if (NcnnModelValidator.checkTurbo(context).ok) {
-            "ncnn"
-        } else {
-            "system"
-        }
+    // Настройки голоса: движок распознавания ("system" | "whisper").
+    //
+    // ncnn-движок выпилен 14.10.2026 вместе с его моделью (1,2 ГБ): на этом
+    // Adreno он падал в SIGSEGV на энкодере, а на CPU был вчетверо медленнее
+    // whisper.cpp. Подробности и таблицы - docs/VOICE-REPORT.md. Сохранённое
+    // значение "ncnn" мигрирует на "whisper", чтобы настройка не осталась
+    // в несуществующем движке.
+    val savedEngine = prefs.getString("stt_engine", "system")
+    val defaultEngine = if (savedEngine == "ncnn") "whisper" else (savedEngine ?: "system")
     var sttEngine by remember { mutableStateOf(defaultEngine) }
-    // double-tap на "NCNN": показ подсказки о том, как работает двигатель (int8-энкодер и т.д.)
-    var ncnnTipVisible by remember { mutableStateOf(false) }
 
-    // Модель выбирается отдельно для каждого движка, поэтому и ключи разные:
-    // `stt_model` — это turbo движка ncnn, а `stt_model_whisper` — выбор из
-    // каталога [SttModels] для whisper.cpp. Общий ключ означал, что переключение
-    // движка молча меняло модель, и это уже стоило нам неверных замеров.
+    // Модель выбирается из каталога [SttModels]; в продукте она одна
+    // (small), но ключ остаётся прежним: перевыбор в будущем не должен
+    // ломать сохранённую настройку.
     //
     // Модель читается из prefs В МОМЕНТ записи, а не из remember. Копия в
     // remember замораживалась на момент запуска приложения: скачал turbo,
@@ -523,12 +512,8 @@ fun ChatOverlay(
         return SttModels.byId(stored)?.id ?: SttModels.DEFAULT_ID
     }
 
-    fun sttModel(): String =
-        if (sttEngine == WhisperTranscribeService.ENGINE_NCNN) {
-            prefs.getString("stt_model", WhisperTranscribeService.MODEL_NCNN_TURBO) ?: WhisperTranscribeService.MODEL_NCNN_TURBO
-        } else {
-            chosenWhisperModel()
-        }
+    /** Модель для распознавания: движок один, значит и ключ один. */
+    fun sttModel(): String = chosenWhisperModel()
 
     // Выбор модели в панели: состояние дублирует prefs, чтобы перерисовка была
     // мгновенной, а на диск пишется сразу — источник правды всё равно prefs.
@@ -983,8 +968,8 @@ fun ChatOverlay(
     fun startVoice() {
         speechError = null
         Log.d("VOICE", "startVoice: engine=$sttEngine")
-        if (sttEngine == "whisper" || sttEngine == "ncnn") {
-            // Локальный движок: ncnn (CPU) или whisper.cpp (CPU) — запись PCM16 16кГц в буфер.
+        if (sttEngine == "whisper") {
+            // Локальный движок: запись PCM16 16 кГц в буфер.
             try {
                 val ar = AudioRecorder(context.applicationContext)
                 ar.start()
@@ -1018,7 +1003,7 @@ fun ChatOverlay(
     }
 
     fun stopVoice() {
-        if (sttEngine == "whisper" || sttEngine == "ncnn") {
+        if (sttEngine == "whisper") {
             val ar = whisperRecorder ?: return
             whisperRecorder = null
             listening = false
@@ -1076,7 +1061,7 @@ fun ChatOverlay(
                 speechError = null
                 // ЭКСП-5: сегментный пайплайн — VAD отбрасывает тишину/шум
                 // (нет галлюцинаций «Продолжение следует…»), длинные клипы
-                // (>30с) режутся на высказывания (нет потери хвоста у ncnn).
+                // (>30 с) режутся на высказывания без потери хвоста.
                 Log.d("VOICE", "запускаю сегментное распознавание через foreground-сервис...")
                 val text =
                     try {
@@ -1084,12 +1069,6 @@ fun ChatOverlay(
                             context,
                             samples,
                             model = sttModel(),
-                            engine =
-                                if (sttEngine == "ncnn") {
-                                    WhisperTranscribeService.ENGINE_NCNN
-                                } else {
-                                    WhisperTranscribeService.ENGINE_WHISPER
-                                },
                         )
                     } catch (e: Throwable) {
                         Log.e("VOICE", "сервис распознавания упал", e)
@@ -1147,12 +1126,6 @@ fun ChatOverlay(
                                                 context,
                                                 samples,
                                                 model = sttModel(),
-                                                engine =
-                                                    if (sttEngine == "ncnn") {
-                                                        WhisperTranscribeService.ENGINE_NCNN
-                                                    } else {
-                                                        WhisperTranscribeService.ENGINE_WHISPER
-                                                    },
                                             )
                                         } catch (e: Throwable) {
                                             Log.e("VOICE", "TTS-тест упал", e)
@@ -1803,7 +1776,7 @@ fun ChatOverlay(
                     }
                 }
             }
-            // Панель настроек: движок голосового распознавания (system | ncnn).
+            // Панель настроек: движок голосового распознавания (system | whisper).
             if (showSettings) {
                 Column(
                     Modifier
@@ -1852,7 +1825,7 @@ fun ChatOverlay(
                     )
                 }
             }
-            // Панель выбора голосового движка (system | ncnn). Отдельная от showSettings:
+            // Панель выбора голосового движка (system | whisper). Отдельная от showSettings:
             // GaugeSettings отвечает только за полосы гейджа. Открывается иконкой Mic в хедере.
             if (showSttSettings) {
                 Column(
@@ -1893,39 +1866,6 @@ fun ChatOverlay(
                         modifier =
                             Modifier
                                 .fillMaxWidth()
-                                .combinedClickable(
-                                    enabled = true,
-                                    onClick = {
-                                        sttEngine = "ncnn"
-                                        // Переключение на ncnn всегда подразумевает turbo (base битый)
-                                        prefs
-                                            .edit()
-                                            .putString("stt_engine", "ncnn")
-                                            .putString("stt_model", WhisperTranscribeService.MODEL_NCNN_TURBO)
-                                            .apply()
-                                    },
-                                    onDoubleClick = { ncnnTipVisible = !ncnnTipVisible },
-                                ).padding(vertical = 6.dp),
-                    ) {
-                        Text(
-                            if (sttEngine ==
-                                "ncnn"
-                            ) {
-                                "● "
-                            } else {
-                                "○ "
-                            },
-                            color = Color(0xFFFF6D00),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                        )
-                        Text("NCNN (CPU encoder int8)", color = Color(0xFFE6E6E6), fontSize = 13.sp)
-                    }
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
                                 .clickable {
                                     sttEngine = "whisper"
                                     // Модель НЕ подставляется здесь: её выбирает человек
@@ -1949,8 +1889,7 @@ fun ChatOverlay(
                         )
                         Text("Whisper.cpp (GGML Vulkan, Adreno)", color = Color(0xFFE6E6E6), fontSize = 13.sp)
                     }
-                    // Список моделей — только для whisper.cpp. У ncnn модель одна и жёсткая
-                    // (ncnn-turbo), показывать там выбор из четырёх нечего.
+                    // Список моделей — только для локального движка.
                     if (sttEngine == "whisper") {
                         SttModelPicker(
                             selected = whisperModelId,
@@ -1958,14 +1897,6 @@ fun ChatOverlay(
                                 whisperModelId = picked
                                 prefs.edit().putString("stt_model_whisper", picked).apply()
                             },
-                        )
-                    }
-                    if (ncnnTipVisible) {
-                        Text(
-                            "Как работает: int8-энкодер (блочная квантование, ~2× быстрее fp32) → fp16/32-декодер с KV-cache (шаг по токену ~64мс).",
-                            color = Color(0xFF90A4AE),
-                            fontSize = 10.sp,
-                            modifier = Modifier.padding(start = 20.dp, top = 2.dp, bottom = 4.dp),
                         )
                     }
                 }

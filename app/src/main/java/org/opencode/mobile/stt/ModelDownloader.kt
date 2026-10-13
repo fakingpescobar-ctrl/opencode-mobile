@@ -16,75 +16,20 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
 
 /**
- * Скачивание whisper-моделей на устройство по требованию.
+ * Скачивание whisper-модели на устройство по требованию.
  *
- * APK остаётся маленьким: и base, и turbo НЕ кладём в assets, а качаем в
- * filesDir/models (по выбору в настройках STT). Загруженный файл живёт между
- * запусками — повторно качаем только если его нет.
+ * APK остаётся маленьким: модель НЕ кладём в assets, а качаем в
+ * filesDir/models. Загруженный файл живёт между запусками — повторно качаем
+ * только если его нет.
  *
- * - base  = ggerganov/whisper.cpp ggml-base.bin      (141 047 000 б ≈ 141 МБ)
- * - turbo = ggerganov/whisper.cpp ggml-large-v3-turbo-q5_0.bin (574 МБ)
+ * Модель одна: `ggml-small.bin` (487 601 967 б) из
+ * ggerganov/whisper.cpp. Остальные варианты замерены и вычеркнуты, причины
+ * и полные таблицы — в `docs/VOICE-REPORT.md`, коротко — в [SttModels].
  */
 object ModelDownloader {
     private const val TAG = "ModelDL"
 
     private const val HF_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
-    private const val URL_BASE = "$HF_BASE/ggml-base.bin"
-
-    /** Имена файлов моделей на диске устройства. */
-    const val BASE_FILE = "ggml-base.bin"
-
-    /**
-     * Fallback-пороги «не оборван», когда sidecar с точным размером ещё нет
-     * (см. [expectedSizeFile]): чуть НИЖЕ реальных размеров (~134.5MiB / ~547MiB),
-     * т.к. предел выше реального размера навсегда заблокировал бы *Ready(). Точные
-     * сверки после скачивания идут по sidecar-размеру (см. downloadTo).
-     */
-    private const val MIN_BASE = 130L * 1024 * 1024
-
-/** Ожидаемый размер ggml-base.bin. Только для надписи в UI до первого ответа
-     *  сервера: настоящий total приходит из Content-Length в колбэке прогресса,
-     *  так что расхождение с этим числом ничего не сломает. */
-    const val BASE_BYTES = 141L * 1024 * 1024
-
-/** Имена моделей для UI. base — самая лёгкая, но путает слова; основной выбор
-     *  живёт в каталоге [SttModels]. */
-    const val BASE_MODEL = "base"
-
-    /**
-     * turbo в f16 — третья модель, добавлена после замеров 13.10.2026.
-     *
-     * Зачем: квантованная turbo (q5_0) на Adreno 840 через ggml-vulkan даёт мусор
-     * и rtf 58,52, поэтому jni.c вообще не пускает кванты на GPU. Но неправ тот
-     * старый вывод, будто на GPU «гасится и f16»: base f16 на GPU даёт rtf 0,07–0,13
-     * при точном тексте. Значит на GPU идти должна НЕквантованная модель, а turbo
-     * f16 — ровно она. Имя файла без тега кванта, поэтому проверка model_is_quantized()
-     * в jni.c сама отправит её на видеокарту.
-     *
-     * Размеры замерены: 1 624 555 275 б.
-     */
-    private const val URL_TURBO_F16 = "$HF_BASE/ggml-large-v3-turbo.bin"
-    const val TURBO_F16_FILE = "ggml-large-v3-turbo.bin"
-    private const val MIN_TURBO_F16 = 1500L * 1024 * 1024
-    const val TURBO_F16_BYTES = 1624555275L
-
-    /** Имя модели для выбора движка: f16-вариант turbo. */
-    const val TURBO_F16_MODEL = "turbo-f16"
-
-    private const val MIN_FREE_TURBO_F16 = 1800L * 1024 * 1024 // 1549 МБ + запас
-
-    // ---- medium (f16, 1533763059 б) ----
-
-    private const val URL_MEDIUM = "$HF_BASE/ggml-medium.bin"
-    const val MEDIUM_FILE = "ggml-medium.bin"
-    private const val MIN_MEDIUM = 1450L * 1024 * 1024
-    const val MEDIUM_BYTES = 1533763059L
-
-    /** Имя модели для выбора движка. */
-    const val MEDIUM_MODEL = "medium"
-
-    private const val MIN_FREE_MEDIUM = 1700L * 1024 * 1024 // 1462 МБ + запас
-
     // ---- small (f16, 487601967 б) ----
 
     private const val URL_SMALL = "$HF_BASE/ggml-small.bin"
@@ -97,20 +42,19 @@ object ModelDownloader {
     private const val MIN_FREE_SMALL = 550L * 1024 * 1024 // 465 МБ + запас
 
     /**
-     * Минимально необходимое свободное место на томе filesDir ПЕРЕД началом
-     * скачивания (размер модели + запас на хвост-resume и sidecar-ы). Проверку
-     * делаем до старта, а не в пути: обрыв посреди 574 МБ из-за места — худший
-     * сценарий для пользователя (модель «наполовину скачана», USB-освобождения).
-     * usableSpace ≤ 0 (ФС без лимита) — проверку пропускаем.
+     * Каталоги выпиленных движков. Их файлы не `.bin`, поэтому обычная чистка
+     * моделей их не возьмёт, а `ncnn-turbo` — это 1,2 ГБ, которые пользователю
+     * нужно освободить руками. Перечислены явно, а не «всё, что не модель»:
+     * рядом лежит `tts/` с озвучкой, его удалять нельзя.
      */
-    private const val MIN_FREE_BASE = 200L * 1024 * 1024 // 141 МБ base + запас
+    private val RETIRED_MODEL_DIRS = listOf("ncnn-turbo")
 
     /** Папка каталога моделей внутри filesDir: <filesDir>/models/. */
     fun modelsDir(context: Context): File = File(context.filesDir, "models").apply { mkdirs() }
 
     /**
-     * Сериализация скачиваний: downloadBase/downloadTurbo могут прийти параллельно
-     * (UI + сервис); общий .part-файл и общий выходной файл — общие ресурсы.
+     * Сериализация скачиваний: [downloadSmall] может прийти из UI и из
+     * сервиса одновременно, а .part-файл и выходной файл у них общие.
      */
     private val downloadMutex = Mutex()
 
@@ -174,7 +118,6 @@ object ModelDownloader {
     /**
      * Пишет манифест модели. digest можно передать готовым (считанный по tmp до
      * rename — содержимое то же), иначе считается заново.
-     * internal: используется и ncnn-качалкой (NcnnModelDownloader).
      */
     internal fun writeManifest(
         file: File,
@@ -251,86 +194,6 @@ object ModelDownloader {
         return if (ok) ModelIntegrity.VALID else ModelIntegrity.CORRUPT
     }
 
-    // ---- base ----
-
-    fun baseFile(context: Context): File = File(modelsDir(context), BASE_FILE)
-
-/** Докачана ли base (файл существует и >= точного размера из постоянного
-     *  sidecar, иначе fallback-порог; повреждённая модель (SHA-256 не сошёлся)
-     *  готовой НЕ считается — докачка перекачает её). */
-    fun baseReady(context: Context): Boolean {
-        val f = baseFile(context)
-        return f.exists() &&
-            f.length() >= readyThreshold(f, MIN_BASE) &&
-            checkIntegrity(f) != ModelIntegrity.CORRUPT
-    }
-
-    /** Скачивает base-модель в filesDir/models. Блокирующий (suspend). */
-    suspend fun downloadBase(
-        context: Context,
-        onProgress: (Long, Long) -> Unit = { _, _ -> },
-    ): File = downloadTo(context, URL_BASE, baseFile(context), MIN_BASE, "base", MIN_FREE_BASE, onProgress)
-
-    // ---- turbo f16 ----
-
-    fun turboF16File(context: Context): File = File(modelsDir(context), TURBO_F16_FILE)
-
-    /** Готовность turbo f16 — по тем же правилам, что и у q5_0. */
-    fun turboF16Ready(context: Context): Boolean {
-        val f = turboF16File(context)
-        return f.exists() &&
-            f.length() >= readyThreshold(f, MIN_TURBO_F16) &&
-            checkIntegrity(f) != ModelIntegrity.CORRUPT
-    }
-
-    /** Скачивает turbo в f16 (1,5 ГБ). Блокирующий (suspend). */
-    suspend fun downloadTurboF16(
-        context: Context,
-        onProgress: (Long, Long) -> Unit = { _, _ -> },
-    ): File =
-        downloadTo(
-            context,
-            URL_TURBO_F16,
-            turboF16File(context),
-            MIN_TURBO_F16,
-            "turbo f16",
-            MIN_FREE_TURBO_F16,
-            onProgress,
-        )
-
-    // ---- medium ----
-
-    /** Medium — промежуточная модель между base и turbo.
-     *
-     *  Замеры точности на 7 клипах против одного эталона (13.10.2026):
-     *  base f16 — WER 37,7 %, turbo f16 — WER 7,4 %. Разрыв в пять раз
-     *  слишком велик, чтобы отдать выбор человеку «ну как хочешь»: base
-     *  ошибается в трети слов. Medium ищет точность turbo за меньшие
-     *  деньги — модель вдвое меньше турбо и должна быть заметно быстрее. */
-    fun mediumFile(context: Context): File = File(modelsDir(context), MEDIUM_FILE)
-
-    fun mediumReady(context: Context): Boolean {
-        val f = mediumFile(context)
-        return f.exists() &&
-            f.length() >= readyThreshold(f, MIN_MEDIUM) &&
-            checkIntegrity(f) != ModelIntegrity.CORRUPT
-    }
-
-    /** Скачивает medium в f16 (1,5 ГБ). Блокирующий (suspend). */
-    suspend fun downloadMedium(
-        context: Context,
-        onProgress: (Long, Long) -> Unit = { _, _ -> },
-    ): File =
-        downloadTo(
-            context,
-            URL_MEDIUM,
-            mediumFile(context),
-            MIN_MEDIUM,
-            "medium",
-            MIN_FREE_MEDIUM,
-            onProgress,
-        )
-
     // ---- small ----
 
     fun smallFile(context: Context): File = File(modelsDir(context), SMALL_FILE)
@@ -382,25 +245,28 @@ object ModelDownloader {
      * больше 600 МБ, но скачать их уже нельзя и выбрать тоже.
      *
      * Возвращает список удалённых файлов — панели нужно показать, что именно
-     * освободилось. Каталог моделей (`ncnn-turbo/`) и sidecar-ы моделей из
-     * каталога не трогаем: удаляются только `ggml-*.bin`, которых в
-     * [SttModels.fileNames] нет.
+     * освободилось. Удаляются только `ggml-*.bin`, которых нет в
+     * [SttModels.fileNames]; sidecar-ы моделей из каталога не трогаем.
      */
     fun deleteOtherModels(context: Context): List<File> {
         val keep = SttModels.fileNames
+        val root = modelsDir(context)
         val gone =
-            modelsDir(context)
+            root
                 .listFiles()
                 ?.filter { it.isFile && it.name.endsWith(".bin") && it.name !in keep }
                 .orEmpty()
-        return gone.filter { deleteModel(it) }
+        val dirs =
+            RETIRED_MODEL_DIRS
+                .map { File(root, it) }
+                .filter { it.isDirectory && it.deleteRecursively() }
+        return gone.filter { deleteModel(it) } + dirs
     }
 
 /** Суммарный размер всех файлов каталога моделей (включая .part и sidecar-ы). */
     fun modelsUsedBytes(context: Context): Long {
         val dir = modelsDir(context)
         if (!dir.exists()) return 0L
-        // Рекурсивно: ncnn-модели лежат в подпапке ncnn-turbo/, а не в корне models/.
         return dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
     }
 
