@@ -314,10 +314,18 @@ Vulkan-эксперимент 6.45 s — стабилен, но в проде в
 ### Требования
 - **Android Studio** (или Android SDK + JDK 17) с SDK Platform 36.
 - ARM64-устройство (физический телефон) или arm64-эмулятор.
-- Файл `local.properties` с путём к SDK (не коммитится в git).
+- Файл `local.properties` с путём к SDK (или переменная `ANDROID_HOME`) —
+  не коммитится в git, в клоне его нет.
+- Достаточно PowerShell 7 (`pwsh`) и сети: нативы тянутся из npm, Alpine и
+  GitHub-релизов.
+
+> ⚠️ **Собирать с `-SkipNative`, если нет whisper.cpp и VulkanSDK.** Нативка
+> whisper собирается из исходников и требует внешних зависимостей, которых в
+> репозитории нет; без флага сборка упадёт на конфигурации CMake. Подробности
+> в «Про бинари» ниже.
 
 ### Шаги
-0. **Скачать бинарь opencode** (лежит не в git, см. «Про бинари» ниже):
+0. **Скачать нативы** (в git их нет, см. «Про бинари» ниже):
    ```powershell
    pwsh -File tools\fetch-opencode-binary.ps1
    ```
@@ -325,12 +333,12 @@ Vulkan-эксперимент 6.45 s — стабилен, но в проде в
 1. Открыть папку проекта в Android Studio, дождаться синка Gradle.
 2. Собрать: `Build → Build APK(s)` или из терминала:
    ```bash
-   ./gradlew :app:assembleDebug
+   ./gradlew :app:assembleDebug -PskipNativeBuild=true
    ```
    На Windows есть обёртка `build.ps1` (Android Studio JDK, offline, лог
    в `build-inst.log`):
    ```powershell
-   powershell -ExecutionPolicy Bypass -File build.ps1 -Task debug
+   pwsh -File build.ps1 -Task debug -SkipNative
    ```
 3. APK появится в `app/build/outputs/apk/debug/opencode-debug-<дата>-<git-sha>[-dirty].apk` — в имени метка времени и хэш коммита, иначе установленные сборки не отличить друг от друга. Старые сборки не перезаписываются, поэтому имя берётся последним по времени:
    ```powershell
@@ -386,11 +394,18 @@ Vulkan-эксперимент 6.45 s — стабилен, но в проде в
   (`BuildConfig.OPENCODE_VERSION`, его показывает экран «О программе») и `build.ps1`.
   Смена версии = смена этой строки + прогон скрипта. Версии остальных нативов
   (bun 1.4.0, sherpa-onnx 1.13.8, Alpine v3.21) закреплены пинами прямо в скрипте.
-- whisper-нативка (`whisperlib`) **собирается при сборке приложения** из
-  исходников: `third_party/ncnn` (in-repo) + **внешний** `whisper.cpp` (вне репо)
-  и VulkanSDK (Windows). Пути конфигурируются: `-PwhisperCppDir=...`,
-  `-PvulkanSdkDir=...`, отключение нативки — `-PskipNativeBuild=true`
-  (используется в CI — ubuntu не имеет ни whisper.cpp, ни VulkanSDK).
+- **whisper-нативка (`whisperlib`) из репозитория НЕ собирается.** Нужны
+  внешние зависимости, которых в git нет: **whisper.cpp** (путь по умолчанию
+  жёстко зашит как `C:/Projects/whisper.cpp`, менять через
+  `-PwhisperCppDir=...`) и **VulkanSDK** от LunarG (`-PvulkanSdkDir=...`) плюс
+  Visual Studio с «Desktop development with C++». Сборка сверяет коммит
+  whisper.cpp с пинном из `whisperlib/src/main/jni/whisper/WHISPER_PIN` и
+  падает при расхождении.
+  ⇒ **Из свежего клона собирайте с `-SkipNative`** (то же делает CI — на
+  ubuntu нет ни whisper.cpp, ни VulkanSDK). Распознавание речи при этом
+  отключается, всё остальное работает.
+  Проверено: `git clone` + скрипт нативов + `build.ps1 -Task debug -SkipNative`
+  даёт рабочий APK, сервер отвечает, агент отвечает.
 - Модели whisper (turbo) в assets **не хранятся** — качаются по требованию через
   `ModelDownloader` в `filesDir/models/` (ncnn-формат: `.ncnn.param/.bin`,
   int8-вариант энкодера — automatically).
