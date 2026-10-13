@@ -35,6 +35,14 @@ object LocalOpenCodeClient {
     /** Успешный HTTP-код ответа serve. */
     private const val HTTP_OK = 200
 
+    /** Границы «запрос принят» для ответов без тела. Именование как в MemoryMcp/YnisonMcp. */
+    private const val HTTP_OK_MIN = 200
+
+    private const val HTTP_OK_MAX = 299
+
+    /** Сколько символов тела ошибки пишем в лог, чтобы не утащить туда ответ целиком. */
+    private const val ERROR_BODY_CHARS = 200
+
     private fun auth(conn: HttpURLConnection) {
         val h = ServerAuth.basicHeader()
         if (h != null) {
@@ -81,6 +89,73 @@ object LocalOpenCodeClient {
         } finally {
             conn.disconnect()
         }
+    }
+
+    /**
+     * POST, где важен только факт принятия: 2xx — да, всё прочее — нет.
+     *
+     * Отдельная функция, а не расширение [post], потому что у [post] в условии
+     * ровно 200, а ответ на разрешение приходит пустым 204 No Content. Если бы
+     * разрешить 2xx там же, пришлось бы разбирать, что вернуло тело: у abort
+     * тела нет вовсе, а у prompt есть, и «успех» в разных вызовах означает
+     * разное.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    fun postAccepted(
+        port: Int,
+        path: String,
+        body: String,
+        contentType: String = "application/json",
+        readTimeoutMs: Int = READ_TIMEOUT_MS,
+    ): Boolean {
+        val conn = (URL("http://127.0.0.1:$port$path").openConnection() as HttpURLConnection)
+        try {
+            conn.requestMethod = "POST"
+            conn.connectTimeout = CONNECT_TIMEOUT_MS
+            conn.readTimeout = readTimeoutMs
+            auth(conn)
+            if (body.isNotEmpty()) {
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", contentType)
+                conn.outputStream.use { it.write(body.toByteArray()) }
+            }
+            return accepted(conn, path)
+        } catch (error: Exception) {
+            Log.w(TAG, "POST $path не дошёл до ответа: ${error.javaClass.simpleName}: ${error.message}")
+            return false
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /**
+     * Код ответа — в лог, даже когда он неуспешный. Раньше причина отказа
+     * терялась: вызывающий видел только false и писал «сервер не отвечает».
+     * Разница между 404, 401 и 500 в разы меняет то, что чинить.
+     */
+    private fun accepted(
+        conn: HttpURLConnection,
+        path: String,
+    ): Boolean {
+        val code = conn.responseCode
+        if (code in HTTP_OK_MIN..HTTP_OK_MAX) return true
+        Log.w(TAG, "POST $path -> $code, тело ответа: ${errorBodyOf(conn)}")
+        return false
+    }
+
+    /**
+     * Тело ошибочного ответа, коротко. Успешный ответ не читаем: у abort и
+     * permission reply тела нет вовсе, а лишнее чтение на других маршрутах
+     * стоило бы ещё одного оборота.
+     */
+    private fun errorBodyOf(conn: HttpURLConnection): String {
+        val raw =
+            try {
+                conn.errorStream?.bufferedReader()?.use { it.readText() }
+            } catch (_: Exception) {
+                null
+            }
+        return (raw ?: "").take(ERROR_BODY_CHARS).replace('\n', ' ')
     }
 
     /**

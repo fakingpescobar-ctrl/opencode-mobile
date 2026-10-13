@@ -32,8 +32,28 @@ import org.json.JSONObject
  * в asJsonArray/asJsonObject.
  */
 internal object ApiShape {
-    /** Тело ответа на создание/отправку. В v2 это плоский `{"text":"…"}`. */
-    fun promptBody(text: String): JSONObject = JSONObject().put("text", text)
+    /** Режим доставки: вклинить в текущий ход или встать в очередь. */
+    internal const val DELIVERY_STEER = "steer"
+
+    /** Поставить в очередь: ход доработает, потом начнёт следующий. */
+    internal const val DELIVERY_QUEUE = "queue"
+
+    /**
+     * Тело ответа на создание/отправку. В v2 это плоский `{"text":"…"}`.
+     *
+     * [delivery] по умолчанию не пишется — тогда сервер ведёт себя как прежде,
+     * то есть `steer`. Поле нужно там, где сообщение отправляется в разгар чужого
+     * хода: по умолчанию оно вплетается в идущий ход и модель отвечает сразу на
+     * оба, а с `queue` сообщение ждёт и становится отдельным ходом.
+     */
+    fun promptBody(
+        text: String,
+        delivery: String? = null,
+    ): JSONObject {
+        val body = JSONObject().put("text", text)
+        if (!delivery.isNullOrBlank()) body.put("delivery", delivery)
+        return body
+    }
 
     /** Список сессий: снимает конверт `{data:[…]}`, если он есть. */
     fun sessions(raw: String?): JSONArray? {
@@ -224,10 +244,17 @@ internal object ApiShape {
                 when (item.optString("type")) {
                     "text" -> out.put(JSONObject().put("type", "text").put("text", item.optString("text")))
                     // Имя инструмента в v2 лежит в name, в v1 было в tool.
+                    //
+                    // id части сохраняем: это идентификатор вызова, и по нему
+                    // `/permission` ссылается на инструмент в `source.id`. Без
+                    // него нечем сцепить запрос «вопрос задать» с текстом вопроса,
+                    // который лежит именно в этой части ленты. Раньше id молча
+                    // терялся, потому что потребителям он не был нужен.
                     "tool" ->
                         out.put(
                             JSONObject()
                                 .put("type", "tool")
+                                .put("id", item.optString("id"))
                                 .put("tool", item.optString("name"))
                                 .put("state", item.optJSONObject("state") ?: JSONObject()),
                         )

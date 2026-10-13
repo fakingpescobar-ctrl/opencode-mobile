@@ -130,12 +130,16 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import org.opencode.mobile.R
+import org.opencode.mobile.server.ApiAsk
 import org.opencode.mobile.server.ApiMcp
 import org.opencode.mobile.server.ApiPaths
 import org.opencode.mobile.server.ApiShape
 import org.opencode.mobile.server.ApiStatus
+import org.opencode.mobile.server.AskCard
+import org.opencode.mobile.server.AskOption
 import org.opencode.mobile.server.LocalOpenCodeClient
 import org.opencode.mobile.server.MemoryMcp
+import org.opencode.mobile.server.PendingAsk
 import org.opencode.mobile.server.YnisonMcp
 import org.opencode.mobile.social.MoltbookScanClient
 import org.opencode.mobile.stt.NcnnModelValidator
@@ -312,6 +316,7 @@ private data class ChatParseResult(
     val messages: List<ChatMsg>,
     val thinking: Boolean,
     val liveTool: ChatTool?,
+    val ask: List<AskCard>?,
     val contextTokens: Long,
 )
 
@@ -354,6 +359,10 @@ internal data class ChatSnapshot(
     val stalled: Boolean = false,
     val stalledDead: Boolean = false,
     val liveTool: ChatTool? = null,
+    // Что сервер ждёт от пользователя: команда под «ask» или вопрос агента.
+    // null — состояние неизвестно (сервер не ответил), пустой список — ждать
+    // нечего. Различие обязательное: скрыть запрос значит оставить ход висеть.
+    val ask: List<AskCard>? = null,
     // Заполненность контекста (входные токены сессии). Контекст-лимит модели
     // (порог компакта) задаётся константой CONTEXT_LIMIT — берётся из модели.
     val contextTokens: Long = 0L,
@@ -543,6 +552,68 @@ fun ChatOverlay(
     var creatingSession by remember { mutableStateOf(false) }
     // Диалог подтверждения «очистить все сессии» (long-press на +).
     var confirmClearAll by remember { mutableStateOf(false) }
+
+    // Отвечаем на запроу, на которых сервер ждёт: команда под «ask» или вопрос
+    // агента. Отдельное состояние от snapshot.ask нужно потому, что ответ —
+    // действие с побочным эффектом: пока он уходит, карточку надо оставить на
+    // экране, иначе ход повиснет с заблокированной кнопкой.
+    var askBusy by remember { mutableStateOf(false) }
+    var askError by remember { mutableStateOf<String?>(null) }
+    // id запроса, чей ответ уже ушёл в очередь: повтор не должен слать его снова.
+    var askAnswerSent by remember { mutableStateOf<String?>(null) }
+    // Отметка привязана к конкретному запросу, поэтому её надо снимать при любой
+    // смене карточки — и при уходе запроса из /permission, и при переходе в
+    // другую сессию. Иначе после частичного провала (ответ ушёл в очередь, но
+    // отклонить не удалось) тап «Разрешить» с новым текстом ушёл бы без текста:
+    // answerPendingAsk решил бы, что этот ответ уже отправляли.
+    val shownCard = snapshot?.ask?.firstOrNull()
+    val shownAskId = shownCard?.ask?.id
+    LaunchedEffect(shownAskId) {
+        askAnswerSent = null
+        askError = null
+    }
+
+    /**
+     * Ответ на ждущий запрос. [message] обязателен для вопроса агента и не
+     * нужен для команды. Карточку снимаем только по успеху: неуспешный ответ
+     * иначе исчезнет с экрана вместе с единственным способом её закрыть.
+     */
+    fun answerAsk(
+        ask: PendingAsk,
+        decision: String,
+        message: String? = null,
+    ) {
+        val sessionId = snapshot?.activeId ?: return
+        if (askBusy) return
+        askBusy = true
+        askError = null
+        val alreadySent = askAnswerSent == ask.id
+        scope.launch {
+            val outcome =
+                withContext(Dispatchers.IO) {
+                    answerPendingAsk(
+                        serverPort,
+                        sessionId,
+                        ask,
+                        decision,
+                        if (alreadySent) null else message,
+                    )
+                }
+            askBusy = false
+            if (outcome.answered) askAnswerSent = ask.id
+            when {
+                !outcome.replied && alreadySent ->
+                    askError = "Ответ ушёл в очередь, но запрос не закрыт. Нажми ещё раз — текст повторно не уйдёт."
+                !outcome.replied -> askError = "Ответ не ушёл. Проверь сервер и повтори."
+                else -> {
+                    askAnswerSent = null
+                    askError = null
+                    userScrolledUp = false
+                    scrollToBottomFull(listState, (snapshot?.messages?.size ?: 0) - 1)
+                }
+            }
+        }
+    }
 
     // Подтверждение сброса зависшей сессии из DeadRow. Удаление необратимо,
     // поэтому отдельный диалог, а не кнопка в один тап.
@@ -1280,6 +1351,11 @@ fun ChatOverlay(
                     old.stalledDead != final.stalledDead ||
                     old.liveTool != final.liveTool ||
                     old.notice != final.notice ||
+                    // ask обязателен: запрос разрешения может прийти позже той же
+                    // tool-части, что уже в ленте, и тогда ни лента, ни thinking, ни
+                    // liveTool не меняются. Без этого пункта карточка не доедет до UI
+                    // и ход останется висеть.
+                    old.ask != final.ask ||
                     latchBefore != noticeLatch
                 if (changed) {
                     snapshot = final
@@ -2212,6 +2288,23 @@ fun ChatOverlay(
                     modifier = Modifier.padding(top = 6.dp),
                 )
             }
+            // Запрос, на котором сервер ждёт: команда под «ask» или вопрос
+            // агента. Приколот над полем ввода, а не в ленте. В ленте он был
+            // последним элементом, и автоскролл уезжал на индекс конца
+            // сообщений — то есть на строку «думаю», а карточка оставалась под
+            // сгибом. Блокирующий вопрос обязан быть виден всегда, поэтому
+            // скроллить его не нужно вовсе.
+            snapshot?.ask?.firstOrNull()?.let { card ->
+                Box(modifier = Modifier.padding(top = 8.dp)) {
+                    AskRow(
+                        card = card,
+                        busy = askBusy,
+                        error = askError,
+                        onReply = { m -> answerAsk(card.ask, "once", m) },
+                        onReject = { answerAsk(card.ask, "reject", null) },
+                    )
+                }
+            }
             Row(
                 modifier =
                     Modifier
@@ -2578,6 +2671,152 @@ private fun StalledRow() {
             "Нет ответа (зависло) — проверь сеть/провайдера",
             color = Color(0xFFE25822),
             fontSize = 13.sp,
+        )
+    }
+}
+
+private const val ASK_BORDER = 0xFF8A6D3B
+private const val ASK_ALLOW = 0xFF2E5E8E
+private const val ASK_REJECT = 0xFF5A3B3B
+private const val ASK_ERROR = 0xFFE05B5B
+private const val ASK_CORNER = 10
+private const val ASK_FIELD_BG = 0xFF1E1E1E
+private const val ASK_HINT = 0xFF707070
+private const val ASK_BUSY = 0xFF505050
+
+/**
+ * Карточка запроса, на котором сервер ждёт пользователя.
+ *
+ * Один композабл на оба вида запроса — команды и вопросы. Различает их
+ * только `action`: у команды нечего выбирать, у вопроса есть варианты
+ * и свободный текст. Две карточки означали бы две копии отправки ответа,
+ * а ответ уходит на один и тот же маршрут.
+ */
+@Composable
+private fun AskRow(
+    card: AskCard,
+    busy: Boolean,
+    error: String?,
+    onReply: (String?) -> Unit,
+    onReject: () -> Unit,
+) {
+    val question = card.ask.action == ApiAsk.QUESTION
+    var answer by remember(card.ask.id) { mutableStateOf("") }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .border(1.dp, Color(ASK_BORDER), RoundedCornerShape(ASK_CORNER.dp))
+            .padding(12.dp),
+    ) {
+        Text(
+            card.title,
+            color = Color(ASK_BORDER),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+        )
+        if (card.body.isNotBlank()) {
+            Spacer(Modifier.height(4.dp))
+            Text(card.body, color = Color(0xFFE0E0E0), fontSize = 13.sp)
+        }
+        card.options.forEach { opt ->
+            AskOptionRow(opt, busy) { onReply(opt.label) }
+        }
+        if (question) {
+            Spacer(Modifier.height(8.dp))
+            AskField(answer, busy) { answer = it }
+        }
+        Spacer(Modifier.height(10.dp))
+        AskActions(busy, canReply = !question || answer.isNotBlank(), onReply, onReject, answer.trim().ifBlank { null })
+        if (error != null) {
+            Spacer(Modifier.height(6.dp))
+            Text(error, color = Color(ASK_ERROR), fontSize = 11.sp)
+        }
+    }
+}
+
+/** Вариант ответа на вопрос агента: тап отправляет подпись варианта. */
+@Composable
+private fun AskOptionRow(
+    opt: AskOption,
+    busy: Boolean,
+    onPick: () -> Unit,
+) {
+    Spacer(Modifier.height(6.dp))
+    Text(
+        if (opt.description.isBlank()) opt.label else "${opt.label} — ${opt.description}",
+        color = Color(0xFFE0E0E0),
+        fontSize = 13.sp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = !busy, onClick = onPick)
+            .padding(vertical = 4.dp),
+    )
+}
+
+/** Свободный ответ на вопрос. Для команды не рисуется — отвечать нечем. */
+@Composable
+private fun AskField(
+    value: String,
+    busy: Boolean,
+    onChange: (String) -> Unit,
+) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .background(Color(ASK_FIELD_BG), RoundedCornerShape(ASK_CORNER.dp))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        BasicTextField(
+            value = value,
+            onValueChange = onChange,
+            enabled = !busy,
+            textStyle = androidx.compose.ui.text
+                .TextStyle(color = Color(0xFFE0E0E0), fontSize = 13.sp),
+            modifier = Modifier.fillMaxWidth(),
+            decorationBox = { inner ->
+                if (value.isEmpty()) {
+                    Text("Свой ответ…", color = Color(ASK_HINT), fontSize = 13.sp)
+                }
+                inner()
+            },
+        )
+    }
+}
+
+/**
+ * Кнопки ответа. [message] уходит на сервер, если пользователь что-то ввёл.
+ *
+ * [canReply] для вопроса без текста и без выбранного варианта выключает
+ * «Разрешить»: отправить нечего, а жмущий без ответа всё равно закрыл бы
+ * вопрос молча. Варианты идут мимо кнопки и работают как раньше.
+ */
+@Composable
+private fun AskActions(
+    busy: Boolean,
+    canReply: Boolean,
+    onReply: (String?) -> Unit,
+    onReject: () -> Unit,
+    message: String?,
+) {
+    val enabled = !busy && canReply
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = if (busy) "Отправляю…" else "Разрешить",
+            color = if (enabled) Color(ASK_ALLOW) else Color(ASK_BUSY),
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier
+                .clickable(enabled = enabled) { onReply(message) }
+                .padding(vertical = 4.dp),
+        )
+        Text(
+            text = "Отклонить",
+            color = Color(ASK_REJECT),
+            fontSize = 13.sp,
+            modifier = Modifier
+                .clickable(enabled = !busy) { onReject() }
+                .padding(vertical = 4.dp),
         )
     }
 }
@@ -3457,6 +3696,11 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             val noticeDeferred = async {
                 if (ChatCache.result?.thinking == true) fetchNotice(p, activeId) else null
             }
+            // Запросы, на которых сервер ждёт пользователя: команда под «ask» либо
+            // вопрос агента. Отдельным async, чтобы лента не ждала этот вызов.
+            // Опрос всегда, а не по thinking: ждущий запрос держит ход открытым,
+            // но thinking по ленте к этому моменту уже снят.
+            val askDeferred = async { ApiAsk.askPending(p, activeId) }
             // MCP-серверы: GET /mcp → Record<name, McpServer{name,enabled,status,...}> (иначе пустой {}).
             // Читаем из кэша (обновляется раз в MCP_CACHE_MS), чтобы не дёргать сервис каждый поллинг.
             // Подключёнными считаем тех, у кого status == "connected". Показываем «N MCP».
@@ -3487,6 +3731,12 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                 // MCP недоступен — покажем 0 красным
             }
             val notice = noticeDeferred.await()
+            val ask = askDeferred.await()
+            // Лента не пришла, но запрос разрешения виден — карточку всё равно
+            // показываем: текст вопроса соберётся следующим тиком, когда лента
+            // вернётся. null из /permission означает «не ответил», а не «нет».
+            val askAlone = ask?.map { ApiAsk.card(it, JSONArray()) }
+                ?: ChatCache.result?.takeIf { ChatCache.sessionId == activeId }?.ask
             val msgRaw =
                 msgDeferred.await()
                     ?: return@withContext ChatSnapshot(
@@ -3494,6 +3744,7 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                         label,
                         activeId,
                         pingMs = pingMs,
+                        ask = askAlone,
                         reachable = true,
                         notice = notice,
                     )
@@ -3508,6 +3759,20 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                 val thinking = cached.thinking
                 val liveTool = cached.liveTool
                 val take = cached.messages
+                // Запросы разрешений в кэш не кладутся: карточка — это побочный
+                // опрос, и запрос может появиться, когда лента не менялась ни
+                // байтом (инструмент уже в ленте, разрешение доехало позже).
+                // Тогда кэш молчал бы, а ход висел бы. Пересобираем карточки
+                // только когда набор id реально изменился — на каждом тике
+                // поллинга парсить ленту заново нельзя.
+                val freshIds = ask?.map { it.id }.orEmpty()
+                val cachedIds = cached.ask?.map { it.ask.id }.orEmpty()
+                val askCards =
+                    when {
+                        ask == null -> cached.ask
+                        freshIds == cachedIds -> cached.ask
+                        else -> ApiShape.messages(msgRaw)?.let { arr -> ask.map { ApiAsk.card(it, arr) } }
+                    }
                 val snap =
                     ChatSnapshot(
                         take,
@@ -3521,6 +3786,7 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                         // а не ленты. Из кэша тянуть нельзя — иначе в шапке застынет
                         // первое измерение и «Offline» не появится, когда сервер ляжет.
                         pingMs = pingMs,
+                        ask = askCards,
                         reachable = true,
                         // Расход Zen из кэша ленты: если сырой JSON тот же, то и число
                         // завершённых ответов то же — пересчитывать незачем. Новый
@@ -3533,11 +3799,19 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                 android.util.Log.d(
                     "ChatOverlay",
                     "FETCH(cached) out=${take.size} thinking=$thinking " +
-                        "notice=${notice != null} label=$label model=$bestModelId",
+                        "notice=${notice != null} ask=${snap.ask?.size ?: 0} " +
+                        "label=$label model=$bestModelId",
                 )
                 return@withContext snap
             }
             val arr = ApiShape.messages(msgRaw) ?: JSONArray()
+            // Текст вопроса лежит не в запросе (там resources:["*"]), а в части
+            // ленты с тем же id вызова. Склеиваем здесь, где лента ещё в JSON.
+            // null здесь означает «/permission не ответил», а не «запросов нет»:
+            // прятать карточку на таком тике нельзя, иначе вопрос останется без
+            // способа ответить. Поэтому при непрочитанном ответе держим прошлую.
+            val previousAsk = cached?.takeIf { ChatCache.sessionId == activeId }?.ask
+            val askCards = ask?.map { ApiAsk.card(it, arr) } ?: previousAsk
             val out = ArrayList<ChatMsg>(arr.length())
             // Состояние последнего сырого сообщения нужно отдельно от видимых строк:
             // assistant с одним tool-чатом и step-finish скрывается из ленты ниже, но всё
@@ -3672,6 +3946,7 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                     take,
                     thinking,
                     liveTool,
+                    ask = askCards,
                     ctxTokens,
                 )
             val snap =
@@ -3684,6 +3959,7 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                     liveTool = liveTool,
                     contextTokens = ctxTokens,
                     pingMs = pingMs,
+                    ask = askCards,
                     reachable = true,
                     // Расход Zen — из БАЗЫ СЕРВЕРА, который обновляется раз в
                     // ZEN_REFRESH_MS. Лента тут не годится: она покрывает только
@@ -3702,7 +3978,7 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             android.util.Log.d(
                 "ChatOverlay",
                 "FETCH parse out=${out.size} take=${take.size} thinking=$thinking " +
-                    "label=$label " +
+                    "ask=${snap.ask?.size ?: 0} label=$label " +
                     "model=$bestModelId liveTool=${liveTool?.name} LAST=[$lastDiag] " +
                     "latestRole=$latestRole latestAct=$latestActivity latestFin=$latestFinish " +
                     "latestCompleted=$latestCompleted",
@@ -3974,13 +4250,90 @@ private fun pruneEmptySessions(
     }
 }
 
+/**
+ * Отправка сообщения в сессию.
+ *
+ * [delivery] намеренно НЕ задаётся по умолчанию: без поля сервер ведёт себя как
+ * `steer`, то есть сообщение вплетается в идущий ход. Так ведёт себя обычная
+ * реплика пользователя, и менять это нельзя — человек должен уметь вмешаться в
+ * генерацию. Очередь нужна только для ответа на вопрос агента, и её ставит
+ * [answerPendingAsk] явно.
+ */
 private fun postMessage(
     port: Int,
     sessionId: String,
     text: String,
+    delivery: String? = null,
 ): Boolean {
-    val body = ApiShape.promptBody(text).toString()
+    val body = ApiShape.promptBody(text, delivery).toString()
     return LocalOpenCodeClient.postAsync(port, ApiPaths.prompt(sessionId), body)
+}
+
+/**
+ * Постановка ответа на вопрос в очередь — в отличие от обычной реплики, ждём
+ * ответа сервера.
+ *
+ * [LocalOpenCodeClient.postAsync] возвращает true сразу после записи тела и
+ * HTTP-код не читает. Для обычного сообщения это неважно (оно либо дойдёт,
+ * либо пользователь увидит, что чат не обновился), а здесь — нет: если
+ * сервер отклонит сообщение в очереди, а мы всё равно отклоним висящий
+ * вопрос, инструмент упадёт, ход завершится, и ответ пропадёт молча.
+ */
+private fun queueMessage(
+    port: Int,
+    sessionId: String,
+    text: String,
+): Boolean {
+    val body = ApiShape.promptBody(text, ApiShape.DELIVERY_QUEUE).toString()
+    return LocalOpenCodeClient.postAccepted(port, ApiPaths.prompt(sessionId), body)
+}
+
+/** Что получилось при ответе на запрос сервера. */
+private data class AskOutcome(
+    val replied: Boolean,
+    val answered: Boolean,
+)
+
+/**
+ * Ответ на запрос, ждущий ответа.
+ *
+ * Для команды под «ask» всё просто: разрешить — и ход идёт дальше, это на
+ * живом сервере проверено целиком.
+ *
+ * Для ВОПРОСА приходится идти в обход. Замерено на живом сервере 2.0.27:
+ * ответ на вопрос в саму карточку (`decision:once` + `message`) запрос снимает,
+ * но ход НЕ продолжается — инструмент навсегда остаётся `status=running`, а
+ * сессия для `ApiStatus.isBusy` выглядит занятой навсегда, так что новые
+ * сообщения в неё больше не доходят. Проверено и вручную, и из приложения.
+ * Работает другая последовательность: ответ уходит обычным сообщением с
+ * `delivery:"queue"` (его модель прочтёт следующим ходом), а висящий запрос
+ * отклоняется — это единственный способ прекратить инструмент и дать очереди
+ * отработать. На застрявшей сессии `ses_ecda34d…` это дало `pending` 1 → 0,
+ * `TOOL question` → `status=error` и настоящий ответ модели `finish=stop`.
+ * Порядок именно такой: сначала сообщение, чтобы ответ не потерялся, если
+ * отклонение не пройдёт.
+ *
+ * Повторный вызов после частичного провала передаёт [message] равным null:
+ * ответ тогда уже в очереди, и второй раз слать его нельзя — иначе модель
+ * получила бы один и тот же ответ дважды. Отклонение при этом повторяется,
+ * и именно оно снимает висящий инструмент.
+ *
+ * Для команды обе операции не нужны и не выполняются.
+ */
+private fun answerPendingAsk(
+    port: Int,
+    sessionId: String,
+    ask: PendingAsk,
+    decision: String,
+    message: String?,
+): AskOutcome {
+    val isQuestion = ask.action == ApiAsk.QUESTION
+    val answer = if (isQuestion && !message.isNullOrBlank()) message else null
+    if (answer != null && !queueMessage(port, sessionId, answer)) {
+        return AskOutcome(replied = false, answered = false)
+    }
+    val replied = ApiAsk.replyAsk(port, sessionId, ask.id, if (isQuestion) ApiAsk.REJECT else decision, message)
+    return AskOutcome(replied = replied, answered = answer != null)
 }
 
 /** Ряд-переключатель в стиле панели STT: активен или нет. */

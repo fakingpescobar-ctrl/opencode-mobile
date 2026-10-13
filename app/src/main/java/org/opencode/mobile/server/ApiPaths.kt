@@ -42,6 +42,26 @@ object ApiPaths {
     /** Прерывание хода. POST. */
     fun interrupt(id: String): String = "$SESSIONS/$id/interrupt"
 
+    /**
+     * Запросы, на которые сервер ждёт ответа пользователя. GET.
+     *
+     * Это единственный источник вопросов: отдельной формы на вопросы в v2 нет,
+     * см. KDoc у `ApiAsk`. Проверено на живом 2.0.27 — `/api/session/{id}/form`
+     * при висящем вопросе остаётся пустым, а вопрос приходит сюда с
+     * `action:"question"`.
+     */
+    fun permissions(id: String): String = "$SESSIONS/$id/permission"
+
+    /**
+     * Ответ на запрос: POST, тело `{decision:"once"|"always"|"reject"}`,
+     * для вопроса дополнительно `message`. Ключ называется именно `decision` —
+     * проверено: `{reply:…}` и пустое тело дают 400.
+     */
+    fun permissionReply(
+        id: String,
+        requestId: String,
+    ): String = "$SESSIONS/$id/permission/$requestId/reply"
+
     /** Список MCP-серверов. GET. */
     const val MCP = "/api/mcp"
 }
