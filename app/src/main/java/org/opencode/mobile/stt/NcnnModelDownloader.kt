@@ -14,8 +14,8 @@ import kotlin.coroutines.coroutineContext
 /**
  * Скачивание ncnn-turbo набора моделей из GitHub Releases по требованию.
  *
- * В отличие от ggml-моделей (ModelDownloader) ncnn-набор — это 16 файлов в
- * подкаталоге models/ncnn-turbo/ (encoder int8 + fp32, decoder, fbank,
+ * В отличие от ggml-моделей (ModelDownloader) ncnn-набор — это 13 файлов в
+ * подкаталоге models/ncnn-turbo/ (encoder int8, decoder, fbank,
  * embed_token/position, proj_out, vocab). Точные размеры ФИНАЛЬНОГО релиза
  * [REL_TAG] зашиты в манифест [ASSETS] — поэтому:
  *  - готовность проверяется жёстко: существование каждого файла И длина ==
@@ -24,24 +24,21 @@ import kotlin.coroutines.coroutineContext
  *    (механика ModelDownloader.writeManifest) — следующий запуск сверяет
  *    содержимое, а не только размер.
  *
- * APK остаётся маленьким: набор (≈2.49 ГБ) НЕ в assets, качается user-ом
+ * APK остаётся маленьким: набор (≈1.21 ГБ) НЕ в assets, качается user-ом
  * один раз в filesDir (само-обновление релиза — через манифест-хеши в
  * будущей версии; текущий [REL_TAG] фиксирован).
  */
 object NcnnModelDownloader {
     private const val TAG = "NcnnDL"
 
-    /** Тег GitHub-релиза с опубликованными моделями (16 assets, 2370 MiB). */
+    /** Тег GitHub-релиза с опубликованными моделями (13 assets, ~1.21 ГБ). */
     const val REL_TAG = "models-ncnn-turbo-v1"
 
     private const val GITHUB_RELEASES =
         "https://github.com/fakingpescobar-ctrl/opencode-mobile/releases/download/$REL_TAG"
 
-    private const val ENCODER_BIN_BYTES = 1_278_526_472L
-    private const val ENCODER_PARAM_BYTES = 26_779L
     private const val ENCODER_INT8_BIN_BYTES = 728_023_304L
     private const val ENCODER_INT8_PARAM_BYTES = 27_782L
-    private const val ENCODER_TABLE_BYTES = 1_457_688L
     private const val DECODER_BIN_BYTES = 210_063_552L
     private const val DECODER_PARAM_BYTES = 5_503L
     private const val FBANK_BIN_BYTES = 102_912L
@@ -54,14 +51,20 @@ object NcnnModelDownloader {
     private const val PROJ_OUT_PARAM_BYTES = 178L
     private const val VOCAB_BYTES = 444_543L
 
-    /** Файлы набора и точные размеры (байт) из манифеста релиза. */
+    /**
+     * Файлы набора и точные размеры (байт) из манифеста релиза.
+     *
+     * Энкодер тут только int8. Второй, fp32 на 1.28 ГБ, — запасной
+     * вариант: ncnn_jni.cpp пробует `_encoder_int8.ncnn.*` первым и
+     * трогает `_encoder.ncnn.*` только если int8 не загрузился
+     * (строки 349 и 367). Точные размеры нужны для готовности, поэтому
+     * тянуть fp32 «про запас» — это гигабайт трафика и места,
+     * которые не читаются, пока int8 на месте.
+     */
     private val ASSETS: Map<String, Long> =
         linkedMapOf(
-            "whisper_turbo_encoder.ncnn.bin" to ENCODER_BIN_BYTES,
-            "whisper_turbo_encoder.ncnn.param" to ENCODER_PARAM_BYTES,
             "whisper_turbo_encoder_int8.ncnn.bin" to ENCODER_INT8_BIN_BYTES,
             "whisper_turbo_encoder_int8.ncnn.param" to ENCODER_INT8_PARAM_BYTES,
-            "whisper_turbo_encoder.table" to ENCODER_TABLE_BYTES,
             "whisper_turbo_decoder.ncnn.bin" to DECODER_BIN_BYTES,
             "whisper_turbo_decoder.ncnn.param" to DECODER_PARAM_BYTES,
             "whisper_turbo_fbank.ncnn.bin" to FBANK_BIN_BYTES,
@@ -78,10 +81,26 @@ object NcnnModelDownloader {
     /** Суммарный размер набора (для прогресса). */
     val TOTAL_BYTES: Long = ASSETS.values.sum()
 
+    /** Сколько файлов в наборе — для диагностических сообщений. */
+    val FILE_COUNT: Int = ASSETS.size
+
+    /** Имена файлов набора — единый источник правды о том, что нужно
+     *  на диске. NcnnModelValidator сверяется с этим списком в тестах:
+     *  если валидатор потребует больше файлов, чем здесь перечислено,
+     *  набор никогда не станет готовым. Это val, а не функция: объект
+     *  уже стоит на лимите detekt по числу функций. */
+    val FILE_NAMES: List<String> = ASSETS.keys.toList()
+
+    /** Подпись размера набора: «1.2 ГБ». Считается из манифеста, чтобы
+     *  подпись в UI и в сообщениях об ошибке не разъезжались. */
+    val SIZE_LABEL: String =
+        String.format(java.util.Locale.US, "%.1f ГБ", TOTAL_BYTES.toDouble() / GIB)
+
     /** Минимально необходимое свободное место ПЕРЕД началом скачивания: набор
-     *  ≈2.49 ГБ + запас на .part-хвосты и sidecar-ы. */
-    private const val MIN_FREE_BYTES = 3_000L * 1024 * 1024 // ~3 ГБ
+     *  ≈1.21 ГБ + запас на .part-хвосты и sidecar-ы. */
+    private const val MIN_FREE_BYTES = 1_600L * 1024 * 1024 // ~1.6 ГБ
     private const val BYTES_PER_MIB = 1024L
+    private const val GIB = 1024.0 * 1024.0 * 1024.0
     private const val CONNECT_TIMEOUT_MS = 30_000
     private const val READ_TIMEOUT_MS = 60_000
     private const val DOWNLOAD_BUFFER_BYTES = 256 * 1024
@@ -122,7 +141,7 @@ object NcnnModelDownloader {
      * Скачивает полный набор (последовательно, с resume по файлам) в
      * models/ncnn-turbo/. Блокирующий (suspend); при сбое бросает Exception —
      * частично скачанные .part-файлы ОСТАЮТСЯ (следующий заход докачает с места
-     * обрыва, а не начнёт 2.5 ГБ заново).
+     * обрыва, а не начнёт 1.2 ГБ заново).
      *
      * @param onProgress суммарный прогресс по ВСЕМУ набору: (doneBytes, TOTAL_BYTES)
      */

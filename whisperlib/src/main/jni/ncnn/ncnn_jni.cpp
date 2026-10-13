@@ -283,6 +283,13 @@ protected:
     mutable bool m_cross_layout_ok = true;
 };
 
+// A/B-флаг: отключает обрезку мел-фреймов в extract_fbank_feature.
+// Нужен, чтобы отделить две гипотезы про SIGSEGV на Vulkan: «ломается сам
+// Vulkan-путь ncnn» и «ломает обрезка, потому что энкодер получает не ту
+// длину». В сентябре 2026 Vulkan-энкодер на этом же телефоне работал
+// (6.5-6.9s vs 8.82 CPU, см. комментарий выше), и тогда обрезки не было.
+static bool g_no_crop = false;
+
 int Whisper::load(const std::string& dir, const std::string& base)
 {
     // CPU + fp32 (turbo) / fp16 (base): рабочий режим.
@@ -369,7 +376,45 @@ std::string p = dir + "/" + base;
         if (encoder.load_param(enc_param.c_str()) != 0) return -1;
         if (encoder.load_model(enc_bin.c_str()) != 0) return -1;
     }
-    NCNN_PHASE("encoder mode: %s vulkan=%d", int8_ok ? "int8" : "fp32", (int)encoder.opt.use_vulkan_compute);
+    // Encoder-only Vulkan A/B switch. Three modes, chosen by a marker file in
+    // the model dir, so a run needs no rebuild:
+    //   (none)                int8 weights, CPU          <- known good
+    //   encoder_vulkan        int8-packed on Vulkan      <- SIGSEGV today
+    //   encoder_vulkan_fp16   fp16 storage on Vulkan
+    // The 02.09 numbers (int8-Vulkan 6.45s vs int8-CPU 8.82s) were measured
+    // for the encoder alone, but the Vulkan DECODER was slower, so all Vulkan
+    // was switched off and this combination was never tried on the device.
+    //
+    // Why try fp16 after int8-packed crashed twice with the same fault: the
+    // fault address 0xe0 is a small offset from null, so this is a null
+    // pipeline, not a corrupted heap. Adreno implements Vulkan int8 compute
+    // poorly, so the int8-packed shader is the likely thing that fails to
+    // build. fp16 storage is the one precision every Vulkan driver handles,
+    // and ncnn dequantises the int8 weights into it for us.
+    int enc_mode = 0; // 0 = cpu, 1 = vulkan int8, 2 = vulkan fp16
+    {
+        FILE* fv = fopen((dir + "/encoder_vulkan").c_str(), "rb");
+        if (fv) { fclose(fv); enc_mode = 1; }
+FILE* ff = fopen((dir + "/encoder_vulkan_fp16").c_str(), "rb");
+if (ff) { fclose(ff); enc_mode = 2; }
+FILE* fn = fopen((dir + "/no_crop").c_str(), "rb");
+if (fn) { fclose(fn); g_no_crop = true; }
+    }
+    encoder.opt.use_vulkan_compute = enc_mode != 0;
+    encoder.opt.use_int8_packed = enc_mode != 2;
+    encoder.opt.use_int8_storage = enc_mode != 2;
+    encoder.opt.use_int8_arithmetic = enc_mode != 2;
+    encoder.opt.use_fp16_packed = enc_mode == 2;
+    encoder.opt.use_fp16_storage = enc_mode == 2;
+    encoder.opt.use_fp16_arithmetic = enc_mode == 2;
+    if (enc_mode != 0)
+    {
+        // Report the device before using it: "no GPU at all" and "the GPU
+        // rejected this shader" are different bugs with different fixes.
+        NCNN_PHASE("gpu count=%d index=%d", ncnn::get_gpu_count(),
+                   ncnn::get_gpu_info(0).device_index());
+    }
+    NCNN_PHASE("encoder mode: %s mode=%d", int8_ok ? "int8" : "fp32", enc_mode);
     if (embed_token.load_param((p + "_embed_token.ncnn.param").c_str()) != 0) return -1;
     if (embed_token.load_model((p + "_embed_token.ncnn.bin").c_str()) != 0) return -1;
     if (embed_position.load_param((p + "_embed_position.ncnn.param").c_str()) != 0) return -1;
@@ -685,6 +730,27 @@ int Whisper::extract_fbank_feature(const std::vector<short>& samples, ncnn::Mat&
         }
         if (fix)
             NCNN_PHASE("ncnn fbank NaN->-10 fixed %d elems (%.1f%%)", fix, 100.0 * fix / input_features.total());
+    }
+    // Short-clip crop. The whisper encoder ALWAYS runs the full 30 s window
+    // (3000 mel frames -> 1500 encoder positions, visible as shape(64,1500,20)
+    // in the prefill log), so a 3 s phrase pays for 27 s of silence: that is
+    // where the 6.3 s of encoder time goes. The positional embeddings are
+    // absolute over 1500 positions, so a crop uses only the first N of them
+    // - acceptable for short clips, which is why this is a separate,
+    // measurable step rather than a silent optimisation.
+    //   hop = 160 samples (whisper mel hop) -> 100 mel frames per second.
+    const int hop = 160;
+    const int min_frames = 100;  // below 1 s the clip is noise anyway
+    const int margin = 20;       // keep a little tail so the last word survives
+    int want = (int)(samples_size / hop) + margin;
+    if (want < min_frames) want = min_frames;
+    if (!g_no_crop && want < input_features.w)
+    {
+        ncnn::Mat cropped(want, input_features.h);
+        for (int i = 0; i < input_features.h; i++)
+            memcpy(cropped.row(i), input_features.row(i), want * sizeof(float));
+        NCNN_PHASE("ncnn crop frames %d -> %d", input_features.w, want);
+        input_features = cropped;
     }
     return 0;
 }

@@ -27,10 +27,14 @@
                          против musl-овского GCC-рантайма. Родные
                          библиотеки Android не подходят: они сами
                          собраны против bionic.
-    libonnxruntime.so    GitHub-релиз sherpa-onnx (offline STT/TTS)
-    libsherpa-onnx-jni.so  тот же релиз, но статическая сборка aar;
-                         в tar.bz2 лежит другая, на 4.7 МБ, и она
-                         НЕ подходит.
+libsherpa-onnx-jni.so  sherpa-onnx, статическая сборка aar;
+                          в tar.bz2 лежит другая, на 4.7 МБ, и она
+                          НЕ подходит.
+
+    libonnxruntime.so НЕ входит: onnxruntime влинкован статически в
+    libsherpa-onnx-jni.so (llvm-readelf -d не показывает его в NEEDED),
+    а грузит его только System.loadLibrary, которого в приложении нет.
+    Это был мёртвый вес на 22 МБ в каждом APK.
 
     Версии закреплены пинами с sha256: подмена версии молча ломает
     рантайм, а размер совпадает у разных сборок (например musl 1.2.5-r11
@@ -49,8 +53,8 @@
     Скачать заново, даже если рядом уже лежит комплект нужных версий.
 
 .PARAMETER SkipTts
-    Не трогать ТОЛЬКО sherpa-onnx и onnxruntime - это 46 МБ офлайн-речи.
-    Остальные шесть файлов, включая libbun-musl.so (JS-рантайм для
+    Не трогать ТОЛЬКО libsherpa-onnx-jni.so - это 24 МБ офлайн-озвучки.
+    Остальные файлы, включая libbun-musl.so (JS-рантайм для
     Retention и harness-скриптов), флаг не затрагивает: без bun
     приложение собирается, но harness на устройстве не запустится.
 
@@ -143,16 +147,11 @@ function Get-Pins {
             bytes   = 133008
             sha256  = '69c45f16064b7b61b9a3d64c37395d13368a8fe719745d49e9508ec650fea971'
         }
-        @{
-            name    = 'libonnxruntime.so'
-            from    = 'sherpa-onnx 1.13.8 android-aarch64-termux-shared'
-            url     = "$Sherpa/sherpa-onnx-v1.13.8-android-aarch64-termux-shared.tar.bz2"
-            kind    = 'tar'
-            member  = 'sherpa-onnx-v1.13.8-android-aarch64-termux-shared/lib/libonnxruntime.so'
-            bytes   = 22249560
-            sha256  = '33847ad43bffe204699fd4a27f7f3603452a8cdaf2f9a44983a0bc31ffcf2da1'
-            tts     = $true
-        }
+        # libonnxruntime.so сюда НЕ входит и больше не качается: в
+        # libsherpa-onnx-jni.so из aar onnxruntime влинкован статически
+        # (llvm-readelf -d показывает ни одной записи NEEDED про
+        # onnxruntime), а System.loadLibrary("onnxruntime") в приложении
+        # не вызывает никто. 22 МБ мёртвого веса в каждом APK.
         @{
             name    = 'libsherpa-onnx-jni.so'
             from    = 'sherpa-onnx 1.13.8 static-link-onnxruntime aar'
@@ -270,7 +269,12 @@ if ($Check) {
         Write-Host "Skript ne zapuskalsya: pwsh -File tools\fetch-opencode-binary.ps1" -ForegroundColor Yellow
         exit 1
     }
-    Write-Host "OK: nativy na meste ($($pins.Count) sht)" -ForegroundColor Green
+    $fileCount = 0
+foreach ($p in $pins) {
+    $fileCount += 1
+    if ($p.ContainsKey('alsoAs')) { $fileCount += 1 }
+}
+Write-Host "OK: nativy na meste ($($pins.Count) pinov, $fileCount faylov)" -ForegroundColor Green
     exit 0
 }
 

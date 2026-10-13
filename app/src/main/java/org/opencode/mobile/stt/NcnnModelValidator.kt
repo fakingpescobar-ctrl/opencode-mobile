@@ -69,11 +69,14 @@ object NcnnModelValidator {
         }
 
         // Энкодер: полный int8 ИЛИ полный fp32 (как fallback в ncnn_jni.cpp).
+        // Когда нет ни того, ни другого, сообщаем ТОЛЬКО про int8-пару —
+        // именно её качает продукт (NcnnModelDownloader.ASSETS), а fp32
+        // это запасной вариант движка, который в приложение не
+        // кладётся. Перечисление обоих давало «отсутствует 15 из 13»:
+        // счётчик отсутствующих расходился с числом скачиваемых файлов.
         if (encoderVariant(dir, base) == EncoderVariant.NONE) {
-            if (!File(dir, "${base}_encoder_int8.ncnn.param").isFile) missing += "${base}_encoder_int8.ncnn.param"
-            if (!File(dir, "${base}_encoder_int8.ncnn.bin").isFile) missing += "${base}_encoder_int8.ncnn.bin"
-            if (!File(dir, "${base}_encoder.ncnn.param").isFile) missing += "${base}_encoder.ncnn.param"
-            if (!File(dir, "${base}_encoder.ncnn.bin").isFile) missing += "${base}_encoder.ncnn.bin"
+            missing += "${base}_encoder_int8.ncnn.param"
+            missing += "${base}_encoder_int8.ncnn.bin"
         }
 
         if (!File(dir, "whisper_vocab.txt").isFile) missing += "whisper_vocab.txt"

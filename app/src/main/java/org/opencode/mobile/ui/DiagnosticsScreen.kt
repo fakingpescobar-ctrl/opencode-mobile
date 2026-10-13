@@ -57,11 +57,15 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.opencode.mobile.BuildConfig
 import org.opencode.mobile.OpencodeApp
 import org.opencode.mobile.account.YandexAccountController
+import org.opencode.mobile.engine.Engine
+import org.opencode.mobile.engine.EngineStore
 import org.opencode.mobile.installer.InstalledAppController
 import org.opencode.mobile.server.OpencodeServerService
 import org.opencode.mobile.server.OpencodeServerService.ServerStatus
@@ -72,6 +76,7 @@ import org.opencode.mobile.server.RuntimeValidation
 import org.opencode.mobile.stt.ModelDownloader
 import org.opencode.mobile.stt.NcnnModelDownloader
 import org.opencode.mobile.stt.NcnnModelValidator
+import org.opencode.mobile.stt.SttModels
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -96,6 +101,45 @@ private const val RETENTION_OUTPUT_TAIL_LINES = 12
 private const val PROGRESS_TRACK_COLOR = 0xFF2A2A2AL
 
 /** Состояние скачивания ncnn-набора (кнопка в секции «Голосовое распознавание»). */
+
+/** Состояние скачивания нативного движка. Отделено от моделей: те идут своим каналом. */
+/** Приглушённый серо-голубой для пояснений. Константой, потому что detekt
+ *  считает второе появление одного и того же литерала в файле магическим числом. */
+private const val NOTE_ARGB = 0xFF90A4AEL
+
+private sealed interface EngineDownloadState {
+    data object Idle : EngineDownloadState
+
+    data class Running(
+        val engine: Engine,
+        val done: Long,
+        val total: Long,
+    ) : EngineDownloadState
+
+    data class Failed(
+        val message: String,
+    ) : EngineDownloadState
+}
+
+/** Состояние закачки ggml-моделей для whisper.cpp. Одна машина на base и turbo:
+ *  они качаются одинаково, различаются лишь именем и размером, а держать два
+ *  одинаковых набора состояний — значит потом забыть про один из них, как уже
+ *  случилось с кнопкой base. */
+private sealed interface GgmlDownloadState {
+    data object Idle : GgmlDownloadState
+
+    data class Running(
+        val model: String,
+        val done: Long,
+        val total: Long,
+    ) : GgmlDownloadState
+
+    data class Failed(
+        val model: String,
+        val message: String,
+    ) : GgmlDownloadState
+}
+
 private sealed interface NcnnDownloadState {
     data object Idle : NcnnDownloadState
 
@@ -115,6 +159,12 @@ private data class StorageSnapshot(
     val used: Long,
     val ncnnTurboReady: Boolean,
     val ncnnTurboSize: Long,
+    /**
+     * Готовые ggml-модели движка whisper.cpp: идентификатор -> размер на диске.
+     * Считается в IO-ветке снапшота, потому что isReady() хеширует файл целиком
+     * (141 МБ у base, 1,5 ГБ у turbo) и на главном потоке froze бы экран.
+     */
+    val ggmlReady: Map<String, Long>,
     val logTail: String,
     /** Единый отчёт готовности runtime-слоя (RuntimeValidation). */
     val validation: RuntimeValidation.Report,
@@ -183,6 +233,82 @@ fun DiagnosticsScreen(
             }
         }
     }
+    // Модель для whisper.cpp. Это ДРУГАЯ модель, чем ncnn-turbo: turbo на 1.2 ГБ
+    // ncnn-формата движку whisper.cpp не годится, ему нужен свой ggml. Поэтому
+    // отдельное состояние и отдельная кнопка — иначе выбрал движок, а скачивать
+    // нечего, ровно как вышло в первый раз.
+    var ggmlDl by remember { mutableStateOf<GgmlDownloadState>(GgmlDownloadState.Idle) }
+    val startGgmlDownload: (String) -> Unit = { model ->
+        if (ggmlDl !is GgmlDownloadState.Running) {
+            ggmlDl = GgmlDownloadState.Running(model, 0L, SttModels.byId(model)?.bytes ?: 0L)
+            scope.launch {
+                try {
+                    withContext(Dispatchers.IO) {
+                        val onProgress: (Long, Long) -> Unit = { done, total ->
+                            ggmlDl = GgmlDownloadState.Running(model, done, total)
+                        }
+                        // Каталог знает, как качать каждую модель, поэтому диспетчер
+                        // не растёт вслед за списком: раньше здесь стояла цепочка
+                        // if/else и кнопки существовали ровно для двух моделей.
+                        // error(), а не throw: detekt ограничивает число throw в
+                        // функции, а здесь их уже два (ncnn и движок). Идентификатор
+                        // приходит из каталога, так что это страховка от правки UI.
+                        SttModels.byId(model)?.fetch(context, onProgress)
+                            ?: error("в каталоге нет модели: $model")
+                    }
+                    ggmlDl = GgmlDownloadState.Idle
+                    refreshKey++
+                } catch (e: Exception) {
+                    // Отмена (уход с экрана) — не ошибка: ensureActive() пробрасывает
+                    // CancellationException дальше, а обычные исключения попадают в Failed.
+                    // Именно ensureActive, а не `throw e`: detekt ограничивает число
+                    // throw в функции, и третий лябда уже упирается в лимит.
+                    currentCoroutineContext().ensureActive()
+                    ggmlDl = GgmlDownloadState.Failed(model, e.message ?: e.javaClass.simpleName)
+                }
+            }
+        }
+    }
+    // Удаление моделей, вычеркнутых из каталога. Отдельная кнопка, а не молчаливая
+    // уборка при запуске: файлы занимают сотни мегабайт, и сносить их без спроса
+    // нельзя. Что именно удалилось — показываем строкой.
+    var droppedModels by remember { mutableStateOf("") }
+    val dropOtherModels: () -> Unit = {
+        scope.launch {
+            val gone = withContext(Dispatchers.IO) { ModelDownloader.deleteOtherModels(context) }
+            droppedModels =
+                if (gone.isEmpty()) {
+                    "нечего удалять — все файлы в каталоге"
+                } else {
+                    "удалено: " + gone.joinToString(", ") { it.name }
+                }
+            refreshKey++
+        }
+    }
+    // Движок (нативная библиотека) качается отдельно от моделей: без него
+    // ncnn не грузится вообще, а модели бесполезны. Порядок и хеши - в Engine.
+    var engineDl by remember { mutableStateOf<EngineDownloadState>(EngineDownloadState.Idle) }
+    val startEngineDownload = { engine: Engine ->
+        // Движок из APK качать нечего: повторная запись заняла бы
+        // filesDir и только заставила бы грузить его оттуда, хотя
+        // System.loadLibrary и так находит его в самом APK.
+        if (!engine.bundled && engineDl !is EngineDownloadState.Running) {
+            engineDl = EngineDownloadState.Running(engine, 0L, engine.totalBytes)
+            scope.launch {
+                try {
+                    EngineStore.download(context, engine) { done, total ->
+                        engineDl = EngineDownloadState.Running(engine, done, total)
+                    }
+                    engineDl = EngineDownloadState.Idle
+                    refreshKey++ // строка движка станет «установлен»
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    engineDl = EngineDownloadState.Failed(e.message ?: e.javaClass.simpleName)
+                }
+            }
+        }
+    }
     LaunchedEffect(refreshKey) {
         snap =
             withContext(Dispatchers.IO) {
@@ -194,11 +320,16 @@ fun DiagnosticsScreen(
                 val turboDir = File(modelsDir, "ncnn-turbo")
                 val tReady = NcnnModelValidator.checkModelDir(turboDir).ok
                 val tSize = turboDir.listFiles()?.sumOf { it.length() } ?: 0L
+                // Готовность ggml для движка whisper.cpp. Именно здесь, а не в теле
+                // композабла: baseReady() считает sha256 файла в 141 МБ, и на главном
+                // потоке это повесило бы экран настроек на секунды.
+                val ggmlReady = SttModels.snapshotOf(context)
                 StorageSnapshot(
                     free = ModelDownloader.freeBytes(context),
                     used = ModelDownloader.modelsUsedBytes(context),
                     ncnnTurboReady = tReady,
                     ncnnTurboSize = tSize,
+                    ggmlReady = ggmlReady,
                     logTail = readLogTail(File(context.filesDir, "opencode.log")),
                     validation = RuntimeValidation.run(context),
                 )
@@ -358,10 +489,15 @@ fun DiagnosticsScreen(
                     }
                 }
 
+                sectionHeader("Движки распознавания и озвучки")
+                // Без нативной библиотеки кнопка микрофона не даст ничего,
+                // поэтому движок показываем раньше моделей: сначала его.
+                EngineRows(engineDl, startEngineDownload)
+
                 sectionHeader("Голосовое распознавание")
                 InfoRow("Движок", engineLabel(prefs))
-                // ncnn = всегда turbo (base-конверт битый и удалён из программы).
-                InfoRow("Модель", "turbo")
+                // Модель зависит от движка: у ncnn всегда turbo, у whisper.cpp — свой ggml.
+                InfoRow("Модель", currentModelLabel(prefs))
                 if (snap == null) {
                     InfoRow("Модели", "загрузка…")
                 } else {
@@ -404,11 +540,16 @@ fun DiagnosticsScreen(
                         }
                         NcnnDownloadState.Idle -> {
                             if (!s.ncnnTurboReady) {
-                                downloadButton("Скачать ncnn-модели (~2.5 ГБ)") { startNcnnDownload() }
+                                downloadButton("Скачать ncnn-модели (~1.2 ГБ)") { startNcnnDownload() }
                             }
                         }
                     }
                 }
+
+                if (droppedModels.isNotEmpty()) {
+                    InfoRow("Уборка моделей", droppedModels, Color(NOTE_ARGB))
+                }
+                GgmlModelRows(snap, ggmlDl, { model -> startGgmlDownload(model) }, dropOtherModels)
 
                 // Между STT и валидацией: обе секции — про то, что человек должен один раз
                 // настроить, чтобы функция вообще работала, и обе с кнопкой. Валидация
@@ -897,6 +1038,22 @@ private fun engineLabel(prefs: android.content.SharedPreferences): String =
         else -> "Системный Android"
     }
 
+/**
+ * Какая модель выбрана ПРАКТИЧЕСКИ. У ncnn модель своя и жёсткая (ncnn-turbo),
+ * у whisper.cpp — выбор пользователя из каталога. Раньше строка показывала
+ * жёстко «ggml-base» для whisper, даже когда выбран turbo: диагностика врала
+ * про работающую конфигурацию, а это худший вид неправды.
+ *
+ * Ключ модели whisper.cpp — `stt_model_whisper`, отдельный от `stt_model`
+ * движка ncnn: общий ключ означал, что переключение движка молча меняло модель.
+ */
+private fun currentModelLabel(prefs: android.content.SharedPreferences): String =
+    when (prefs.getString("stt_engine", "system")) {
+        "ncnn" -> "ncnn-turbo"
+        "whisper" -> "ggml-" + SttModels.labelOf(prefs.getString("stt_model_whisper", SttModels.DEFAULT_ID) ?: SttModels.DEFAULT_ID)
+        else -> "системный Android"
+    }
+
 /** Хвост opencode.log (serve пишет через ProcessBuilder.appendTo; ротация регулярная). */
 private fun readLogTail(
     file: File,
@@ -922,5 +1079,103 @@ private fun readLogTail(
         if (cut in 1 until txt.length) txt.substring(cut + 1) else txt
     } catch (e: Exception) {
         ""
+    }
+}
+
+/**
+ * Список из двух движков: готов ли, сколько весит, кнопка скачивания.
+ *
+ * Показываем оба сразу, а не только STT: озвучка через sherpa - тоже нативная
+ * библиотека, и её отсутствие выглядит так же - молчание.
+ */
+
+/** Ряды моделей движка whisper.cpp.
+ *
+ *  Список и кнопки строятся по каталогу [SttModels], а не по захардкоженной
+ *  паре base/turbo: пока интерфейс знал две модели, small/medium/turbo f16 были
+ *  замерены, но скачать их было нечем, и выбрать модель в настройках было
+ *  невозможно. Теперь список и UI растут вместе.
+ *
+ *  Готовность приходит из снапшота: isReady() считает sha256 целиком (141 МБ у
+ *  base, 1,5 ГБ у turbo), и на главном потоке это заморозило бы экран.
+ */
+@Composable
+private fun GgmlModelRows(
+    snap: StorageSnapshot?,
+    state: GgmlDownloadState,
+    onDownload: (String) -> Unit,
+    onDeleteOthers: () -> Unit,
+) {
+    val ready = snap?.ggmlReady.orEmpty()
+    for (model in SttModels.all) {
+        val bytes = ready[model.id]
+        InfoRow(
+            "ggml-" + model.id,
+            (if (bytes != null) "готов · " else "нет · ") + (if (bytes != null) fmtBytes(bytes) else model.sizeLabel),
+            if (bytes != null) Color(0xFF7BD88F) else Color(0xFFFF6F5A),
+        )
+        InfoRow("  " + model.id, model.note, Color(NOTE_ARGB))
+    }
+    when (val dl = state) {
+        is GgmlDownloadState.Running -> InfoRow(
+            "Загрузка ggml-" + dl.model,
+            "${fmtBytes(dl.done)} из ${fmtBytes(dl.total)}",
+            Color(0xFFFFC107),
+        )
+
+        is GgmlDownloadState.Failed -> {
+            InfoRow("Скачивание не удалось", dl.message, Color(0xFFFF6F5A))
+            downloadButton("Повторить (докачка)") { onDownload(dl.model) }
+        }
+
+        GgmlDownloadState.Idle ->
+            for (model in SttModels.all) {
+                if (ready[model.id] == null) {
+                    downloadButton("Скачать ggml-" + model.id + " (~" + model.sizeLabel + ")") {
+                        onDownload(model.id)
+                    }
+                }
+            }
+    }
+    Spacer(Modifier.height(6.dp))
+    downloadButton("Удалить модели, которых больше нет в списке") { onDeleteOthers() }
+}
+
+@Composable
+private fun EngineRows(
+    state: EngineDownloadState,
+    onDownload: (Engine) -> Unit,
+) {
+    val context = LocalContext.current
+    for (engine in Engine.entries) {
+        // Движок из APK не проверяем в filesDir: он туда никогда не
+        // попадает и не должен. Для него ответ один — «в комплекте».
+        val ready = engine.bundled || remember(engine) { EngineStore.isReady(context, engine) }
+        val mark = when {
+            engine.bundled -> "✔ в комплекте с приложением"
+            ready -> "✔ установлен"
+            else -> "✘ не установлен"
+        }
+        InfoRow(
+            engine.label,
+            "$mark · ${fmtBytes(engine.totalBytes)}",
+            if (ready) Color(0xFF7BD88F) else Color(0xFFFF6F5A),
+        )
+        val dl = state
+        if (!engine.bundled && !ready && dl !is EngineDownloadState.Running) {
+            downloadButton("Скачать (${fmtBytes(engine.totalBytes)})") { onDownload(engine) }
+        }
+    }
+    val running = state as? EngineDownloadState.Running
+    if (running != null) {
+        val ratio = if (running.total > 0) (running.done.toFloat() / running.total).coerceIn(0f, 1f) else 0f
+        InfoRow(
+            "Загрузка движка ${running.engine.label}",
+            "${(ratio * PERCENT_MAX).toInt()}% · ${fmtBytes(running.done)} из ${fmtBytes(running.total)}",
+            Color(0xFFFFC107),
+        )
+    }
+    if (state is EngineDownloadState.Failed) {
+        InfoRow("Движок не скачался", state.message, Color(0xFFFF6F5A))
     }
 }

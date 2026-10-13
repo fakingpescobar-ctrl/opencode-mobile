@@ -250,7 +250,7 @@ class BenchSttTest {
                 WhisperTranscribeService.transcribe(
                     target,
                     wav.samples,
-                    WhisperTranscribeService.MODEL_TURBO,
+                    WhisperTranscribeService.MODEL_NCNN_TURBO,
                     WhisperTranscribeService.ENGINE_NCNN,
                 )
             }
@@ -316,7 +316,12 @@ class BenchSttTest {
 
         val t0 = System.nanoTime()
         val text = runBlocking {
-            ChunkedTranscriber.transcribe(target, wav.samples, "turbo", WhisperTranscribeService.ENGINE_NCNN)
+            ChunkedTranscriber.transcribe(
+                target,
+                wav.samples,
+                WhisperTranscribeService.MODEL_NCNN_TURBO,
+                WhisperTranscribeService.ENGINE_NCNN
+            )
         }
         val ms = (System.nanoTime() - t0) / 1_000_000
         Log.i(TAG, "BENCH_ROW chunked,long,$ms,---,---,$ms,$text")
@@ -376,13 +381,23 @@ class BenchSttTest {
         // Прогрев обязателен в обоих замерах: первый вызов поднимает модели
         // (~3-4с), и без прогрева разница между путями измеряла бы не путь.
         runBlocking {
-            WhisperTranscribeService.transcribe(target, wav.samples, "turbo", WhisperTranscribeService.ENGINE_NCNN)
+            WhisperTranscribeService.transcribe(
+                target,
+                wav.samples,
+                WhisperTranscribeService.MODEL_NCNN_TURBO,
+                WhisperTranscribeService.ENGINE_NCNN
+            )
         }
 
         // (1) продовый путь
         val tChunked = System.nanoTime()
         val chunked = runBlocking {
-            ChunkedTranscriber.transcribe(target, wav.samples, "turbo", WhisperTranscribeService.ENGINE_NCNN)
+            ChunkedTranscriber.transcribe(
+                target,
+                wav.samples,
+                WhisperTranscribeService.MODEL_NCNN_TURBO,
+                WhisperTranscribeService.ENGINE_NCNN
+            )
         }
         val chunkedMs = (System.nanoTime() - tChunked) / 1_000_000
         val nChunked = countMarker(chunked)
@@ -435,7 +450,12 @@ class BenchSttTest {
             WhisperTranscribeService.resetLanguageLatch()
             val tSingle = System.nanoTime()
             val single = runBlocking {
-                WhisperTranscribeService.transcribe(target, clipped, "turbo", WhisperTranscribeService.ENGINE_NCNN)
+                WhisperTranscribeService.transcribe(
+                    target,
+                    clipped,
+                    WhisperTranscribeService.MODEL_NCNN_TURBO,
+                    WhisperTranscribeService.ENGINE_NCNN
+                )
             }
             val singleMs = (System.nanoTime() - tSingle) / 1_000_000
             val nSingle = countMarker(single)
@@ -498,7 +518,7 @@ class BenchSttTest {
             ChunkedTranscriber.transcribe(
                 target,
                 silence.samples,
-                "turbo",
+                WhisperTranscribeService.MODEL_NCNN_TURBO,
                 WhisperTranscribeService.ENGINE_NCNN,
             )
         }
@@ -508,7 +528,7 @@ class BenchSttTest {
             ChunkedTranscriber.transcribe(
                 target,
                 audio,
-                "turbo",
+                WhisperTranscribeService.MODEL_NCNN_TURBO,
                 WhisperTranscribeService.ENGINE_NCNN,
             )
         }

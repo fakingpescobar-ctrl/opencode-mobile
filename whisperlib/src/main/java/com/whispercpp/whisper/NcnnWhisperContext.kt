@@ -37,6 +37,13 @@ class NcnnWhisperContext private constructor(
     @Synchronized
     private fun ensureInit(): Boolean {
         if (initialized) return true
+        // Без загруженного движка nativeInit упал бы UnsatisfiedLinkError.
+        // Ловим это здесь и возвращаем false: вызывающий уже умеет
+        // превращать false в понятную строку для пользователя.
+        if (!engineReady) {
+            Log.w(NCNN_LOG_TAG, "dvigok ncnn ne zagruzen, vozvraschayu false")
+            return false
+        }
         initialized = NcnnWhisperLib.nativeInit(modelDir, base)
         return initialized
     }
@@ -176,6 +183,24 @@ class NcnnWhisperContext private constructor(
 
     companion object {
         /**
+         * Загружен ли нативный движок.
+         *
+         * Раньше движок лежал в APK, и `NcnnWhisperLib` грузил его сам в
+         * своём `init` через System.loadLibrary. Теперь .so лежит в
+         * filesDir/engines/stt, куда loadLibrary не заглядывает, и грузит
+         * его модуль приложения (EngineLibs) - он знает порядок зависимостей.
+         * Модуль whisperlib не видит модуль приложения, поэтому передача
+         * идёт флагом: приложение грузит библиотеки и подтверждает факт.
+         */
+        @Volatile
+        private var engineReady = false
+
+        /** Вызывает приложение сразу после успешной загрузки библиотек. */
+        fun markEngineReady() {
+            engineReady = true
+        }
+
+        /**
          * Создаёт контекст из каталога, где лежат whisper_<base>_*.ncnn.{param,bin}
          * и whisper_vocab.txt. base = "whisper_base" (whisper-base fp16 ncnn).
          */
@@ -188,12 +213,6 @@ class NcnnWhisperContext private constructor(
 // и JNI-имена совпадают с ncnn_jni.cpp: Java_..._NcnnWhisperLib_native*.
 // Companion-методы требуют суффикса 00024Companion — в .so его нет.
 private object NcnnWhisperLib {
-    init {
-        Log.d(NCNN_LOG_TAG, "Loading libncnnwhisper.so (ncnn Vulkan)")
-        System.loadLibrary("ncnnwhisper")
-    }
-
-    // JNI (ncnn_jni.cpp): Java_com_whispercpp_whisper_NcnnWhisperLib_*
       external fun nativeInit(modelDir: String, base: String): Boolean
       external fun nativeSetThreads(n: Int): Boolean
       /** Жив ли нативный синглтон именно на ЭТОЙ модели (dir+base). См. [ensureAlive]. */

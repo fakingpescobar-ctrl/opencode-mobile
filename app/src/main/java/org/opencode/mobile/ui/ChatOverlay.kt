@@ -145,6 +145,7 @@ import org.opencode.mobile.server.PendingAsk
 import org.opencode.mobile.server.YnisonMcp
 import org.opencode.mobile.social.MoltbookScanClient
 import org.opencode.mobile.stt.NcnnModelValidator
+import org.opencode.mobile.stt.SttModels
 import org.opencode.mobile.stt.WhisperTranscribeService
 import org.opencode.mobile.tts.ElevenLabsSecret
 import org.opencode.mobile.tts.TtsConfig
@@ -491,21 +492,51 @@ fun ChatOverlay(
     var sttEngine by remember { mutableStateOf(defaultEngine) }
     // double-tap на "NCNN": показ подсказки о том, как работает двигатель (int8-энкодер и т.д.)
     var ncnnTipVisible by remember { mutableStateOf(false) }
-    // Модель ncnn: "base" | "turbo" (выбор был в панели; ggml-модели убраны,
-    // переключаться теперь негде). Дефолт — turbo: base-конверт даёт мусор
-    // (петля декодера, никогда EOT), turbo-int8 — единственный рабочий путь.
-    var sttModel by remember { mutableStateOf(prefs.getString("stt_model", "turbo") ?: "turbo") }
-    LaunchedEffect(Unit) {
-        if (sttEngine == "whisper") {
-            prefs
-                .edit()
-                .putString("stt_engine", "ncnn")
-                .putString("stt_model", "turbo")
-                .apply()
-            sttEngine = "ncnn"
-            sttModel = "turbo"
-        }
+
+    // Модель выбирается отдельно для каждого движка, поэтому и ключи разные:
+    // `stt_model` — это turbo движка ncnn, а `stt_model_whisper` — выбор из
+    // каталога [SttModels] для whisper.cpp. Общий ключ означал, что переключение
+    // движка молча меняло модель, и это уже стоило нам неверных замеров.
+    //
+    // Модель читается из prefs В МОМЕНТ записи, а не из remember. Копия в
+    // remember замораживалась на момент запуска приложения: скачал turbo,
+    // перевыбрал движок — а распознавание всё равно шло на base. Настройки на
+    // диске, remember про них ничего не знает.
+
+    /**
+     * Модель whisper.cpp на момент записи — просто то, что выбрал человек.
+     *
+     * Здесь НЕТ проверки `spec.isReady(context)`, и это сделано намеренно:
+     * `isReady` считает sha256 файла целиком (до 1,5 ГБ — это секунды
+     * блокировки), а `sttModel()` дёргается прямо в колуторе записи, то есть
+     * почти наверняка на главном потоке. Тот же расчёт уже есть в двух других
+     * местах, оба в `Dispatchers.IO`: в пикере настроек и в диагностике.
+     *
+     * Что модель вообще скачана, гарантирует пикер: нескачанная строка
+     * некликабельна. Если файл всё же пропал (уборка в диагностике, смена
+     * карты) — ошибку даст сервис своим понятным текстом «скачай в Настройки ->
+     * Диагностика», а не молчаливая подмена на другую модель, которую человек
+     * не выбирал.
+     */
+    fun chosenWhisperModel(): String {
+        val stored = prefs.getString("stt_model_whisper", SttModels.DEFAULT_ID) ?: SttModels.DEFAULT_ID
+        return SttModels.byId(stored)?.id ?: SttModels.DEFAULT_ID
     }
+
+    fun sttModel(): String =
+        if (sttEngine == WhisperTranscribeService.ENGINE_NCNN) {
+            prefs.getString("stt_model", WhisperTranscribeService.MODEL_NCNN_TURBO) ?: WhisperTranscribeService.MODEL_NCNN_TURBO
+        } else {
+            chosenWhisperModel()
+        }
+
+    // Выбор модели в панели: состояние дублирует prefs, чтобы перерисовка была
+    // мгновенной, а на диск пишется сразу — источник правды всё равно prefs.
+    var whisperModelId by remember {
+        mutableStateOf(prefs.getString("stt_model_whisper", SttModels.DEFAULT_ID) ?: SttModels.DEFAULT_ID)
+    }
+    // Движок больше не переключается принудительно: whisper.cpp собран
+    // с GGML_VULKAN=ON под Adreno и выбирается пользователем.
     // Полноэкранная диагностика: состояние сервера, STT-модели, лог serve.
     // Оверлей рисуется ПОСЛЕДНИМ в корневом Surface — поверх чата и панелей.
     var showDiagnostics by remember { mutableStateOf(false) }
@@ -1052,7 +1083,7 @@ fun ChatOverlay(
                         org.opencode.mobile.stt.ChunkedTranscriber.transcribe(
                             context,
                             samples,
-                            model = sttModel,
+                            model = sttModel(),
                             engine =
                                 if (sttEngine == "ncnn") {
                                     WhisperTranscribeService.ENGINE_NCNN
@@ -1111,11 +1142,11 @@ fun ChatOverlay(
                                     withContext(Dispatchers.IO) {
                                         try {
                                             val samples = readWavPcm16(file)
-                                            Log.d("VOICE", "TTS-тест: ${samples.size} сэмплов → whisper ($sttModel)")
+                                            Log.d("VOICE", "TTS-тест: ${samples.size} сэмплов → whisper (${sttModel()})")
                                             WhisperTranscribeService.transcribe(
                                                 context,
                                                 samples,
-                                                model = sttModel,
+                                                model = sttModel(),
                                                 engine =
                                                     if (sttEngine == "ncnn") {
                                                         WhisperTranscribeService.ENGINE_NCNN
@@ -1870,7 +1901,7 @@ fun ChatOverlay(
                                         prefs
                                             .edit()
                                             .putString("stt_engine", "ncnn")
-                                            .putString("stt_model", "turbo")
+                                            .putString("stt_model", WhisperTranscribeService.MODEL_NCNN_TURBO)
                                             .apply()
                                     },
                                     onDoubleClick = { ncnnTipVisible = !ncnnTipVisible },
@@ -1889,6 +1920,45 @@ fun ChatOverlay(
                             fontWeight = FontWeight.Bold,
                         )
                         Text("NCNN (CPU encoder int8)", color = Color(0xFFE6E6E6), fontSize = 13.sp)
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    sttEngine = "whisper"
+                                    // Модель НЕ подставляется здесь: её выбирает человек
+                                    // списком ниже. Раньше движок молча затирал модель на
+                                    // base, и выбрать turbo было невозможно — настройка
+                                    // «движок» затирала настройку «модель».
+                                    prefs.edit().putString("stt_engine", "whisper").apply()
+                                }.padding(vertical = 6.dp),
+                    ) {
+                        Text(
+                            if (sttEngine ==
+                                "whisper"
+                            ) {
+                                "● "
+                            } else {
+                                "○ "
+                            },
+                            color = Color(0xFFFF6D00),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text("Whisper.cpp (GGML Vulkan, Adreno)", color = Color(0xFFE6E6E6), fontSize = 13.sp)
+                    }
+                    // Список моделей — только для whisper.cpp. У ncnn модель одна и жёсткая
+                    // (ncnn-turbo), показывать там выбор из четырёх нечего.
+                    if (sttEngine == "whisper") {
+                        SttModelPicker(
+                            selected = whisperModelId,
+                            onSelect = { picked ->
+                                whisperModelId = picked
+                                prefs.edit().putString("stt_model_whisper", picked).apply()
+                            },
+                        )
                     }
                     if (ncnnTipVisible) {
                         Text(

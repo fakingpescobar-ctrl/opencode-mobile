@@ -173,6 +173,60 @@ Java_com_whispercppdemo_whisper_WhisperLib_00024Companion_initContextFromInputSt
     return (jlong) context;
 }
 
+static bool model_is_quantized(const char *path) {
+    if (!path) return false;
+    // Теги квантов ggml-конвенции whisper.cpp: q4_0 q4_1 q4_k, q5_0 q5_1 q5_k,
+    // q8_0, q2_k, q3_k, q6_K, iq1_s iq2_xxs iq3_xxs и т.п.
+    static const char *tags[] = {"q4_", "q5_", "q8_", "q2_", "q3_", "q6_", "iq1_", "iq2_", "iq3_"};
+    const char *name = strrchr(path, '/');
+    name = name ? name + 1 : path;
+    for (size_t i = 0; i < sizeof(tags) / sizeof(tags[0]); i++) {
+        if (strstr(name, tags[i]) != NULL) {
+            return true;
+        }
+    }
+return false;
+}
+
+// Метка-файл рядом с моделью позволяет переключать бэкенд на живом телефоне,
+// без пересборки .so: `quant_gpu` — пустить квантованную модель на GPU,
+// `cpu` — наоборот, удержать ЛЮБУЮ модель на процессоре. Метка лежит в
+// каталоге модели, а не флаг сборки, потому что переключать приходится на
+// устройстве, где собирать нечего.
+static bool marker_present(const char *path, const char *name) {
+    if (!path) return false;
+    const char *slash = strrchr(path, '/');
+    if (!slash) return false;
+    const size_t dir_len = (size_t)(slash - path);
+    const size_t name_len = strlen(name);
+    char marker[4096];
+    if (dir_len + 1 + name_len + 1 >= sizeof(marker)) return false;
+    memcpy(marker, path, dir_len);
+    marker[dir_len] = '/';
+    memcpy(marker + dir_len + 1, name, name_len + 1);
+    FILE *f = fopen(marker, "rb");
+    if (!f) return false;
+    fclose(f);
+    return true;
+}
+
+static bool quant_gpu_override(const char *path) {
+    return marker_present(path, "quant_gpu");
+}
+
+static bool force_cpu_override(const char *path) {
+    return marker_present(path, "cpu");
+}
+
+// Квантованные модели на GPU дают мусор: замер 14.10.2026, q5_0 + flash_attn
+// дал WER ~3500 % и rtf 47,64 против 6,25 на CPU. Значит виноват квант, а не
+// attention, и гейт по имени файла обязателен.
+static bool use_gpu_for(const char *path) {
+    if (!path) return false;
+    if (force_cpu_override(path)) return false;
+    if (!model_is_quantized(path)) return true;
+    return quant_gpu_override(path);
+}
 static size_t asset_read(void *ctx, void *output, size_t read_size) {
     return AAsset_read((AAsset *) ctx, output, read_size);
 }
@@ -198,30 +252,33 @@ static struct whisper_context *whisper_init_from_asset(
         return NULL;
     }
 
-    whisper_model_loader loader = {
+whisper_model_loader loader = {
             .context = asset,
             .read = &asset_read,
             .eof = &asset_is_eof,
             .close = &asset_close
     };
 
-    // GPU (ggml-vulkan) на Adreno выдаёт мусор и медленнее CPU —
-    // считаем на CPU (8 потоков), там модель распознаёт чисто.
+    // GPU (ggml-vulkan) на Adreno включаем ТОЛЬКО для f16-моделей.
+    //
+    // Замеры на OnePlus CPH2747 / Snapdragon 8 Elite Gen 5 / Adreno 840 (13.10.2026):
+    //   ggml-base f16             + GPU: rtf 0,07-0,13, текст точный
+    //   ggml-large-v3-turbo-q5_0  + GPU: rtf 58,52, текст МУСОР на эталоне "Кто ты?"
+    //   ggml-base f16             CPU : rtf 0,38,   текст точный
+    //   ggml-large-v3-turbo-q5_0  CPU : rtf 6,25,   текст точный
+    //
+    // То есть ggml-vulkan на Adreno не сломан — его ломает КВАНТОВАНИЕ (q5_0). На
+    // кванте GPU в 9 раз МЕДЛЕНЕЕ CPU и выдаёт мусор вместо текста. Поэтому решает
+    // имя файла, а не флаг: модель с тегом кванта уходит на CPU.
+    //
+    // Прежде здесь стояло use_gpu = false с комментарием "выдаёт мусор и медленнее
+    // CPU" — это было обобщение краша ncnn на ggml-vulkan. Формулировка была верной
+    // только про кванты, и потому отключала и f16, который на GPU отлично работает.
     struct whisper_context_params ctx_params = whisper_context_default_params();
-    ctx_params.use_gpu = false;
+    ctx_params.use_gpu = use_gpu_for(asset_path);
     return whisper_init_with_params(&loader, ctx_params);
 }
 
-JNIEXPORT jlong JNICALL
-Java_com_whispercpp_whisper_WhisperLib_00024Companion_initContextFromAsset(
-        JNIEnv *env, jobject thiz, jobject assetManager, jstring asset_path_str) {
-    UNUSED(thiz);
-    struct whisper_context *context = NULL;
-    const char *asset_path_chars = (*env)->GetStringUTFChars(env, asset_path_str, NULL);
-    context = whisper_init_from_asset(env, assetManager, asset_path_chars);
-    (*env)->ReleaseStringUTFChars(env, asset_path_str, asset_path_chars);
-    return (jlong) context;
-}
 
 JNIEXPORT jlong JNICALL
 Java_com_whispercpp_whisper_WhisperLib_00024Companion_initContext(
@@ -230,7 +287,13 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_initContext(
     struct whisper_context *context = NULL;
     const char *model_path_chars = (*env)->GetStringUTFChars(env, model_path_str, NULL);
     struct whisper_context_params ctx_params = whisper_context_default_params();
-    ctx_params.use_gpu = false; // ggml-vulkan на Adreno даёт мусор — CPU надёжнее
+    // Квант на Adreno+Vulkan даёт мусор и в сотни раз БОЛЬШЕ времени, чем CPU.
+    // f16 на той же связке отличен (rtf 0,07 против 6,25 у turbo-q5_0). Решает имя файла.
+    ctx_params.use_gpu = use_gpu_for(model_path_chars);
+    // Тир 1 плана оптимизации: flash-attention (поле в context_params, не full_params).
+    // Меняет арифметику внимания, поэтому сверяем и текст против эталона, а не только
+    // время. Выигрыш в ggml даёт fp16-вход, то есть ровно наш случай — GPU + f16.
+    ctx_params.flash_attn = true;
     context = whisper_init_from_file_with_params(model_path_chars, ctx_params);
     (*env)->ReleaseStringUTFChars(env, model_path_str, model_path_chars);
     return (jlong) context;

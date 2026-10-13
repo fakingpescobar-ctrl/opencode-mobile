@@ -119,6 +119,14 @@
         </service>
 
         <receiver
+            android:name=".stt.SttBenchReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="org.opencode.mobile.STT_BENCH" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
             android:name=".installer.PackageInstallReceiver"
             android:exported="false">
             <intent-filter>

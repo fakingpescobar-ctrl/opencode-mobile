@@ -10,6 +10,7 @@ import android.content.Intent
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import com.whispercpp.whisper.FAILED_LANG
 import com.whispercpp.whisper.NcnnWhisperContext
@@ -21,6 +22,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import org.opencode.mobile.engine.Engine
+import org.opencode.mobile.engine.EngineLibs
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -55,9 +58,28 @@ class WhisperTranscribeService : Service() {
         private const val CHANNEL_ID = "whisper_stt"
         private const val TAG = "VOICE"
 
-        /** Идентификаторы моделей: base живёт в assets, turbo — скачивается в filesDir. */
+        /**
+         * Идентификаторы моделей ggml для движка whisper.cpp. Список, порядок,
+         * описания и скачивание живут в [SttModels]; здесь только идентификаторы,
+         * потому что их знают prefs и UI.
+         *
+         * Модели turbo q5_0 и tiny вычеркнуты 14.10.2026 после замеров: на Adreno
+         * 840 квантованная turbo даёт мусор (rtf 47,64), на CPU — rtf 6,25, а tiny
+         * ошибается в 60 % слов и проигрывает даже base. ncnn-turbo — отдельная
+         * модель в ncnn-формате, к этому перечню отношения не имеет.
+         */
         const val MODEL_BASE = "base"
-        const val MODEL_TURBO = "turbo"
+        const val MODEL_TURBO_F16 = "turbo-f16"
+        const val MODEL_MEDIUM = "medium"
+        const val MODEL_SMALL = "small"
+
+        /**
+         * Модель ncnn-движка — отдельная сущность, к каталогу ggml не имеет
+         * отношения: это веса `whisper_turbo` в ncnn-формате (1,2 ГБ), а не
+         * turbo f16/q5_0 из HuggingFace. Именно поэтому её не было в
+         * `SttModels` и не стало, когда оттуда вычеркнули квантованную turbo.
+         */
+        const val MODEL_NCNN_TURBO = "turbo"
 
         /** Движки распознавания. */
         const val ENGINE_WHISPER = "whisper"
@@ -82,6 +104,9 @@ class WhisperTranscribeService : Service() {
             val model: String,
             val engine: String,
             val deferred: CompletableDeferred<String>,
+            /** Путь исходного WAV — не null только для задач отладочного стенда.
+             *  Нужен, чтобы в лог писать полный результат с привязкой к файлу. */
+            val origin: String? = null,
         )
 
         // FIFO-очередь задач. Доступ — только через synchronized-обёртки ниже,
@@ -153,6 +178,9 @@ class WhisperTranscribeService : Service() {
         const val MIN_LANG_DETECT_SECONDS = 3.0
         private const val SAMPLE_RATE_HZ = 16_000
 
+/** Миллисекунд в секунде — переводит «сэмплы» в «мс» для отчёта о скорости. */
+        private const val MS_PER_SECOND = 1000L
+
         /** Сброс защёлки в начале новой сессии диктовки. */
         fun resetLanguageLatch() {
             latchedLang = null
@@ -205,14 +233,15 @@ class WhisperTranscribeService : Service() {
         /**
          * Блокирующий (suspend) запуск распознавания через foreground-сервис.
          * Кладёт задачу в очередь; сервис считает её в порядке FIFO.
-         * @param model MODEL_BASE (assets) или MODEL_TURBO (файл в filesDir) — для whisper.cpp.
+         * @param model MODEL_SMALL (по умолчанию) или MODEL_MEDIUM/MODEL_TURBO_F16/MODEL_BASE
+         *   из каталога [SttModels] — движок whisper.cpp, файлы в filesDir/models.
          * @param engine ENGINE_WHISPER (whisper.cpp CPU) или ENGINE_NCNN (ncnn CPU).
          * Возвращает текст либо строку "ОШИБКА WHISPER: ..." (в т.ч. по таймауту/переполнению).
          */
         suspend fun transcribe(
             context: Context,
             samples: FloatArray,
-            model: String = MODEL_BASE,
+            model: String = MODEL_SMALL,
             engine: String = ENGINE_WHISPER,
             timeoutMs: Long = 90_000L,
         ): String {
@@ -280,6 +309,54 @@ class WhisperTranscribeService : Service() {
             }
 
         /**
+         * Отладочный путь: кладёт в очередь WAV из broadcast вместо записи с
+         * микрофона. Нужен, чтобы мерить скорость и точность автономно.
+         *
+         * Работает только в debug-сборке: приложение ещё и HTTP-сервер поднимает,
+         * а экспортированный приёмник, читающий произвольный файл, — дыра.
+         * Сервис уже запущен к этому моменту (приёмник вызвал startForegroundService),
+         * поэтому submit() здесь не нужен — достаточно enqueue.
+         */
+        private fun enqueueBench(intent: Intent) {
+            // Проверка и в приёмнике, и здесь: сервис можно разбудить и напрямую.
+            val task = if (org.opencode.mobile.BuildConfig.DEBUG) benchTask(intent) else null
+            if (task == null) return
+            enqueue(task)
+            Log.d(TAG, "bench: задача #${task.id} в очереди")
+        }
+
+        /**
+         * Задача из WAV-файла либо null, если файл нечитаем или не в том формате.
+         * Один `when` без ранних возвратов — проверок четыре, а detekt держит
+         * ReturnCount = 2.
+         */
+        private fun benchTask(intent: Intent): SttTask? {
+            val path = intent.getStringExtra(SttBenchReceiver.EXTRA_FILE).orEmpty()
+            val file = File(path)
+            if (path.isBlank() || !file.canRead()) {
+                Log.w(TAG, "bench: путь '$path' пуст или нечитаем")
+                return null
+            }
+            val bytes = file.readBytes()
+            val samples = SttWav.samples(bytes)
+            val header = SttWav.headerOf(bytes)
+            return if (samples == null) {
+                Log.w(TAG, "bench: $path не 16 kHz mono pcm_s16le (${SttWav.describe(header)})")
+                null
+            } else {
+                Log.d(TAG, "bench: $path, ${samples.size} сэмплов (${SttWav.describe(header)})")
+                SttTask(
+                    id = taskIdGen.incrementAndGet(),
+                    samples = samples,
+                    model = intent.getStringExtra(SttBenchReceiver.EXTRA_MODEL) ?: MODEL_SMALL,
+                    engine = intent.getStringExtra(SttBenchReceiver.EXTRA_ENGINE) ?: ENGINE_WHISPER,
+                    deferred = CompletableDeferred(),
+                    origin = path,
+                )
+            }
+        }
+
+        /**
          * Запускает единственный worker распознавания: крутится, пока в очереди
          * есть задачи, считает их строго по одной (сериализация = нет гонки на
          * whisper-контекстах), затем планирует остановку сервиса. Не требует
@@ -300,6 +377,10 @@ class WhisperTranscribeService : Service() {
                     Log.d(TAG, "worker: задача #${task.id}, ${task.samples.size} сэмплов, модель=${task.model}, движок=${task.engine}")
                     val text = transcribeTask(task)
                     Log.d(TAG, "worker: результат #${task.id}: '${text.take(80)}'")
+                    // Бенч сравнивает текст с эталоном, поэтому ему нужен результат
+                    // целиком, а не первые 80 символов. Пишем отдельной строкой
+                    // только для задач из файла — микрофон не должен этим шуметь.
+                    task.origin?.let { Log.i(TAG, "BENCH $it => '$text'") }
                     // complete() вернёт false, если вызывающая сторона уже ушла
                     // (таймаут/откат) и отменила deferred — это ожидаемо: результат
                     // больше никому не нужен, и он молча отбрасывается. Раньше здесь
@@ -318,15 +399,49 @@ class WhisperTranscribeService : Service() {
             }
         }
 
-        /** Распознавание одной задачи. Никогда не бросает: ошибка -> текст-строка. */
+        /** Распознавание одной задачи. Никогда не бросает: ошибка -> текст-строка.
+         *
+         * Замеры времени здесь не украшение: без них «распознавание медленное»
+         * нечем подтвердить. Печатаем четыре числа, которые и различают все
+         * гипотезы - сколько ждала загрузка модели, сколько длился сам
+         * проход и во сколько раз он длиннее звука. */
         private suspend fun transcribeTask(task: SttTask): String =
             try {
                 if (task.engine == ENGINE_NCNN) {
+                    val loadStart = SystemClock.elapsedRealtime()
                     val ctx = obtainNcnnContext(task.model)
-                    transcribeNcnn(ctx, task.samples).trim()
+                    val loaded = SystemClock.elapsedRealtime()
+                    val audioMs = task.samples.size * MS_PER_SECOND / SAMPLE_RATE_HZ
+                    val text = transcribeNcnn(ctx, task.samples).trim()
+                    val done = SystemClock.elapsedRealtime()
+                    val rtf = if (audioMs > 0) (done - loaded).toFloat() / audioMs else 0f
+                    Log.i(
+                        TAG,
+                        "ncnn: загрузка ${loaded - loadStart} мс, " +
+                            "проход ${done - loaded} мс, звук $audioMs мс, rtf ${"%.2f".format(rtf)}"
+                    )
+                    text
                 } else {
+                    val app = requireAppContext()
+                    if (!EngineLibs.load(app, Engine.WHISPER)) {
+                        error(EngineLibs.reasonOf(app, Engine.WHISPER) ?: "движок whisper.cpp не загрузился")
+                    }
+                    // Замеры — те же, что в ncnn-ветке, иначе скорость приходится
+                    // считать по меткам logcat вручную. Здесь загрузка движка и
+                    // модели видна отдельно от самого прохода.
+                    val loadStart = SystemClock.elapsedRealtime()
                     val ctx = obtainContext(task.model)
-                    ctx.transcribeData(task.samples, printTimestamp = false).trim()
+                    val loaded = SystemClock.elapsedRealtime()
+                    val text = ctx.transcribeData(task.samples, printTimestamp = false).trim()
+                    val done = SystemClock.elapsedRealtime()
+                    val wAudioMs = task.samples.size * MS_PER_SECOND / SAMPLE_RATE_HZ
+                    val wRtf = if (wAudioMs > 0) (done - loaded).toFloat() / wAudioMs else 0f
+                    Log.i(
+                        TAG,
+                        "whisper: загрузка ${loaded - loadStart} мс, " +
+                            "проход ${done - loaded} мс, звук $wAudioMs мс, rtf ${"%.2f".format(wRtf)}"
+                    )
+                    text
                 }
             } catch (e: Throwable) {
                 Log.e(TAG, "распознавание упало (в сервисе)", e)
@@ -466,31 +581,30 @@ class WhisperTranscribeService : Service() {
          *  второй читатель/писатель = гонка. НЕ вызывать из onStartCommand, UI и т.д. */
         private fun loadContextLocked(model: String): WhisperContext {
             val app = requireAppContext()
-            return when (model) {
-                WhisperTranscribeService.MODEL_BASE -> {
-                    val f = ModelDownloader.baseFile(app)
-                    if (!ModelDownloader.baseReady(app)) {
-                        error(
-                            "base-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках STT"
-                        )
-                    }
-                    requireNotCorrupt(f, "base-модель")
-                    Log.d(TAG, "гружу base-модель с файла (${f.length() / 1024 / 1024}MB)")
-                    WhisperContext.createContextFromFile(f.absolutePath)
-                }
-                WhisperTranscribeService.MODEL_TURBO -> {
-                    val f = ModelDownloader.turboFile(app)
-                    if (!ModelDownloader.turboReady(app)) {
-                        error(
-                            "turbo-модель не скачана (${if (f.exists()) (f.length() / 1024 / 1024) else 0}MB) — скачай в настройках"
-                        )
-                    }
-                    requireNotCorrupt(f, "turbo-модель")
-                    Log.d(TAG, "гружу turbo-модель с файла (${f.length() / 1024 / 1024}MB), может занять время")
-                    WhisperContext.createContextFromFile(f.absolutePath)
-                }
-                else -> throw IllegalArgumentException("неизвестная модель: $model")
+            // Список моделей живёт в каталоге [SttModels], а не здесь: раньше здесь
+            // стоял when на шесть копий одного и того же (имя файла + подпись),
+            // и добавление модели означало править и его, и UI, и диагностику.
+            val spec = SttModels.byId(model) ?: throw IllegalArgumentException("неизвестная модель: $model")
+            return loadGgmlFile(app, spec.fileOf(app), spec.isReady, spec.id)
+        }
+
+        /** Общая загрузка ggml-модели: проверить наличие, целостность, открыть контекст.
+         *  Всё, что различается между моделями, приходит аргументами из каталога. */
+        private fun loadGgmlFile(
+            app: Context,
+            file: java.io.File,
+            ready: (Context) -> Boolean,
+            label: String,
+        ): WhisperContext {
+            if (!ready(app)) {
+                error(
+                    "$label не скачана (${if (file.exists()) (file.length() / 1024 / 1024) else 0}MB) — " +
+                        "скачай в Настройки -> Диагностика -> Голосовое распознавание"
+                )
             }
+            requireNotCorrupt(file, label)
+            Log.d(TAG, "гружу $label-модель с файла (${file.length() / 1024 / 1024}MB)")
+            return WhisperContext.createContextFromFile(file.absolutePath)
         }
 
         private fun requireAppContext(): Context =
@@ -524,16 +638,34 @@ class WhisperTranscribeService : Service() {
         // на одну модель. computeIfAbsent держит бин-лок, поэтому контекст
         // создаётся ровно один раз даже при гонке.
         private fun obtainNcnnContext(model: String): NcnnWhisperContext =
-            ncnnCtxCache.computeIfAbsent("turbo") {
+            ncnnCtxCache.computeIfAbsent(MODEL_NCNN_TURBO) {
                 val app = requireAppContext()
+                // Движок лежит в filesDir/engines/stt, а не в APK, поэтому
+                // System.loadLibrary его не видит - грузим по абсолютному
+                // пути и только потом разрешаем нативные вызовы.
+                if (!EngineLibs.load(app, Engine.STT)) {
+                    error(EngineLibs.reasonOf(app, Engine.STT) ?: "движок ncnn не загрузился")
+                }
+                NcnnWhisperContext.markEngineReady()
                 val dir = File(ModelDownloader.modelsDir(app), "ncnn-turbo")
                 val baseName = "whisper_turbo"
                 val check = NcnnModelValidator.checkModelDir(dir, baseName)
+                val missing = check.missing.size
+                val ofTotal = NcnnModelDownloader.FILE_COUNT
+                val size = NcnnModelDownloader.SIZE_LABEL
                 check(check.ok) {
-                    "ncnn-модель неполная в $dir — отсутствуют: ${check.missing.joinToString(", ")}"
+                    // Не перечисляем все 15 имён: в чат это уходит строкой
+                    // ответа, и она обрезается по длине. Причина одна -
+                    // набор не скачан, и пользователю нужно знать куда
+                    // идти, а не что именно отсутствует.
+                    "ncnn-модели не скачаны — Настройки -> Диагностика -> " +
+                        "«Скачать ncnn-модели» (~$size, отсутствует $missing из $ofTotal)"
                 }
-                Log.d(TAG, "гружу ncnn-модель из $dir (CPU, $baseName)")
-                NcnnWhisperContext.createFromFilesDir(dir, baseName)
+                Log.d(TAG, "гружу ncnn-модель из $dir ($baseName)")
+                val t0 = SystemClock.elapsedRealtime()
+                val created = NcnnWhisperContext.createFromFilesDir(dir, baseName)
+                Log.i(TAG, "ncnn-модель загружена за ${SystemClock.elapsedRealtime() - t0} мс")
+                created
             }
 
         /**
@@ -553,7 +685,7 @@ class WhisperTranscribeService : Service() {
          * гарантирует, что модель не нужна прямо сейчас.
          */
         suspend fun releaseNcnnContext() {
-            val ctx = ncnnCtxCache.remove("turbo") ?: return
+            val ctx = ncnnCtxCache.remove(MODEL_NCNN_TURBO) ?: return
             Log.d(TAG, "отпускаю кэшированный ncnn-контекст (модель освободится нативно)")
             ctx.release()
         }
@@ -572,8 +704,15 @@ class WhisperTranscribeService : Service() {
         startId: Int,
     ): Int {
         startInForeground()
+        // Контекст нужен воркеру, а раньше его ставил только путь микрофона
+        // (transcribe()). Сервис жив — значит контекст точно есть; ставим здесь,
+        // иначе задача из broadcast падает «context не инициализирован».
+        appContext = applicationContext
         // Снимаем отложенную остановку: пришла новая задача.
         mainHandler.removeCallbacks(stopRunnable)
+        if (intent?.action == SttBenchReceiver.ACTION) {
+            enqueueBench(intent)
+        }
         ensureWorker()
         return START_NOT_STICKY
     }
