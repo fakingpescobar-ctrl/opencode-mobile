@@ -699,6 +699,10 @@ object OpencodeRuntime {
         // без закреплённого дефолта сервер всё равно поднимается (opencode выберет модель сам),
         // поэтому отказ здесь означает «оставим выбор opencode», а не «не запускаемся».
         syncModelEntry(file, file.readTextOrEmpty())
+        // Ключ question — не часть готовности по той же причине: без него сервер
+        // поднимается, вопросы просто не доходят до карточки. Отказ здесь означает
+        // «карточка останется немой», а не «не запускаемся».
+        syncQuestionPermission(file, file.readTextOrEmpty())
         return afterMoltbook
     }
 
@@ -732,6 +736,39 @@ object OpencodeRuntime {
                 android.util.Log.w(
                     "OpencodeRuntime",
                     "Config shape is not recognised; leaving the model choice to opencode",
+                )
+        }
+    }
+
+    /**
+     * Закрепляет `"question": "ask"`, чтобы вопросы доходили до карточки.
+     *
+     * Зачем. Пока ключа нет, инструмент question не спрашивает разрешения: он
+     * стартует и навсегда остаётся в `status=running`, а `GET
+     * /api/session/{id}/permission` возвращает пустой список — карточка есть, но
+     * показать ей нечего. На устройстве это читалось как «карточка вопроса опять
+     * не вызвалась». Подробности разбора — в [planQuestionPermission].
+     *
+     * Отказ здесь не важен для запуска: сервер поднимется и без ключа, просто
+     * вопросы останутся без ответа.
+     */
+    private fun syncQuestionPermission(
+        file: File,
+        text: String,
+    ) {
+        when (val plan = planQuestionPermission(text)) {
+            PermissionPlan.Keep -> Unit
+            is PermissionPlan.Write ->
+                if (!writeMemoryConfigText(file, plan.text)) {
+                    android.util.Log.w(
+                        "OpencodeRuntime",
+                        "Could not pin the question permission; the ask card will stay silent",
+                    )
+                }
+            PermissionPlan.Refuse ->
+                android.util.Log.w(
+                    "OpencodeRuntime",
+                    "No permission section in the config; cannot pin the question permission",
                 )
         }
     }

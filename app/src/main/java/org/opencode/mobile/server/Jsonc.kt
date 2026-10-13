@@ -112,7 +112,7 @@ internal fun nextSignificant(
 }
 
 /** Есть ли после [from] необязательный пробел и двоеточие — то есть это ключ, а не значение. */
-private fun colonFollows(
+internal fun colonFollows(
     text: String,
     from: Int,
 ): Boolean {
@@ -121,18 +121,18 @@ private fun colonFollows(
     return i < text.length && text[i] == ':'
 }
 
-private fun isLineCommentAt(
+internal fun isLineCommentAt(
     text: String,
     i: Int,
 ): Boolean = text[i] == '/' && i + 1 < text.length && text[i + 1] == '/'
 
-private fun isBlockCommentAt(
+internal fun isBlockCommentAt(
     text: String,
     i: Int,
 ): Boolean = text[i] == '/' && i + 1 < text.length && text[i + 1] == '*'
 
 /** Позиция закрывающей кавычки строки, начатой до [from]; переводы строк внутри строк не ждём. */
-private fun skipString(
+internal fun skipString(
     text: String,
     from: Int,
 ): Int {
@@ -150,7 +150,7 @@ private fun skipString(
     return i
 }
 
-private fun skipToLineEnd(
+internal fun skipToLineEnd(
     text: String,
     from: Int,
 ): Int {
@@ -159,7 +159,7 @@ private fun skipToLineEnd(
     return i + 1
 }
 
-private fun skipToBlockEnd(
+internal fun skipToBlockEnd(
     text: String,
     from: Int,
 ): Int {
