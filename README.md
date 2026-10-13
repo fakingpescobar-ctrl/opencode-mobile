@@ -346,32 +346,46 @@ Vulkan-эксперимент 6.45 s — стабилен, но в проде в
 
 - `app/src/main/jniLibs/arm64-v8a/` — **в git НЕ лежит** (`.gitignore`), туда
   кладутся все нативы: `libopencode.so`, `libldmusl.so`, `libc_musl.so`,
-  `libstdcxx.so`, `libgcc_s.so`, `libbun-musl.so` (плюс sherpa-onnx и
-  onnxruntime, если нужна локальная речь). Из свежего клона рабочее
+  `libstdcxx.so`, `libgcc_s.so`, `libbun-musl.so`, `libsherpa-onnx-jni.so`,
+  `libonnxruntime.so`. Из свежего клона рабочее
   приложение не соберётся, а **сборка при этом не упадёт**: Gradle просто не
   найдёт файла и соберёт APK без сервера — приложение стартует, opencode не
   запускается, и причина неочевидна.
-- Поэтому бинарь ставится одной командой:
+- Поэтому **весь комплект** нативов ставится одной командой:
   ```powershell
-  pwsh -File tools\fetch-opencode-binary.ps1      # скачать и положить
-  pwsh -File tools\fetch-opencode-binary.ps1 -Check   # только проверить
-  .\build.ps1 -Task binary                       # то же через build.ps1
+  pwsh -File tools\fetch-opencode-binary.ps1           # скачать и положить
+  pwsh -File tools\fetch-opencode-binary.ps1 -Check    # только проверить
+  pwsh -File tools\fetch-opencode-binary.ps1 -Force    # скачать заново
+  pwsh -File tools\fetch-opencode-binary.ps1 -SkipTts  # без sherpa/onnxruntime (46 МБ)
+  .\build.ps1 -Task binary                             # то же через build.ps1
   ```
-  Скрипт берёт `@opencode/cli-linux-arm64-musl` с npm — **релизов на GitHub
-  для 2.x не существует вообще**, а официальный установщик бинарь не качает.
-  `-Check` сверяет версию, размер и sha256, а также ищет в файле маркеры musl
+  Скрипт тянет все восемь файлов из четырёх публичных источников, каждый
+  сверяет по размеру **и sha256** (размер у разных сборок совпадает, поэтому
+  проверяется именно хеш), а в конце прогоняет ту же проверку, что и `-Check`.
+  Источники:
+
+  | файл | откуда |
+  |---|---|
+  | `libopencode.so` | npm `@opencode/cli-linux-arm64-musl` — **релизов на GitHub для 2.x не существует вообще**, официальный установщик бинарь не качает |
+  | `libbun-musl.so` | npm `@oven/bun-linux-aarch64-musl` (не библиотека, а сам bun: ELF типа `ET_EXEC`) |
+  | `libc_musl.so`, `libldmusl.so` | Alpine v3.21 musl — `ld-musl-aarch64.so.1` под двумя именами, побайтово один файл |
+  | `libstdcxx.so`, `libgcc_s.so` | Alpine v3.21 GCC-рантайм (бинарь opencode **не статический**) |
+  | `libonnxruntime.so` | GitHub-релиз sherpa-onnx 1.13.8, сборка `android-aarch64-termux-shared` |
+  | `libsherpa-onnx-jni.so` | тот же релиз, но `sherpa-onnx-static-link-onnxruntime-1.13.8.aar` — **не** из `.tar.bz2`, там лежит другая сборка на 4.7 МБ |
+
+  `-Check` дополнительно ищет в `libopencode.so` маркеры musl
   (`libstdc++.so.6`, `libgcc_s.so.1`), чтобы не принять windows-сборку или 1.x
-  за 2.x.
-- `debug` и `release` **проверяют комплектность нативов перед сборкой** и падают
-  со списком того, чего не хватает. Обойти — `-SkipBinary`.
-- Версия бинаря живёт в `gradle.properties`, строкой `opencode.binaryVersion`.
+  за 2.x. Рядом скрипт пишет `natives.json` — что откуда и с каким хешем.
+- `debug` и `release` **проверяют комплектность и хеши нативов перед сборкой**
+  и падают со списком того, чего не хватает или что не сходится. Обойти —
+  `-SkipBinary`. Если офлайн-речь не нужна — `-SkipTts`: он убирает 46 МБ и
+  проверку этих двух файлов тоже (иначе отказ от речи пришлось бы отменять
+  `-SkipBinary`).
+- Версия бинаря opencode живёт в `gradle.properties`, строкой `opencode.binaryVersion`.
   Это единственный источник правды: его читают скрипт загрузки, `app/build.gradle.kts`
   (`BuildConfig.OPENCODE_VERSION`, его показывает экран «О программе») и `build.ps1`.
-  Смена версии = смена этой строки + прогон скрипта.
-- Остальные нативы скрипт **не качает**: musl-рантайм (`libc_musl.so`, `libstdcxx.so` =
-  Alpine `libstdc++.so.6.0.33`, `libgcc_s.so` = Alpine `libgcc_s.so.1`) берётся из
-  Alpine v3.22, `libldmusl.so` — из musl-tools, `libbun-musl.so` — из Bun для
-  `Retention.kt` и harness-скриптов.
+  Смена версии = смена этой строки + прогон скрипта. Версии остальных нативов
+  (bun 1.4.0, sherpa-onnx 1.13.8, Alpine v3.21) закреплены пинами прямо в скрипте.
 - whisper-нативка (`whisperlib`) **собирается при сборке приложения** из
   исходников: `third_party/ncnn` (in-repo) + **внешний** `whisper.cpp` (вне репо)
   и VulkanSDK (Windows). Пути конфигурируются: `-PwhisperCppDir=...`,
@@ -513,7 +527,7 @@ app/
       tts/                      # озвучка: SpeechFactory, TtsNarrator, Supertonic/ElevenLabs
       social/                   # мобильный агент moltbook: тик, будильник, watchdog
     assets/                       # шрифты, MCP-ассеты (memory/moltbook/ynison), harness
-    jniLibs/arm64-v8a/           # нативы НЕ в git: opencode-бинарь + musl/Bun (см. fetch-opencode-binary.ps1)
+    jniLibs/arm64-v8a/           # нативы НЕ в git: opencode + musl/Bun/GCC + sherpa (см. fetch-opencode-binary.ps1)
 whisperlib/                      # JNI-обёртки: ncnn (рабочий) + whisper.cpp (legacy)
   src/main/jni/
     whisper/                     # whisper.cpp-gw (использует ggml; use_gpu=false)
@@ -525,7 +539,7 @@ docs/
   EXPERIMENTS-STT-LATENCY.md     # замеры ncnn: int8/Vulkan/KV, ЭКСП-5 (чанкинг)
   stt-bench-2026-09-24.csv       # бенч int8 vs fp32 (24.09.2026)
 tools/
-  fetch-opencode-binary.ps1      # скачать бинарь opencode 2.x с npm (в git его нет)
+  fetch-opencode-binary.ps1      # скачать все 8 нативов (opencode, musl, Bun, GCC, sherpa) — в git их нет
   adb-auth-common.ps1            # пароль serve из /proc + готовый Basic-заголовок
   ncnn-whisper-plan.md           # план интеграции ncnn-whisper
   ncnn-int8-plan.md              # int8-квантование (внедрено) + тулзы квантования

@@ -25,6 +25,11 @@
 .PARAMETER SkipNative
     Не собирать нативку whisperlib (сборка из prebuilt jniLibs).
 
+.PARAMETER SkipTts
+    Не требовать офлайн-речь (sherpa-onnx + onnxruntime, 46 МБ) — то же, что
+    делает fetch-opencode-binary.ps1 -SkipTts. Предсборочная проверка нативов
+    тоже их пропустит, иначе отказ от речи пришлось бы отменять -SkipBinary.
+
 .PARAMETER Task
     verify  — ktlint + detekt + compileDebugKotlin + юнит-тесты JVM
     jstest  — офлайн-тесты JS-ассетов MCP (node, без сети и без gradle)
@@ -44,7 +49,7 @@
     .\build.ps1 -Task utest
     .\build.ps1 -Task native -WhisperCppDir C:\src\whisper.cpp
     .\build.ps1 -Task release -SkipNative
-    .\build.ps1 -Task binary          # polozhit binayr opencode v jniLibs
+    .\build.ps1 -Task binary          # polozhit ves komplekt nativov v jniLibs
 #>
 param(
     [ValidateSet('verify', 'jstest', 'utest', 'debug', 'release', 'native', 'binary')]
@@ -53,6 +58,7 @@ param(
     [string]$VulkanSdkDir = '',
     [switch]$SkipNative,
     [switch]$SkipBinary,
+    [switch]$SkipTts,
     [string]$Log = ''
 )
 
@@ -121,23 +127,27 @@ if ($Task -eq 'binary') {
     exit $LASTEXITCODE
 }
 if (-not $SkipBinary -and ($Task -eq 'debug' -or $Task -eq 'release')) {
-    $problems = @()
-    & pwsh -ExecutionPolicy Bypass -File $fetchBinary -Check | Out-Null
-    if ($LASTEXITCODE -ne 0) { $problems += 'libopencode.so ne na meste ili ne ta versiya' }
-    $jni = Join-Path $Root 'app\src\main\jniLibs\arm64-v8a'
-    foreach ($so in @('libldmusl.so', 'libc_musl.so', 'libstdcxx.so', 'libgcc_s.so', 'libbun-musl.so')) {
-        if (-not (Test-Path -LiteralPath (Join-Path $jni $so))) { $problems += "net $so" }
-    }
-    if ($problems.Count -gt 0) {
+    # Skript sam znaet polnyy spisok nativov i sveryaet kazhdyy po sha256,
+    # poetomu zdes tolko ego vyvod - inache katalog rassypayetsya v dvukh
+    # mestakh i odin iz nih poteryayet pravila pro verzii.
+    $report = @()
+    $checkArgs = @('-ExecutionPolicy', 'Bypass', '-File', $fetchBinary, '-Check')
+    # -SkipTts probрасываем: esli chelovek soznatelno otkazalsya ot 46 MB
+    # oflayn-rechi, trebovat ih obratno bilo by molchanlivym udivleniem.
+    if ($SkipTts) { $checkArgs += '-SkipTts' }
+    & pwsh @checkArgs 2>&1 |
+        ForEach-Object { $report += [string]$_ }
+    if ($LASTEXITCODE -ne 0) {
         Write-Host ''
-        Write-Host "SBORKA OSTOROZHENA: ne polnyy komplekt nativnyh bibliotek:" -ForegroundColor Red
-        foreach ($p in $problems) { Write-Host "  - $p" -ForegroundColor Red }
+        Write-Host 'SBORKA OSTOROZHENA: ne polnyy komplekt nativnyh bibliotek:' -ForegroundColor Red
+        foreach ($line in $report) { Write-Host $line -ForegroundColor Red }
         Write-Host ''
-        Write-Host 'Binayr opencode kachaetsya odnoy komandoy:' -ForegroundColor Yellow
+        Write-Host 'Vse nativy kachaetsya odnoy komandoy:' -ForegroundColor Yellow
         Write-Host '  pwsh -File tools\fetch-opencode-binary.ps1'
-        Write-Host 'Ostalnoe (musl-ranTAjm libstdcxx.so/libgcc_s.so, libldmusl.so, libbun-musl.so)'
-        Write-Host 'beretsya iz Alpine v3.22 i musl-tools - skript ikh ne kachaet.'
-        Write-Host 'Esli nativy na vashey mashine uzhe est, no sbori ne hochet nikh videt:'
+        if ($SkipTts) {
+            Write-Host '  (oflayn-rech ne trebuetsya: sborka s -SkipTts, ee ne sprashivaet)' -ForegroundColor Yellow
+        }
+        Write-Host 'Esli nativy uzhe est, no sbori ne hochet nikh videt:'
         Write-Host '  .\build.ps1 -Task debug -SkipBinary'
         exit 1
     }
