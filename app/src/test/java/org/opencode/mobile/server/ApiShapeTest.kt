@@ -80,12 +80,78 @@ class ApiShapeTest {
             val streaming =
                 ApiShape.messages(
                     """{"data":[{"id":"m","type":"assistant","time":{"created":5},"content":[
-                       {"type":"text","text":"ещё"}]}]}""",
+                       {"type":"text","text":"<think></think>ещё"}]}]}""",
                 ) ?: error("null")
             val info = streaming.getJSONObject(0).getJSONObject("info")
             // Ключа нет — как в v1 до конца хода, иначе lastAssistantText принял бы
             // недописанный ответ за законченный.
             assertFalse(info.getJSONObject("time").has("completed"))
+        }
+    }
+
+    @Test
+    fun `nezavershennyy otvet bez tega v lentu ne popadaet`() {
+        v2 {
+            // created — «сейчас», иначе сработает страховка finishedFor от
+            // зависшего потока (STREAM_STALE_MS) и текст попал бы в ленту.
+            val fresh = System.currentTimeMillis()
+            val streaming =
+                ApiShape.messages(
+                    """{"data":[{"id":"m","type":"assistant","time":{"created":$fresh},"content":[
+                       {"type":"text","text":"The user asks in Russian"}]}]}""",
+                ) ?: error("null")
+            // Пока тег </think> не пришёл, непонятно, мысль это или ответ.
+            // Показывать наугад нельзя: в ленте всплыл бы английский монолог,
+            // а озвучка успела бы произнести его по инкременту.
+            assertEquals(0, streaming.length())
+        }
+    }
+
+    @Test
+    fun `zavisshiy potok pokazhdaetsya posle poroga`() {
+        v2 {
+            // Ни finish, ни completed, а streamed старый: поток замолчал. Молчать
+            // было бы хуже, чем показать текст — человек не отличил бы «думает»
+            // от «упало».
+            val old = System.currentTimeMillis() - 60_000L
+            val stuck =
+                ApiShape.messages(
+                    """{"data":[{"id":"m","type":"assistant","time":{"created":$old,"streamed":$old},"content":[
+                       {"type":"text","text":"The user asks in Russian"}]}]}""",
+                ) ?: error("null")
+            assertEquals(1, stuck.length())
+        }
+    }
+
+    @Test
+    fun `bez streamed potok schitaetsya zhivym`() {
+        v2 {
+            // Сервер не отдаёт время последнего обновления: данных о жизни потока
+            // нет, поэтому показывать нечего — ждём finish. Иначе на таком сервере
+            // мысль выползала бы через 15 секунд.
+            val old = System.currentTimeMillis() - 120_000L
+            val unknown =
+                ApiShape.messages(
+                    """{"data":[{"id":"m","type":"assistant","time":{"created":$old},"content":[
+                       {"type":"text","text":"The user asks in Russian"}]}]}""",
+                ) ?: error("null")
+            assertEquals(0, unknown.length())
+        }
+    }
+
+    @Test
+    fun `dlinnyy zhyvoy potok ne pokazyvaet mysl do konca`() {
+        v2 {
+            // Ход идёт две минуты, но поток только что обновился: мысль без тега
+            // в ленту попадать не должна, пока не придёт </think>.
+            val created = System.currentTimeMillis() - 120_000L
+            val streamed = System.currentTimeMillis()
+            val live =
+                ApiShape.messages(
+                    """{"data":[{"id":"m","type":"assistant","time":{"created":$created,"streamed":$streamed},
+                       "content":[{"type":"text","text":"The user asks in Russian"}]}]}""",
+                ) ?: error("null")
+            assertEquals(0, live.length())
         }
     }
 

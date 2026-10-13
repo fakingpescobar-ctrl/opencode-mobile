@@ -14,14 +14,6 @@ internal object SpeechFactory {
     private const val TAG = "TTS"
 
     /**
-     * Локальный движок: Supertonic, если модель скачана, иначе системный TTS.
-     *
-     * Нужен и для выбора движка, и как страховка облака, поэтому вынесен в
-     * отдельный метод: раньше логика жила внутри when и её нельзя было
-     * переиспользовать второму месту.
-     */
-
-    /**
      * Движок, который реально поднялся, и разница с тем, что выбрал юзер.
      *
      * Раньше откат был предсказанием по наличию ключа и файлов модели. Это врало:
@@ -31,14 +23,23 @@ internal object SpeechFactory {
      */
     data class Resolved(
         val synth: SpeechSynth?,
-        /** Что озвучит на деле — может отличаться от настроек. */
+        /**
+         * Движок, к которому сводится настройка. Может отличаться от выбранного:
+         * облако без ключа уходит в локальный. При `synth == null` это движок,
+         * который ЗАПУЩЕН БЫ БЫЛ, а не тот, кто говорит, — говорит тот, кто молчит.
+         */
         val effective: TtsEngine,
         /** null — озвучка идёт выбранным движком. Иначе — что и почему подменили. */
         val reason: String?,
     )
 
     /**
-     * Локальный движок: Supertonic, если модель читается, иначе системный TTS.
+     * Локальный движок: Supertonic.
+     *
+     * Если модель не скачана или не читается, synth = null — озвучка молчит.
+     * Раньше здесь был тихий откат на системный Android TTS, и это стоило
+     * пользователю доверия: чужой голос хрипел и пердил, а выглядел как
+     * наш (14.10.2026). Молчание с внятной причиной в плашке честнее.
      *
      * Нужен и для выбора движка, и как страховка облака, поэтому вынесен в
      * отдельный метод: раньше логика жила внутри when и её нельзя было
@@ -65,9 +66,9 @@ internal object SpeechFactory {
         // и «модели нет», и «модель есть, но не читается».
         val cause = if (cfg.modelInstalled(context)) "не читается" else "не скачана"
         return Resolved(
-            SystemSpeechSynth(context),
-            TtsEngine.System,
-            "Supertonic $cause — читает системный голос Android",
+            null,
+            TtsEngine.Sherpa,
+            "Supertonic $cause — озвучка молчит, скачай модель в Настройки -> Диагностика",
         )
     }
 
@@ -78,7 +79,6 @@ internal object SpeechFactory {
     ): Resolved =
         when (cfg.engine) {
             TtsEngine.Off -> Resolved(null, TtsEngine.Off, null)
-            TtsEngine.System -> Resolved(SystemSpeechSynth(context), TtsEngine.System, null)
             TtsEngine.Sherpa -> local(context, cfg)
             TtsEngine.ElevenLabs -> cloud(context, cfg)
         }
@@ -95,11 +95,11 @@ internal object SpeechFactory {
             // Ключ не введён — это ошибка настройки, а не повод оставить юзера без
             // озвучки: уходим на локальный движок и говорим об этом и в лог, и в UI.
             val local = local(context, cfg)
-            val reason = "API-ключ ElevenLabs не задан или не читается — читает " +
-                if (local.effective == TtsEngine.Sherpa) {
-                    "локальный движок Supertonic"
+            val reason = "API-ключ ElevenLabs не задан или не читается — " +
+                if (local.synth != null) {
+                    "читает локальный движок Supertonic"
                 } else {
-                    "системный голос Android"
+                    "озвучка молчит, введи ключ в Настройках"
                 }
             Log.w(TAG, "откат движка: $reason")
             return Resolved(local.synth, local.effective, reason)

@@ -8,7 +8,6 @@
     <ID>CyclomaticComplexMethod:MoltbookTicker.kt$MoltbookTicker.Companion$internal fun lastAssistantText(messages: org.json.JSONArray): String?</ID>
     <ID>CyclomaticComplexMethod:RuntimeManager.kt$RuntimeManager$suspend fun run()</ID>
     <ID>CyclomaticComplexMethod:SentenceChunker.kt$SentenceChunker$private fun findBoundary(text: String, limit: Int): Int?</ID>
-    <ID>CyclomaticComplexMethod:SystemSpeechSynth.kt$PcmWav$fun readMonoFloat(file: File): TtsAudio?</ID>
     <ID>CyclomaticComplexMethod:sherpa_Tts.kt$fun getOfflineTtsConfig( modelDir: String, modelName: String, // for VITS acousticModelName: String, // for Matcha vocoder: String, // for Matcha voices: String, // for Kokoro or kitten lexicon: String, dataDir: String, dictDir: String, // unused ruleFsts: String, ruleFars: String, numThreads: Int? = null, isKitten: Boolean = false, isSupertonic: Boolean = false, durationPredictor: String = "", // for Supertonic textEncoder: String = "", // for Supertonic vectorEstimator: String = "", // for Supertonic supertonicVocoder: String = "", // for Supertonic ttsJson: String = "", // for Supertonic unicodeIndexer: String = "", // for Supertonic voiceStyle: String = "", // for Supertonic ): OfflineTtsConfig</ID>
     <ID>EmptyFunctionBlock:ChatOverlay.kt$&lt;no name provided&gt;${}</ID>
     <ID>ForEachOnRange:RuntimeManager.kt$RuntimeManager$(1..MAX_LOG_FILES) .map { File(parent, "opencode.log.$it") } .filter { it.exists() }</ID>
@@ -247,25 +246,6 @@
     <ID>MagicNumber:RuntimeManager.kt$RuntimeManager$499</ID>
     <ID>MagicNumber:RuntimeManager.kt$RuntimeManager$500</ID>
     <ID>MagicNumber:RuntimeManager.kt$RuntimeManager$60</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$0xFF</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$12</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$128</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$128f</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$14</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$16</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$24</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$3</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$32</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$32768f</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$4</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$44</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$44100</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$PcmWav$8</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$SystemSpeechSynth$0.5f</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$SystemSpeechSynth$3</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$SystemSpeechSynth$30</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$SystemSpeechSynth$44</ID>
-    <ID>MagicNumber:SystemSpeechSynth.kt$SystemSpeechSynth$44100</ID>
     <ID>MagicNumber:Theme.kt$0xFF04100A</ID>
     <ID>MagicNumber:Theme.kt$0xFF0B0E11</ID>
     <ID>MagicNumber:Theme.kt$0xFF11151A</ID>
@@ -302,7 +282,6 @@
     <ID>NewLineAtEndOfFile:MoltbookRawArchive.kt$org.opencode.mobile.social.MoltbookRawArchive.kt</ID>
     <ID>NewLineAtEndOfFile:MoltbookRawArchiveTest.kt$org.opencode.mobile.social.MoltbookRawArchiveTest.kt</ID>
     <ID>NewLineAtEndOfFile:SentenceChunker.kt$org.opencode.mobile.tts.SentenceChunker.kt</ID>
-    <ID>NewLineAtEndOfFile:SystemSpeechSynth.kt$org.opencode.mobile.tts.SystemSpeechSynth.kt</ID>
     <ID>ReturnCount:AudioTrackPlayer.kt$AudioTrackPlayer$fun play(audio: TtsAudio): Boolean</ID>
     <ID>ReturnCount:ChatOverlay.kt$AudioRecorder$fun stop(): FloatArray</ID>
     <ID>ReturnCount:ChatOverlay.kt$private fun prettyModel(id: String?): String</ID>
@@ -342,8 +321,6 @@
     <ID>ReturnCount:SentenceChunker.kt$SentenceChunker$private fun findBoundary(text: String, limit: Int): Int?</ID>
     <ID>ReturnCount:SentenceChunker.kt$SentenceChunker$private fun takeChunk(force: Boolean): String?</ID>
     <ID>ReturnCount:SupertonicTts.kt$SupertonicTts.Companion$fun loadOrNull(modelDir: File, threads: Int = TtsConfig.NUM_THREADS): SupertonicTts?</ID>
-    <ID>ReturnCount:SystemSpeechSynth.kt$PcmWav$fun readMonoFloat(file: File): TtsAudio?</ID>
-    <ID>ReturnCount:SystemSpeechSynth.kt$SystemSpeechSynth$override fun synthesize(text: String, sid: Int, speed: Float): TtsAudio?</ID>
     <ID>ReturnCount:TtsSpeaker.kt$TtsSpeaker$private fun synthLoop(myGen: Long)</ID>
     <ID>SwallowedException:DiagnosticsScreen.kt$e: Exception</ID>
     <ID>SwallowedException:Ipv4Proxy.kt$Ipv4Proxy$e: IOException</ID>
@@ -374,7 +351,6 @@
     <ID>TooGenericExceptionCaught:ProcessSupervisor.kt$ProcessSupervisor$e: Exception</ID>
     <ID>TooGenericExceptionCaught:RuntimeManager.kt$RuntimeManager$e: Exception</ID>
     <ID>TooGenericExceptionCaught:SupertonicTts.kt$SupertonicTts.Companion$t: Throwable</ID>
-    <ID>TooGenericExceptionCaught:SystemSpeechSynth.kt$SystemSpeechSynth$t: Throwable</ID>
     <ID>TooGenericExceptionCaught:TtsSpeaker.kt$TtsSpeaker$t: Throwable</ID>
     <ID>TooGenericExceptionCaught:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$e: Exception</ID>
     <ID>TooGenericExceptionCaught:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$e: Throwable</ID>

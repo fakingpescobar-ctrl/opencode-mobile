@@ -1928,7 +1928,7 @@ fun ChatOverlay(
                             if (TtsConfig.read(context).modelInstalled(context)) {
                                 "Supertonic offline: модель на месте, 2 потока, sid ${ttsConfig.sid}"
                             } else {
-                                "Модель Supertonic не скачана — пока доступен только системный голос"
+                                "Модель Supertonic не скачана — скачай её в Настройки -> Диагностика"
                             },
                             color = Color(0xFF90A4AE),
                             fontSize = 10.sp,
@@ -1941,19 +1941,14 @@ fun ChatOverlay(
                             TtsConfig.save(context, ttsConfig)
                             TtsNarrator.stop()
                         }
-                        TtsRadioRow("Системный Android", ttsConfig.engine == TtsEngine.System) {
-                            ttsConfig = ttsConfig.copy(engine = TtsEngine.System)
-                            TtsConfig.save(context, ttsConfig)
-                            TtsNarrator.stop()
-                        }
                         TtsRadioRow("ElevenLabs (облако, нужен VPN)", ttsConfig.engine == TtsEngine.ElevenLabs) {
                             ttsConfig = ttsConfig.copy(engine = TtsEngine.ElevenLabs)
                             TtsConfig.save(context, ttsConfig)
                             TtsNarrator.stop()
                         }
                         // Что СЕЙЧАС реально озвучит, если выбранный движок не поднялся.
-                        // Без этой строки юзер выбирает облако, слышит системный голос
-                        // и гадает почему: откат был только в Log.w и в UI не попадал.
+                        // Без этой строки юзер выбирает облако, слышит тишину и гадает
+                        // почему: причина была только в Log.w и в UI не попадала.
                         // Текст приходит из ttsFallback - состояния, которое
                         // LaunchedEffect выше подтягивает из TtsNarrator. Считать его
                         // здесь нельзя: панель перерисовывается на каждый кадр, а

@@ -237,12 +237,21 @@ internal object ApiShape {
         error: String?,
     ): JSONArray {
         val out = JSONArray()
+        // Тип и завершённость нужны отсечению мысли: пока поток идёт, тег
+        // </think> может ещё не прийти, и резать пока нечего. Завершённость
+        // считает и «зависший» поток (finishedFor), иначе обрыв ответа был бы
+        // не виден никогда.
+        val msgType = msg.optString("type")
+        val finished = finishedFor(msg)
         val content = msg.optJSONArray("content")
         if (content != null) {
             for (i in 0 until content.length()) {
                 val item = content.optJSONObject(i) ?: continue
                 when (item.optString("type")) {
-                    "text" -> out.put(JSONObject().put("type", "text").put("text", item.optString("text")))
+                    // Размышление, пришедшее в текстовый канал, отрезается —
+                    // см. answerText: иначе в ленте видно английский монолог
+                    // модели перед ответом.
+                    "text" -> putText(out, answerText(msgType, item.optString("text"), finished))
                     // Имя инструмента в v2 лежит в name, в v1 было в tool.
                     //
                     // id части сохраняем: это идентификатор вызова, и по нему
@@ -262,8 +271,7 @@ internal object ApiShape {
                 }
             }
         } else {
-            val text = msg.optString("text")
-            if (text.isNotBlank()) out.put(JSONObject().put("type", "text").put("text", text))
+            putText(out, answerText(msgType, msg.optString("text"), finished))
         }
         // У v2 нет step-finish: его роль играет непустой finish.
         // finish:"error" — не «реплица завершена», а «ход провалился»: ставить

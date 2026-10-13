@@ -45,7 +45,7 @@ class SupertonicTts private constructor(
 
         /**
          * Ошибка загрузки движка: нет нативной библиотеки (x86), нет модели,
-         * либо модель повреждена. Разрешается в TtsEngine.system.
+         * либо модель повреждена: озвучка молчит, причина уходит в UI.
          */
         class LoadFailed(
             message: String,
@@ -53,14 +53,31 @@ class SupertonicTts private constructor(
         ) : Exception(message, cause)
 
         /**
-         * Запрет на повторную загрузку — только после НЕУДАЧИ.
+         * Запрет на повторную загрузку — только после НЕУДАЧИ и ненадолго.
          *
-         * Раньше флаг защёлкивался навсегда, и переключение system → sherpa в панели
+         * Раньше флаг защёлкивался навсегда, и переключение движка в панели
          * убивало озвучку до перезапуска приложения. Смысл флага — не долбить
          * упавшую модель в цикле, а не запретить нормальную работу после
          * пересоздания спикера.
+         *
+         * И позже выяснилось, что вечного запрета тоже мало: сброс звал только
+         * androidTest, то есть в релизной сборке после OOM или битого onnx озвучка
+         * не поднималась вообще никогда — до перезапуска процесса. Теперь запрет
+         * живёт [RETRY_AFTER_SEC]: сломанная модель получит одну попытку в минуту
+         * вместо одной на всё время работы приложения, а скачанная заново
+         * поднимется сама.
          */
         private var failedLoad = false
+
+        /** Когда последняя попытка упала; 0 — попыток ещё не было. */
+        private var lastFailAt = 0L
+
+        private const val RETRY_AFTER_SEC = 60L
+
+        private const val MS_IN_SEC = 1000L
+
+        private const val RETRY_AFTER_MS = RETRY_AFTER_SEC * MS_IN_SEC
+
         private var unsupportedAbi = false
 
         /** Нативная библиотека есть только для arm64 — на эмуляторе деградируем. */
@@ -68,7 +85,7 @@ class SupertonicTts private constructor(
             android.os.Build.SUPPORTED_ABIS
                 .any { it.startsWith("arm64") }
 
-        /** null — движок недоступен, вызывающий переходит на system. */
+        /** null — движок недоступен: озвучка молчит, причина уходит в UI. */
         fun loadOrNull(
             modelDir: File,
             threads: Int = TtsConfig.NUM_THREADS,
@@ -89,8 +106,11 @@ class SupertonicTts private constructor(
                     Log.w(TAG, "sherpa-onnx: модель не установлена, нет ${missing.joinToString()}")
                     "модель не установлена"
                 }
-                failedLoad -> {
-                    Log.w(TAG, "sherpa-onnx: предыдущая загрузка упала, повтор запрещён до resetLoadAttempt")
+                failedLoad && (lastFailAt > 0L && System.currentTimeMillis() - lastFailAt < RETRY_AFTER_MS) -> {
+                    Log.w(
+                        TAG,
+                        "sherpa-onnx: предыдущая загрузка упала, повтор не раньше чем через $RETRY_AFTER_SEC с",
+                    )
                     "предыдущая загрузка упала"
                 }
                 else -> null
@@ -145,6 +165,7 @@ class SupertonicTts private constructor(
             } catch (t: Throwable) {
                 // UnsatisfiedLinkError на не-arm64, OOM на слабом железе, битый onnx.
                 failedLoad = true
+                lastFailAt = System.currentTimeMillis()
                 Log.e(TAG, "sherpa-onnx не поднялся: ${t.javaClass.simpleName}: ${t.message}")
                 null
             }
@@ -153,6 +174,7 @@ class SupertonicTts private constructor(
         /** Сбросить запрет повторной загрузки (после скачивания модели). */
         fun resetLoadAttempt() {
             failedLoad = false
+            lastFailAt = 0L
         }
     }
 }

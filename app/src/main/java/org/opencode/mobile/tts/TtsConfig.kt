@@ -10,7 +10,6 @@ enum class TtsEngine(
     val label: String,
 ) {
     Off("off", "Выключено"),
-    System("system", "Системный"),
     Sherpa("sherpa", "Supertonic (offline)"),
 
     /**
@@ -24,7 +23,24 @@ enum class TtsEngine(
     val isCloud: Boolean get() = this == ElevenLabs
 
     companion object {
-        fun fromPref(value: String?): TtsEngine = entries.firstOrNull { it.prefValue == value } ?: Off
+        /**
+         * Системный Android раньше был отдельным движком и стоял в prefs у
+         * обновлённых пользователей. Его выпилили 14.10.2026 — он хрипел и
+         * пердил, — поэтому старое значение переезжает на Supertonic, а не в
+         * Off: иначе выпиливание тихо выключило бы озвучку у того, кто её
+         * включал.
+         */
+        private const val RETIRED_SYSTEM = "system"
+
+        /** Старое значение движка, которого больше нет в enum. */
+        fun isRetired(value: String?): Boolean = value == RETIRED_SYSTEM
+
+        fun fromPref(value: String?): TtsEngine =
+            when (value) {
+                null -> Off
+                RETIRED_SYSTEM -> Sherpa
+                else -> entries.firstOrNull { it.prefValue == value } ?: Off
+            }
     }
 }
 
@@ -95,8 +111,17 @@ data class TtsConfig(
 
         fun read(context: Context): TtsConfig {
             val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val stored = prefs.getString(KEY_ENGINE, TtsEngine.Off.prefValue)
+            val engine = TtsEngine.fromPref(stored)
+            if (TtsEngine.isRetired(stored)) {
+                // Само-лечение: переписываем pref сразу, иначе «system» навсегда
+                // остался бы в настройках, а UI продолжал бы показывать строку
+                // выбора движка, которой больше нет.
+                prefs.edit().putString(KEY_ENGINE, engine.prefValue).apply()
+                Log.i("TTS", "engine system is gone, using ${engine.prefValue}")
+            }
             return TtsConfig(
-                engine = TtsEngine.fromPref(prefs.getString(KEY_ENGINE, TtsEngine.Off.prefValue)),
+                engine = engine,
                 model = prefs.getString(KEY_MODEL, DEFAULT_MODEL) ?: DEFAULT_MODEL,
                 sid = prefs.getInt(KEY_SID, DEFAULT_SID).coerceIn(0, MAX_SID),
                 speechRate = prefs

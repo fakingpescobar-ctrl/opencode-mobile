@@ -26,32 +26,6 @@
         <error line="61" column="40" source="standard:function-signature" />
         <error line="61" column="76" source="standard:function-signature" />
     </file>
-    <file name="src/main/java/org/opencode/mobile/tts/SystemSpeechSynth.kt">
-        <error line="4" column="1" source="standard:no-unused-imports" />
-        <error line="18" column="25" source="standard:class-signature" />
-        <error line="18" column="41" source="standard:class-signature" />
-        <error line="18" column="45" source="standard:class-signature" />
-        <error line="18" column="74" source="standard:class-signature" />
-        <error line="40" column="29" source="standard:function-signature" />
-        <error line="40" column="43" source="standard:function-signature" />
-        <error line="40" column="53" source="standard:function-signature" />
-        <error line="40" column="65" source="standard:function-signature" />
-        <error line="49" column="13" source="standard:blank-line-before-declaration" />
-        <error line="59" column="34" source="standard:function-signature" />
-        <error line="59" column="47" source="standard:function-signature" />
-        <error line="59" column="61" source="standard:function-signature" />
-        <error line="162" column="27" source="standard:function-signature" />
-        <error line="162" column="41" source="standard:function-signature" />
-        <error line="162" column="47" source="standard:function-signature" />
-        <error line="166" column="29" source="standard:function-signature" />
-        <error line="166" column="43" source="standard:function-signature" />
-        <error line="166" column="49" source="standard:function-signature" />
-        <error line="166" column="57" source="standard:function-signature" />
-        <error line="169" column="25" source="standard:function-signature" />
-        <error line="169" column="39" source="standard:function-signature" />
-        <error line="169" column="45" source="standard:function-signature" />
-        <error line="170" column="1" source="standard:final-newline" />
-    </file>
     <file name="src/main/java/org/opencode/mobile/tts/sherpa_Tts.kt">
         <error line="1" column="1" source="standard:filename" />
         <error line="74" column="1" source="standard:indent" />
