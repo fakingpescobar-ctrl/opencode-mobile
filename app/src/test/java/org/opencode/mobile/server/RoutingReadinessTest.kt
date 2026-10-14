@@ -159,6 +159,28 @@ class RoutingReadinessTest {
     }
 
     @Test
+    fun `дословный живой ответ со служебными разделами читается без потерь`() {
+        // Снят с устройства 15.10.2026 целиком. Рядом с agents лежат model,
+        // permissions и mcp - разбор не должен принять их за агентов (например
+        // mcp-сервер за агента с моделью), иначе сверка прошла бы на мусоре.
+        val body =
+            """[{"type":"document","path":"/data/user/0/x/files/opencode-config/opencode/opencode.jsonc",""" +
+                """"info":{"${'$'}schema":"https://opencode.ai/config.json",""" +
+                """"model":{"providerID":"opencode","model":"big-pickle"},""" +
+                """"permissions":[{"action":"question","resource":"*","effect":"ask"}],""" +
+                """"agents":{"build":{"model":{"providerID":"opencode","model":"space-bunny-free"}},""" +
+                """"plan":{"model":{"providerID":"opencode","model":"space-bunny-free"}},""" +
+                """"explore":{"model":{"providerID":"opencode","model":"cat-jam-free"}},""" +
+                """"general":{"model":{"providerID":"opencode","model":"cat-jam-free"}},""" +
+                """"title":{"model":{"providerID":"opencode","model":"mimo-v2.6-flash-free"}}},""" +
+                """"mcp":{"servers":{"memory":{"type":"remote","url":"http://127.0.0.1:4199/mcp"}}}}},""" +
+                """{"type":"directory","path":"/data/user/0/x/files/opencode-config/opencode"}]"""
+        val served = RoutingReadiness.parseAgentModels(body)
+        assertEquals(setOf("build", "plan", "explore", "general", "title"), served.keys)
+        assertTrue(RoutingReadiness.routingServed(served, routing))
+    }
+
+    @Test
     fun `пустой ответ не считается успехом - без этого рестарт прятался бы навсегда`() {
         assertFalse(RoutingReadiness.routingServed(emptyMap(), routing))
     }
