@@ -57,6 +57,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -333,8 +334,14 @@ private object ChatCache {
 internal data class ChatMsg(
     val role: String,
     val text: String,
-    /** Причина отказа провайдера — показывается, но не читается вслух и не считается ответом. */
+    /** причина отказа - показывается цветным, не попадает в озвучку и в счётчик. */
     val notice: String? = null,
+    /**
+     * Идентификатор сообщения от сервера. Пусто у реплик, добавленных на
+     * стороне клиента (своё сообщение). Нужен устойчивой метке для анимации
+     * печати: индекс в ленте не годится, она обрезается до MAX_SHOWN.
+     */
+    val id: String = "",
 )
 
 // Один вызов инструмента модели (tool) для live-чипа «что делает сейчас».
@@ -427,6 +434,12 @@ fun ChatOverlay(
     // Отделён от knownMsgs (фиксирует появление в сессии), чтобы звук играл
     // СТРОГО когда ответ реально стал видимым на экране (см. LaunchedEffect(lastResp)).
     var knownRendered by remember { mutableIntStateOf(-1) }
+    // Ключ ответа, который уже напечатан по буквам. null — печатать можно,
+    // иначе тот же текст перепечатывался бы при каждой пересборке ленты.
+    // Именно remember, а не rememberSaveable: при убийстве процесса Android
+    // восстанавливает сохранённый Bundle, и тогда последний ответ не напечатался
+    // бы вообще — хуже, чем лишняя перепечатка при пересоздании Activity.
+    var typingKey by remember { mutableStateOf<String?>(null) }
     // Флаг «базовая линия зафиксирована»: истина после первого поллинга.
     // Нужен чтобы первый реальный ответ (в т.ч. в пустой сессии) корректно
     // вибрировал, а старые ответы при старте — нет.
@@ -2253,8 +2266,34 @@ fun ChatOverlay(
                         // (например, дважды отправленная команда «Стой»). Лента append-only,
                         // добавление в конец не трогает существующие позиции — позиционный
                         // ключ безопасен и полностью устраняет этот краш.
-                        items(msgs) { m ->
-                            MessageRow(m, snapshot?.modelName ?: "Модель", modelFont, modelColor)
+                        itemsIndexed(msgs) { idx, m ->
+                            // Печать — только ПОСЛЕДНЕЙ реплике модели и только один
+                            // раз на её текст. Ключ гасится в onTyped: иначе каждая
+                            // пересборка ленты (опрос сервера каждые доли секунды)
+                            // начинала бы печать заново, а возврат в чат
+                            // перепечатывал бы всю историю.
+                            // Условие «последняя» обязательно: без него печаталась бы
+                            // каждая реплика, ключ которой ещё не погашен, то есть
+                            // вся лента целиком при каждом новом ответе.
+                            val last = idx == msgs.lastIndex
+                            // Пустой ответ модели (шаг с одними вызовами
+                            // инструментов) печатать нечего: MessageText для
+                            // него вообще не вызывается, значит и гасить ключ
+                            // некому — иначе typingKey навсегда остался бы на
+                            // предыдущем ответе.
+                            val printable = last && m.role == "assistant" && m.text.isNotBlank()
+                            MessageRow(
+                                m,
+                                snapshot?.modelName ?: "Модель",
+                                modelFont,
+                                modelColor,
+                                onTyped =
+                                    if (printable && typingKey != typedKeyOf(m)) {
+                                        { typingKey = typedKeyOf(m) }
+                                    } else {
+                                        null
+                                    },
+                            )
                         }
                         if (snapshot?.thinking == true) {
                             val snap = requireNotNull(snapshot)
@@ -3438,12 +3477,47 @@ private class AudioRecorder(
     }
 }
 
+/**
+ * Текст реплики.
+ *
+ * [onTyped] == null — печатать не надо (своя реплика, служебная строка, уже
+ * напечатанный ответ). Непустой — текст проявляется по буквам, и колбэк
+ * вызывается один раз, когда печать дошла до конца.
+ */
+@Composable
+private fun MessageText(
+    m: ChatMsg,
+    isModel: Boolean,
+    modelFont: FontFamily,
+    modelColor: Color,
+    onTyped: (() -> Unit)?,
+) {
+    val style =
+        TextStyle(
+            color = if (isModel) modelColor else Color(0xFFEDEDED),
+            fontFamily = if (isModel) modelFont else FontFamily.Default,
+            fontSize = 14.sp,
+            lineHeight = 19.sp,
+        )
+    // Один и тот же composable в обоих случаях: смена ветки означала бы, что при
+    // гашении ключа поддерево печати выбрасывается из композиции, а вместе с ним
+    // и remember с накопленным прогрессом. Здесь меняется только флаг.
+    TypewriterText(
+        text = m.text,
+        animate = onTyped != null,
+        style = style,
+        key = typedKeyOf(m),
+        onTyped = { onTyped?.invoke() },
+    )
+}
+
 @Composable
 private fun MessageRow(
     m: ChatMsg,
     modelName: String = "Модель",
     modelFont: FontFamily = FontFamily.Monospace,
     modelColor: Color = Color(0xFFD97706),
+    onTyped: (() -> Unit)? = null,
 ) {
     val isModel = m.role == "assistant"
     val roleColor =
@@ -3471,17 +3545,13 @@ private fun MessageRow(
             fontWeight = FontWeight.Bold,
         )
         if (m.text.isNotBlank()) {
-            // SelectionContainer — системное выделение текста длинным нажатием:
-            // можно выделить любой кусок ответа и скопировать его отдельно.
-            SelectionContainer {
-                Text(
-                    m.text,
-                    color = if (isModel) modelColor else Color(0xFFEDEDED),
-                    fontFamily = if (isModel) modelFont else FontFamily.Default,
-                    fontSize = 14.sp,
-                    lineHeight = 19.sp,
-                )
-            }
+            MessageText(
+                m = m,
+                isModel = isModel,
+                modelFont = modelFont,
+                modelColor = modelColor,
+                onTyped = onTyped,
+            )
         }
         // Причина отказа лежит отдельно от текста, поэтому и рисуется отдельно:
         // под репликой модели её не спутать с самим ответом.
@@ -3498,6 +3568,19 @@ private fun MessageRow(
         }
     }
 }
+
+/**
+ * Ключ реплики для анимации печати.
+ *
+ * Ключ — идентификатор сообщения от сервера. Индекс в ленте для этого не годится:
+ * лента обрезается до MAX_SHOWN, при каждом обновлении индексы прыгают, и уже
+ * напечатанная реплика начинает печататься заново (жалоба пользователя 14.10).
+ * Длина текста тоже не годится по той же причине — она меняется при дописывании.
+ * У клиентских реплик (своё сообщение) идентификатора нет, поэтому fallback —
+ * роль и длина: две такие реплики подряд дадут разные ключи, лишь одинаковые
+ * тексты совпадут, и второй просто не напечатается.
+ */
+private fun typedKeyOf(m: ChatMsg): String = m.id.ifBlank { "${m.role}:${m.text.length}" }
 
 /**
  * Забирает статус хода у сервера. Разбор - в [noticeFromStatus], он чистый и
@@ -3785,7 +3868,14 @@ private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                 // а просто шаг без текста. Фильтруем его из ленты. ДУМАЮЩИЙ assistant
                 // (без step-finish) остаётся, чтобы UI показал «генерируется».
                 if (role == "assistant" && !hasText && finish) continue
-                out.add(ChatMsg(role, sb.toString(), notice.toString().ifBlank { null }))
+                out.add(
+                    ChatMsg(
+                        role = role,
+                        text = sb.toString(),
+                        notice = notice.toString().ifBlank { null },
+                        id = info.optString("id"),
+                    ),
+                )
             }
             val take = if (out.size > MAX_SHOWN) out.subList(out.size - MAX_SHOWN, out.size) else out
             val last = out.lastOrNull()

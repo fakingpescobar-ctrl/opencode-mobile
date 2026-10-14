@@ -219,6 +219,11 @@ internal object ApiShape {
         // сообщения. Квота (ZenQuota) читает именно info.
         info.put("providerID", model?.optString("providerID") ?: "")
         info.put("modelID", model?.optString("id") ?: "")
+        // Идентификатор сообщения. Понадобился не для сервера, а для UI:
+        // анимация печати должна знать, какая реплика уже напечатана, и по
+        // индексу это не сделать — лента обрезается до MAX_SHOWN, индексы
+        // прыгают, и напечатанное начинает печататься заново.
+        info.put("id", msg.optString("id"))
         return JSONObject().put("info", info).put("parts", parts)
     }
 
