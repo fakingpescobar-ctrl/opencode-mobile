@@ -25,3 +25,15 @@
 # Если добавить сюда класс с native-методами и он перестанет работать в release,
 # сначала проверь, что default-файл действительно подключён в build.gradle.kts
 # через getDefaultProguardFile("proguard-android-optimize.txt").
+
+# Keep для sherpa-onnx (com.k2fsa.sherpa.onnx). Здесь отличие от whispercpp выше:
+# ломается не имя класса, а ПОЛЯ конфигов. JNI (sherpa-onnx-jni) собирает конфиг
+# из Kotlin-объекта через GetFieldID по именам полей
+# (modelConfig.transducer.encoder, tokens, numThreads, debug, provider, modelType…).
+# Правило для native <methods> поля не защищает, а R8 вырезает поля, которые не
+# читает Kotlin-код: у OfflineModelConfig это paraformer, whisper, senseVoice,
+# nemo, fireRedAsr, qwen3Asr и прочие подконфиги, нужные только нативу. После
+# вырезания GetFieldID вернёт NULL, JNI кинет исключение и приложение упадёт
+# (std::terminate → SIGABRT). Касается и TTS (sherpa_Tts.kt, sherpa_WaveReader.kt
+# — тот же пакет), и offline-распознавания (sherpa_OfflineRecognizer.kt).
+-keep class com.k2fsa.sherpa.onnx.** { *; }

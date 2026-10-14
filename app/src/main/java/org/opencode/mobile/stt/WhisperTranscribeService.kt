@@ -12,6 +12,11 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import com.k2fsa.sherpa.onnx.FeatureConfig
+import com.k2fsa.sherpa.onnx.OfflineModelConfig
+import com.k2fsa.sherpa.onnx.OfflineRecognizer
+import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
 import com.whispercpp.whisper.WhisperContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -69,6 +74,20 @@ class WhisperTranscribeService : Service() {
         /** Движок распознавания. Системный Android живёт отдельно, в UI. */
         const val ENGINE_WHISPER = "whisper"
 
+        /**
+         * Движок sherpa-onnx OfflineRecognizer (nemo_transducer / Parakeet).
+         * Экспериментальная ветка для замера на стенде: проверяем, обгоняет ли
+         * Parakeet TDT 0.6B v3 (25 европейских языков, включая русский) whisper small
+         * по WER и времени. Модель кладётся вручную в getExternalFilesDir/parakeet.
+         */
+        const val ENGINE_PARAKEET = "parakeet"
+
+        /** Каталог с файлами модели parakeet (encoder/decoder/joiner.int8.onnx + tokens.txt). */
+        private const val PARAKEET_DIR = "parakeet"
+
+        /** Потоки для sherpa-onnx: 4 как у CPU-ветки whisper — на 8 ядрах не голодает. */
+        private const val PARAKEET_THREADS = 4
+
         /** Максимум задач в очереди. Клип 30-60с PCM ≈ 2.6-5.3MB — ограничиваем память. */
         private const val MAX_QUEUE_SIZE = 4
 
@@ -100,6 +119,9 @@ class WhisperTranscribeService : Service() {
 
         /** Кэш контекстов: модель грузится один раз за процесс. */
         private val whisperCtxCache = HashMap<String, WhisperContext>()
+
+        /** Кэш parakeet-распознавателя (грузится один раз за процесс, ~650МБ модель). */
+        private val parakeetCache = HashMap<String, OfflineRecognizer>()
 
         /**
          * Tombstone удалённых моделей (thread-safe): модели, чей файл удалён с диска
@@ -374,30 +396,111 @@ class WhisperTranscribeService : Service() {
          * проход и во сколько раз он длиннее звука. */
         private suspend fun transcribeTask(task: SttTask): String =
             try {
-                val app = requireAppContext()
-                if (!EngineLibs.load(app, Engine.WHISPER)) {
-                    error(EngineLibs.reasonOf(app, Engine.WHISPER) ?: "движок whisper.cpp не загрузился")
-                }
-                // Замеры не украшение: без них «распознавание медленное» нечем
-                // подтвердить. Загрузка движка и модели видна отдельно от
-                // самого прохода.
-                val loadStart = SystemClock.elapsedRealtime()
-                val ctx = obtainContext(task.model)
-                val loaded = SystemClock.elapsedRealtime()
-                val text = ctx.transcribeData(task.samples, printTimestamp = false).trim()
-                val done = SystemClock.elapsedRealtime()
-                val wAudioMs = task.samples.size * MS_PER_SECOND / SAMPLE_RATE_HZ
-                val wRtf = if (wAudioMs > 0) (done - loaded).toFloat() / wAudioMs else 0f
-                Log.i(
-                    TAG,
-                    "whisper: загрузка ${loaded - loadStart} мс, " +
-                        "проход ${done - loaded} мс, звук $wAudioMs мс, rtf ${"%.2f".format(wRtf)}"
-                )
-                text
+                if (task.engine == ENGINE_PARAKEET) transcribeParakeet(task) else transcribeWhisper(task)
             } catch (e: Throwable) {
                 Log.e(TAG, "распознавание упало (в сервисе)", e)
-                "ОШИБКА WHISPER: ${e.message}"
+                "ОШИБКА ${task.engine.uppercase()}: ${e.message}"
             }
+
+        /** Ветка whisper.cpp: грузит движок/модель и делает проход, печатая замеры. */
+        private suspend fun transcribeWhisper(task: SttTask): String {
+            val app = requireAppContext()
+            if (!EngineLibs.load(app, Engine.WHISPER)) {
+                error(EngineLibs.reasonOf(app, Engine.WHISPER) ?: "движок whisper.cpp не загрузился")
+            }
+            // Замеры не украшение: без них «распознавание медленное» нечем
+            // подтвердить. Загрузка движка и модели видна отдельно от
+            // самого прохода.
+            val loadStart = SystemClock.elapsedRealtime()
+            val ctx = obtainContext(task.model)
+            val loaded = SystemClock.elapsedRealtime()
+            val text = ctx.transcribeData(task.samples, printTimestamp = false).trim()
+            val done = SystemClock.elapsedRealtime()
+            val wAudioMs = task.samples.size * MS_PER_SECOND / SAMPLE_RATE_HZ
+            val wRtf = if (wAudioMs > 0) (done - loaded).toFloat() / wAudioMs else 0f
+            Log.i(
+                TAG,
+                "whisper: загрузка ${loaded - loadStart} мс, " +
+                    "проход ${done - loaded} мс, звук $wAudioMs мс, rtf ${"%.2f".format(wRtf)}"
+            )
+            return text
+        }
+
+        /**
+         * Ветка sherpa-onnx OfflineRecognizer (Parakeet TDT). Движок — тот же
+         * libsherpa-onnx-jni, что и TTS (bundled), поэтому грузим его через
+         * EngineLibs.load(Engine.TTS). Модель offline: подаём весь клип целиком
+         * (acceptWaveform) и декодируем одним проходом.
+         */
+        private fun transcribeParakeet(task: SttTask): String {
+            val app = requireAppContext()
+            if (!EngineLibs.load(app, Engine.TTS)) {
+                error(EngineLibs.reasonOf(app, Engine.TTS) ?: "libsherpa-onnx-jni не загрузился")
+            }
+            val loadStart = SystemClock.elapsedRealtime()
+            val recognizer = parakeetCache.getOrPut(PARAKEET_DIR) { buildParakeetRecognizer(app) }
+            val loaded = SystemClock.elapsedRealtime()
+            val stream = recognizer.createStream()
+            val text =
+                try {
+                    stream.acceptWaveform(task.samples, SAMPLE_RATE_HZ)
+                    recognizer.decode(stream)
+                    recognizer.getResult(stream).text.trim()
+                } finally {
+                    stream.release()
+                }
+            val done = SystemClock.elapsedRealtime()
+            val pAudioMs = task.samples.size * MS_PER_SECOND / SAMPLE_RATE_HZ
+            val pRtf = if (pAudioMs > 0) (done - loaded).toFloat() / pAudioMs else 0f
+            Log.i(
+                TAG,
+                "parakeet: загрузка ${loaded - loadStart} мс, " +
+                    "проход ${done - loaded} мс, звук $pAudioMs мс, rtf ${"%.2f".format(pRtf)}"
+            )
+            return text
+        }
+
+        /**
+         * Собирает OfflineRecognizer под модель parakeet-tdt-0.6b-v3-int8.
+         * Файлы берём из getExternalFilesDir/PARAKEET_DIR (для стенда кладутся
+         * adb push — у Android нет bzip2, а релиз модели идёт .tar.bz2).
+         * modelType="nemo_transducer" — то, что ждёт JNI для Parakeet TDT.
+         */
+        private fun buildParakeetRecognizer(app: Context): OfflineRecognizer {
+            val dir = File(app.getExternalFilesDir(null), PARAKEET_DIR)
+            val tokens = File(dir, "tokens.txt")
+            val encoder = File(dir, "encoder.int8.onnx")
+            val decoder = File(dir, "decoder.int8.onnx")
+            val joiner = File(dir, "joiner.int8.onnx")
+            val missing = listOf(tokens, encoder, decoder, joiner).filterNot { it.exists() }
+            if (missing.isNotEmpty()) {
+                error(
+                    "parakeet: нет файлов ${missing.joinToString { it.name }} в ${dir.absolutePath} " +
+                        "— положи модель (adb push) перед замером"
+                )
+            }
+            val config =
+                OfflineRecognizerConfig(
+                    featConfig = FeatureConfig(sampleRate = SAMPLE_RATE_HZ, featureDim = 80),
+                    modelConfig =
+                        OfflineModelConfig(
+                            transducer =
+                                OfflineTransducerModelConfig(
+                                    encoder = encoder.absolutePath,
+                                    decoder = decoder.absolutePath,
+                                    joiner = joiner.absolutePath,
+                                ),
+                            tokens = tokens.absolutePath,
+                            modelType = "nemo_transducer",
+                            numThreads = PARAKEET_THREADS,
+                            debug = org.opencode.mobile.BuildConfig.DEBUG,
+                            provider = "cpu",
+                        ),
+                    decodingMethod = "greedy_search",
+                )
+            Log.d(TAG, "parakeet: гружу модель из ${dir.absolutePath}")
+            return OfflineRecognizer(config = config)
+        }
 
         private fun enqueue(task: SttTask): Boolean =
             synchronized(queue) {

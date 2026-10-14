@@ -19,6 +19,7 @@
     <ID>InstanceOfCheckForException:ChatOverlay.kt$e is InterruptedException</ID>
     <ID>InstanceOfCheckForException:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$e is IllegalStateException</ID>
     <ID>InvalidPackageDeclaration:sherpa_Tts.kt$package com.k2fsa.sherpa.onnx</ID>
+    <ID>InvalidPackageDeclaration:sherpa_OfflineRecognizer.kt$package com.k2fsa.sherpa.onnx</ID>
     <ID>InvalidPackageDeclaration:sherpa_WaveReader.kt$package com.k2fsa.sherpa.onnx</ID>
     <ID>LargeClass:MoltbookClientTest.kt$MoltbookClientTest</ID>
     <ID>LargeClass:MoltbookTicker.kt$MoltbookTicker</ID>
@@ -372,6 +373,7 @@
     <ID>TooManyFunctions:OpencodeServerService.kt$OpencodeServerService : Service</ID>
     <ID>TooManyFunctions:RuntimeManager.kt$RuntimeManager</ID>
     <ID>TooManyFunctions:WhisperTranscribeService.kt$WhisperTranscribeService$Companion</ID>
+    <ID>TooManyFunctions:sherpa_OfflineRecognizer.kt$OfflineRecognizer</ID>
     <ID>TooManyFunctions:sherpa_Tts.kt$OfflineTts</ID>
     <ID>UnusedParameter:AudioTrackPlayer.kt$AudioTrackPlayer$t: AudioTrack</ID>
     <ID>UnusedParameter:WhisperTranscribeService.kt$WhisperTranscribeService.Companion$model: String</ID>

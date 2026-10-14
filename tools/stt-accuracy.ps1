@@ -114,7 +114,7 @@ function GrabLog() {
     }
     $tim = @{}
     foreach ($l in $raw) {
-        if ($l -match 'whisper:.*проход (\d+) мс.*звук (\d+) мс.*rtf ([\d,]+)') {
+        if ($l -match '(?:whisper|parakeet):.*проход (\d+) мс.*звук (\d+) мс.*rtf ([\d,]+)') {
             $tim['last'] = "pass=$($matches[1])ms audio=$($matches[2])ms rtf=$($matches[3])"
         }
     }

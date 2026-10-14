@@ -26,6 +26,9 @@
         <error line="61" column="40" source="standard:function-signature" />
         <error line="61" column="76" source="standard:function-signature" />
     </file>
+    <file name="src/main/java/org/opencode/mobile/tts/sherpa_OfflineRecognizer.kt">
+        <error line="1" column="1" source="standard:filename" />
+    </file>
     <file name="src/main/java/org/opencode/mobile/tts/sherpa_Tts.kt">
         <error line="1" column="1" source="standard:filename" />
         <error line="74" column="1" source="standard:indent" />
