@@ -71,7 +71,9 @@ class RoutingPlanTest {
         val out = written(planRoutingEntry(once, other))
         assertEquals(other.heavy, out.getJSONObject("agent").getJSONObject("build").getString("model"))
         assertEquals(other.light, out.getJSONObject("agent").getJSONObject("general").getString("model"))
-        assertEquals("opencode/big-pickle", out.getString("model"))
+        // Корневой model — не «чужой ключ»: измерено, что именно он выбирает
+        // модель генерации, поэтому он обязан идти вместе с тяжёлой ролью.
+        assertEquals(other.heavy, out.getString("model"))
     }
 
     @Test
@@ -127,5 +129,34 @@ class RoutingPlanTest {
     @Test
     fun `small_model не строкой отказывает`() {
         assertEquals(RoutingPlan.Refuse, planRoutingEntry("""{ "small_model": 5, "permission": {} }""", routing))
+    }
+
+    @Test
+    fun `корневой model объектом приводится к строке и маршрутизация дописывается`() {
+        val text =
+            """{ "model": { "providerID": "opencode", "model": "big-pickle" }, "permission": {} }"""
+        val out = written(planRoutingEntry(text, routing))
+        assertEquals(routing.heavy, out.getString("model"))
+        assertEquals(routing.small, out.getString("small_model"))
+        assertEquals(routing.heavy, out.getJSONObject("agent").getJSONObject("build").getString("model"))
+    }
+
+    @Test
+    fun `корневой model скаляром или массивом тоже переписывается`() {
+        val scalar = written(planRoutingEntry("""{ "model": null, "permission": {} }""", routing))
+        assertEquals(routing.heavy, scalar.getString("model"))
+        val number = written(planRoutingEntry("""{ "model": 5, "permission": {} }""", routing))
+        assertEquals(routing.heavy, number.getString("model"))
+        val array = written(planRoutingEntry("""{ "model": [1, 2], "permission": {} }""", routing))
+        assertEquals(routing.heavy, array.getString("model"))
+        assertEquals(routing.light, array.getJSONObject("agent").getJSONObject("explore").getString("model"))
+    }
+
+    @Test
+    fun `комментарий сразу после значения не съедается`() {
+        val text = "{\n  \"model\": 5// мост\n  , \"permission\": {}\n}"
+        val out = applied(text)
+        assertTrue("хвост комментария должен остаться комментарием", out.contains("// мост"))
+        assertTrue("модель должна встать на место скаляра", out.contains("\"model\": \"${routing.heavy}\""))
     }
 }

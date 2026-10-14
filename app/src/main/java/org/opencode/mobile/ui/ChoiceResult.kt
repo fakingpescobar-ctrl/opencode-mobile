@@ -64,7 +64,7 @@ private fun settleChoice(
     routing: ModelRouting,
 ): ChoiceResult {
     val applied = OpencodeRuntime.applyModelRouting(context)
-    val served = RoutingReadiness.servedAgents(OpencodeServerService.state.value.port)
+    val served = RoutingReadiness.served(OpencodeServerService.state.value.port)
     if (served != null && RoutingReadiness.routingServed(served, routing)) {
         return ChoiceResult(pending = false, message = appliedMessage(served, routing))
     }
@@ -84,7 +84,7 @@ private fun settleChoice(
  * требовать его — значит вечно обещать пользователю то, что не сработает.
  */
 private fun appliedMessage(
-    served: Map<String, String>,
+    served: RoutingReadiness.Served,
     routing: ModelRouting,
 ): String =
     if (RoutingReadiness.smallRoleMismatch(served, routing)) {
@@ -107,7 +107,7 @@ internal suspend fun currentChoiceState(
     routing: ModelRouting,
 ): ChoiceResult =
     withContext(Dispatchers.IO) {
-        val served = RoutingReadiness.servedAgents(OpencodeServerService.state.value.port)
+        val served = RoutingReadiness.served(OpencodeServerService.state.value.port)
         val inSync = !ModelRoutingPrefs.isEnabled(context) ||
             (served != null && RoutingReadiness.routingServed(served, routing))
         if (inSync) {
@@ -147,7 +147,7 @@ internal suspend fun restartAndVerify(
  */
 private fun pendingMessage(
     applied: RoutingApply,
-    served: Map<String, String>?,
+    served: RoutingReadiness.Served?,
 ): String =
     when {
         applied == RoutingApply.FAILED ->

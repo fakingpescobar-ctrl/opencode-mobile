@@ -68,28 +68,67 @@ private const val SMALL_MODEL_KEY = "small_model"
 private const val MODEL_KEY = "model"
 
 /**
- * Решает, что делать с записями `small_model` и `agent.<id>.model`, ничего не записывая.
+ * Решает, что делать с записями `model`, `small_model` и `agent.<id>.model`,
+ * ничего не записывая.
  *
  * Вынесено отдельной функцией (как [planModelEntry] и [planQuestionPermission]) по
  * одной причине: правка управляемого конфига — место, где легко тихо испортить
  * рабочую установку, и проверять её должен юнит-тест, а не устройство.
  *
- * Четыре агента (`build`, `plan` → тяжёлая; `explore`, `general` → лёгкая) и
- * `small_model` считаются управляемыми: пользователь включил маршрутизацию из UI,
- * поэтому их значения мы вправе переписать. Чужой формы не трогаем: если `agent`
- * или конкретный агент существует не объектом, а `model` внутри агента — не строкой,
- * план `Refuse` (лог честно скажет, что файл не понят).
+ * **Корневой `model` — не формальность, а то, что реально работает.** Замерено
+ * на устройстве (15.10.2026): при `model: opencode/big-pickle` и
+ * `agent.build.model: opencode/space-bunny-free` генерация шла на big-pickle, и
+ * только после смены корневого `model` ответ пошёл от space-bunny-free. Запись
+ * одного лишь `agent.build.model` видна в `GET /api/agent`, но не влияет на
+ * генерацию — поэтому тяжёлую модель пишем в корень, а агентские записи оставляем
+ * как согласованное описание (и как источник правды для `/api/agent`).
+ *
+ * Шесть ключей (`model`, `small_model`, `build`/`plan` → тяжёлая; `explore`/
+ * `general` → лёгкая) считаются управляемыми: пользователь включил маршрутизацию
+ * из UI, поэтому их значения мы вправе переписать. Чужой формы не трогаем: если
+ * `agent` или конкретный агент существует не объектом, а `model` внутри агента —
+ * не строкой, план `Refuse` (лог честно скажет, что файл не понят). Корневой
+ * `model` — исключение: его значение переписывается в любой форме, см.
+ * [upsertRootModel].
  */
 internal fun planRoutingEntry(
     text: String,
     routing: ModelRouting,
 ): RoutingPlan {
     if (rootObjectStart(text) < 0) return RoutingPlan.Refuse
-    val updated = upsertRootString(text, SMALL_MODEL_KEY, routing.small)?.let { upsertAgents(it, routing) }
+    val updated =
+        upsertRootModel(text, routing.heavy)
+            ?.let { upsertRootString(it, SMALL_MODEL_KEY, routing.small) }
+            ?.let { upsertAgents(it, routing) }
     return when {
         updated == null -> RoutingPlan.Refuse
         updated == text -> RoutingPlan.Keep
         else -> RoutingPlan.Write(updated)
+    }
+}
+
+/**
+ * Ставит корневой `model` — единственный ключ, который реально влияет на генерацию,
+ * поэтому обрабатывается отдельно от [upsertRootString].
+ *
+ * Форма значения может быть любой: строкой (`"model": "opencode/big-pickle"`) —
+ * обычный случай; объектом (`{ "providerID": …, "model": … }`, так его отдаёт сам
+ * `GET /api/config`); скаляром или массивом — попадается в чужих правках. Во всех
+ * случаях заменяем ровно значение ключа, текст вокруг остаётся байт-в-байт.
+ *
+ * Отказа здесь быть не должно: этот ключ пишет и [planModelEntry] (он же закрепляет
+ * `DEFAULT_FREE_MODEL`), а отказ обнулил бы всю маршрутизацию — и она стала бы
+ * неприменимой навсегда, с вечной плашкой «применить».
+ */
+private fun upsertRootModel(
+    text: String,
+    model: String,
+): String? {
+    val span = rootValueSpan(text, MODEL_KEY)
+    return when {
+        span != null -> text.substring(0, span.first) + quoted(model) + text.substring(span.second)
+        hasTopLevelKey(text, MODEL_KEY) -> null
+        else -> insertMember(text, "\"$MODEL_KEY\": ${quoted(model)}", "  ", "")
     }
 }
 

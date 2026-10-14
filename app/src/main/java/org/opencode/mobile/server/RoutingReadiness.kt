@@ -24,11 +24,30 @@ import org.json.JSONTokener
  * внешнего процесса и обязана проверяться тестом, а не устройством.
  */
 internal object RoutingReadiness {
+    /**
+     * Что реально обслуживает serve: корневая модель + модели агентов.
+     *
+     * Корневая идёт отдельным полем, а не ключом в карте по двум причинам.
+     * Первая и главная — измеренная на устройстве (15.10.2026): именно корневой
+     * `model` выбирает модель генерации, а `agent.<id>.model` в этой сборке только
+     * показывается в `/api/agent`, но генерацию не переключает. Значит сверка
+     * «применилось ли» обязана смотреть на корень, иначе она подтвердит
+     * расписание, по которому агент работает не на той модели. Вторая — карта
+     * агентов теряет различие «агент без модели» и «модель с таким именем».
+     */
+    data class Served(
+        val root: String?,
+        val agents: Map<String, String>,
+    )
+
     /** Путь конфига у serve: единственный источник правды о том, что он обслуживает. */
     private const val CONFIG_PATH = "/api/config"
 
     /** Пауза между попытками опроса. Рестарт serve — секунды, не миллисекунды. */
     private const val POLL_INTERVAL_MS = 1_000L
+
+    /** Тип элемента ответа `/api/config`, который содержит разобранный конфиг. */
+    private const val DOCUMENT_TYPE = "document"
 
     /**
      * Сколько ждём нового процесса. Измерено на устройстве: мягкий рестарт
@@ -36,28 +55,31 @@ internal object RoutingReadiness {
      * после которого плашка «применить» возвращается и пользователь может
      * повторить сам.
      */
-    /** Тип элемента ответа `/api/config`, который содержит разобранный конфиг. */
-    private const val DOCUMENT_TYPE = "document"
-
     private const val POLL_ATTEMPTS = 40
 
     /**
-     * Модели агентов из ответа `GET /api/config`, в виде `id -> "провайдер/модель"`.
+     * Корневая модель и модели агентов из ответа `GET /api/config`.
      *
-     * Ответ — массив документов (`[{type, info}, …]`), и нужный — первый: это
-     * разобранный конфиг, остальные элементы массива — сырые файлы и каталоги.
-     * Пустой ответ или сломанный JSON дают пустую карту, а не исключение:
-     * вызывающему важно «агент этого не подтвердил», а не причина сбоя парсинга.
+     * Ответ — массив документов (`[{type, info}, …]`), и нужный — элемент с
+     * `type == "document"`: это разобранный конфиг, остальные элементы массива —
+     * сырые файлы и каталоги. Пустой ответ или сломанный JSON дают [Served] с
+     * пустыми полями, а не исключение: вызывающему важно «агент этого не
+     * подтвердил», а не причина сбоя парсинга.
      */
-    fun parseAgentModels(body: String): Map<String, String> =
+    fun parseServed(body: String): Served =
         runCatching {
-            val agents = agentsObject(JSONTokener(body).nextValue())
-            buildMap {
-                agents?.keys()?.forEach { id ->
-                    agentModel(agents.optJSONObject(id))?.let { put(id, it) }
-                }
-            }
-        }.getOrDefault(emptyMap())
+            val info = configInfo(JSONTokener(body).nextValue())
+            val agents = info?.optJSONObject("agents")
+            Served(
+                root = agentModel(info),
+                agents =
+                    buildMap {
+                        agents?.keys()?.forEach { id ->
+                            agentModel(agents.optJSONObject(id))?.let { put(id, it) }
+                        }
+                    },
+            )
+        }.getOrDefault(Served(null, emptyMap()))
 
     /**
      * Модель одного агента в виде `провайдер/имя`.
@@ -84,7 +106,7 @@ internal object RoutingReadiness {
     }
 
     /**
-     * Достаёт `agents` из ответа `/api/config` независимо от формы обёртки.
+     * Достаёт разобранный конфиг (`info`) из ответа `/api/config` независимо от формы обёртки.
      *
      * Формы две, и это не косметика: с массивом вместо `data` разбор возвращал
      * пустую карту, а пустая карта в [routingServed] — это «сервер не подтвердил
@@ -98,7 +120,7 @@ internal object RoutingReadiness {
      * Если документов нет вовсе, откатываемся на первый элемент с `info`:
      * лучше разобрать не то, чем вернуть пустую карту и вечную «применить».
      */
-    private fun agentsObject(root: Any?): JSONObject? {
+    private fun configInfo(root: Any?): JSONObject? {
         val items =
             when (root) {
                 is JSONArray -> root
@@ -112,13 +134,19 @@ internal object RoutingReadiness {
                 val withInfo = objects.firstOrNull { it.optJSONObject("info") != null }
                 (document ?: withInfo)?.optJSONObject("info")
             }
-        return (info ?: root as? JSONObject)?.optJSONObject("agents")
+        return info ?: root as? JSONObject
     }
 
     /**
      * Обслуживает ли сервер именно это расписание.
      *
-     * Проверяем только тех агентов, чьи модели пишет сам [planRoutingEntry]:
+     * Обязательная часть — корневая модель: измерено на устройстве, что именно
+     * она выбирает модель генерации, а записи агентов только описывают
+     * расписание. Без этой проверки сверка подтверждала бы старый корень и
+     * снимала плашку «применить» при агенте, который продолжает отвечать от
+     * прежней модели (ровно тот случай, что и жаловался пользователь).
+     *
+     * Дальше проверяем тех агентов, чьи модели пишет сам [planRoutingEntry]:
      * `build`/`plan` — тяжёлые, `explore`/`general` — лёгкие. Служебные роли
      * (`title`, `summary`) в конфиг не пишутся вовсе: они выводятся сервером из
      * `small_model` (проверено на устройстве — `agents.title.model` совпадает с
@@ -128,21 +156,28 @@ internal object RoutingReadiness {
      * заставляло бы плашку «применить» возвращаться навсегда — ровно та ошибка,
      * ради устранения которой проверка и написана.
      *
-     * Отсутствующий агент пропускаем (его просто нет в этой сборке), а `build`
-     * обязателен — иначе пустой ответ считался бы успехом.
+     * Отсутствующий агент пропускаем (его просто нет в этой сборке), но `build`
+     * обязателен вместе с корнем: без него пустой или неразобранный раздел
+     * `agents` прошёл бы сверку по одному корню и объявил расписание применённым.
      */
     fun routingServed(
-        agents: Map<String, String>,
+        served: Served,
         routing: ModelRouting,
     ): Boolean {
         val expected =
             mapOf(
+                "build" to routing.heavy,
                 "plan" to routing.heavy,
                 "explore" to routing.light,
                 "general" to routing.light,
             )
-        val buildOk = sameModel(agents["build"], routing.heavy)
-        return buildOk && expected.all { (id, model) -> agents[id]?.let { sameModel(it, model) } ?: true }
+        val rootOk = sameModel(served.root, routing.heavy)
+        val buildOk = served.agents["build"]?.let { sameModel(it, routing.heavy) } == true
+        val restOk =
+            expected
+                .filterKeys { it != "build" }
+                .all { (id, model) -> served.agents[id]?.let { sameModel(it, model) } ?: true }
+        return rootOk && buildOk && restOk
     }
 
     /**
@@ -166,15 +201,15 @@ internal object RoutingReadiness {
      * расхождение показываем, но не блокируем им карточку.
      */
     fun smallRoleMismatch(
-        agents: Map<String, String>,
+        served: Served,
         routing: ModelRouting,
     ): Boolean {
-        val served = listOfNotNull(agents["title"], agents["summary"])
-        return served.isNotEmpty() && served.any { !sameModel(it, routing.small) }
+        val named = listOfNotNull(served.agents["title"], served.agents["summary"])
+        return named.isNotEmpty() && named.any { !sameModel(it, routing.small) }
     }
 
     /** Расписание живого сервера или null, если он не ответил. */
-    fun servedAgents(port: Int): Map<String, String>? = LocalOpenCodeClient.get(port, CONFIG_PATH)?.let { parseAgentModels(it) }
+    fun served(port: Int): Served? = LocalOpenCodeClient.get(port, CONFIG_PATH)?.let { parseServed(it) }
 
     /**
      * Ждёт, пока сервер начнёт обслуживать [routing] — сразу возвращает true,
@@ -188,7 +223,7 @@ internal object RoutingReadiness {
         routing: ModelRouting,
     ): Boolean {
         repeat(POLL_ATTEMPTS) {
-            if (routingServed(servedAgents(port) ?: emptyMap(), routing)) return true
+            if (routingServed(served(port) ?: Served(null, emptyMap()), routing)) return true
             delay(POLL_INTERVAL_MS)
         }
         return false

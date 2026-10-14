@@ -53,6 +53,36 @@ internal fun rootStringValueSpan(
     }
 }
 
+/**
+ * Границы значения корневого ключа [key] ЛЮБОЙ формы: (начало_значения,
+ * позиция_за_значением). null — ключа нет либо значение не удалось разобрать.
+ *
+ * Нужна там, где запись обязана быть переписана в любом случае: строковое
+ * значение меняется одним токеном, объект/массив — от `open` до парной скобки,
+ * а скаляр (`null`, число, `true`) — до запятой или закрывающей скобки. Отказ по
+ * форме здесь обнулял бы всю правку, а для корневого `model` это значило бы, что
+ * маршрутизация не применима никогда.
+ */
+internal fun rootValueSpan(
+    text: String,
+    key: String,
+): Pair<Int, Int>? {
+    val afterKey = rootKeyValue(text, key) ?: return null
+    val start = valueStart(text, afterKey)
+    return if (start in text.indices) valueSpanAt(text, start) else null
+}
+
+/** Границы значения, первый значимый символ которого стоит в [start]. */
+private fun valueSpanAt(
+    text: String,
+    start: Int,
+): Pair<Int, Int>? =
+    when (text[start]) {
+        '"' -> skipString(text, start + 1).let { end -> if (end > start + 1) start to end else null }
+        '{', '[' -> closeBracket(text, start).let { close -> if (close > start) start to close + 1 else null }
+        else -> endOfScalar(text, start).let { end -> if (end > start) start to end else null }
+    }
+
 /** Позиция открывающей скобки значения ключа [key] в корне, либо -1. */
 private fun openBraceOf(
     text: String,
@@ -119,6 +149,63 @@ private fun valueStart(
     while (i < text.length && text[i].isWhitespace()) i++
     if (i >= text.length || text[i] != ':') return -1
     return nextSignificant(text, i + 1)
+}
+
+/**
+ * Позиция закрывающей скобки, парной скобке в [open] (`{` или `[`), либо -1.
+ *
+ * Отдельный примитив вместо [matchBrace]: корневой `model` может оказаться не
+ * только объектом, но и массивом, а искать пару для `[]` тем же счётчиком
+ * дешевле, чем заводить второй почти такой же скан.
+ */
+private fun closeBracket(
+    text: String,
+    open: Int,
+): Int {
+    var depth = 0
+    var i = open
+    while (i < text.length) {
+        val c = text[i]
+        i =
+            when {
+                c == '"' -> skipString(text, i + 1)
+                isLineCommentAt(text, i) -> skipToLineEnd(text, i)
+                isBlockCommentAt(text, i) -> skipToBlockEnd(text, i + 2)
+                c == '{' || c == '[' -> {
+                    depth++
+                    i + 1
+                }
+                c == '}' || c == ']' -> {
+                    depth--
+                    if (depth == 0) return i
+                    i + 1
+                }
+                else -> i + 1
+            }
+    }
+    return -1
+}
+
+/**
+ * Позиция сразу за скалярным значением, начавшимся в [start].
+ *
+ * Скаляр в jsonc не разбирать нечем: он идёт до запятой, закрывающей скобки или
+ * конца строки — что встретилось первым. Останавливаемся и на `/`: это начало
+ * комментария, и «склеить» его со значением нельзя (`5//мост` — это `5` плюс
+ * комментарий, а не одно число), иначе замена значения оставила бы в файле
+ * обрывок комментария обычным текстом и opencode.jsonc перестал бы парситься.
+ */
+private fun endOfScalar(
+    text: String,
+    start: Int,
+): Int {
+    var i = start
+    while (i < text.length) {
+        val c = text[i]
+        if (c in ",}]" || c.isWhitespace() || c == '/') break
+        i++
+    }
+    return i
 }
 
 /**
