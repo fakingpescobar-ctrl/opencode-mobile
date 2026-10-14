@@ -74,6 +74,7 @@ import org.opencode.mobile.server.RuntimeStage
 import org.opencode.mobile.server.RuntimeValidation
 import org.opencode.mobile.stt.ModelDownloader
 import org.opencode.mobile.stt.SttModels
+import org.opencode.mobile.tts.TtsModelDownloader
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -134,6 +135,24 @@ private sealed interface GgmlDownloadState {
     ) : GgmlDownloadState
 }
 
+/**
+ * Состояние закачки офлайн-модели озвучки. Отдельное от остальных закачек,
+ * потому что качать её приходится не по расписанию, а после «Удалить данные»
+ * в настройках Android: там сносится filesDir вместе с моделью.
+ */
+private sealed interface TtsDownloadState {
+    data object Idle : TtsDownloadState
+
+    data class Running(
+        val done: Long,
+        val total: Long,
+    ) : TtsDownloadState
+
+    data class Failed(
+        val message: String,
+    ) : TtsDownloadState
+}
+
 /** Снапшот моделей и хранилища, собранный один раз на IO при открытии. */
 private data class StorageSnapshot(
     val free: Long,
@@ -144,6 +163,13 @@ private data class StorageSnapshot(
      * (141 МБ у base, 1,5 ГБ у turbo) и на главном потоке froze бы экран.
      */
     val ggmlReady: Map<String, Long>,
+    /**
+     * Офлайн-модель озвучки Supertonic: готова ли и сколько занимает.
+     * Считается в IO-ветке снапшота по точным размерам файлов: на главном
+     * потоке проверка 138 МБ заметно дёрнула бы экран настроек.
+     */
+    val ttsVoiceReady: Boolean,
+    val ttsVoiceBytes: Long,
     val logTail: String,
     /** Единый отчёт готовности runtime-слоя (RuntimeValidation). */
     val validation: RuntimeValidation.Report,
@@ -265,6 +291,27 @@ fun DiagnosticsScreen(
             }
         }
     }
+    // Офлайн-модель озвучки. Её приходится качать не по расписанию, а после
+    // «Удалить данные» в настройках Android: там сносится filesDir вместе с
+    // моделью, и больше её неоткуда взять — в APK её нет, в кэше тоже.
+    var ttsDl by remember { mutableStateOf<TtsDownloadState>(TtsDownloadState.Idle) }
+    val startTtsDownload: () -> Unit = {
+        if (ttsDl !is TtsDownloadState.Running) {
+            ttsDl = TtsDownloadState.Running(0L, TtsModelDownloader.TOTAL_BYTES)
+            scope.launch {
+                try {
+                    TtsModelDownloader.download(context) { done, total ->
+                        ttsDl = TtsDownloadState.Running(done, total)
+                    }
+                    ttsDl = TtsDownloadState.Idle
+                    refreshKey++
+                } catch (e: Exception) {
+                    currentCoroutineContext().ensureActive()
+                    ttsDl = TtsDownloadState.Failed(e.message ?: e.javaClass.simpleName)
+                }
+            }
+        }
+    }
     LaunchedEffect(refreshKey) {
         snap =
             withContext(Dispatchers.IO) {
@@ -278,6 +325,8 @@ fun DiagnosticsScreen(
                     free = ModelDownloader.freeBytes(context),
                     used = ModelDownloader.modelsUsedBytes(context),
                     ggmlReady = ggmlReady,
+                    ttsVoiceReady = TtsModelDownloader.isReady(context),
+                    ttsVoiceBytes = TtsModelDownloader.bytesOnDisk(context),
                     logTail = readLogTail(File(context.filesDir, "opencode.log")),
                     validation = RuntimeValidation.run(context),
                 )
@@ -458,6 +507,13 @@ fun DiagnosticsScreen(
                     InfoRow("Уборка моделей", droppedModels, Color(NOTE_ARGB))
                 }
                 GgmlModelRows(snap, ggmlDl, { model -> startGgmlDownload(model) }, dropOtherModels)
+                sectionHeader("Озвучка (Supertonic, offline)")
+                TtsVoiceRows(
+                    ready = snap?.ttsVoiceReady == true,
+                    bytesOnDisk = snap?.ttsVoiceBytes ?: 0L,
+                    state = ttsDl,
+                    onDownload = { startTtsDownload() },
+                )
 
                 // Между STT и валидацией: обе секции — про то, что человек должен один раз
                 // настроить, чтобы функция вообще работала, и обе с кнопкой. Валидация
@@ -1083,5 +1139,39 @@ private fun EngineRows(
     }
     if (state is EngineDownloadState.Failed) {
         InfoRow("Движок не скачался", state.message, Color(0xFFFF6F5A))
+    }
+}
+
+@Composable
+private fun TtsVoiceRows(
+    ready: Boolean,
+    bytesOnDisk: Long,
+    state: TtsDownloadState,
+    onDownload: () -> Unit,
+) {
+    InfoRow(
+        "Модель озвучки (Supertonic)",
+        if (ready) "готова · ${fmtBytes(bytesOnDisk)}" else "не скачана · ${TtsModelDownloader.sizeLabel()}",
+        if (ready) Color(0xFF7BD88F) else Color(0xFFFF6F5A),
+    )
+    when (val dl = state) {
+        is TtsDownloadState.Running -> {
+            val ratio = if (dl.total > 0) (dl.done.toFloat() / dl.total).coerceIn(0f, 1f) else 0f
+            InfoRow(
+                "Загрузка модели озвучки",
+                "${(ratio * PERCENT_MAX).toInt()}% · ${fmtBytes(dl.done)} из ${fmtBytes(dl.total)}",
+                Color(0xFFFFC107),
+            )
+        }
+
+        is TtsDownloadState.Failed -> {
+            InfoRow("Модель не скачалась", dl.message, Color(0xFFFF6F5A))
+            downloadButton("Повторить (докачка)") { onDownload() }
+        }
+
+        TtsDownloadState.Idle ->
+            if (!ready) {
+                downloadButton("Скачать модель озвучки (~" + TtsModelDownloader.sizeLabel() + ")") { onDownload() }
+            }
     }
 }
