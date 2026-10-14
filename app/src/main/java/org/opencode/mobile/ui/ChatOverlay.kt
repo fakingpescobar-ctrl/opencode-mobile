@@ -142,7 +142,9 @@ import org.opencode.mobile.server.ApiStatus
 import org.opencode.mobile.server.AskCard
 import org.opencode.mobile.server.LocalOpenCodeClient
 import org.opencode.mobile.server.MemoryMcp
+import org.opencode.mobile.server.ModelRoutingPrefs
 import org.opencode.mobile.server.PendingAsk
+import org.opencode.mobile.server.SessionModel
 import org.opencode.mobile.server.YnisonMcp
 import org.opencode.mobile.social.MoltbookScanClient
 import org.opencode.mobile.stt.SttModels
@@ -315,7 +317,7 @@ private fun getMcpCached(port: Int): String? {
 // к (sessionId, hashCode(сырой /message)): если хэш тот же — лента битово
 // идентична, переиспользуем готовые объекты и НЕ парсим снова. serverRevs держит
 // отдельно, потому что заголовок/метки могут меняться независимо от ленты.
-private data class ChatParseResult(
+internal data class ChatParseResult(
     val messages: List<ChatMsg>,
     val thinking: Boolean,
     val liveTool: ChatTool?,
@@ -323,7 +325,12 @@ private data class ChatParseResult(
     val contextTokens: Long,
 )
 
-private object ChatCache {
+/**
+ * Кэш разбора ленты активной сессии. internal, а не private: идентификатором
+ * сессии пользуется ещё и карточка маршрутизации моделей — ей нужно знать,
+ * какой именно сессии менять модель на лету (`POST /session/{id}/model`).
+ */
+internal object ChatCache {
     @Volatile var sessionId: String? = null
 
     @Volatile var rawHash: Int = 0
@@ -732,7 +739,7 @@ fun ChatOverlay(
                     if (sessionId != null) {
                         postMessage(serverPort, sessionId, text) to null
                     } else {
-                        val fresh = createSession(serverPort)
+                        val fresh = createSession(serverPort, context)
                         when {
                             fresh == null -> false to null
                             postMessage(serverPort, fresh, text) -> true to null
@@ -835,7 +842,7 @@ fun ChatOverlay(
                 withContext(Dispatchers.IO) {
                     abortSession(serverPort, sid)
                     deleteSession(serverPort, sid) &&
-                        createSession(serverPort)?.let {
+                        createSession(serverPort, context)?.let {
                             ChatCache.sessionId = null
                             ChatCache.rawHash = 0
                             true
@@ -858,7 +865,7 @@ fun ChatOverlay(
         scope.launch {
             val created =
                 withContext(Dispatchers.IO) {
-                    val id = createSession(serverPort) // POST /session → fresh id
+                    val id = createSession(serverPort, context) // POST /session → fresh id
                     if (id != null) {
                         // Сбрасываем кэш ленты ТОЛЬКО при успехе: при отказе createSession
                         // поллинг продолжит прежнюю ленту без лишнего форс-перезапроса.
@@ -887,7 +894,7 @@ fun ChatOverlay(
         scope.launch {
             val created =
                 withContext(Dispatchers.IO) {
-                    val id = createSession(serverPort) // POST /session → fresh id
+                    val id = createSession(serverPort, context) // POST /session → fresh id
                     if (id != null) {
                         // Сбрасываем кэш ленты ТОЛЬКО при успехе: при отказе createSession
                         // поллинг продолжит прежнюю ленту без лишнего форс-перезапроса.
@@ -4023,10 +4030,31 @@ private fun playNotificationSound(context: Context) {
     }
 }
 
-private fun createSession(port: Int): String? {
-    val body = LocalOpenCodeClient.post(port, ApiPaths.SESSIONS, "{}") ?: return null
-    return ApiShape.session(body)?.optString("id")?.takeIf(String::isNotBlank)
+/**
+ * Новая сессия сразу на выбранной модели.
+ *
+ * `POST /api/session` принимает `model` в теле (проверено по OpenAPI и на живом
+ * 2.0.27), а переключение через `POST /api/session/{id}/model` есть только у уже
+ * родившейся сессии. Поэтому модель выбирается здесь, на создании: так новая
+ * сессия не зависит от того, успел ли сервер перечитать конфиг (он читает его
+ * только при старте процесса).
+ *
+ * Отказ по модели НЕ ломает создание: если сервер её не принял (протухла,
+ * выпала из каталога), повторяем пустым телом — сообщение должно уйти любой
+ * ценой, а выбор модели это настройка, не условие работы чата. Худший случай
+ * такой попытки — лишняя пустая сессия, их и так чистит `pruneEmptySessions`.
+ */
+private fun createSession(
+    port: Int,
+    context: Context,
+): String? {
+    val model = if (ModelRoutingPrefs.isEnabled(context)) ModelRoutingPrefs.current(context).heavy else null
+    val withModel = LocalOpenCodeClient.post(port, ApiPaths.SESSIONS, SessionModel.createBody(model))
+    return createdSessionId(withModel)
+        ?: createdSessionId(LocalOpenCodeClient.post(port, ApiPaths.SESSIONS, SessionModel.EMPTY_BODY))
 }
+
+private fun createdSessionId(body: String?): String? = body?.let { ApiShape.session(it)?.optString("id") }?.takeIf(String::isNotBlank)
 
 /**
  * Прерывает текущую генерацию модели в сессии. opencode serve принимает

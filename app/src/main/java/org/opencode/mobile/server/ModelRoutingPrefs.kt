@@ -28,24 +28,32 @@ internal object ModelRoutingPrefs {
 
     /** Значения маршрутизации или null, если пользователь её не включал. */
     fun read(context: Context): ModelRouting? {
-        val prefs = prefs(context)
-        if (!prefs.getBoolean(ENABLED, false)) return null
-        return ModelRouting(
-            heavy = prefs.getString(HEAVY, null) ?: DEFAULT_HEAVY,
-            light = prefs.getString(LIGHT, null) ?: DEFAULT_LIGHT,
-            small = prefs.getString(SMALL, null) ?: DEFAULT_SMALL,
-        )
+        if (!isEnabled(context)) return null
+        return current(context)
     }
 
-    /** Значения ползунков для UI: сохранённые или дефолты, даже если маршрутизация выключена. */
+    /**
+     * Значения ползунков для UI: сохранённые или дефолты, даже если маршрутизация выключена.
+     *
+     * Сохранённое значение проверяется на форму `provider/model`: без провайдера
+     * его нечем ни записать в конфиг (`"model": "big-pickle"` сервер не берёт), ни
+     * подсунуть в создание сессии. Такой выбор — почти всегда ручная правка prefs
+     * или протухшая модель каталога, и молчаливый откат на дефолт честнее, чем
+     * карточка, которая обещает применённое, а на деле ничего не применяет.
+     */
     fun current(context: Context): ModelRouting {
         val prefs = prefs(context)
         return ModelRouting(
-            heavy = prefs.getString(HEAVY, null) ?: DEFAULT_HEAVY,
-            light = prefs.getString(LIGHT, null) ?: DEFAULT_LIGHT,
-            small = prefs.getString(SMALL, null) ?: DEFAULT_SMALL,
+            heavy = model(prefs.getString(HEAVY, null), DEFAULT_HEAVY),
+            light = model(prefs.getString(LIGHT, null), DEFAULT_LIGHT),
+            small = model(prefs.getString(SMALL, null), DEFAULT_SMALL),
         )
     }
+
+    private fun model(
+        saved: String?,
+        fallback: String,
+    ): String = saved?.takeIf { SessionModel.ref(it) != null } ?: fallback
 
     fun isEnabled(context: Context): Boolean = prefs(context).getBoolean(ENABLED, false)
 

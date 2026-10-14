@@ -43,6 +43,17 @@ object ApiPaths {
     fun interrupt(id: String): String = "$SESSIONS/$id/interrupt"
 
     /**
+     * Горячая смена модели сессии. POST, 204 без тела.
+     *
+     * Взят из OpenAPI самого opencode (`operationId: session.switchModel`,
+     * «Switch the model used by subsequent provider turns»), проверен на живом
+     * 2.0.27: ответ следующего хода приходит уже от новой модели, без рестарта
+     * процесса. Раньше единственным рычагом был рестарт serve, а он рвёт
+     * стриминг текущей сессии.
+     */
+    fun sessionModel(id: String): String = "$SESSIONS/$id/model"
+
+    /**
      * Запросы, на которые сервер ждёт ответа пользователя. GET.
      *
      * Это единственный источник вопросов: отдельной формы на вопросы в v2 нет,
