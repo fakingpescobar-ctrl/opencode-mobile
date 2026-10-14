@@ -525,7 +525,6 @@ fun DiagnosticsScreen(
                     refreshKey++
                 }
 
-                sectionHeader("Маршрутизация моделей агента")
                 ModelRoutingPicker()
 
                 sectionHeader("Валидация runtime")

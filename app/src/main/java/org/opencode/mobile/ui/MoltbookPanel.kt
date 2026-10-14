@@ -60,9 +60,9 @@ import org.opencode.mobile.social.pendingHeadline
  */
 internal val MoltAccent = Color(0xFFFFB020)
 internal val MoltIdle = Color(0xFF8A8A8A)
-private val MoltCard = Color(0xFF14110C)
+internal val MoltCard = Color(0xFF14110C)
 internal val MoltChipOff = Color(0xFF1E1B15)
-private val MoltValue = Color(0xFFE8E8E8)
+internal val MoltValue = Color(0xFFE8E8E8)
 private val MoltWarn = Color(0xFFFF6B6B)
 
 /**
@@ -76,8 +76,8 @@ private val MoltWarn = Color(0xFFFF6B6B)
  */
 internal val TINY = 9.sp
 internal val TINY_LINE = 11.sp
-private val SMALL = 10.sp
-private val SMALL_LINE = 13.sp
+internal val SMALL = 10.sp
+internal val SMALL_LINE = 13.sp
 internal val BODY = 11.sp
 internal val BODY_LINE = 14.sp
 

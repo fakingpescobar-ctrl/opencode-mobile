@@ -1,10 +1,15 @@
 package org.opencode.mobile.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -16,9 +21,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
@@ -29,35 +36,27 @@ import org.opencode.mobile.server.ModelRouting
 import org.opencode.mobile.server.ModelRoutingPrefs
 import org.opencode.mobile.server.OpencodeRuntime
 
-// Цвета/отступы — константами: detekt считает литерал цвета магическим числом
-// уже при первом появлении, как и в SttModelPicker.
-private const val MRP_BG_ARGB = 0xFF1C1C1CL
-private const val MRP_TEXT_ARGB = 0xFFE6E6EL
-private const val MRP_DIM_ARGB = 0xFF90A4AEL
-private const val MRP_ACCENT_ARGB = 0xFFFF6D00L
-private const val MRP_OK_ARGB = 0xFF7BD88FL
-private val MRP_CORNER = 8.dp
-private const val MRP_LEFT_PAD = 20
-private const val MRP_GAP = 2
-
 /** Роль агента, за которой закрепляется модель. Список ролей конечен и известен. */
 private enum class RoutingRole(
-    val title: String,
+    val chip: String,
     val hint: String,
 ) {
-    HEAVY("Тяжёлые (build, plan)", "сложные многошаговые задачи"),
-    LIGHT("Лёгкие (explore, general)", "поиск и вспомогательные шаги"),
-    SMALL("Служебные (заголовок, сводка)", "короткие авто-генерации"),
+    HEAVY("ТЯЖЁЛЫЕ", "build, plan — сложные многошаговые задачи"),
+    LIGHT("ЛЁГКИЕ", "explore, general — поиск и вспомогательные шаги"),
+    SMALL("СЛУЖЕБНЫЕ", "title, summary, compaction — короткие генерации"),
 }
 
 /**
- * Выбор модели под роль агента. Аналог [SttModelPicker], но предмет другой:
- * не «какой движок распознавания», а «какая модель у каких агентов opencode».
+ * Карточка маршрутизации моделей по ролям. Графически — ровно карточка
+ * Moltbook: та же подложка, та же обводка, тот же заголовок с разрядкой и те же
+ * плашечки-чипы вместо списка с галочками. Различие только в предмете: не
+ * «что случилось с журналом», а «какая модель у каких агентов opencode».
  *
- * Пишем прямо в управляемый конфиг (`ModelRoutingPrefs.save` +
- * `OpencodeRuntime.applyModelRouting`) — это те ключи `small_model` и
- * `agent.<id>.model`, которые конфиг-менеджер намеренно не трогает, пока мы их
- * не завели через [RoutingPlan].
+ * Выбор применяется СРАЗУ по нажатию плашечки — отдельной кнопки «Сохранить»
+ * нет намеренно: лишний шаг между решением и результатом в настройке, которую
+ * открывают раз в пару месяцев, только мешает. Запись конфига синхронная
+ * (чтение + tmp/rename + читающая проверка), поэтому она уходит в IO — на кадре
+ * это фриз.
  *
  * Выключение не стирает уже записанный блок: оно лишь перестаёт им управлять,
  * чтобы правка конфига вручную не пропадала из-под пользователя.
@@ -74,65 +73,219 @@ internal fun ModelRoutingPicker(
     var role by remember { mutableStateOf(RoutingRole.HEAVY) }
     var status by remember { mutableStateOf("") }
 
+    fun commit(
+        next: ModelRouting,
+        on: Boolean,
+    ) {
+        routing = next
+        enabled = on
+        scope.launch {
+            status =
+                withContext(Dispatchers.IO) {
+                    apply(context, on, next, onSaved)
+                }
+        }
+    }
+
     Column(
         modifier
             .fillMaxWidth()
-            .background(Color(MRP_BG_ARGB), RoundedCornerShape(MRP_CORNER))
-            .padding(horizontal = 8.dp, vertical = 6.dp),
+            .padding(top = 4.dp, bottom = 2.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MoltCard)
+            .border(1.dp, MoltAccent.copy(alpha = 0.25f), RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 5.dp),
     ) {
-        Text("Маршрутизация моделей по ролям", color = Color(MRP_TEXT_ARGB), fontSize = 13.sp, fontWeight = FontWeight.Bold)
-        ToggleRow(enabled) { enabled = !enabled }
-
-        for (r in RoutingRole.entries) {
-            RoleRow(
-                role = r,
-                active = r == role,
-                modelId = modelOf(routing, r),
-                onClick = { role = r },
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "МОДЕЛИ АГЕНТА",
+                color = MoltAccent,
+                fontSize = SMALL,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.5.sp,
+                lineHeight = SMALL_LINE,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.weight(1f))
+            RoutingChip(
+                text = if (enabled) "ВКЛ" else "ВЫКЛ",
+                selected = enabled,
+                onClick = { commit(routing, !enabled) },
             )
         }
 
-        Text("Модель для выбранной роли:", color = Color(MRP_DIM_ARGB), fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
-        for (model in ModelCatalog.all) {
-            ModelRow(
-                id = model.id,
-                label = model.label,
-                note = model.note,
-                selected = model.id == modelOf(routing, role),
-                onClick = {
-                    routing = setModel(routing, role, model.id)
-                    if (!enabled) enabled = true
-                },
+        Spacer(Modifier.height(6.dp))
+        DividerLine()
+        Spacer(Modifier.height(6.dp))
+
+        Caption("РОЛЬ АГЕНТА · нажатием плашки выбираем, кому какая модель")
+        RoleChips(role) { role = it }
+        Caption(role.hint, top = 3)
+
+        Spacer(Modifier.height(6.dp))
+        ModelChips(
+            current = modelOf(routing, role),
+            onPick = { commit(setModel(routing, role, it), true) },
+        )
+
+        val note = ModelCatalog.all.firstOrNull { it.id == modelOf(routing, role) }?.note ?: ""
+        RoutingFooter(note, status)
+    }
+}
+
+/**
+ * Подпись под сеткой: что умеет выбранная модель и что сделало последнее
+ * нажатие. Пустой статус — не «всё хорошо молча», а напоминание, что конфиг
+ * opencode перечитывает при старте агента.
+ */
+@Composable
+private fun RoutingFooter(
+    note: String,
+    status: String,
+) {
+    if (note.isNotEmpty()) {
+        Text(
+            text = note,
+            color = MoltIdle,
+            fontSize = TINY,
+            lineHeight = TINY_LINE,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    }
+    Text(
+        text = status.ifEmpty { APPLY_HINT },
+        color = if (status.isEmpty()) MoltIdle else MoltValue,
+        fontSize = TINY,
+        lineHeight = TINY_LINE,
+        modifier = Modifier.padding(top = 5.dp),
+    )
+}
+
+/** Три роли плашками в ряд: ширина делится поровну, поэтому карточка тянется
+ *  на любой экран, а не подгоняется под 319 dp, как в шапке чата. */
+@Composable
+private fun RoleChips(
+    selected: RoutingRole,
+    onSelect: (RoutingRole) -> Unit,
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(CHIP_GAP)) {
+        RoutingRole.entries.forEach { role ->
+            RoutingChip(
+                text = role.chip,
+                selected = role == selected,
+                onClick = { onSelect(role) },
+                modifier = Modifier.weight(1f),
             )
         }
+    }
+}
 
-        // Запись конфига — синхронный дисковый I/O (чтение, tmp+rename, читающая
-        // проверка). На кадре это фриз, поэтому уводим в IO, как SttModelPicker.
-        SaveRow(enabled, status) {
-            scope.launch {
-                val msg = withContext(Dispatchers.IO) { save(context, enabled, routing, onSaved) }
-                status = msg
+/** Сетка моделей по две в ряду: подписи вида «Nemotron 3.5 Lightning» влезают
+ *  в половину карточки, а id («muse-spark-1.3-contributor-free») — нет. */
+@Composable
+private fun ModelChips(
+    current: String,
+    onPick: (String) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(CHIP_GAP)) {
+        ModelCatalog.all.chunked(MODELS_PER_ROW).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(CHIP_GAP)) {
+                row.forEach { model ->
+                    RoutingChip(
+                        text = model.label,
+                        selected = model.id == current,
+                        onClick = { onPick(model.id) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                repeat(MODELS_PER_ROW - row.size) { Spacer(Modifier.weight(1f)) }
             }
         }
     }
 }
 
-/** Сохраняет выбор и пытается применить его к конфигу немедленно. */
-private fun save(
+/**
+ * Плашечка. Ровно чип из MoltbookIntervalChip: та же скруглённая подложка, та же
+ * обводка только у выбранного, жирный акцентный текст вместо серого.
+ */
+@Composable
+private fun RoutingChip(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    // Цвет обводки — отдельно, иначе цепочка модификаторов разъезжается на две
+    // строки и ktlint требует переносить точку в конец предыдущей, ломая порядок
+    // рисования (см. MoltbookIntervalChip).
+    val borderColor = if (selected) MoltAccent.copy(alpha = 0.7f) else Color.Transparent
+    Box(
+        modifier =
+            modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(if (selected) MoltAccent.copy(alpha = 0.14f) else MoltChipOff)
+                .border(1.dp, borderColor, RoundedCornerShape(6.dp))
+                .clickable { onClick() }
+                .padding(vertical = 5.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = text,
+            color = if (selected) MoltAccent else MoltIdle,
+            fontSize = BODY,
+            lineHeight = BODY_LINE,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun Caption(
+    text: String,
+    top: Int = 5,
+) {
+    Text(
+        text = text,
+        color = MoltIdle,
+        fontSize = TINY,
+        letterSpacing = 0.5.sp,
+        lineHeight = TINY_LINE,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.padding(top = top.dp),
+    )
+}
+
+@Composable
+private fun DividerLine() {
+    Box(Modifier.fillMaxWidth().height(1.dp).background(MoltAccent.copy(alpha = 0.15f)))
+}
+
+/**
+ * Пишем выбор в prefs и сразу патчим управляемый конфиг — это те ключи
+ * `small_model` и `agent.<id>.model`, которые конфиг-менеджер намеренно не трогает.
+ * Функция блокирующая (диск), поэтому зовётся только из withContext(Dispatchers.IO).
+ */
+private fun apply(
     context: android.content.Context,
     enabled: Boolean,
     routing: ModelRouting,
     onSaved: (Boolean) -> Unit,
 ): String {
-    if (enabled) {
-        ModelRoutingPrefs.save(context, routing)
-        val applied = OpencodeRuntime.applyModelRouting(context)
-        onSaved(enabled)
-        return if (applied) "Сохранено и записано в конфиг" else "Сохранено; конфиг подхватится при следующем старте агента"
+    if (!enabled) {
+        ModelRoutingPrefs.disable(context)
+        onSaved(false)
+        return "выключено — записанный блок оставлен как есть"
     }
-    ModelRoutingPrefs.disable(context)
-    onSaved(enabled)
-    return "Выключено — записанный блок оставлен как есть"
+    ModelRoutingPrefs.save(context, routing)
+    val applied = OpencodeRuntime.applyModelRouting(context)
+    onSaved(true)
+    return if (applied) "записано в конфиг" else "сохранено; конфиг подхватится при следующем старте агента"
 }
 
 private fun modelOf(
@@ -156,139 +309,13 @@ private fun setModel(
         RoutingRole.SMALL -> routing.copy(small = id)
     }
 
-@Composable
-private fun ToggleRow(
-    enabled: Boolean,
-    onClick: () -> Unit,
-) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clickable { onClick() }
-            .padding(top = MRP_GAP.dp, bottom = MRP_GAP.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            if (enabled) "● " else "○ ",
-            color = Color(if (enabled) MRP_OK_ARGB else MRP_DIM_ARGB),
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Bold,
-        )
-        Text(
-            if (enabled) "включена" else "выключена",
-            color = Color(MRP_TEXT_ARGB),
-            fontSize = 12.sp,
-        )
-    }
-}
+/** Моделей в ряду: подпись самой длинной (Nemotron 3.5 Lightning) влезает в
+ *  половину карточки, в третьей колонке — обрезалась бы многоточием. */
+private const val MODELS_PER_ROW = 2
 
-@Composable
-private fun RoleRow(
-    role: RoutingRole,
-    active: Boolean,
-    modelId: String,
-    onClick: () -> Unit,
-) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clickable { onClick() }
-            .padding(start = MRP_LEFT_PAD.dp, top = MRP_GAP.dp, bottom = MRP_GAP.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                if (active) "◆ " else "◇ ",
-                color = Color(MRP_ACCENT_ARGB),
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                role.title,
-                color = Color(MRP_TEXT_ARGB),
-                fontSize = 12.sp,
-                fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
-            )
-        }
-        Text(
-            ModelCatalog.labelOf(modelId),
-            color = Color(MRP_ACCENT_ARGB),
-            fontSize = 10.sp,
-            modifier = Modifier.padding(start = 14.dp),
-        )
-        Text(
-            role.hint,
-            color = Color(MRP_DIM_ARGB),
-            fontSize = 10.sp,
-            modifier = Modifier.padding(start = 14.dp),
-        )
-    }
-}
+/** Зазор между плашками — тот же, что у чипов периодичности Moltbook. */
+private val CHIP_GAP = 6.dp
 
-@Composable
-private fun ModelRow(
-    id: String,
-    label: String,
-    note: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clickable { onClick() }
-            .padding(start = MRP_LEFT_PAD.dp, top = MRP_GAP.dp, bottom = MRP_GAP.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                if (selected) "● " else "○ ",
-                color = Color(MRP_ACCENT_ARGB),
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                id,
-                color = Color(MRP_TEXT_ARGB),
-                fontSize = 13.sp,
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-            )
-            Text(
-                "  " + label,
-                color = Color(MRP_DIM_ARGB),
-                fontSize = 10.sp,
-            )
-        }
-        if (note.isNotEmpty()) {
-            Text(
-                note,
-                color = Color(MRP_DIM_ARGB),
-                fontSize = 10.sp,
-                modifier = Modifier.padding(start = 14.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun SaveRow(
-    enabled: Boolean,
-    status: String,
-    onSave: () -> Unit,
-) {
-    Column(Modifier.padding(top = 6.dp)) {
-        Text(
-            if (enabled) "✔ Сохранить маршрутизацию" else "✔ Сохранить (маршрутизация выключена)",
-            color = Color(MRP_OK_ARGB),
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.clickable { onSave() },
-        )
-        if (status.isNotEmpty()) {
-            Text(status, color = Color(MRP_DIM_ARGB), fontSize = 10.sp)
-        }
-        Text(
-            "opencode перечитывает конфиг при старте агента — надёжнее всего после сохранения открыть новую сессию.",
-            color = Color(MRP_DIM_ARGB),
-            fontSize = 10.sp,
-        )
-    }
-}
+/** Подпись под карточкой до первого нажатия: конфиг opencode перечитывает при
+ *  старте агента, и без этой оговорки «применилось» читается как «уже применено». */
+private const val APPLY_HINT = "перечитывается при старте агента — надёжнее открыть новую сессию"
