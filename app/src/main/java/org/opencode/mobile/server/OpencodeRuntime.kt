@@ -711,32 +711,43 @@ object OpencodeRuntime {
         return afterMoltbook
     }
 
-    /**
-     * Применяет выбранную пользователем маршрутизацию моделей к управляемому конфигу.
+/**
+     * Применяет выбранную пользователем маршрутизацию к управляемому конфигу.
      *
      * Зовётся из UI после сохранения пикера — чтобы не ждать следующего старта
      * сервера. null-маршрутизация (пользователь её не включал) — ничего не делаем.
+     *
+     * Возвращает не Boolean, а [RoutingApply]: «файл изменился» и «файл уже был
+     * таким» — разные ситуации для UI (см. [RoutingApply]). Но и [RoutingApply]
+     * ещё не ответ на вопрос «а работает ли агент на новых моделях»: конфиг
+     * opencode читается только при старте процесса, поэтому это проверяет
+     * [org.opencode.mobile.server.RoutingReadiness].
      */
-    fun applyModelRouting(context: Context): Boolean =
+    fun applyModelRouting(context: Context): RoutingApply =
         runCatching {
-            val routing = ModelRoutingPrefs.read(context) ?: return@runCatching false
+            val routing = ModelRoutingPrefs.read(context) ?: return@runCatching RoutingApply.FAILED
             val cfg = OpencodeApp.ServerConfig
             val file = File(File(cfg.opencodeConfig, "opencode"), "opencode.jsonc")
-            if (!file.exists()) return@runCatching false
+            if (!file.exists()) return@runCatching RoutingApply.FAILED
             when (val plan = planRoutingEntry(file.readTextOrEmpty(), routing)) {
-                RoutingPlan.Keep -> true
-                is RoutingPlan.Write -> writeMemoryConfigText(file, plan.text)
+                RoutingPlan.Keep -> RoutingApply.UNCHANGED
+                is RoutingPlan.Write ->
+                    if (writeMemoryConfigText(file, plan.text)) {
+                        RoutingApply.WRITTEN
+                    } else {
+                        RoutingApply.FAILED
+                    }
                 RoutingPlan.Refuse -> {
                     android.util.Log.w(
                         "OpencodeRuntime",
                         "applyModelRouting: config shape not recognised; leaving routing untouched",
                     )
-                    false
+                    RoutingApply.FAILED
                 }
             }
         }.onFailure {
             android.util.Log.e("OpencodeRuntime", "applyModelRouting failed: ${it.message}")
-        }.getOrDefault(false)
+        }.getOrDefault(RoutingApply.FAILED)
 
     /**
      * Держит блок `agent` и строку `small_model` вровень с выбором пользователя.
