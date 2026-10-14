@@ -525,6 +525,9 @@ fun DiagnosticsScreen(
                     refreshKey++
                 }
 
+                sectionHeader("Маршрутизация моделей агента")
+                ModelRoutingPicker()
+
                 sectionHeader("Валидация runtime")
                 if (snap == null) {
                     InfoRow("Проверка", "загрузка…")

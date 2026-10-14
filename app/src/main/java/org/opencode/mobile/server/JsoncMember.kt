@@ -29,6 +29,30 @@ internal fun memberObjectSpan(
     return if (open >= 0 && close >= 0) open to close else null
 }
 
+/**
+ * Границы строкового значения корневого ключа [key]: (кавычка_открывающая,
+ * позиция_за_закрывающей). null — ключа нет, либо его значение не строка.
+ *
+ * Нужна, чтобы менять скалярную запись (`small_model`) заменой ровно одного
+ * токена, а не пересборкой секции: так чужой конфиг остаётся байт-в-байт, кроме
+ * самой строки. Не-строка возвращает null — тогда вызывающий решает, что форма
+ * не узнана, вместо того чтобы вслепую переписать число или объект.
+ */
+internal fun rootStringValueSpan(
+    text: String,
+    key: String,
+): Pair<Int, Int>? {
+    val afterKey = rootKeyValue(text, key) ?: return null
+    val start = valueStart(text, afterKey)
+    return when {
+        start < 0 || start >= text.length || text[start] != '"' -> null
+        else ->
+            skipString(text, start + 1).let { end ->
+                if (end > start + 1) start to end else null
+            }
+    }
+}
+
 /** Позиция открывающей скобки значения ключа [key] в корне, либо -1. */
 private fun openBraceOf(
     text: String,

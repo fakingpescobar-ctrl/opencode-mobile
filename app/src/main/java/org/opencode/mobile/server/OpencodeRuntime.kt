@@ -631,6 +631,7 @@ object OpencodeRuntime {
         memoryToken: String,
         ynisonToken: String? = null,
         moltbookReady: Boolean = false,
+        routing: ModelRouting? = null,
     ): Boolean =
         runCatching {
             require(memoryToken.isNotBlank()) { "MCP memory token is empty" }
@@ -641,7 +642,7 @@ object OpencodeRuntime {
             // версию, читает её вместо живого /api/info.
             V1Leftovers.purge(configHome)
             val file = File(configHome, "opencode.jsonc")
-            val ok = ensureMcpConfigFile(file, ynisonToken, moltbookReady)
+            val ok = ensureMcpConfigFile(file, ynisonToken, moltbookReady, routing)
             // Эталон в Documents пишем только после успеха: копия неразобранного
             // конфига хуже отсутствия копии — потом её не отличить от рабочей.
             if (ok) mirrorConfig(file)
@@ -688,6 +689,7 @@ object OpencodeRuntime {
         file: File,
         ynisonToken: String?,
         moltbookReady: Boolean,
+        routing: ModelRouting?,
     ): Boolean {
         val memoryReady = ensureMemorySection(file)
         // Синхронизаторы идут по очереди и каждый читает файл заново: предыдущий мог его переписать.
@@ -703,7 +705,66 @@ object OpencodeRuntime {
         // поднимается, вопросы просто не доходят до карточки. Отказ здесь означает
         // «карточка останется немой», а не «не запускаемся».
         syncQuestionPermission(file, file.readTextOrEmpty())
+        // Маршрутизация — тоже не часть готовности: без неё сервер поднимается и
+        // работает на одном дефолте. Отказ означает «оставим один общий дефолт».
+        syncRoutingEntry(file, file.readTextOrEmpty(), routing)
         return afterMoltbook
+    }
+
+    /**
+     * Применяет выбранную пользователем маршрутизацию моделей к управляемому конфигу.
+     *
+     * Зовётся из UI после сохранения пикера — чтобы не ждать следующего старта
+     * сервера. null-маршрутизация (пользователь её не включал) — ничего не делаем.
+     */
+    fun applyModelRouting(context: Context): Boolean =
+        runCatching {
+            val routing = ModelRoutingPrefs.read(context) ?: return@runCatching false
+            val cfg = OpencodeApp.ServerConfig
+            val file = File(File(cfg.opencodeConfig, "opencode"), "opencode.jsonc")
+            if (!file.exists()) return@runCatching false
+            when (val plan = planRoutingEntry(file.readTextOrEmpty(), routing)) {
+                RoutingPlan.Keep -> true
+                is RoutingPlan.Write -> writeMemoryConfigText(file, plan.text)
+                RoutingPlan.Refuse -> {
+                    android.util.Log.w(
+                        "OpencodeRuntime",
+                        "applyModelRouting: config shape not recognised; leaving routing untouched",
+                    )
+                    false
+                }
+            }
+        }.onFailure {
+            android.util.Log.e("OpencodeRuntime", "applyModelRouting failed: ${it.message}")
+        }.getOrDefault(false)
+
+    /**
+     * Держит блок `agent` и строку `small_model` вровень с выбором пользователя.
+     *
+     * Не трогаем, если маршрутизация не включена: у тех, кто пикер не открывал, в
+     * конфиге не должно появиться ни новой секции, ни нового ключа.
+     */
+    private fun syncRoutingEntry(
+        file: File,
+        text: String,
+        routing: ModelRouting?,
+    ) {
+        if (routing == null) return
+        when (val plan = planRoutingEntry(text, routing)) {
+            RoutingPlan.Keep -> Unit
+            is RoutingPlan.Write ->
+                if (!writeMemoryConfigText(file, plan.text)) {
+                    android.util.Log.w(
+                        "OpencodeRuntime",
+                        "Could not apply model routing; agents keep the default model",
+                    )
+                }
+            RoutingPlan.Refuse ->
+                android.util.Log.w(
+                    "OpencodeRuntime",
+                    "Config shape is not recognised; leaving model routing untouched",
+                )
+        }
     }
 
     /**
