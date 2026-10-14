@@ -1900,7 +1900,7 @@ fun ChatOverlay(
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
                         )
-                        Text("Whisper.cpp (GGML Vulkan, Adreno)", color = Color(0xFFE6E6E6), fontSize = 13.sp)
+                        Text("Локальные модели (whisper.cpp / sherpa-onnx)", color = Color(0xFFE6E6E6), fontSize = 13.sp)
                     }
                     // Список моделей — только для локального движка.
                     if (sttEngine == "whisper") {

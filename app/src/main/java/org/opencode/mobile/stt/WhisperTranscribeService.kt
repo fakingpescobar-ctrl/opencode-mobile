@@ -82,8 +82,10 @@ class WhisperTranscribeService : Service() {
          */
         const val ENGINE_PARAKEET = "parakeet"
 
-        /** Каталог с файлами модели parakeet (encoder/decoder/joiner.int8.onnx + tokens.txt). */
-        private const val PARAKEET_DIR = "parakeet"
+        const val PARAKEET_DIR = "parakeet"
+
+        /** Имя каталога для ModelSettings/use-кода (не private в companion лишает доступ вне). */
+        const val PARAKEET_DIR_NAME = "parakeet"
 
         /** Потоки для sherpa-onnx: 4 как у CPU-ветки whisper — на 8 ядрах не голодает. */
         private const val PARAKEET_THREADS = 4
@@ -220,12 +222,12 @@ class WhisperTranscribeService : Service() {
         /**
          * Блокирующий (suspend) запуск распознавания через foreground-сервис.
          * Кладёт задачу в очередь; сервис считает её в порядке FIFO.
-         * @param model [SttModels.DEFAULT_ID] либо любой другой id из каталога
-         *   [SttModels] — движок whisper.cpp, файлы в filesDir/models.
-         * @param engine [ENGINE_WHISPER]. Параметр оставлен ради вызывающего кода:
-         *   модель в приложении одна, но «системный Android» переключается в UI
-         *   и до этого сервиса не доходит.
-         * Возвращает текст либо строку "ОШИБКА WHISPER: ..." (в т.ч. по таймауту/переполнению).
+         * @param model id из каталога [SttModels] — движок выводится из него
+         *   ([chooseEngine]): `parakeet-tdt-0.6b-v3` → sherpa-onnx, остальные → whisper.cpp.
+         * @param engine [ENGINE_WHISPER]. Явный движок для отладочного стенда: замер
+         *   исторически задаёт его отдельно (`-e engine parakeet`), поэтому значение
+         *   [ENGINE_PARAKEET] перебивает вывод из [model]. Боевой путь его не задаёт.
+         * Возвращает текст либо строку "ОШИБКА <ДВИЖОК>: ..." (в т.ч. по таймауту/переполнению).
          */
         suspend fun transcribe(
             context: Context,
@@ -394,12 +396,29 @@ class WhisperTranscribeService : Service() {
          * нечем подтвердить. Печатаем четыре числа, которые и различают все
          * гипотезы - сколько ждала загрузка модели, сколько длился сам
          * проход и во сколько раз он длиннее звука. */
-        private suspend fun transcribeTask(task: SttTask): String =
-            try {
-                if (task.engine == ENGINE_PARAKEET) transcribeParakeet(task) else transcribeWhisper(task)
+        private suspend fun transcribeTask(task: SttTask): String {
+            val engine = chooseEngine(task.model, task.engine)
+            return try {
+                if (engine == ENGINE_PARAKEET) transcribeParakeet(task) else transcribeWhisper(task)
             } catch (e: Throwable) {
                 Log.e(TAG, "распознавание упало (в сервисе)", e)
-                "ОШИБКА ${task.engine.uppercase()}: ${e.message}"
+                "ОШИБКА ${engine.uppercase()}: ${e.message}"
+            }
+        }
+
+        /**
+         * Движок по модели и/или явному запросу. Приоритет у parakeet, если его
+         * назвал ЛЮБОЙ из двух источников: боевой путь выводит движок из id модели,
+         * а стенд может задать `-e engine parakeet` при произвольной модели.
+         */
+        private fun chooseEngine(
+            modelId: String,
+            requested: String,
+        ): String =
+            if (requested == ENGINE_PARAKEET || modelId == SttModels.PARAKEET_ID) {
+                ENGINE_PARAKEET
+            } else {
+                ENGINE_WHISPER
             }
 
         /** Ветка whisper.cpp: грузит движок/модель и делает проход, печатая замеры. */

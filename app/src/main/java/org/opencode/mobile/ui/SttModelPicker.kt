@@ -78,7 +78,7 @@ internal fun SttModelPicker(
             .background(Color(PICK_BG_ARGB), RoundedCornerShape(PICK_CORNER))
             .padding(horizontal = 6.dp, vertical = 4.dp),
     ) {
-        Text("Модель (Whisper.cpp):", color = Color(PICK_DIM_ARGB), fontSize = 12.sp)
+        Text("Модель распознавания:", color = Color(PICK_DIM_ARGB), fontSize = 12.sp)
         for (model in SttModels.all) {
             ModelRow(
                 model = model,
@@ -107,6 +107,21 @@ private fun ModelRow(
             .clickable(enabled = ready) { onSelect() }
             .padding(start = PICK_LEFT_PAD.dp, top = PICK_GAP.dp, bottom = PICK_GAP.dp),
     ) {
+        // «Не скачана» — для моделей с кнопкой скачивания; ручная модель
+        // (adb push) не «скачивается», а «устанавливается», и отправлять
+        // человека за кнопкой, которой нет, нельзя.
+        val status =
+            when {
+                ready -> "  ✔ скачана"
+                model.manual -> "  ✘ не установлена"
+                else -> "  ✘ не скачана"
+            }
+        val hint =
+            when {
+                ready -> ""
+                model.manual -> " — ставится вручную (adb push) в каталог внешней памяти"
+                else -> " — сначала скачай: Настройки -> Диагностика"
+            }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 if (selected) "● " else "○ ",
@@ -126,13 +141,13 @@ private fun ModelRow(
                 fontSize = 10.sp,
             )
             Text(
-                if (ready) "  ✔ скачана" else "  ✘ не скачана",
+                status,
                 color = if (ready) Color(PICK_OK_ARGB) else Color(PICK_MISSING_ARGB),
                 fontSize = 10.sp,
             )
         }
         Text(
-            model.note + if (ready) "" else " — сначала скачай: Настройки -> Диагностика",
+            model.note + hint,
             color = Color(PICK_DIM_ARGB),
             fontSize = 10.sp,
             modifier = Modifier.padding(start = 14.dp),

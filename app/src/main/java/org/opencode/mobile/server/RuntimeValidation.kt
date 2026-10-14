@@ -27,6 +27,17 @@ object RuntimeValidation {
     /** Нижняя граница успешного HTTP-кода (2xx = MCP-протокол жив). */
     private const val HTTP_OK_MIN = 200
 
+    /**
+     * Файл-настроек и ключ выбранной модели — те же, что пишет выбор модели
+     * в оверлее чата (ChatOverlay -> SttModelPicker). Зеркалим здесь, потому
+     * что валидация не должна заходить в UI-слой, а ответ ей нужен тот же:
+     * «какая модель будет распознавать речь».
+     */
+    private const val OVERLAY_PREFS = "chat_overlay"
+
+    /** Ключ выбранной модели распознавания внутри [OVERLAY_PREFS]. */
+    private const val SELECTED_MODEL_PREF = "stt_model_whisper"
+
     /** Верхняя граница успешного HTTP-кода. */
     private const val HTTP_OK_MAX = 299
 
@@ -48,7 +59,15 @@ object RuntimeValidation {
          * отсутствие не должно красить весь отчёт; поэтому здесь true.
          */
         val musicMcp: Boolean,
-        /** Модель из каталога распознавания на месте и цела ([SttModels]). */
+        /**
+         * Модель, которой приложение распознаёт речь прямо сейчас, на месте и цела
+         * ([SttModels]).
+         *
+         * Проверяется ВЫБРАННАЯ модель (или дефолтная, если выбора ещё не было), а
+         * не весь каталог: в каталоге есть и опциональные модели, которые ставят
+         * вручную (Parakeet — 4 файла, без кнопки скачивания), и требование «все
+         * модели каталога готовы» красило бы отчёт для тех, кто их просто не ставил.
+         */
         val sttModelReady: Boolean,
         /** Свободно байт на хранилище моделей. */
         val storageFreeBytes: Long,
@@ -67,12 +86,24 @@ object RuntimeValidation {
             // Музыка проверяется только когда ожидалась (см. KDoc поля): без bearer'а
             // витка проверять нечего, и `true` отражает «опциональна, требований нет».
             musicMcp = YnisonAuth.bearerHeader()?.let { probeMcp(YNISON_PORT, it) } ?: true,
-            sttModelReady =
-                SttModels.all.all { spec ->
-                    spec.isReady(context) && ModelDownloader.checkIntegrity(spec.fileOf(context)) != ModelDownloader.ModelIntegrity.CORRUPT
-                },
+            sttModelReady = selectedModelReady(context),
             storageFreeBytes = ModelDownloader.freeBytes(context),
         )
+
+    /**
+     * Готовность модели, которой распознают речь, — выбранной в настройках
+     * (или дефолтной, если выбора ещё не было): файл на месте и SHA-256 не
+     * битый. Ровно та же проверка, что делала `SttModels.all.all {}`, пока в
+     * каталоге была одна модель, — только теперь она смотрит на выбор
+     * пользователя, а не требует ставить все модели каталога разом.
+     */
+    private fun selectedModelReady(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(OVERLAY_PREFS, Context.MODE_PRIVATE)
+        val stored = prefs.getString(SELECTED_MODEL_PREF, SttModels.DEFAULT_ID) ?: SttModels.DEFAULT_ID
+        val spec = SttModels.byId(stored) ?: SttModels.byId(SttModels.DEFAULT_ID) ?: return false
+        return spec.isReady(context) &&
+            ModelDownloader.checkIntegrity(spec.fileOf(context)) != ModelDownloader.ModelIntegrity.CORRUPT
+    }
 
     /**
      * Протокольная проверка локальной памяти MCP: GET /mcp должен ответить

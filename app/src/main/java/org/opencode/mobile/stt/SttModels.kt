@@ -46,6 +46,20 @@ internal data class SttModel(
     val fetch: suspend (Context, (Long, Long) -> Unit) -> Unit,
     /** Короткая подпись размера, чтобы не форматировать его в трёх местах. */
     val sizeLabel: String,
+    /**
+     * Имя одиночного файла модели в каталоге моделей (modelsDir) или null,
+     * если модель лежит иначе (например, набор из нескольких файлов в другом
+     * каталоге, как Parakeet). Из этого поля строится [SttModels.fileNames] —
+     * белый список для [ModelDownloader.deleteOtherModels], поэтому добавлять
+     * имя в двух местах больше не нужно.
+     */
+    val flatFileName: String?,
+    /**
+     * Модель ставится вручную (например, adb push набора файлов), а не кнопкой
+     * скачивания: [fetch] у такой модели — no-op. Пикеру это нужно, чтобы не
+     * отправлять человека в диагностику за кнопкой, которой там нет.
+     */
+    val manual: Boolean = false,
 )
 
 internal object SttModels {
@@ -65,6 +79,9 @@ internal object SttModels {
      */
     const val DEFAULT_ID = WhisperTranscribeService.MODEL_SMALL
 
+    /** Идентификатор Parakeet TDT 0.6B v3 (sherpa-onnx nemo_transducer). */
+    const val PARAKEET_ID = "parakeet-tdt-0.6b-v3"
+
     /** Все модели, которые приложение умеет предложить. Сейчас ровно одна. */
     val all: List<SttModel> =
         listOf(
@@ -76,6 +93,18 @@ internal object SttModels {
                 fileOf = ModelDownloader::smallFile,
                 fetch = { ctx, on -> ModelDownloader.downloadSmall(ctx, on) },
                 sizeLabel = "465 МБ",
+                flatFileName = ModelDownloader.SMALL_FILE,
+            ),
+            SttModel(
+                id = PARAKEET_ID,
+                note = "0,8 с на 12,6 с аудио · WER 11,1% (лучше whisper на длинных) · CPU, ~640 МБ",
+                bytes = 670L * 1024 * 1024,
+                isReady = { ctx -> parakeetReady(ctx) },
+                fileOf = { ctx -> parakeetDir(ctx) },
+                fetch = { _, _ -> }, // скачивание вручную (tar.bz2) — оставим бенч-UI, не заводим в основной
+                sizeLabel = "~670 МБ",
+                flatFileName = null, // не одиночный .bin в modelsDir: 4 файла в external/parakeet
+                manual = true,
             ),
         )
 
@@ -86,13 +115,24 @@ internal object SttModels {
     fun labelOf(id: String): String = byId(id)?.id ?: id
 
     /**
-     * Имена файлов, которые каталог считает своими. Всё прочее в
+     * Имена файлов, которые каталог считует своими. Всё прочее в
      * filesDir/models — кандидат на удаление: см. [ModelDownloader.deleteOtherModels].
+     * Строится из [SttModel.flatFileName], чтобы белый список не мог разойтись
+     * с каталогом: модель, живущая одним файлом в modelsDir, попадает сюда сама.
      */
     val fileNames: Set<String> =
-        setOf(
-            ModelDownloader.SMALL_FILE,
-        )
+        all
+            .mapNotNull { it.flatFileName }
+            .toSet()
+
+    private fun parakeetDir(context: Context): File = File(context.getExternalFilesDir(null), WhisperTranscribeService.PARAKEET_DIR_NAME)
+
+    private fun parakeetReady(context: Context): Boolean {
+        val dir = parakeetDir(context)
+        if (!dir.exists()) return false
+        val files = listOf("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt")
+        return files.all { File(dir, it).exists() }
+    }
 
     /** Готовность и размер всех моделей разом — только из IO-ветки (модель хешируется). */
     fun snapshotOf(context: Context): Map<String, Long> =

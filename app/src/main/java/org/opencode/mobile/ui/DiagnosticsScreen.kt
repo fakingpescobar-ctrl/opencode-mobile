@@ -1012,7 +1012,13 @@ private fun engineLabel(prefs: android.content.SharedPreferences): String =
  */
 private fun currentModelLabel(prefs: android.content.SharedPreferences): String =
     when (prefs.getString("stt_engine", "system")) {
-        "whisper", "ncnn" -> "ggml-" + SttModels.labelOf(prefs.getString("stt_model_whisper", SttModels.DEFAULT_ID) ?: SttModels.DEFAULT_ID)
+        "whisper", "ncnn" -> {
+            val id = prefs.getString("stt_model_whisper", SttModels.DEFAULT_ID) ?: SttModels.DEFAULT_ID
+            val spec = SttModels.byId(id)
+            // Ручная модель (Parakeet) — не ggml: префикс врал бы про движок.
+            if (spec?.manual == true) spec.id else "ggml-" + SttModels.labelOf(id)
+        }
+
         else -> "системный Android"
     }
 
@@ -1071,9 +1077,18 @@ private fun GgmlModelRows(
     val ready = snap?.ggmlReady.orEmpty()
     for (model in SttModels.all) {
         val bytes = ready[model.id]
+        // У ручной модели (Parakeet) fileOf — каталог, и его length() не размер
+        // модели; плюс имя без «ggml-», потому что это не ggml.
+        val title = if (model.manual) model.id else "ggml-" + model.id
+        val size =
+            when {
+                model.manual -> model.sizeLabel
+                bytes != null -> fmtBytes(bytes)
+                else -> model.sizeLabel
+            }
         InfoRow(
-            "ggml-" + model.id,
-            (if (bytes != null) "готов · " else "нет · ") + (if (bytes != null) fmtBytes(bytes) else model.sizeLabel),
+            title,
+            (if (bytes != null) "готов · " else "нет · ") + size,
             if (bytes != null) Color(0xFF7BD88F) else Color(0xFFFF6F5A),
         )
         InfoRow("  " + model.id, model.note, Color(NOTE_ARGB))
@@ -1090,17 +1105,28 @@ private fun GgmlModelRows(
             downloadButton("Повторить (докачка)") { onDownload(dl.model) }
         }
 
-        GgmlDownloadState.Idle ->
-            for (model in SttModels.all) {
-                if (ready[model.id] == null) {
-                    downloadButton("Скачать ggml-" + model.id + " (~" + model.sizeLabel + ")") {
-                        onDownload(model.id)
-                    }
-                }
-            }
+        GgmlDownloadState.Idle -> GgmlIdleControls(ready, onDownload)
     }
     Spacer(Modifier.height(6.dp))
     downloadButton("Удалить модели, которых больше нет в списке") { onDeleteOthers() }
+}
+
+/** Кнопки скачивания для моделей, которых ещё нет на диске. Ручные модели
+ *  (fetch — no-op, файлы кладут adb push) кнопки не получают: она «качала» бы
+ *  в никуда. Вынесено из [GgmlModelRows] ради детекта (NestedBlockDepth). */
+@Composable
+private fun GgmlIdleControls(
+    ready: Map<String, Long>,
+    onDownload: (String) -> Unit,
+) {
+    for (model in SttModels.all) {
+        if (ready[model.id] != null) continue
+        if (model.manual) {
+            InfoRow("Установка " + model.id, "вручную (adb push) — кнопки скачивания нет", Color(NOTE_ARGB))
+        } else {
+            downloadButton("Скачать ggml-" + model.id + " (~" + model.sizeLabel + ")") { onDownload(model.id) }
+        }
+    }
 }
 
 @Composable

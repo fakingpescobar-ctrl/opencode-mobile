@@ -53,8 +53,23 @@ class SttModelsTest {
         assertTrue("tiny больше не в каталоге", "tiny" !in ids)
     }
 
+    /**
+     * Раньше здесь было простое равенство `all.size == fileNames.size` — оно
+     * работало, пока каждая модель была одним ggml-файлом в modelsDir. Parakeet
+     * разрешён набором из 4 файлов в отдельном каталоге и в filesDir/models
+     * не лежит вовсе, поэтому равенство ушло.
+     *
+     * Смысл проверки прежний: белый список [SttModels.fileNames] должен
+     * покрывать ровно те модели, что лежат одиночным файлом в modelsDir, —
+     * иначе [ModelDownloader.deleteOtherModels] сотрёт живую модель.
+     */
     @Test
     fun `имена файлов совпадают с числом моделей`() {
-        assertEquals(SttModels.all.size, SttModels.fileNames.size)
+        val flat = SttModels.all.mapNotNull { m -> m.flatFileName }
+        assertEquals(
+            "белый список удаления разошёлся с моделями, лежащими файлом в modelsDir",
+            flat.toSet(),
+            SttModels.fileNames,
+        )
     }
 }
