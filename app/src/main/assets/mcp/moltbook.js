@@ -603,26 +603,69 @@ export function resumeAdvice(targetCommentId) {
  * комментария. Не по флажку в нашем коде, а по прочитанному треду - иначе «мы ответили»
  * держилось бы на памяти плагина и терялось при переустановке.
  */
+/**
+ * Три состояния родителя, которые журнал обязан различать.
+ *
+ * Раньше пропавший из прочитанного куска родитель и удалённый родитель
+ * выглядели одинаково - никак. Это разные факты: надгробие значит «ветка
+ * закрыта, отвечать некому», а отсутствие в выдаче значит «мы просто не
+ * видели родителя»: сортировки отдают не весь тред, и обязательство ответить
+ * при этом остаётся. Путать их - значит либо бросать вопрос, либо хоронить
+ * живой.
+ */
+export const PARENT_ID_COLUMN = "parent_id";
+export const PARENT_STATE_COLUMN = "parent_state";
+export const PARENT_VISIBLE = "visible";
+export const PARENT_GONE = "gone";
+export const PARENT_UNSEEN = "unseen";
+
+/** Состояние родителя по прочитанному треду. Для корня - пусто. */
+export function parentState(comments, parentId) {
+  const id = String(parentId || "");
+  if (!id) return { parent_id: "", parent_state: "" };
+  const found = (comments || []).find((c) => c && String(c.id) === id);
+  if (!found) return { parent_id: id, parent_state: PARENT_UNSEEN };
+  return { parent_id: id, parent_state: isTombstone(found) ? PARENT_GONE : PARENT_VISIBLE };
+}
+
 /** Автор родителя, чтобы в журнал попал не пустой строкой. */
 export function parentMeta(comments, parentId) {
   const found = (comments || []).find((c) => c && String(c.id) === String(parentId));
   if (!found) return null;
-  return { author: String(found.author || ""), body: String(found.body || "") };
+  return {
+    author: String(found.author || ""),
+    body: String(found.body || ""),
+    ...parentState(comments, parentId),
+  };
 }
 
-export function pickCandidates(comments, ourName) {
+export function pickCandidates(comments, ourName, knownReplyIds) {
   const ours = String(ourName || "").trim().toLowerCase();
   const mine = (author) => String(author || "").trim().toLowerCase() === ours;
   const answered = new Set();
   // id наших опубликованных комментариев: именно на них нам и отвечают.
   const oursPublished = new Set();
+  // Надгробия отдельно: родитель, которого мы удалили, обязательства не создаёт,
+  // даже если его id остался в старых строках журнала.
+  const tombstones = new Set();
   for (const comment of comments) {
+    if (isTombstone(comment)) {
+      if (comment && comment.id) tombstones.add(String(comment.id));
+      continue;
+    }
     if (mine(comment.author) && isPublishedStatus(comment.verification_status)) {
       if (comment.parent_id) answered.add(comment.parent_id);
       oursPublished.add(String(comment.id));
     }
   }
+  // Ответы, которые журнал уже знает по our_reply_id. Родитель мог исчезнуть из
+  // прочитанного куска - сортировки отдают не весь тред, - но вопрос от этого
+  // не перестаёт быть вопросом к нам. Без этого ответы на такой родитель
+  // молча выпадали из очереди: «родителя не видно» читалось как «родитель удалён».
+  const known = publishedIds(knownReplyIds);
+  const present = new Set(comments.map((comment) => String(comment && comment.id)));
   const candidates = [];
+  const unseenParents = [];
   for (const comment of comments) {
     if (mine(comment.author)) continue;
     // Надгробие - это не вопрос. Удалённый комментарий остаётся в дереве с
@@ -635,10 +678,21 @@ export function pickCandidates(comments, ourName) {
     // Вложенный берём только когда он отвечает на наш комментарий. Раньше любой
     // parent_id отсекался, и скан физически не видел адресных нам ответов:
     // очередь из сотни сообщений выглядела для агента как пустая лента.
-    if (parentId && !oursPublished.has(parentId)) continue;
+    if (parentId && !oursPublished.has(parentId) && !(known.has(parentId) && !tombstones.has(parentId))) {
+      // Родителя нет в прочитанном куске - это не «удалён», а «не видно».
+      // Такой случай отдаём наружу отдельно: молча терять вопрос нельзя.
+      if (!present.has(parentId)) {
+        unseenParents.push({
+          postId: String(comment.post_id || ""),
+          commentId: String(comment.id),
+          parentId: parentId,
+        });
+      }
+      continue;
+    }
     candidates.push(comment);
   }
-  return { candidates, answeredCount: answered.size, oursPublished };
+  return { candidates, answeredCount: answered.size, oursPublished, unseenParents };
 }
 
 /**
@@ -1019,12 +1073,16 @@ export const GEO_BLOCK_REASON =
  * Раньше любой `parent_id` отсекался, и такие ответы в журнал не попадали вовсе:
  * скан их не видел, отчёт молчал, агент думал, что ответа ему никто не даёт.
  */
-export function scanStatus(comment, ourPublished) {
+export function scanStatus(comment, ourPublished, knownReplyIds) {
   if (!comment || !comment.id) return COMMENT_STATUS.SKIPPED;
   if (String(comment.author || "").trim().toLowerCase() === MOLTBOOK_NAME) return COMMENT_STATUS.SKIPPED;
   const parentId = comment.parent_id ? String(comment.parent_id) : null;
   if (!parentId) return COMMENT_STATUS.NEW;
-  return publishedIds(ourPublished).has(parentId) ? COMMENT_STATUS.NEW : COMMENT_STATUS.SKIPPED;
+  // Родитель, которого нет в прочитанном куске, но чей id журнал помнит как наш
+  // ответ, - всё равно наш родитель: вопрос к нам, а не к пустоте.
+  return publishedIds(ourPublished).has(parentId) || publishedIds(knownReplyIds).has(parentId)
+    ? COMMENT_STATUS.NEW
+    : COMMENT_STATUS.SKIPPED;
 }
 
 /**
@@ -1037,7 +1095,9 @@ export function publishedIds(ours) {
 }
 
 export function writeScan(db, posts, comments, now, ourPostIds = [], partialPostIds = []) {
-  if (!db) return { postsWritten: 0, commentsWritten: 0, commentsSeen: 0, refused: "ledger-missing" };
+  if (!db) {
+    return { postsWritten: 0, commentsWritten: 0, commentsSeen: 0, ourReplyIds: [], refused: "ledger-missing" };
+  }
   let postsWritten = 0;
   let commentsWritten = 0;
   let attempted = 0;
@@ -1061,15 +1121,24 @@ export function writeScan(db, posts, comments, now, ourPostIds = [], partialPost
     "INSERT OR IGNORE INTO posts (id,title,author,ours,repost_of,comments_total,upvotes,seen_at,updated_at)" +
       " VALUES (?,?,?,?,?,?,?,?,?)",
   );
+  // Колонки родителя появляются лениво: схему comments создаёт Kotlin и о них
+  // не знает, как и о resume_target. Без них скан не смог бы запомнить, что
+  // родитель был прочитан (visible), удалён (gone) или просто не попал в выдачу
+  // (unseen) - а это три разных факта, и путать их нельзя.
+  ensureParentColumns(db);
   const insertComment = db.prepare(
-    "INSERT OR IGNORE INTO comments (id,post_id,author,body,created_at,status,our_reply_id,summary_ru,seen_at,replied_at,reply_outcome)" +
-      " VALUES (?,?,?,?,?,?,NULL,'',?,0,'')",
+    "INSERT OR IGNORE INTO comments (id,post_id,author,body,created_at,status,our_reply_id,summary_ru,seen_at,replied_at,reply_outcome,parent_id,parent_state)" +
+      " VALUES (?,?,?,?,?,?,NULL,'',?,0,'',?,?)",
   );
   // Тело и seen_at обновляются у новых и пропущенных строк, но НЕ у failed.
   // seen_at у провала пишет только markFailed: если бы скан подновлял его
   // каждый раз, старый провал снова и снова попадал бы в «провалы за окно»,
   // и счётчик не убывал бы никогда.
-  const touchComment = db.prepare("UPDATE comments SET body=?, seen_at=? WHERE id=? AND UPPER(status) NOT IN ('POSTED','FAILED')");
+  const touchComment = db.prepare(
+    "UPDATE comments SET body=?, seen_at=?," +
+      " parent_state = CASE WHEN ? IN ('visible','gone') THEN ? ELSE parent_state END" +
+      " WHERE id=? AND UPPER(status) NOT IN ('POSTED','FAILED')",
+  );
   // Ответ на наш комментарий - это вопрос к нам, и он должен вернуться в NEW,
   // даже если в прошлом тике был записан как SKIPPED. Ответ на него (our_reply_id)
   // вопрос закрывает, поэтому такую строку не поднимаем.
@@ -1085,6 +1154,14 @@ export function writeScan(db, posts, comments, now, ourPostIds = [], partialPost
     if (String(comment.author || "").trim().toLowerCase() !== MOLTBOOK_NAME) continue;
     if (isPublishedStatus(comment.verification_status)) oursPublished.add(String(comment.id));
   }
+  // id наших опубликованных комментариев, которые журнал помнит, даже когда их
+  // нет в прочитанном куске треда: родитель мог уехать из выдачи (sort=new
+  // отстаёт) или попасть за limit. Ответ на такой родитель - всё ещё вопрос к
+  // нам, и отсутствие родителя в снимке не повод молчать.
+  const ourReplyIds = db
+    .prepare("SELECT our_reply_id AS id FROM comments WHERE our_reply_id IS NOT NULL AND our_reply_id != ''")
+    .all()
+    .map((row) => String(row.id));
   // Явные BEGIN/COMMIT, а не db.transaction(): этот файл проверяется обычным node,
   // где движок - node:sqlite, а у него нет .transaction(). Транзакция всё равно одна.
   db.exec("BEGIN");
@@ -1129,7 +1206,8 @@ export function writeScan(db, posts, comments, now, ourPostIds = [], partialPost
     }
     for (const comment of comments) {
       if (!comment.post_id) continue;
-      const status = scanStatus(comment, oursPublished);
+      const status = scanStatus(comment, oursPublished, ourReplyIds);
+      const parent = parentState(comments, comment.parent_id);
       insertComment.run(
         comment.id,
         comment.post_id,
@@ -1138,11 +1216,15 @@ export function writeScan(db, posts, comments, now, ourPostIds = [], partialPost
         comment.created_at,
         status,
         now,
+        parent.parent_id,
+        parent.parent_state,
       );
       attempted += 1;
       // Строка могла уже быть - тогда обновляем тело и время просмотра, но НЕ
       // трогаем status/our_reply_id/replied_at/reply_outcome (см. доки above).
-      touchComment.run(comment.body, now, comment.id);
+      // Состояние родителя поднимается только до visible/gone: «его нет в этом
+      // снимке» не должно затирать факт, что он был виден раньше.
+      touchComment.run(comment.body, now, parent.parent_state, parent.parent_state, comment.id);
       // Ответ на наш комментарий, записанный раньше как SKIPPED, поднимаем в NEW:
       // в тот тик наш комментарий ещё не был опубликован, и INSERT OR IGNORE
       // существующую строку не переписывает - вопрос остался бы в журнале навсегда
@@ -1169,6 +1251,9 @@ export function writeScan(db, posts, comments, now, ourPostIds = [], partialPost
     // были, а строк не появилось» - то есть потеря. Именно так выглядел баг с
     // NaN в created_at: attempted 400, written 0.
     commentsSeen: attempted,
+    // Пригодится вызывающему: по этим id видно ответы, чей родитель уже уехал
+    // из выдачи, и такие ответы нельзя терять.
+    ourReplyIds,
     refused: null,
   };
 }
@@ -1433,7 +1518,7 @@ export async function moltbookScan(deps) {
   for (const post of posts) seenByPost[post.id] = true;
   for (const postId of noticePosts) seenByPost[postId] = true;
   const fresh = allComments.filter((c) => seenByPost[c.post_id]);
-  const picked = pickCandidates(fresh, MOLTBOOK_NAME);
+  const picked = pickCandidates(fresh, MOLTBOOK_NAME, written.ourReplyIds);
 
   let karma = null;
   let unread = null;
@@ -1520,6 +1605,10 @@ export async function moltbookScan(deps) {
       body: c.body.slice(0, 400),
     })),
     answerable: picked.candidates.length,
+    // Родитель ответа не виден в прочитанном куске треда. Это не «родителя нет»:
+    // журнал помнит его id как наш ответ, значит обязательство остаётся. Ветку
+    // нельзя ни прочитать, ни закрыть - только показать как невидимую.
+    unseen_parents: { total: picked.unseenParents.length, ids: picked.unseenParents.slice(0, 20) },
     // Сколько русских текстов доехало в этом круге. Не «сколько всего»: панель
     // показывает переведённое, а сколько ещё в очереди - видно по заголовку.
     translation: { attempted: translation.attempted, translated: translation.translated, skipped: translation.skipped },
@@ -1799,12 +1888,17 @@ export function ourAnswerFor(comments, parentId, ourName, knownReplyId) {
  * длжно сохраняться как доказательство.
  */
 const RECORD_SQL =
-  "INSERT INTO comments (id,post_id,author,body,created_at,status,our_reply_id,summary_ru,seen_at,replied_at,reply_outcome)" +
-  " VALUES (?,?,?,?,?,?,?,'',?,?,?)" +
+  "INSERT INTO comments (id,post_id,author,body,created_at,status,our_reply_id,summary_ru,seen_at,replied_at,reply_outcome,parent_id,parent_state)" +
+  " VALUES (?,?,?,?,?,?,?,'',?,?,?,?,?)" +
   " ON CONFLICT(id) DO UPDATE SET status = excluded.status," +
   " our_reply_id = COALESCE(excluded.our_reply_id, comments.our_reply_id)," +
   " reply_outcome = CASE WHEN excluded.reply_outcome = '' THEN comments.reply_outcome ELSE excluded.reply_outcome END," +
   " replied_at = CASE WHEN excluded.replied_at = 0 THEN comments.replied_at ELSE excluded.replied_at END," +
+  // Состояние родителя не затирается пустым: строка, записанная ответом на
+  // вложенный комментарий, не должна терять факт «родитель был виден» только
+  // потому, что журнал пишут из места, где тред уже не читали.
+  " parent_id = CASE WHEN excluded.parent_id = '' THEN comments.parent_id ELSE excluded.parent_id END," +
+  " parent_state = CASE WHEN excluded.parent_state = '' THEN comments.parent_state ELSE excluded.parent_state END," +
   " seen_at = excluded.seen_at" +
   // Записанная posted строка не переписывается: тело ответа — это доказательство,
   // и потерять его нельзя. Единственный пропускаемый переход — created -> verified,
@@ -1813,6 +1907,7 @@ const RECORD_SQL =
 
 export function recordComment(db, row) {
   if (!db || !row || !row.id) return false;
+  ensureParentColumns(db);
   const known = db.prepare("SELECT author FROM comments WHERE id = ?").get(String(row.id));
   const author = String(row.author || (known && known.author) || "").trim();
   // Автор нужен только на вставку: pendingReplies отдаст пустый автор
@@ -1838,6 +1933,8 @@ const stmt = db.prepare(RECORD_SQL);
     // и не должен попасть в счётчик работы.
     repliedAt,
     String(row.reply_outcome || ""),
+    String(row.parent_id || ""),
+    String(row.parent_state || ""),
   ).changes > 0;
   if (changed) return true;
   // Ничего не изменилось - но это не обязательно отказ. Запись могла уже стоять
@@ -1920,6 +2017,35 @@ export function ensureResumeTargetColumn(db) {
   } catch (_) {
     return false;
   }
+}
+
+/**
+ * Заводит колонки родителя, если их ещё нет.
+ *
+ * Три состояния родителя - это три разных факта, и хранить их в одном поле
+ * нельзя: «в выдаче его нет» не значит «он удалён». Unseen-родитель оставляет
+ * обязательство ответить, gone-родитель его снимает. Схему comments создаёт
+ * Kotlin и про эти колонки не знает, поэтому, как и resume_target, плагин
+ * добавляет их сам при первой записи.
+ */
+export function ensureParentColumns(db) {
+  if (!db) return false;
+  let ok = true;
+  if (!hasCommentColumn(db, PARENT_ID_COLUMN)) {
+    try {
+      db.exec("ALTER TABLE comments ADD COLUMN " + PARENT_ID_COLUMN + " TEXT NOT NULL DEFAULT ''");
+    } catch (_) {
+      ok = false;
+    }
+  }
+  if (!hasCommentColumn(db, PARENT_STATE_COLUMN)) {
+    try {
+      db.exec("ALTER TABLE comments ADD COLUMN " + PARENT_STATE_COLUMN + " TEXT NOT NULL DEFAULT ''");
+    } catch (_) {
+      ok = false;
+    }
+  }
+  return ok;
 }
 
 /**
@@ -2156,16 +2282,18 @@ export function appendVerifier(kind, at, postId, detail) {
 }
 
 /** POST с телом. Архивирует сырой ответ тем же способом, что и GET. */
-export async function postRaw(key, path, payload) {
+export async function postRaw(key, path, payload, requestKey) {
   const at = Date.now();
   try {
-    const { ok, status, body, headers } = await fetchWithTimeout(MOLTBOOK_HOST + path, {
+    const headers = { Authorization: "Bearer " + key, "Content-Type": "application/json" };
+    if (requestKey) headers["Idempotency-Key"] = requestKey;
+    const { ok, status, body, headers: responseHeaders } = await fetchWithTimeout(MOLTBOOK_HOST + path, {
       method: "POST",
-      headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(payload),
     });
     archiveRaw(MOLTBOOK_DIR ? join(MOLTBOOK_DIR, RAW_DIR_NAME) : "", at, path, status, body, "POST");
-    return { ok, status, path, at, body, headers };
+    return { ok, status, path, at, body, headers: responseHeaders };
   } catch (error) {
     archiveRaw(MOLTBOOK_DIR ? join(MOLTBOOK_DIR, RAW_DIR_NAME) : "", at, path, 0, String(error), "POST");
     return { ok: false, status: 0, path, at, body: "", error: String((error && error.message) || error) };
@@ -2179,15 +2307,17 @@ export async function postRaw(key, path, payload) {
  * отвечает `{"success":true}`, а комментарий остаётся публичным. Поэтому
  * удаление подтверждается только повторным чтением треда (см. moltbookDelete).
  */
-export async function deleteRaw(key, path) {
+export async function deleteRaw(key, path, requestKey) {
   const at = Date.now();
   try {
-    const { ok, status, body, headers } = await fetchWithTimeout(MOLTBOOK_HOST + path, {
+    const headers = { Authorization: "Bearer " + key };
+    if (requestKey) headers["Idempotency-Key"] = requestKey;
+    const { ok, status, body, headers: responseHeaders } = await fetchWithTimeout(MOLTBOOK_HOST + path, {
       method: "DELETE",
-      headers: { Authorization: "Bearer " + key },
+      headers,
     });
     archiveRaw(MOLTBOOK_DIR ? join(MOLTBOOK_DIR, RAW_DIR_NAME) : "", at, path, status, body, "DELETE");
-    return { ok, status, path, at, body, headers };
+    return { ok, status, path, at, body, headers: responseHeaders };
   } catch (error) {
     archiveRaw(MOLTBOOK_DIR ? join(MOLTBOOK_DIR, RAW_DIR_NAME) : "", at, path, 0, String(error), "DELETE");
     return { ok: false, status: 0, path, at, body: "", error: String((error && error.message) || error) };
@@ -2652,8 +2782,19 @@ export async function moltbookPublish(args, deps) {
   // Попытка записи засчитывается ДО запроса: сервер считает в свой лимит любой
   // дошедший запрос, и наш счётчик должен считать так же.
   noteWriteAttempt(openDb, now);
+  // Ключ идемпотентности: одинаковый текст в тот же родитель даёт тот же ключ,
+  // поэтому повтор после таймаута не может создать второй комментарий - если
+  // сервер ключ поддерживает. Поддержка пока не подтверждена: заголовок безвреден,
+  // но полагаться на него нельзя, дедуп по тексту остаётся основным доказательством.
+  const requestKey = parentId
+    ? "reply-" + simpleHash(postId + "|" + parentId + "|" + content)
+    : "root-" + simpleHash(postId + "|" + content);
+  const finish = (result) => {
+    result.idempotency_key = requestKey;
+    return result;
+  };
   const payload = parentId ? { content, parent_id: parentId } : { content };
-  const posted = await send(key, "/api/v1/posts/" + postId + "/comments", payload);
+  const posted = await send(key, "/api/v1/posts/" + postId + "/comments", payload, requestKey);
   requests.push({ path: posted.path, status: posted.status, ok: posted.ok });
   const outcome = parsePostOutcome(posted.body);
 
@@ -2672,7 +2813,7 @@ export async function moltbookPublish(args, deps) {
         "id=" + outcome.commentId + " reused" +
           (outcome.dedup ? " дедуп по тексту: " + String(outcome.message || "").slice(0, ATTEMPT_TEXT_CHARS) : ""),
       );
-      return replyResult("reused", outcome.commentId, postId, parentId, now, requests, refusals, written.counted);
+      return finish(replyResult("reused", outcome.commentId, postId, parentId, now, requests, refusals, written.counted));
     }
     if (verdict === "misparented") {
       journal((db) => markFailed(db, parentId, now, { post_id: postId, ...parentRow }));
@@ -2682,11 +2823,11 @@ export async function moltbookPublish(args, deps) {
         postId,
         "dedup-alias parent=" + parentId + " actual=" + (outcome.parentId || "unknown-parent") + " id=" + outcome.commentId,
       );
-      return replyResult("misparented", outcome.commentId, postId, parentId, now, requests, refusals, false);
+      return finish(replyResult("misparented", outcome.commentId, postId, parentId, now, requests, refusals, false));
     }
     refusals.push("our-unpublished-answer");
     journal((db) => markFailed(db, parentId, now, { post_id: postId, ...parentRow }));
-    return replyResult("blocked", outcome.commentId, postId, parentId, now, requests, refusals, false);
+    return finish(replyResult("blocked", outcome.commentId, postId, parentId, now, requests, refusals, false));
   }
 
   if (outcome.kind === "rejected") {
@@ -2711,13 +2852,13 @@ export async function moltbookPublish(args, deps) {
       deferred.reason =
         "Ответ отложен: родитель " + parentId + " лежит ниже капа глубины (" + KNOWN_LIMITS.DEPTH_CAP + "), и молтбук его не принял. " +
         "Повторить ответ на верхнем уровне треда " + postId + resumeAdvice(targetCommentId);
-      return deferred;
+      return finish(deferred);
     }
     refusals.push("post-rejected");
     journal((db) => markFailed(db, parentId, now, { post_id: postId, ...parentRow }));
     const rejected = replyResult("rejected", "", postId, parentId, now, requests, refusals, false);
     rejected.reason = outcome.message;
-    return rejected;
+    return finish(rejected);
   }
 
   if (outcome.kind === "challenge") {
@@ -2727,7 +2868,7 @@ export async function moltbookPublish(args, deps) {
     appendVerifier(VERIFIER_KIND.REFUSED, now, postId, "id=" + outcome.commentId + " ждёт проверки");
     const challenged = replyResult("challenge", outcome.commentId, postId, parentId, now, requests, refusals, false);
     challenged.challenge = outcome.challenge;
-    return challenged;
+    return finish(challenged);
   }
 
   const confirmed = await confirmComment(get, key, postId, outcome.commentId, parentId);
@@ -2752,7 +2893,7 @@ export async function moltbookPublish(args, deps) {
   const created = replyResult(kind === VERIFIER_KIND.CONFIRMED ? "created" : "unconfirmed", outcome.commentId, postId, parentId, now, requests, refusals, kind === VERIFIER_KIND.CONFIRMED && written.counted);
   created.verifier = kind;
   created.server_status = confirmed.status;
-  return created;
+  return finish(created);
 }
 
 /**
@@ -3002,8 +3143,12 @@ export async function moltbookDelete(args, deps) {
   // Попытка записи засчитывается ДО запроса: сервер считает в свой лимит любой
   // дошедший DELETE, и наш счётчик должен считать так же.
   noteWriteAttempt(openDb, now);
-  const removed = await remove(key, "/api/v1/comments/" + commentId);
-  requests.push({ path: removed.path, status: removed.status, ok: removed.ok });
+  // Ключ идемпотентности: удаление идемпотентно по своей природе - повтор
+  // DELETE того же id не создаёт новой работы. Поддержку ключа сервером не
+  // проверяли, поэтому заголовок безвреден, но не доказательство.
+  const requestKey = "delete-" + commentId;
+  const removed = await remove(key, "/api/v1/comments/" + commentId, requestKey);
+  requests.push({ path: removed.path, status: removed.status, ok: removed.ok, idempotency_key: requestKey });
   // «Comment not found» - это ответ сервера на удаление того, чего уже нет.
   // Живая проба 20.10.2026: 403 и тело {"message":"Comment not found"}.
   // Это НЕ отказ и не ошибка удаления: комментария нет, и повторный DELETE
@@ -3043,6 +3188,7 @@ export async function moltbookDelete(args, deps) {
     deleting.reason =
       "сервер подтвердил удаление, но тред после DELETE не прочитан: мягкое удаление применяется с задержкой - проверь тред позже";
     deleting.server_message = String(removed.body || "").slice(0, SERVER_MESSAGE_CHARS);
+    deleting.idempotency_key = requestKey;
     return deleting;
   }
   // Четыре состояния после повторного чтения. Узел может остаться в дереве -
@@ -3068,6 +3214,7 @@ export async function moltbookDelete(args, deps) {
       "сервер подтвердил удаление, но тело комментария ещё видно: мягкое удаление применяется с задержкой " +
       "(живая проверка 20.10.2026: тело пропало через несколько минут). Проверь тред позже";
     deleting.server_message = String(removed.body || "").slice(0, SERVER_MESSAGE_CHARS);
+    deleting.idempotency_key = requestKey;
     return deleting;
   }
   const soft = Boolean(left);
@@ -3085,6 +3232,7 @@ export async function moltbookDelete(args, deps) {
   writeReply(openDb, (db) => markDeleted(db, commentId, now), refusals);
   const deleted = replyResult("deleted", commentId, postId, "", now, requests, refusals, false);
   deleted.soft_delete = soft;
+  deleted.idempotency_key = requestKey;
   deleted.reason = soft
     ? "комментарий удалён: сервер оставил вместо него надпись «" + TOMBSTONE_TEXT +
       "» - тела нет, удаление подтверждено, но след в дереве виден"
@@ -3367,6 +3515,18 @@ export function countPending(rows, ourName) {
 }
 
 /**
+ * Родители, которых не видно в прочитанном куске треда.
+ *
+ * `parent_state = unseen` - это НЕ «родитель удалён»: сервер не показал его
+ * в выдаче, а журнал помнит его id как наш ответ. Обязательство остаётся,
+ * закрыть его нечем - поэтому такие строки идут в отчёт отдельным разделом.
+ */
+export function unseenParentRows(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  return list.filter((row) => String(row.parent_state || "") === PARENT_UNSEEN);
+}
+
+/**
  * Доказательство живости: дошли ли мы до источника.
  *
  * Пустой отчёт читается как «нечего делать», а на деле это может быть
@@ -3481,6 +3641,7 @@ export function renderReport(data) {
   const refusals = Array.isArray(data.refusals) ? data.refusals : [];
   const unreadable = Number(data.unreadable || 0);
   const notes = Array.isArray(data.notes) ? data.notes : [];
+  const unseen = Array.isArray(data.unseen) ? data.unseen : [];
   const done = work.created.length + work.verified.length;
   // Раздел «Отложено» и счётчики в «Итоге» считаются от одного и того же
   // момента (data.to). Иначе строка «(просрочено)» в разделе противоречила бы
@@ -3566,6 +3727,16 @@ export function renderReport(data) {
     for (const item of pending) {
       out.push(line("пост " + item.postId + " / коммент " + item.commentId + " от " + item.author +
         " — " + item.body.replace(/\s+/g, " ")));
+    }
+  }
+  out.push("");
+  out.push("## Родитель не виден");
+  if (unseen.length === 0) {
+    out.push("- таких нет");
+  } else {
+    for (const item of unseen) {
+      out.push(line("пост " + item.post_id + " / наш коммент " + item.id + " от " + item.author +
+        " — родителя нет в прочитанном куске треда (это не «удалён»): обязательство остаётся"));
     }
   }
   out.push("");
@@ -3670,10 +3841,11 @@ const REPORT_COLUMNS = [
  * Колонки, которых в старой базе нет, заменяются пустой строкой: отчёт должен
  * собраться и на базе, где их ещё не заводили.
  */
-function reportRows(db, hasReplyOutcome, hasResumeTarget) {
+function reportRows(db, hasReplyOutcome, hasResumeTarget, hasParentState) {
   const columns = REPORT_COLUMNS.concat([
     hasReplyOutcome ? "reply_outcome" : "''",
     hasResumeTarget ? "resume_target" : "''",
+    hasParentState ? "parent_state" : "''",
   ]);
   return db.prepare("SELECT " + columns.join(", ") + " FROM comments").all();
 }
@@ -3727,10 +3899,12 @@ export async function moltbookReport(args, deps) {
     // node:sqlite, ни у настоящего движка на некоторых сборках.
     const hasReplyOutcome = hasCommentColumn(opened.db, "reply_outcome");
     const hasResumeTarget = hasCommentColumn(opened.db, RESUME_TARGET_COLUMN);
-    const rows = reportRows(opened.db, hasReplyOutcome, hasResumeTarget);
+    const hasParentState = hasCommentColumn(opened.db, PARENT_STATE_COLUMN);
+    const rows = reportRows(opened.db, hasReplyOutcome, hasResumeTarget, hasParentState);
     const work = projectWork(rows, window.from, window.to);
     const pending = pendingQuestions(rows, MOLTBOOK_NAME, options.pendingLimit);
     const pendingTotal = countPending(rows, MOLTBOOK_NAME);
+    const unseenRows = unseenParentRows(rows);
     const liveness = livenessProof(rows);
     const observed = verifierRecords(window.from);
     const externalDir = String(process.env.MCP_MOLTBOOK_REPORT_DIR || "");
@@ -3747,6 +3921,7 @@ export async function moltbookReport(args, deps) {
       work,
       pending,
       pendingTotal,
+      unseen: unseenRows,
       liveness,
       refusals: observed.refusals,
       unreadable: observed.unreadable,
@@ -3778,6 +3953,7 @@ export async function moltbookReport(args, deps) {
       liveness,
       pending: pendingTotal,
       pendingShown: pending.length,
+      unseen: unseenRows.length,
       refusals: observed.refusals.length,
       notes,
       unreadableVerifierLines: observed.unreadable,

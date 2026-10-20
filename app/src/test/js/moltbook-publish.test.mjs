@@ -114,8 +114,10 @@ function deps(file, script) {
     openDb: () => ({ db: new DatabaseSync(file), path: file }),
     posts: posts,
     calls: [],
-    send: async (key, path, payload) => {
+    keys: [],
+    send: async (key, path, payload, requestKey) => {
       api.calls.push(path);
+      api.keys.push(requestKey);
       const next = posts[postIndex++];
       const text = typeof next === "function" ? next(path, payload) : next.body;
       return { ok: true, status: next.status || 200, path, at: AT, body: text };
@@ -1044,6 +1046,34 @@ function countRows(file) {
   eq(r.outcome, "reused", "дедуп корневого комментария - это reused");
   eq(r.comment_id, "c-root-dup", "и он несёт существующий id");
   eq(r.refusals.indexOf("our-unpublished-answer"), -1, "our-unpublished-answer не примешивается");
+}
+
+// ---- 2e. ключ идемпотентности описывает запрос, а не момент ------------------------
+// Серверная поддержка заголовка не подтверждена, поэтому проверяем то, что
+// зависит от нас: ключ одинаков для того же текста и уходит в запрос.
+{
+  const call = async (content) => {
+    const file = fresh();
+    seed(file, "DELETE FROM comments");
+    const d = deps(file, {
+      threads: { new: [threadBody([]), threadBody([ourAnswer("c-k", "", "verified")])] },
+      posts: [
+        {
+          status: 201,
+          body: JSON.stringify({ success: true, comment: { id: "c-k", verification_status: "verified" } }),
+        },
+      ],
+    });
+    const r = await m.moltbookPublish({ post_id: POST, content }, d);
+    return { result: r, sentKey: d.keys[0] };
+  };
+  const first = await call("one and the same");
+  const again = await call("one and the same");
+  const other = await call("a different thing");
+  truthy(String(first.result.idempotency_key || "").startsWith("root-"), "корневой ключ помечен как корневой");
+  eq(first.sentKey, first.result.idempotency_key, "ключ, который видит вызывающий, ушёл в запрос");
+  eq(again.result.idempotency_key, first.result.idempotency_key, "тот же текст - тот же ключ");
+  eq(other.result.idempotency_key === first.result.idempotency_key, false, "другой текст - другой ключ");
 }
 
 for (const f of failures) console.log("  FAIL " + f);

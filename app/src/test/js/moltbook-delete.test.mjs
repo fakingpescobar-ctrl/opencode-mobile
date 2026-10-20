@@ -85,14 +85,16 @@ function deps(threads, deleteResponse) {
     now: () => AT,
     key: () => "K",
     calls: [],
+    keys: [],
     get: async (key, path) => {
       api.calls.push("GET " + path);
       if (index < 0 || path.indexOf("sort=new") >= 0) index += 1;
       const body = threads[Math.min(index, threads.length - 1)];
       return { ok: true, status: 200, path, at: AT, body: String(body === undefined ? "" : body) };
     },
-    delete: async (key, path) => {
+    delete: async (key, path, requestKey) => {
       api.calls.push("DELETE " + path);
+      api.keys.push(requestKey);
       return Object.assign(
         { ok: true, status: 200, path, at: AT, body: JSON.stringify({ success: true }) },
         deleteResponse || {},
@@ -155,6 +157,8 @@ await test("a confirmed delete with a visible body is a deletion in progress", a
   truthy(String(r.reason || "").indexOf("позже") >= 0, "and tells the agent to check later");
   eq(typeof r.server_message, "string", "the server answer is attached, cut to 200 characters");
   eq(r.server_message.length <= 200, true, "the server answer is cut to 200 characters");
+  eq(d.keys, ["delete-c-p"], "the deletion carries a key the server can dedupe on");
+  eq(r.idempotency_key, "delete-c-p", "and the caller sees the same key");
 });
 
 // ---- 6. a deletion is confirmed by the re-read of the thread ------------------------

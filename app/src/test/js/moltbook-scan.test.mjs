@@ -20,7 +20,7 @@ function join4(...parts) {
   return parts.join("/").replace(/\\/g, "/").replace(/\/+/g, "/");
 }
 
-const { writeScan, countReportable, COMMENT_STATUS, REPLY_OUTCOME, isGeoBlocked, unreadableRefusal, moltbookScan, resolveDeleteWaits } = await import(
+const { writeScan, countReportable, COMMENT_STATUS, REPLY_OUTCOME, isGeoBlocked, unreadableRefusal, moltbookScan, resolveDeleteWaits, parentState, pickCandidates, PARENT_VISIBLE, PARENT_GONE, PARENT_UNSEEN } = await import(
   pathToFileURL(MOLTBOOK_JS).href
 );
 
@@ -195,7 +195,7 @@ await test("a scan with nothing to write is not a failure", () => {
   // commentsSeen - сколько дошло до записи. Он нужен, чтобы отличить «в тредах
   // пусто» от «дошло, но не записалось»: молчаливый ноль в commentsWritten
   // выглядит одинаково, и именно этим прикрывался баг с датой.
-  eq(written, { postsWritten: 0, commentsWritten: 0, commentsSeen: 0, refused: null });
+  eq(written, { postsWritten: 0, commentsWritten: 0, commentsSeen: 0, ourReplyIds: [], refused: null });
 });
 
 await test("no ledger at all is a refusal, not an exception", () => {
@@ -203,6 +203,7 @@ await test("no ledger at all is a refusal, not an exception", () => {
     postsWritten: 0,
     commentsWritten: 0,
     commentsSeen: 0,
+    ourReplyIds: [],
     refused: "ledger-missing",
   });
 });
@@ -451,6 +452,58 @@ await test("a comment the scan did not see changes nothing", () => {
   const row = db.prepare("SELECT status, reply_outcome FROM comments WHERE id = 'c-dead'").get();
   eq(row.reply_outcome, "deleting", "the wait is still waiting");
   db.close();
+});
+
+// Три состояния родителя - три разных факта. «Не виден» и «удалён» раньше
+// выглядели одинаково, и вопрос либо хоронили, либо держали обязательство
+// по мёртвой ветке.
+await test("a parent is visible, gone or merely unseen - three different facts", () => {
+  const thread = [
+    { id: "c-root", author: "alice", body: "q" },
+    { id: "c-dead", author: "bob", body: "Deleted comment", is_deleted: true },
+  ];
+  eq(parentState(thread, "c-root"), { parent_id: "c-root", parent_state: PARENT_VISIBLE });
+  eq(parentState(thread, "c-dead"), { parent_id: "c-dead", parent_state: PARENT_GONE });
+  eq(parentState(thread, "c-away"), { parent_id: "c-away", parent_state: PARENT_UNSEEN });
+  eq(parentState(thread, ""), { parent_id: "", parent_state: "" });
+});
+
+await test("a scan writes down that the parent was not seen instead of forgetting the question", () => {
+  const db = freshDb();
+  const orphan = { ...COMMENT, id: "c-2", parent_id: "c-away", body: "answer to us" };
+  const written = writeScan(db, [POST], [COMMENT, orphan], 500);
+  const row = db.prepare("SELECT parent_id, parent_state FROM comments WHERE id = 'c-2'").get();
+  eq(row.parent_id, "c-away", "the missing parent id is kept");
+  eq(row.parent_state, PARENT_UNSEEN, "absent is not the same as deleted");
+  eq(written.ourReplyIds, [], "and the journal knows of no reply of ours yet");
+  db.close();
+});
+
+// Родитель выпал из прочитанного куска треда, но журнал помнит, что это наш
+// ответ - значит нам и отвечают. Без этого такие вопросы молча пропадали.
+await test("a reply to our comment stays a question when the parent fell out of the thread", () => {
+  const db = freshDb();
+  db.prepare(
+    "INSERT INTO comments (id,post_id,author,body,created_at,status,our_reply_id,summary_ru,seen_at,replied_at,reply_outcome)" +
+      " VALUES (?,?,?,?,?,?,?,'',?,?,?)",
+  ).run("q-0", "p-1", "alice", "q", 100, "POSTED", "c-ours", 500, 500, "created");
+  const reply = { ...COMMENT, id: "c-rep", parent_id: "c-ours", body: "answer to you" };
+  const written = writeScan(db, [POST], [reply], 500);
+  eq(written.ourReplyIds, ["c-ours"], "the journal remembers its own reply");
+  const row = db.prepare("SELECT status, parent_state FROM comments WHERE id = 'c-rep'").get();
+  eq(row.status, COMMENT_STATUS.NEW, "so the answer is still work to do");
+  eq(row.parent_state, PARENT_UNSEEN, "even though its parent is not in the window");
+  db.close();
+});
+
+await test("candidates name the unseen parent instead of dropping it silently", () => {
+  const picked = pickCandidates(
+    [{ id: "c-2", post_id: "p-1", author: "bob", body: "answer to us", parent_id: "c-away", verification_status: "verified" }],
+    "opencodekz",
+    [],
+  );
+  eq(picked.candidates.length, 0, "an unanchored nested comment is not queued");
+  eq(picked.unseenParents, [{ postId: "p-1", commentId: "c-2", parentId: "c-away" }], "but it is reported");
 });
 
 console.log("");

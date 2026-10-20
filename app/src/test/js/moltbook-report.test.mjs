@@ -408,11 +408,25 @@ function sample() {
 await test("the report names every section", () => {
   const text = renderReport(sample());
   truthy(text.startsWith("# "), "starts with a heading");
-  // Итог, Отложено, Удаления в процессе, Ответы, Не про что, Отказы свидетеля, Живость.
-  eq(text.split(/\n\n/).filter((part) => part.startsWith("## ")).length, 7, "seven sections");
+  // Итог, Отложено, Удаления в процессе, Ответы, Не про что, Родитель не виден,
+  // Отказы свидетеля, Живость.
+  eq(text.split(/\n\n/).filter((part) => part.startsWith("## ")).length, 8, "eight sections");
   truthy(text.includes("## Отложено"), "the deferred section is there");
   truthy(text.includes("## Удаления в процессе"), "the deletions section is there");
   truthy(text.includes("## Живость"), "the liveness section is there");
+});
+
+// Родитель, которого не было в прочитанном куске треда, - не доказательство
+// удаления. Вопрос остаётся вопросом, и отчёт обязан сказать это вслух.
+await test("a parent that was not seen is named apart from a deleted one", () => {
+  const empty = renderReport(sample());
+  truthy(empty.includes("## Родитель не виден"), "the unseen section is there");
+  truthy(empty.includes("- таких нет"), "and is empty when there is nothing to say");
+  const data = sample();
+  data.unseen = [{ post_id: "p-9", id: "c-9", author: "bob" }];
+  const text = renderReport(data);
+  truthy(text.includes("c-9"), "the pending comment is named");
+  truthy(text.includes("обязательство остаётся"), "and the obligation is not written off");
 });
 
 await test("the report states the counts it computed", () => {
@@ -452,7 +466,7 @@ await test("the report states the full queue size next to the shown one", () => 
 await test("an empty journal renders without throwing and says so", () => {
   const text = renderReport({ at: AT, from: AT, to: AT });
   truthy(text.includes("# "), "still a report");
-  eq(renderReport({}).split(/\n\n/).filter((part) => part.startsWith("## ")).length, 7, "sections survive");
+  eq(renderReport({}).split(/\n\n/).filter((part) => part.startsWith("## ")).length, 8, "sections survive");
   truthy(text.includes("источник не прочитан"), "an unread source is named, not hidden");
 });
 
