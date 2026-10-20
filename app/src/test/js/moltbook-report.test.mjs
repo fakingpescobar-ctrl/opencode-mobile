@@ -37,6 +37,10 @@ const {
   parseVerifierLog,
   projectWork,
   pendingQuestions,
+  countPending,
+  livenessProof,
+  deferredDeadline,
+  DEFERRED_DEADLINE_MS,
   renderReport,
   writeReport,
   moltbookReport,
@@ -143,7 +147,7 @@ await test("an unreadable line is counted, never silently dropped", () => {
 });
 
 await test("every kind the plugin writes is understood by the reader", () => {
-  const kinds = ["confirmed", "mismatch", "refused", "divergence"];
+  const kinds = ["confirmed", "mismatch", "refused", "divergence", "attempt", "deleted"];
   const text = kinds.map((k, i) => (AT + i) + "s " + k + " post=p-" + i).join("\n");
   const parsed = parseVerifierLog(text);
   eq(parsed.unreadable, 0);
@@ -213,6 +217,114 @@ await test("no rows project to zeroes rather than to an error", () => {
   eq(projectWork(null, AT).created.length, 0);
 });
 
+// A refusal because of the depth cap is not a lost answer: it has to be
+// retried at the top level of the same thread. Mixed in with the failures it
+// would read as "everything is lost", and nobody would retry it.
+await test("a deferred answer is a list of its own, not a failure", () => {
+  const work = projectWork(
+    [
+      { id: "d-1", post_id: "p-1", status: COMMENT_STATUS.FAILED, reply_outcome: REPLY_OUTCOME.DEFERRED, replied_at: AT, seen_at: AT },
+      { id: "f-1", post_id: "p-1", status: COMMENT_STATUS.FAILED, reply_outcome: "", replied_at: 0, seen_at: AT },
+    ],
+    AT - 1000,
+    AT,
+  );
+  eq(work.deferred.map((r) => r.id), ["d-1"]);
+  eq(work.deferred[0].postId, "p-1");
+  eq(work.deferred[0].at, AT, "the moment of the refusal is kept");
+  // Отложенный ответ - это НЕ провал: работа не потеряна, её можно повторить.
+  // Пока он попадал и в провалы, и в отложенные, отчёт писал «провалов: N» и
+  // «отложено: M» про один и тот же ответ.
+  eq(work.failed.map((r) => r.id), ["f-1"], "a deferred row is not a failure");
+});
+
+// The same answer must not be counted twice: once as a failure and once as a
+// deferral. The two numbers stand side by side in the summary.
+await test("a deferred answer is not counted twice in the summary", () => {
+  const rows = [
+    { id: "d-1", post_id: "p-1", status: COMMENT_STATUS.FAILED, reply_outcome: REPLY_OUTCOME.DEFERRED, replied_at: AT, seen_at: AT },
+    { id: "f-1", post_id: "p-1", status: COMMENT_STATUS.FAILED, reply_outcome: "", replied_at: 0, seen_at: AT },
+  ];
+  const text = renderReport({ at: AT, from: AT - 1000, to: AT, work: projectWork(rows, AT - 1000, AT) });
+  truthy(text.includes("провалов записано: 1"), "one plain failure");
+  truthy(text.includes("отложено до повтора на верхнем уровне: 1"), "one deferral");
+});
+
+// The status of a deferred row never changes, so without a window it hung in
+// every report and the counter grew for ever. Once the deadline has passed the
+// row answers the window like every other row of the journal.
+await test("an expired deferral leaves the report with the window", () => {
+  const work = projectWork(
+    [{ id: "d-old", post_id: "p-1", status: COMMENT_STATUS.FAILED, reply_outcome: REPLY_OUTCOME.DEFERRED, replied_at: OLD, seen_at: OLD }],
+    AT - 1000,
+    AT,
+  );
+  eq(work.deferred.length, 0, "an expired deferral is not pending any more");
+  eq(work.overdue.length, 0, "and it is out of the window too");
+});
+
+// A deferral that is still within its deadline can still be retried, so it
+// stays visible even outside the window: otherwise nobody would retry it.
+await test("a deferral within its deadline stays visible past the window", () => {
+  const work = projectWork(
+    [{ id: "d-1", post_id: "p-1", status: COMMENT_STATUS.FAILED, reply_outcome: REPLY_OUTCOME.DEFERRED, replied_at: AT - 2 * 86_400_000, seen_at: AT - 2 * 86_400_000 }],
+    AT - 1000,
+    AT,
+  );
+  eq(work.deferred.length, 1, "a fresh deferral is still actionable");
+});
+
+await test("a deferred row without a timestamp has no deadline", () => {
+  eq(deferredDeadline(0, AT), "срок не установлен");
+  eq(deferredDeadline(undefined, AT), "срок не установлен");
+  const fresh = deferredDeadline(AT, AT);
+  eq(fresh.indexOf("просрочено"), -1, "a fresh deferral is not overdue");
+  eq(deferredDeadline(AT - 10 * 86_400_000, AT).indexOf("просрочено") > 0, true, "an old one is");
+});
+
+// An empty report and a dead cache look the same. The traces of the last
+// read are the only proof that we actually reached the source.
+await test("an empty journal proves nothing", () => {
+  const proof = livenessProof([]);
+  eq(proof.rows, 0);
+  eq(proof.lastSeenAt, 0);
+  eq(proof.newestId, "");
+  eq(proof.newestAt, 0);
+});
+
+await test("the liveness proof names the newest comment and the last scan", () => {
+  const proof = livenessProof([
+    { id: "c-1", created_at: 100, seen_at: 500 },
+    { id: "c-2", created_at: 900, seen_at: 700 },
+    { id: "c-3", created_at: 300, seen_at: 600 },
+  ]);
+  eq(proof.rows, 3);
+  eq(proof.lastSeenAt, 700);
+  eq(proof.newestId, "c-2");
+  eq(proof.newestAt, 900);
+});
+
+// Not every journal row knows when the comment was written. The proof must not
+// invent a date for those: the freshest read wins and the date stays unknown.
+await test("without creation times the newest is the freshest read", () => {
+  const proof = livenessProof([
+    { id: "c-1", seen_at: 500 },
+    { id: "c-2", seen_at: 900 },
+    { id: "c-3", seen_at: 700 },
+  ]);
+  eq(proof.newestId, "c-2");
+  eq(proof.newestAt, 0);
+});
+
+await test("the deadline is three days after the refusal", () => {
+  eq(DEFERRED_DEADLINE_MS, 3 * 86_400_000);
+  eq(deferredDeadline(AT, AT), stampOf(AT + DEFERRED_DEADLINE_MS));
+});
+
+function stampOf(ms) {
+  return new Date(ms).toISOString().replace("T", " ").slice(0, 19) + "Z";
+}
+
 // ---- pending ------------------------------------------------------------
 
 await test("pending questions are other people's NEW rows only", () => {
@@ -251,6 +363,28 @@ await test("the pending list is capped", () => {
   eq(pendingQuestions(rows, "opencodekz", 0).length, REPORT_PENDING_LIMIT);
 });
 
+// The capped list alone looks like "there are exactly 20 pending" for twenty ticks
+// in a row. The full count has to be visible next to the shown one, otherwise the
+// queue size is a guess.
+await test("the full pending count is not capped", () => {
+  const rows = [];
+  for (let i = 0; i < 40; i++) {
+    rows.push({ id: "q" + i, post_id: "p-1", author: "a" + i, body: "b", status: COMMENT_STATUS.NEW });
+  }
+  eq(countPending(rows, "opencodekz"), 40);
+  eq(countPending(rows.slice(0, 5), "opencodekz"), 5);
+  eq(countPending([], "opencodekz"), 0);
+});
+
+await test("the pending count skips our own rows", () => {
+  const rows = [
+    { id: "q1", post_id: "p-1", author: "alice", body: "why?", status: COMMENT_STATUS.NEW },
+    { id: "q2", post_id: "p-1", author: "opencodekz", body: "mine", status: COMMENT_STATUS.NEW },
+    { id: "q3", post_id: "p-1", author: "bob", body: "done", status: COMMENT_STATUS.POSTED },
+  ];
+  eq(countPending(rows, "opencodekz"), 1);
+});
+
 // ---- rendering ----------------------------------------------------------
 
 function sample() {
@@ -274,7 +408,10 @@ function sample() {
 await test("the report names every section", () => {
   const text = renderReport(sample());
   truthy(text.startsWith("# "), "starts with a heading");
-  eq(text.split(/\n\n/).filter((part) => part.startsWith("## ")).length, 4, "four sections");
+  // Итог, Отложено, Ответы, Не про что, Отказы свидетеля, Живость.
+  eq(text.split(/\n\n/).filter((part) => part.startsWith("## ")).length, 6, "six sections");
+  truthy(text.includes("## Отложено"), "the deferred section is there");
+  truthy(text.includes("## Живость"), "the liveness section is there");
 });
 
 await test("the report states the counts it computed", () => {
@@ -299,10 +436,80 @@ await test("pending questions and refusals are listed, not summarized away", () 
   truthy(text.includes("2"), "unreadable verifier lines are counted");
 });
 
+// "pending: 20" twenty ticks in a row reads as "the queue is exactly 20". The real
+// size has to sit next to the shown count.
+await test("the report states the full queue size next to the shown one", () => {
+  const data = sample();
+  data.pendingTotal = 37;
+  const text = renderReport(data);
+  truthy(
+    text.includes("\u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u0438 37, \u043f\u043e\u043a\u0430\u0437\u0430\u043d\u043e 1"),
+    "the queue size is not the shown count",
+  );
+});
+
 await test("an empty journal renders without throwing and says so", () => {
   const text = renderReport({ at: AT, from: AT, to: AT });
   truthy(text.includes("# "), "still a report");
-  eq(renderReport({}).split(/\n\n/).filter((part) => part.startsWith("## ")).length, 4, "sections survive");
+  eq(renderReport({}).split(/\n\n/).filter((part) => part.startsWith("## ")).length, 6, "sections survive");
+  truthy(text.includes("источник не прочитан"), "an unread source is named, not hidden");
+});
+
+// The report is read by a human agent that cannot see the network. Without
+// traces of the last read an empty report looks exactly like a dead cache.
+await test("the report proves the source was read", () => {
+  const data = sample();
+  data.liveness = livenessProof([{ id: "c-9", created_at: AT, seen_at: AT }]);
+  const text = renderReport(data);
+  truthy(text.includes("прочитано записей: 1"), "the number of rows read is shown");
+  truthy(text.includes("c-9"), "the newest comment is named");
+});
+
+await test("an unknown creation time is said, not dated as 1970", () => {
+  const data = sample();
+  data.liveness = livenessProof([{ id: "c-9", seen_at: AT }]);
+  const text = renderReport(data);
+  truthy(text.includes("время неизвестно"), "the missing date is named");
+  eq(text.includes("1970-01-01"), false, "no invented epoch date");
+});
+
+await test("a deferred answer is listed with its deadline", () => {
+  const rows = [
+    { id: "c-d", post_id: "p-1", status: COMMENT_STATUS.FAILED, reply_outcome: REPLY_OUTCOME.DEFERRED, replied_at: AT, seen_at: AT },
+  ];
+  const text = renderReport({ at: AT, from: AT - 1000, to: AT, work: projectWork(rows, AT - 1000, AT) });
+  truthy(text.includes("пост p-1 / заблокированный родитель c-d"), "the deferred answer is named");
+  truthy(text.includes("крайний срок"), "and it has a deadline");
+});
+
+// The parent the server refused lies under the depth cap. An agent that reads
+// "reply to c-deep" repeats the very answer that was refused, and it is
+// refused again. The recovery target is the top level of the thread.
+await test("the report names the recovery target, not the blocked parent", () => {
+  const rows = [
+    { id: "c-deep", post_id: "p-1", status: COMMENT_STATUS.FAILED, reply_outcome: REPLY_OUTCOME.DEFERRED, replied_at: AT, seen_at: AT, resume_target: "c-root" },
+  ];
+  const text = renderReport({ at: AT, from: AT - 1000, to: AT, work: projectWork(rows, AT - 1000, AT) });
+  truthy(text.includes("цель восстановления: верхний уровень треда, ответить на c-root"), "the top level of the thread is the target");
+  eq(text.includes("ответить на c-deep"), false, "the refused parent is not a retry target");
+});
+
+await test("an overdue deferred answer says so and is counted apart", () => {
+  const rows = [
+    { id: "c-d", post_id: "p-1", status: COMMENT_STATUS.FAILED, reply_outcome: REPLY_OUTCOME.DEFERRED, replied_at: AT - 10 * 86_400_000, seen_at: AT },
+  ];
+  const work = projectWork(rows, 0, AT);
+  eq(work.deferred.length, 0, "an overdue deferral is not a pending one");
+  eq(work.overdue.length, 1, "it is counted as overdue");
+  const text = renderReport({ at: AT, from: 0, to: AT, work });
+  truthy(text.includes("просрочено"), "the overdue mark is there");
+  truthy(text.includes("просрочено отложенных"), "and it has a metric of its own");
+  truthy(text.includes("отложено до повтора на верхнем уровне: 0"), "an overdue deferral is not a pending one");
+});
+
+await test("a report without deferred answers says so", () => {
+  const text = renderReport(sample());
+  truthy(text.includes("отложенных ответов нет"), "an empty deferred list is stated");
 });
 
 // ---- a report the PC agent cannot see is said out loud -------------------

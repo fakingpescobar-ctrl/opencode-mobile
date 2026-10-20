@@ -205,7 +205,7 @@ internal object ApiShape {
         val model = msg.optJSONObject("model")
         // completed кладём ТОЛЬКО когда ход реально завершён. В v1 ключ
         // появлялся тоже только к этому моменту, и на `has("completed")`
-        // завязаны потребители (lastAssistantText в MoltbookTicker) —
+        // завязаны потребители (приём последнего ответа агента) —
         // положим ноль, и они примут недописанный ответ за законченный.
         val completed = time?.optLong("completed") ?: 0L
         val v1Time = JSONObject().put("created", time?.optLong("created") ?: 0L)

@@ -523,14 +523,25 @@ function countRows(file) {
   eq(col(file, PARENT, "reply_outcome"), "created", "reply_outcome survives a later failure");
 }
 
-// ---- 26. a nested reply is not a question to answer -------------------------------------
+// ---- 26. a nested reply is a question only when it answers us ---------------------------
 // replies[] belongs to a branch that is already open. The old ticker would offer such a row
-// as something to answer, so the scan files it as skipped.
+// as something to answer, so the scan files it as skipped. But a reply under OUR published
+// comment is addressed to us - that one is a question again.
 {
   eq(m.scanStatus({ id: "a", parent_id: null, author: "alice" }), "NEW", "someone else's top-level comment is a question");
   eq(m.scanStatus({ id: "a", parent_id: "p", author: "alice" }), "SKIPPED", "a nested reply is not a question");
   eq(m.scanStatus({ id: "a", parent_id: null, author: "OpenCodeKZ" }), "SKIPPED", "our own comment is not a question");
   eq(m.scanStatus({ id: "", parent_id: null, author: "alice" }), "SKIPPED", "a comment without an id is skipped");
+  eq(
+    m.scanStatus({ id: "a", parent_id: "our-1", author: "alice" }, new Set(["our-1"])),
+    "NEW",
+    "a reply to our published comment is a question again",
+  );
+  eq(
+    m.scanStatus({ id: "a", parent_id: "our-1", author: "alice" }, new Set(["other"])),
+    "SKIPPED",
+    "a reply to someone else's comment stays skipped",
+  );
 }
 
 // ---- 27. the archive must record the method it really used ------------------------------
@@ -756,6 +767,183 @@ function countRows(file) {
   eq(m.statusText(undefined), m.UNKNOWN_STATUS, "missing is unknown");
   truthy(m.UNKNOWN_STATUS.trim().length > 0, "the marker is not blank");
   truthy(m.statusText("").indexOf("=") < 0, "the marker cannot be mistaken for a field");
+}
+
+// ---- 38. a depth cap is a deferral, not a lost answer -------------------------------
+// Молтбук отказывает, если родитель лежит слишком глубоко: «your 4b3b20b9 is at
+// the depth cap». По коду ответа такой отказ не отличить от любого другого,
+// и раньше ответ просто терялся. Теперь он отложен вместе с целью повтора.
+{
+  const file = fresh();
+  const d = deps(file, {
+    threads: { new: threadWith([]) },
+    posts: [{ status: 400, body: JSON.stringify({ success: false, message: "your 4b3b20b9 is at the depth cap" }) }],
+  });
+  const r = await m.moltbookPublish(args, d);
+  eq(r.outcome, "deferred", "a depth cap is a deferral, not a plain failure");
+  eq(r.counted, false, "a deferred answer is not work yet");
+  eq(r.resume.post_id, POST, "the thread to retry in is named");
+  eq(r.resume.blocked_parent, PARENT, "the parent that hit the cap is kept as context");
+  eq(r.resume.target, "top-level-comment-of-thread", "and the retry target is the top level, not the same deep parent");
+  truthy(r.refusals.indexOf("depth-cap") >= 0, "the refusal says exactly what happened");
+  truthy(String(r.reason || "").length > 0, "and the agent is told what to do");
+  eq(postCount(file, PARENT), "FAILED|deferred|", "the journal keeps it as deferred, not as a plain failure");
+  eq(col(file, PARENT, "replied_at"), AT, "the moment of the refusal is recorded - the deadline needs it");
+}
+
+// ---- 41. the retry target is the top level of the thread, and it is kept -----
+// Молтбук отказал по капу глубины: родитель лежит под верхним комментарием.
+// Повторять ответ на том же родителе бессмысленно - упрёмся в тот же кап.
+// Цель восстановления - верхний комментарий треда, и он должен попасть и в
+// ответ инструмента, и в журнал: отчёт читает журнал, а не сеть.
+{
+  const file = fresh();
+  const deep = threadBody([
+    { id: "c-root", parent_id: null, author: "alice", body: "root" },
+    { id: PARENT, parent_id: "c-root", author: "alice", body: "deep" },
+  ]);
+  const d = deps(file, {
+    threads: { new: deep },
+    posts: [{ status: 400, body: JSON.stringify({ success: false, message: "your 4b3b20b9 is at the depth cap" }) }],
+  });
+  const r = await m.moltbookPublish(args, d);
+  eq(r.outcome, "deferred", "a depth cap is still a deferral");
+  eq(r.resume.target_comment_id, "c-root", "the retry target is the top level of the thread");
+  eq(r.resume.blocked_parent, PARENT, "the refused parent stays as the context");
+  eq(col(file, PARENT, "resume_target"), "c-root", "and the journal keeps the target for the report");
+  truthy(String(r.reason || "").indexOf("c-root") >= 0, "the agent is told where to answer");
+}
+
+// ---- 42. the root of the thread is found by walking the parents up ---------
+{
+  const parsed = m.parseComments(threadBody([
+    { id: "c-root", parent_id: null, author: "alice", body: "root" },
+    { id: "c-mid", parent_id: "c-root", author: "bob", body: "mid" },
+    { id: "c-deep", parent_id: "c-mid", author: "carol", body: "deep" },
+  ]));
+  eq(m.rootCommentId(parsed.comments, "c-deep"), "c-root", "the deepest comment points at the top of the thread");
+  eq(m.rootCommentId(parsed.comments, "c-root"), "c-root", "the top of the thread is itself");
+  eq(m.rootCommentId(parsed.comments, "c-none"), "c-root", "an unknown comment falls back to the top of the thread");
+  eq(m.rootCommentId([], "c-x"), "", "an empty thread has no root");
+}
+
+// ---- 39. an ordinary refusal stays an ordinary refusal --------------------------------
+// The depth cap is one refusal among many. Every other refusal must keep
+// saying "rejected", otherwise a server that says "depth" in a different
+// sense would silently turn our failures into deferrals.
+{
+  const file = fresh();
+  const d = deps(file, {
+    threads: { new: threadWith([]) },
+    posts: [{ status: 400, body: JSON.stringify({ success: false, message: "content rejected" }) }],
+  });
+  const r = await m.moltbookPublish(args, d);
+  eq(r.outcome, "rejected", "a refusal without a depth cap is rejected, not deferred");
+  truthy(r.refusals.indexOf("depth-cap") < 0, "and it is not announced as a depth cap");
+  eq(postCount(file, PARENT), "FAILED||", "the journal keeps it as a plain failure");
+}
+
+// ---- 40. the new kinds are named, so the reader of the journal understands them ------
+{
+  eq(m.REPLY_OUTCOME.DEFERRED, "deferred", "a deferred answer has its own outcome");
+  eq(m.VERIFIER_KIND.ATTEMPT, "attempt", "an attempt before the request has its own kind");
+  eq(m.DEPTH_CAP_PATTERN.test("your 4b3b20b9 is at the depth cap"), true, "the depth cap is recognised");
+  eq(m.DEPTH_CAP_PATTERN.test("content rejected"), false, "an ordinary refusal is not a depth cap");
+}
+
+// ---- 43. дедуп по ТОЧНОМУ тексту: сервер говорит словами -------------------------
+// Живая проба 20.10.2026: повтор той же публикации отвечает 201 с ТЕМ ЖЕ id
+// коммента и сообщением «You already said this on this post! Here is your
+// existing comment.». Флага already_existed в таком ответе нет, поэтому по
+// одному флагу дедуп не узнать - а без этого повторная публикация выглядела
+// бы как новый ответ и попадала в «создано».
+{
+  const file = fresh();
+  const d = deps(file, {
+    threads: { new: threadWith([]) },
+    posts: [
+      {
+        status: 201,
+        body: JSON.stringify({
+          success: true,
+          id: "c-same",
+          message: "You already said this on this post! Here is your existing comment.",
+        }),
+      },
+    ],
+  });
+  const r = await m.moltbookPublish(args, d);
+  eq(r.outcome, "reused", "the platform said this text is already published");
+  eq(r.comment_id, "c-same", "reused carries the id we already own");
+  eq(postCount(file, PARENT), "POSTED|reused|c-same", "journal records reused, not created");
+  const db = new DatabaseSync(file);
+  const row = db.prepare("SELECT status, reply_outcome FROM comments WHERE id = ?").get(PARENT);
+  db.close();
+  eq(m.countReportable([row]).reportable, 0, "a reused answer is not new work");
+}
+
+// ---- 44. тот же текст на другом вопросе - это misparented ------------------------
+// Дедуп у сервера идёт по тексту без родителя. Если сервер назвал другого
+// родителя, закрывать нашу ветку нельзя: этот ответ - на другой вопрос.
+{
+  const file = fresh();
+  const d = deps(file, {
+    threads: { new: threadWith([]) },
+    posts: [
+      {
+        status: 201,
+        body: JSON.stringify({
+          success: true,
+          id: "c-other",
+          parent_id: "c-sibling",
+          message: "You already said this on this post! Here is your existing comment.",
+        }),
+      },
+    ],
+  });
+  const r = await m.moltbookPublish(args, d);
+  eq(r.outcome, "misparented", "the same text under another question is not our answer to this one");
+  eq(r.counted, false, "and it counts for nothing");
+  eq(postCount(file, PARENT), "FAILED||", "the branch stays open for a human");
+}
+
+// ---- 45. лимит записи: одиннадцатая попытка в окне идёт без сети -------------------
+// Живой лимит записи молтбука - 10 POST/DELETE на 60 секунд (X-RateLimit-Limit: 10),
+// и Retry-After сервер не отдаёт. Наш счётчик живёт в базе плагина, поэтому
+// перезапуск процесса его не обнуляет.
+{
+  const file = fresh();
+  const db = new DatabaseSync(file);
+  db.exec("CREATE TABLE IF NOT EXISTS write_attempts (at INTEGER NOT NULL)");
+  for (let i = 0; i < 10; i++) db.prepare("INSERT INTO write_attempts (at) VALUES (?)").run(AT);
+  db.close();
+  const d = deps(file, { threads: { new: threadWith([]) }, posts: [] });
+  const r = await m.moltbookPublish(args, d);
+  eq(r.refused, "rate-limit-write", "the eleventh write in the window is refused");
+  eq(r.outcome, "refused", "and it is a refusal, not a publication");
+  eq(d.calls.length, 0, "no POST went out");
+  eq(r.refusals.indexOf("rate-limit-write") >= 0, true, "and the refusal is named");
+  truthy(String(r.reason || "").indexOf("подожди") >= 0, "the tool says how long to wait");
+  truthy(String(r.reason || "").indexOf("10") >= 0, "and what the limit is");
+}
+
+// ---- 46. счётчик записи живёт в файле, а не в памяти ------------------------------
+{
+  const file = fresh();
+  let db = new DatabaseSync(file);
+  eq(m.writeBudget(db, AT, {}).allowed, true, "the window is empty at first");
+  for (let i = 0; i < 10; i++) m.recordWriteAttempt(db, AT);
+  const busy = m.writeBudget(db, AT, {});
+  eq(busy.allowed, false, "the eleventh write in the window has no place");
+  eq(busy.limit, 10, "the limit is the measured one");
+  eq(busy.used, 10, "and the ten attempts are counted");
+  eq(busy.retryInMs, 60000, "the place frees itself in a minute");
+  db.close();
+  // "Перезапуск процесса": новая ручка на тот же файл видит тот же счётчик.
+  db = new DatabaseSync(file);
+  eq(m.writeBudget(db, AT, {}).used, 10, "the counter lives in the file, not in memory");
+  eq(m.writeBudget(db, AT + 60001, {}).allowed, true, "and after the window the place is free again");
+  db.close();
 }
 
 for (const f of failures) console.log("  FAIL " + f);

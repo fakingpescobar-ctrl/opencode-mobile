@@ -83,8 +83,8 @@ class ApiShapeTest {
                        {"type":"text","text":"<think></think>ещё"}]}]}""",
                 ) ?: error("null")
             val info = streaming.getJSONObject(0).getJSONObject("info")
-            // Ключа нет — как в v1 до конца хода, иначе lastAssistantText принял бы
-            // недописанный ответ за законченный.
+            // Ключа нет — как в v1 до конца хода, иначе приём последнего ответа
+            // агента принял бы недописанный ответ за законченный.
             assertFalse(info.getJSONObject("time").has("completed"))
         }
     }
@@ -220,8 +220,9 @@ class ApiShapeTest {
         // Роль не assistant: иначе счётчик завершённых ответов и ожидание ответа
         // в молтизме приняли бы диагностику за реплику.
         assertEquals(ApiShape.ERROR_ROLE, roleOf(messages, 1))
-        // Части типа text в самом сообщении об ошибке нет — lastAssistantText берёт
-        // только их. (У соседнего user-сообщения текстовая часть, разумеется, есть.)
+        // Части типа text в самом сообщении об ошибке нет — приём последнего
+        // ответа агента берёт только их. (У соседнего user-сообщения текстовая
+        // часть, разумеется, есть.)
         assertEquals(listOf(ApiShape.ERROR_PART), partTypesOf(messages.getJSONObject(1)))
         // И настоящий текст реплики в ленте остаётся на месте.
         assertEquals(listOf("Напиши одним словом: работает"), textsOf(messages, "text"))

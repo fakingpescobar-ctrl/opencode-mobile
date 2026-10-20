@@ -147,6 +147,7 @@ await test("summarize counts by status and still honours the projection", () => 
       POSTED: 3,
       NEW: 1,
       FAILED: 1,
+      deferred: 0,
       reportable: 1,
       verified: 1,
       reused: 1,
@@ -157,6 +158,20 @@ await test("summarize counts by status and still honours the projection", () => 
     },
     "summary",
   );
+});
+
+// A deferred answer is not a failure: the platform refused it by the depth cap,
+// but the work is not lost - it has to be retried at the top level of the
+// thread. In the FAILED basket it read as "everything is lost", and the very
+// same answer was counted as a failure and as a deferral at the same time.
+await test("a deferred answer is counted apart from the failures", () => {
+  const summary = summarizeComments([
+    row(COMMENT_STATUS.FAILED, REPLY_OUTCOME.DEFERRED),
+    row(COMMENT_STATUS.FAILED, REPLY_OUTCOME.UNKNOWN),
+  ]);
+  eq(summary.FAILED, 1, "only the plain failure is a failure");
+  eq(summary.deferred, 1, "the deferred answer is counted on its own");
+  eq(summary.total, 2, "both rows are still in the journal");
 });
 
 await test("a row with no status falls into new rather than vanishing", () => {
@@ -361,7 +376,11 @@ await test("a reply nested under replies is still a comment we can find", () => 
   eq(deep.parent_id, "c-ours");
   const picked = pickCandidates(parsed.comments, "opencodekz");
   eq(picked.answeredCount, 1);
-  eq(picked.candidates.length, 0);
+  // Ответ нам (bob ответил на наш опубликованный c-ours) - это запрос к нам.
+  // Раньше любой parent_id отсекался, и такой коммент не попадал в скан вообще.
+  eq(picked.candidates.length, 1);
+  eq(picked.candidates[0].id, "c-deep");
+  eq(picked.candidates[0].parent_id, "c-ours");
 });
 
 await test("an empty replies array changes nothing", () => {
@@ -373,7 +392,7 @@ await test("an empty replies array changes nothing", () => {
 });
 
 
-await test("we answer top-level comments of others we have not answered yet", () => {
+await test("we answer top-level comments of others and replies to our own", () => {
   const picked = pickCandidates(
     [
       { id: "c-1", author: "alice", parent_id: null },
@@ -383,8 +402,11 @@ await test("we answer top-level comments of others we have not answered yet", ()
     ],
     "opencodekz",
   );
-  eq(picked.candidates.length, 1);
+  // c-1 - верхнеуровневый чужой коммент. c-4 - ответ на наш коммент c-3,
+  // значит он тоже адресован нам. c-2 отсекается: его родитель c-1 чужой.
+  eq(picked.candidates.length, 2);
   eq(picked.candidates[0].id, "c-1");
+  eq(picked.candidates[1].id, "c-4");
   // c-3 наш, но он верхнеуровневый: он ни на что не отвечает, поэтому веток закрытых нет.
   eq(picked.answeredCount, 0);
 });
@@ -399,6 +421,34 @@ await test("a thread where we already answered gives nothing to answer", () => {
   );
   eq(picked.candidates.length, 0);
   eq(picked.answeredCount, 1);
+});
+
+// ---- a deleted comment is not a question ---------------------------------------------
+// Молтбук удаляет МЯГКО: узел остаётся в дереве, а вместо тела в нём надпись
+// «Deleted comment» (или приходит флаг is_deleted). Такой узел - надгробие:
+// комментария больше нет, и отвечать на него нельзя.
+//
+// Раньше такое надгробие попадало в очередь как живой вопрос, и агент тратил
+// на него публикацию. Свои надгробия и чужие отсекаются одинаково, а ответы
+// на наши опубликованные комментарии (слепое пятно) продолжают работать.
+await test("a deleted comment is not a question to answer", () => {
+  const picked = pickCandidates(
+    [
+      { id: "c-ours", author: "opencodekz", parent_id: null, verification_status: "verified" },
+      { id: "c-gone", author: "alice", parent_id: null, content: "Deleted comment" },
+      { id: "c-flag", author: "alice", parent_id: null, is_deleted: true },
+      { id: "c-ours-gone", author: "opencodekz", parent_id: null, content: "Deleted comment", verification_status: "verified" },
+      { id: "c-reply", author: "bob", parent_id: "c-ours" },
+      { id: "c-dead-reply", author: "bob", parent_id: "c-ours", content: "Deleted comment" },
+      { id: "c-live", author: "alice", parent_id: null, body: "a real question" },
+    ],
+    "opencodekz",
+  );
+  eq(
+    picked.candidates.map((c) => c.id),
+    ["c-reply", "c-live"],
+    "only the live comments are questions, and a reply to us still is one",
+  );
 });
 
 await test("our own pending answer does not close the branch", () => {

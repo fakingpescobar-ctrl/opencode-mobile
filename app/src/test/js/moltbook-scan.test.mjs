@@ -20,7 +20,7 @@ function join4(...parts) {
   return parts.join("/").replace(/\\/g, "/").replace(/\/+/g, "/");
 }
 
-const { writeScan, countReportable, COMMENT_STATUS, REPLY_OUTCOME } = await import(
+const { writeScan, countReportable, COMMENT_STATUS, REPLY_OUTCOME, isGeoBlocked, unreadableRefusal, moltbookScan } = await import(
   pathToFileURL(MOLTBOOK_JS).href
 );
 
@@ -319,6 +319,58 @@ await test("a failed row does not become young again on every scan", () => {
   eq(row.seen_at, 1000, "seen_at of a failure is frozen");
   eq(row.body, "hi", "and its body is evidence, not a cache entry");
 });
+// ---- geo/WAF-блок CloudFront - это не «фид не прочитан» ---------------------------
+// Молтбук стоит за CloudFront, и запрос с ПК получает 403 с HTML-страницей
+// («Request blocked» / «Access denied from your region.») и заголовками
+// `Server: CloudFront`, `X-Cache: Error from cloudfront`.
+//
+// Это НЕ «лента не прочиталась»: лента жива, а закрыт регион. Раньше такой
+// ответ попадал в общий отказ `feed-unreadable-403`, и по отчёту читалось,
+// что сломался источник, а на самом деле нужен другой регион или VPN.
+await test("a CloudFront geo block is recognised", () => {
+  eq(isGeoBlocked(403, "<html><body>Request blocked</body></html>", { server: "CloudFront" }), true, "the block page");
+  eq(isGeoBlocked(403, "<html>Access denied from your region.</html>", {}), true, "the region denial");
+  eq(isGeoBlocked(403, "{}", { "x-cache": "Error from cloudfront" }), true, "the cloudfront cache error");
+  eq(isGeoBlocked(403, "{}", { server: "CloudFront", "x-cache": "Error from cloudfront" }), true, "both headers together");
+  eq(
+    isGeoBlocked(403, JSON.stringify({ message: "forbidden" }), { server: "nginx" }),
+    false,
+    "an ordinary api refusal is not a geo block",
+  );
+  eq(isGeoBlocked(200, "<html>Request blocked</html>", {}), true, "the body marker is enough on its own");
+  eq(isGeoBlocked(403, JSON.stringify({ message: "forbidden" }), {}), false, "a json refusal is not a geo block");
+});
+
+await test("the geo block has its own refusal, the unreadable feed keeps its old one", () => {
+  eq(
+    unreadableRefusal("feed", 403, "<html>Request blocked</html>", { server: "CloudFront" }),
+    "feed-geo-blocked",
+    "the feed refusal names the geo block",
+  );
+  eq(
+    unreadableRefusal("feed", 403, JSON.stringify({ message: "forbidden" }), { server: "nginx" }),
+    "feed-unreadable-403",
+    "an ordinary refusal keeps the old name",
+  );
+});
+
+await test("the scan reports a geo block as a geo block", async () => {
+  const blocked = {
+    ok: false,
+    status: 403,
+    body: "<html><head><title>Request blocked</title></head><body>Request blocked</body></html>",
+    headers: { server: "CloudFront", "x-cache": "Error from cloudfront", "x-amz-cf-id": "cf-1" },
+  };
+  const r = await moltbookScan({
+    key: () => "K",
+    now: () => 1700000000000,
+    get: async (key, path) => Object.assign({ path, at: 1700000000000 }, blocked),
+  });
+  truthy(r.refusals.indexOf("feed-geo-blocked") >= 0, "the geo block is named as a geo block");
+  eq(r.refusals.indexOf("feed-unreadable-403"), -1, "and it is not the old unreadable feed");
+  truthy(r.refusals.indexOf("home-geo-blocked") >= 0, "the home read is blocked by the same wall");
+});
+
 console.log("");
 if (bad > 0) {
   console.log("FAILED: " + ok + " ok, " + bad + " broken");
