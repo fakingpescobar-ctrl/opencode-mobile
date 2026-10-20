@@ -364,7 +364,7 @@ const args = { post_id: POST, parent_id: PARENT, content: "answer" };
   eq(r.counted, false, "and nothing is counted");
 }
 
-// ---- 15. content over the WAF cap is truncated, not rejected ------------------------
+// ---- 15. content over the WAF cap is refused, not cut --------------------------------
 {
   truthy(m.MAX_COMMENT_CHARS < 1000, "cap stays under the 1 kB ceiling CloudFront cuts at");
 }
@@ -678,9 +678,9 @@ function countRows(file) {
   eq(r.outcome, "created", "created");
   const archive = readdirSync(join4(TMP, "..")).length >= 0;
   truthy(archive, "archive readable");
-  truthy(typeof m.wasTruncated === "function", "wasTruncated is exported");
-  eq(m.wasTruncated("short"), false, "short text is not truncated");
-  eq(m.wasTruncated("x".repeat(1200)), true, "over the cap means truncated");
+  truthy(typeof m.exceedsCommentCap === "function", "exceedsCommentCap is exported");
+  eq(m.exceedsCommentCap("short"), false, "short text fits the cap");
+  eq(m.exceedsCommentCap("x".repeat(1200)), true, "over the cap does not");
 }
 
 {
@@ -742,17 +742,41 @@ function countRows(file) {
 }
 
 {
-  // (7) Truncation must be announced. An agent that believes it answered in full when
-  // the tail was cut is worse than one that was told.
-  const long = { post_id: POST, parent_id: PARENT, content: "x".repeat(1200) };
+  // (7) A long text is refused BEFORE the request. Live probe 20.10.2026: a 1247-char
+  // rebuttal was cut to 896 chars and the tail was lost - the plugin admitted the cut
+  // ("content-truncated") and published anyway. A truncated answer is worse than no
+  // answer: the agent has to shorten the text itself and repeat.
+  const long = { post_id: POST, parent_id: PARENT, content: "x".repeat(1247) };
   const file = fresh();
   const d = deps(file, {
     threads: { new: [threadWith([]), threadWith([ourAnswer("c-new", PARENT, "verified")])] },
     posts: [{ status: 201, body: JSON.stringify({ success: true, comment: { id: "c-new", parent_id: PARENT, verification_status: "verified" } }) }],
   });
   const r = await m.moltbookPublish(long, d);
-  eq(r.outcome, "created", "long answer still goes out");
-  truthy(r.refusals.indexOf("content-truncated") >= 0, "but the tool says the tail was cut");
+  eq(r.outcome, "refused", "a long text is refused, not cut");
+  eq(r.refused, "content-too-long", "the refusal says why");
+  eq(r.counted, false, "and nothing is counted");
+  eq(d.calls.length, 0, "no POST went out");
+  truthy(r.refusals.indexOf("content-too-long") >= 0, "the refusal is named, not hidden");
+  truthy(String(r.reason || "").indexOf("1247") >= 0, "the tool says how long the text was");
+  truthy(String(r.reason || "").indexOf("900") >= 0, "and what the limit is");
+  eq(postCount(file, PARENT), "NEW||", "the journal is untouched when nothing was published");
+}
+
+{
+  // (7b) A text inside the cap is published exactly as before: the new refusal must not
+  // become another way to publish nothing.
+  const fits = { post_id: POST, parent_id: PARENT, content: "x".repeat(900) };
+  const file = fresh();
+  const d = deps(file, {
+    threads: { new: [threadWith([]), threadWith([ourAnswer("c-new", PARENT, "verified")])] },
+    posts: [{ status: 201, body: JSON.stringify({ success: true, comment: { id: "c-new", parent_id: PARENT, verification_status: "verified" } }) }],
+  });
+  const r = await m.moltbookPublish(fits, d);
+  eq(r.outcome, "created", "a text of exactly 900 characters goes out");
+  eq(r.counted, true, "and it counts");
+  eq(d.calls.length, 1, "the POST went out");
+  eq(postCount(file, PARENT), "POSTED|created|c-new", "the journal records the answer");
 }
 
 // ---- 37. an empty status is written as a word, not as nothing -------------

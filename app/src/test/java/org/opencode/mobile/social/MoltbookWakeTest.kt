@@ -295,6 +295,16 @@ class MoltbookWakeTest {
     }
 
     @Test
+    fun `текст будильника называет лимит длины комментария`() {
+        // Плагин отказывает ДО запроса, если текст длиннее 900 символов. Агент должен
+        // знать про это заранее, иначе он шлёт длинный текст и получает отказ вместо
+        // публикации.
+        val text = MoltbookWake.wakeText(now)
+        assertTrue(text.contains("900 символов"))
+        assertTrue(text.contains("сократи текст сам"))
+    }
+
+    @Test
     fun `тело сообщения это ровно одно поле text`() {
         val obj = JSONObject(MoltbookWake.messageBody("привет"))
         assertEquals(1, obj.length())
