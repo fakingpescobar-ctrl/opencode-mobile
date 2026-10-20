@@ -970,6 +970,82 @@ function countRows(file) {
   db.close();
 }
 
+// ---- корневой комментарий: parent_id пустой ----------------------------------------
+// До этого плагин требовал parent_id и корневой комментарий под постом был
+// невыполним: оставалось только отвечать на чужие. Сервер принимает POST без
+// parent_id - и это единственный способ начать новую ветку.
+{
+  const file = fresh();
+  seed(file, "DELETE FROM comments");
+  let sent = null;
+  const root = ourAnswer("c-root", "", "verified");
+  const d = deps(file, {
+    threads: { new: [threadBody([]), threadBody([root])], best: threadBody([root]) },
+    posts: [
+      (path, payload) => {
+        sent = payload;
+        return JSON.stringify({ success: true, comment: { id: "c-root", verification_status: "verified" } });
+      },
+    ],
+  });
+  const r = await m.moltbookPublish({ post_id: POST, parent_id: "", content: "hello" }, d);
+  eq(r.outcome, "created", "корневой комментарий опубликован");
+  eq(sent && sent.parent_id, undefined, "parent_id не отправлен: корневой комментарий");
+  eq(sent && sent.content, "hello", "текст ушёл как есть");
+  eq(r.counted, false, "у корневого комментария нет строки журнала, закрывать нечего");
+  eq(r.refusals.indexOf("journal-not-recorded"), -1, "и это не отказ журнала");
+}
+
+// ---- 2b. без parent_id нужен хотя бы content ---------------------------------------
+{
+  const d = deps(fresh(), { threads: {}, posts: [] });
+  const r = await m.moltbookPublish({ post_id: POST, content: "   " }, d);
+  eq(r.outcome, "refused", "пустой текст - отказ");
+  eq(r.refused, "need-post-id-and-content", "отказ называет, чего не хватает");
+  eq(d.calls.length + r.requests.length, 0, "в сеть не пошли");
+}
+
+// ---- 2c. нечитаемый тред не мешает корневому комментарию -----------------------------
+// Предпроверка относится только к ответу в ветку. Корень читать нечего: таймаут
+// GET не должен отказывать в публикации, к которой он не относится.
+{
+  const file = fresh();
+  seed(file, "DELETE FROM comments");
+  const d = deps(file, {
+    threads: {},
+    posts: [{ status: 201, body: JSON.stringify({ success: true, comment: { id: "c-root3", verification_status: "verified" } }) }],
+  });
+  const r = await m.moltbookPublish({ post_id: POST, content: "hello" }, d);
+  eq(d.calls.length, 1, "POST ушёл, хотя тред не читается");
+  eq(r.outcome === "refused", false, "нечитаемый тред не отказывает корневому комментарию");
+  eq(r.refusals.some((x) => x.indexOf("thread-unreadable") === 0), false, "и отказа про тред нет");
+}
+
+// ---- 2d. повторный корневой комментарий - это reused, а не блокировка ----------------
+// Дедуп по тексту на корне: сервер вернул already_existed без parent_id. Родителя
+// у корня нет по определению, значит это наш же комментарий - исход reused.
+{
+  const file = fresh();
+  seed(file, "DELETE FROM comments");
+  const d = deps(file, {
+    threads: {},
+    posts: [
+      {
+        status: 201,
+        body: JSON.stringify({
+          success: true,
+          already_existed: true,
+          comment: { id: "c-root-dup", verification_status: "verified", parent_id: null },
+        }),
+      },
+    ],
+  });
+  const r = await m.moltbookPublish({ post_id: POST, content: "hello" }, d);
+  eq(r.outcome, "reused", "дедуп корневого комментария - это reused");
+  eq(r.comment_id, "c-root-dup", "и он несёт существующий id");
+  eq(r.refusals.indexOf("our-unpublished-answer"), -1, "our-unpublished-answer не примешивается");
+}
+
 for (const f of failures) console.log("  FAIL " + f);
 console.log((bad ? "\nFAILED " : "\nall green: ") + ok + " ok, " + bad + " broken");
 process.exit(bad ? 1 : 0);

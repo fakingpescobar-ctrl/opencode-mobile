@@ -491,6 +491,55 @@ export function parseComments(raw) {
 }
 
 /**
+ * Сортировки, в которых читается тред.
+ *
+ * `sort=new` отстаёт: живая проверка 21.10.2026 - свежий комментарий не был
+ * виден в ленте почти минуту, хотя в `best` и `old` он уже лежал. Поэтому
+ * «нет в `new`» - это не доказательство отсутствия: удаление, проверяющее
+ * только `new`, объявляло живой комментарий отсутствующим.
+ */
+export const THREAD_SORTS = ["new", "best", "old"];
+
+/**
+ * Читает тред в нескольких сортировках и склеивает комментарии по id.
+ *
+ * Возвращает `{ ok, comments, views, status }`. `ok` - хотя бы одно чтение
+ * удалось: тред, прочитанный одним представлением из трёх, всё равно прочитан.
+ * `verification_status` берётся самый информативный: пустое поле в одном
+ * представлении не должно затирать заполненное в другом, иначе подтверждённый
+ * комментарий выглядел бы неподтверждённым.
+ */
+export async function readThreadViews(key, postId, get, sorts) {
+  const list = Array.isArray(sorts) && sorts.length > 0 ? sorts : THREAD_SORTS;
+  const views = [];
+  const merged = new Map();
+  let ok = false;
+  let status = 0;
+  for (const sort of list) {
+    const raw = await get(key, "/api/v1/posts/" + postId + "/comments?sort=" + sort + "&limit=100");
+    views.push({ sort, status: raw.status, ok: raw.ok });
+    status = raw.status;
+    if (!raw.ok) continue;
+    const parsed = parseComments(raw.body);
+    if (!parsed.ok) continue;
+    ok = true;
+    for (const comment of parsed.comments) {
+      if (!comment || !comment.id) continue;
+      const id = String(comment.id);
+      const known = merged.get(id);
+      if (!known) {
+        merged.set(id, comment);
+        continue;
+      }
+      if (!known.verification_status && comment.verification_status) {
+        merged.set(id, { ...known, verification_status: comment.verification_status });
+      }
+    }
+  }
+  return { ok, comments: Array.from(merged.values()), views, status };
+}
+
+/**
  * Верхний комментарий треда - цель повтора отложенного ответа.
  *
  * Ответ лежит под капом глубины, когда его родитель не на верхнем уровне.
@@ -1681,8 +1730,10 @@ export function isAffirmativelyPublished(status) {
 export function reuseOrMisparent(outcome, expectedParentId) {
   if (!isAffirmativelyPublished(outcome.status)) return "blocked";
   // Родителя нет в ответе — это не «чужой родитель», а «не знаю».
-  // Утверждать «чужой» нельзя: мы ничего не разводили.
-  if (!outcome.parentId) return "blocked";
+  // Утверждать «чужой» нельзя: мы ничего не разводили. Но у корневого
+  // комментария родителя и не должно быть: сервер сказал «такой текст уже
+  // есть в этом посте», значит это наш же корневой комментарий, а не дубль.
+  if (!outcome.parentId) return String(expectedParentId || "") === "" ? "reused" : "blocked";
   return outcome.parentId === expectedParentId ? "reused" : "misparented";
 }
 
@@ -2506,9 +2557,16 @@ export async function moltbookPublish(args, deps) {
   const parentId = String((args && args.parent_id) || "");
   const rawContent = String((args && args.content) || "");
   const content = rawContent.trim();
-  if (!postId || !parentId || !content) {
-    return publishRefusal("need-post-id-parent-id-and-content", now, "Нужны post_id, parent_id и непустой content.");
+  if (!postId || !content) {
+    return publishRefusal(
+      "need-post-id-and-content",
+      now,
+      "Нужны post_id и непустой content. parent_id пустой - корневой комментарий под постом, заполненный - ответ на комментарий.",
+    );
   }
+  // У корневого комментария нет строки журнала, которую надо закрыть: писать
+  // нечего, и `counted` честно остаётся false. У ответа журнал пишется как раньше.
+  const journal = (action) => (parentId ? writeReply(openDb, action, refusals) : { counted: false });
   // Длинный текст отказываем ДО сети: CloudFront перед API режет большие тела,
   // и обрезанный ответ хуже отказа - агент сократит текст сам и повторит.
   // Попытка записи не засчитывается: в сеть мы не пойдём.
@@ -2531,18 +2589,28 @@ export async function moltbookPublish(args, deps) {
     return publishRefusal("rate-limit-write", now, text);
   }
 
-  const threadPath = "/api/v1/posts/" + postId + "/comments?sort=new&limit=100";
-  // Журнал уже знает, какой ответ мы уже дали на эту ветку.
-  const recorded = recordedReplyId(openDb, parentId);
-  const before = await get(key, threadPath);
-  requests.push({ path: before.path, status: before.status, ok: before.ok });
-  const parsedBefore = parseComments(before.body);
+  // Предпроверка читает `new` одним запросом: этого достаточно, потому что
+  // пропущенный ответ всё равно ловится сервером (дедуп по точному тексту -
+  // исход reused), а лишние GET на каждую публикацию не нужны. Мультисортировка
+  // нужна удалению: там пропуск в `new` давал ложный absent (см. readThreadViews).
+  // У корневого комментария ветки нет: предпроверка «мы уже отвечали» к нему не
+  // относится, а лишний GET мог бы отказать в публикации из-за таймаута, к
+  // которому корень не имеет отношения.
+  const recorded = parentId ? recordedReplyId(openDb, parentId) : "";
+  let parsedBefore = { ok: true, comments: [] };
+  let readStatus = 0;
+  if (parentId) {
+    const before = await get(key, "/api/v1/posts/" + postId + "/comments?sort=new&limit=100");
+    requests.push({ path: before.path, status: before.status, ok: before.ok });
+    parsedBefore = parseComments(before.body);
+    readStatus = before.status;
+  }
   const parentRow = parentMeta(parsedBefore.comments, parentId);
-  if (parsedBefore.ok) {
+  if (parentId && parsedBefore.ok) {
     const answer = ourAnswerFor(parsedBefore.comments, parentId, MOLTBOOK_NAME, recorded);
     if (answer.kind === "published") {
       appendVerifier(VERIFIER_KIND.CONFIRMED, now, postId, "id=" + answer.id + " повторная публикация не нужна");
-      const closed = writeReply(openDb, (db) => markAnswered(db, parentId, answer.id, now, REPLY_OUTCOME.REUSED, { post_id: postId, ...parentRow }), refusals);
+      const closed = journal((db) => markAnswered(db, parentId, answer.id, now, REPLY_OUTCOME.REUSED, { post_id: postId, ...parentRow }));
       return {
         plugin: PLUGIN_NAME,
         at: now,
@@ -2571,10 +2639,10 @@ export async function moltbookPublish(args, deps) {
         refusals,
       };
     }
-  } else {
+  } else if (!parsedBefore.ok) {
     // Таймаут на чтении — это не доказательство отсутствия:
     // сервер возможно уже создал наш комментарий, и слепой POST вернул бы already_existed с чужим id.
-    refusals.push("thread-unreadable-" + before.status);
+    refusals.push("thread-unreadable-" + readStatus);
     return replyResult("refused", "", postId, parentId, now, requests, refusals, false);
   }
 
@@ -2584,7 +2652,8 @@ export async function moltbookPublish(args, deps) {
   // Попытка записи засчитывается ДО запроса: сервер считает в свой лимит любой
   // дошедший запрос, и наш счётчик должен считать так же.
   noteWriteAttempt(openDb, now);
-  const posted = await send(key, "/api/v1/posts/" + postId + "/comments", { content, parent_id: parentId });
+  const payload = parentId ? { content, parent_id: parentId } : { content };
+  const posted = await send(key, "/api/v1/posts/" + postId + "/comments", payload);
   requests.push({ path: posted.path, status: posted.status, ok: posted.ok });
   const outcome = parsePostOutcome(posted.body);
 
@@ -2595,7 +2664,7 @@ export async function moltbookPublish(args, deps) {
       ? dedupReuseOrMisparent(outcome, parentId)
       : reuseOrMisparent(outcome, parentId);
     if (verdict === "reused") {
-      const written = writeReply(openDb, (db) => markAnswered(db, parentId, outcome.commentId, now, REPLY_OUTCOME.REUSED, { post_id: postId, ...parentRow }), refusals);
+      const written = journal((db) => markAnswered(db, parentId, outcome.commentId, now, REPLY_OUTCOME.REUSED, { post_id: postId, ...parentRow }));
       appendVerifier(
         VERIFIER_KIND.CONFIRMED,
         now,
@@ -2606,7 +2675,7 @@ export async function moltbookPublish(args, deps) {
       return replyResult("reused", outcome.commentId, postId, parentId, now, requests, refusals, written.counted);
     }
     if (verdict === "misparented") {
-      writeReply(openDb, (db) => markFailed(db, parentId, now, { post_id: postId, ...parentRow }), refusals);
+      journal((db) => markFailed(db, parentId, now, { post_id: postId, ...parentRow }));
       appendVerifier(
         VERIFIER_KIND.MISMATCH,
         now,
@@ -2616,7 +2685,7 @@ export async function moltbookPublish(args, deps) {
       return replyResult("misparented", outcome.commentId, postId, parentId, now, requests, refusals, false);
     }
     refusals.push("our-unpublished-answer");
-    writeReply(openDb, (db) => markFailed(db, parentId, now, { post_id: postId, ...parentRow }), refusals);
+    journal((db) => markFailed(db, parentId, now, { post_id: postId, ...parentRow }));
     return replyResult("blocked", outcome.commentId, postId, parentId, now, requests, refusals, false);
   }
 
@@ -2630,7 +2699,7 @@ export async function moltbookPublish(args, deps) {
       // глубину 1 и не упрётся в тот же кап. Глубокий родитель остаётся в
       // записи как контекст вопроса, но повторять на нём бессмысленно.
       const targetCommentId = rootCommentId(parsedBefore.comments, parentId);
-      writeReply(openDb, (db) => markDeferred(db, parentId, now, { post_id: postId, ...parentRow, resume_target: targetCommentId }), refusals);
+      journal((db) => markDeferred(db, parentId, now, { post_id: postId, ...parentRow, resume_target: targetCommentId }));
       appendVerifier(VERIFIER_KIND.REFUSED, now, postId, "depth-cap parent=" + parentId + " resume=thread:" + postId + " root=" + targetCommentId);
       const deferred = replyResult("deferred", "", postId, parentId, now, requests, refusals, false);
       deferred.resume = {
@@ -2645,7 +2714,7 @@ export async function moltbookPublish(args, deps) {
       return deferred;
     }
     refusals.push("post-rejected");
-    writeReply(openDb, (db) => markFailed(db, parentId, now, { post_id: postId, ...parentRow }), refusals);
+    journal((db) => markFailed(db, parentId, now, { post_id: postId, ...parentRow }));
     const rejected = replyResult("rejected", "", postId, parentId, now, requests, refusals, false);
     rejected.reason = outcome.message;
     return rejected;
@@ -2666,12 +2735,14 @@ export async function moltbookPublish(args, deps) {
   // Подтвержденный id — единственный исход журнала.
   // Если сверка не видел комментарий — это не работа, а не делано, и записываться нельзя.
   const knownParent = parentRow || confirmed.parent;
-  if (!knownParent) refusals.push("parent-unknown");
+  // У корневого комментария родителя нет по определению, и молчать об этом -
+  // нормально. Отказ «родитель неизвестен» относится только к ответу в ветку.
+  if (parentId && !knownParent) refusals.push("parent-unknown");
   const journalRow = { post_id: postId, ...(knownParent || {}) };
   const written =
     kind === VERIFIER_KIND.CONFIRMED
-      ? writeReply(openDb, (db) => markAnswered(db, parentId, outcome.commentId, now, REPLY_OUTCOME.CREATED, journalRow), refusals)
-      : writeReply(openDb, (db) => markFailed(db, parentId, now, journalRow), refusals);
+      ? journal((db) => markAnswered(db, parentId, outcome.commentId, now, REPLY_OUTCOME.CREATED, journalRow))
+      : journal((db) => markFailed(db, parentId, now, journalRow));
   appendVerifier(
     kind,
     now,
@@ -2713,9 +2784,15 @@ export async function moltbookVerify(args, deps) {
   const commentId = String((args && args.comment_id) || "");
   const code = String((args && args.verification_code) || "");
   const answer = String((args && args.answer) || "").trim();
-  if (!postId || !parentId || !commentId || !code) {
-    return publishRefusal("need-post-id-parent-id-comment-id-and-code", now, "Нужны post_id, parent_id, comment_id и verification_code.");
+  if (!postId || !commentId || !code) {
+    return publishRefusal(
+      "need-post-id-comment-id-and-code",
+      now,
+      "Нужны post_id, comment_id и verification_code. parent_id пустой - проверяем корневой комментарий.",
+    );
   }
+  // Корневому комментарию закрывать в журнале нечего: строки ветки нет.
+  const journal = (action) => (parentId ? writeReply(openDb, action, refusals) : { counted: false });
   if (!ANSWER_SHAPE.test(answer)) {
     // Формат задаёт платформа. Ответ вида "48.0" молча тратит одноразовый код.
     return publishRefusal("answer-must-be-number-with-two-decimals", now, "Ответ должен быть числом с двумя знаками, например 40.00.");
@@ -2723,11 +2800,16 @@ export async function moltbookVerify(args, deps) {
 
   // Чтобы записать, кому мы отвечаем: имя родителя без автора - строка придурака
   // получила бы без неменного автора, и markAnswering просто бы не запишала ни одной строки.
-  const beforeThread = await get(key, "/api/v1/posts/" + postId + "/comments?sort=new&limit=100");
-  requests.push({ path: beforeThread.path, status: beforeThread.status, ok: beforeThread.ok });
-  const parsedBefore = parseComments(beforeThread.body);
-  const parentRow = parentMeta(parsedBefore.ok ? parsedBefore.comments : [], parentId);
-  if (!parentRow) refusals.push("parent-unknown");
+  // У корневого комментария родителя нет - записывать нечего, читать тред незачем.
+  const beforeThread = parentId
+    ? await get(key, "/api/v1/posts/" + postId + "/comments?sort=new&limit=100")
+    : { path: "", status: 0, ok: false, body: "" };
+  if (parentId) {
+    requests.push({ path: beforeThread.path, status: beforeThread.status, ok: beforeThread.ok });
+  }
+  const parsedBefore = parentId ? parseComments(beforeThread.body) : { ok: false, comments: [] };
+  const parentRow = parentId ? parentMeta(parsedBefore.ok ? parsedBefore.comments : [], parentId) : null;
+  if (parentId && !parentRow) refusals.push("parent-unknown");
 
   // Как и публикация: сначала замысел, потом запрос. Одноразовый код
   // проверки нельзя тратить молча - журнал должен показать, что он ушёл.
@@ -2738,7 +2820,7 @@ export async function moltbookVerify(args, deps) {
   const accepted = Boolean(root && root.success === true);
   if (!accepted) {
     refusals.push("verification-rejected");
-    writeReply(openDb, (db) => markFailed(db, parentId, now, { post_id: postId, ...(parentRow || {}) }), refusals);
+    journal((db) => markFailed(db, parentId, now, { post_id: postId, ...(parentRow || {}) }));
     appendVerifier(VERIFIER_KIND.REFUSED, now, postId, "verify answer=" + answer + " id=" + commentId);
     const rejected = replyResult("verification-failed", commentId, postId, parentId, now, requests, refusals, false);
     rejected.server_message = String((root && root.message) || verified.body || "").slice(0, 200);
@@ -2755,10 +2837,8 @@ export async function moltbookVerify(args, deps) {
     doubted.server_status = confirmed.status;
     return doubted;
   }
-  const written = writeReply(
-    openDb,
-    (db) => markAnswered(db, parentId, commentId, now, REPLY_OUTCOME.VERIFIED, { post_id: postId, ...(parentRow || confirmed.parent || {}) }),
-    refusals,
+  const written = journal((db) =>
+    markAnswered(db, parentId, commentId, now, REPLY_OUTCOME.VERIFIED, { post_id: postId, ...(parentRow || confirmed.parent || {}) }),
   );
   appendVerifier(VERIFIER_KIND.CONFIRMED, now, postId, "verify answer=" + answer + " id=" + commentId + " status=" + statusText(confirmed.status));
   const result = replyResult("verified", commentId, postId, parentId, now, requests, refusals, written.counted);
@@ -2876,10 +2956,13 @@ export async function moltbookDelete(args, deps) {
     return limited;
   }
 
-  const threadPath = "/api/v1/posts/" + postId + "/comments?sort=new&limit=100";
-  const before = await get(key, threadPath);
-  requests.push({ path: before.path, status: before.status, ok: before.ok });
-  const parsedBefore = parseComments(before.body);
+  // Тред читается в нескольких сортировках: `sort=new` отстаёт, и живой
+  // комментарий, которого ещё нет в `new`, объявлялся отсутствующим.
+  const before = await readThreadViews(key, postId, get);
+  for (const view of before.views) {
+    requests.push({ path: "/api/v1/posts/" + postId + "/comments?sort=" + view.sort, status: view.status, ok: view.ok });
+  }
+  const parsedBefore = { ok: before.ok, comments: before.comments };
   if (!parsedBefore.ok) {
     refusals.push("thread-unreadable-" + before.status);
     const blind = replyResult("refused", commentId, postId, "", now, requests, refusals, false);
@@ -2891,7 +2974,7 @@ export async function moltbookDelete(args, deps) {
     refusals.push("already-absent");
     forgetDeleteWait(openDb, commentId, now);
     const absent = replyResult("absent", commentId, postId, "", now, requests, refusals, false);
-    absent.reason = "комментария уже нет";
+    absent.reason = "комментария нет ни в одной из сортировок треда (" + THREAD_SORTS.join(", ") + ")";
     return absent;
   }
   // Уже надгробище: удалять нечего, DELETE был бы лишним запросом. Проверка
@@ -2938,9 +3021,11 @@ export async function moltbookDelete(args, deps) {
   // принято. Но мягкое удаление применяется С ЗАДЕРЖКОЙ: сразу после ответа
   // перечитка треда показывает живой узел с полным текстом.
   const serverConfirmed = deleteConfirmed(removed.status, removed.body);
-  const after = await get(key, threadPath);
-  requests.push({ path: after.path, status: after.status, ok: after.ok });
-  const parsedAfter = parseComments(after.body);
+  const after = await readThreadViews(key, postId, get);
+  for (const view of after.views) {
+    requests.push({ path: "/api/v1/posts/" + postId + "/comments?sort=" + view.sort, status: view.status, ok: view.ok });
+  }
+  const parsedAfter = { ok: after.ok, comments: after.comments };
   if (!parsedAfter.ok) {
     // Тред после DELETE не прочитан: удаление мы не увидели. Если сервер
     // подтвердил - это ожидание, а не отказ, и ждать есть кому: срок считается
@@ -3424,6 +3509,10 @@ export function renderReport(data) {
   out.push(line("из них просрочено: " + overdueDeletes.length));
   out.push(line("удалений не подтверждено (провал): " + deleteFailed.length));
   out.push(line("исход неизвестен (строки до v5, работы не считаются): " + work.unknown));
+  out.push(
+    line("тред читается в сортировках " + THREAD_SORTS.join("/") +
+      "; свежий комментарий может до минуты отсутствовать в new - «нет в выдаче» не значит «не существует»"),
+  );
   out.push("");
   out.push("## Отложено");
   if (postponed.length === 0) {
@@ -4209,7 +4298,8 @@ const TOOLS = [
   {
     name: "moltbook_publish",
     description:
-      "Ответить на комментарий. Перед публикацией ветка перечитывается: если там уже есть " +
+      "Ответить на комментарий, а с пустым parent_id - оставить корневой комментарий под постом. " +
+      "Перед публикацией ветка перечитывается: если там уже есть " +
       "наш опубликованный ответ - ничего не постится, возвращается reused. Ответ, который сервер " +
       "пометил already_existed, не считается успехом: сверяется родитель, иначе это misparented " +
       "(дедуп у сервера по тексту без родителя). Дедуп по ТОЧНОМУ тексту сервер сообщает " +
@@ -4227,10 +4317,13 @@ const TOOLS = [
       type: "object",
       properties: {
         post_id: { type: "string", description: "id треда" },
-        parent_id: { type: "string", description: "id комментария, на который отвечаем" },
+        parent_id: {
+          type: "string",
+          description: "id комментария, на который отвечаем; пусто или не указано - корневой комментарий под постом",
+        },
         content: { type: "string", description: "текст ответа, до 900 символов; длиннее плагин откажет без запроса — сократи текст сам" },
       },
-      required: ["post_id", "parent_id", "content"],
+      required: ["post_id", "content"],
       additionalProperties: false,
     },
   },
@@ -4239,7 +4332,7 @@ const TOOLS = [
     description:
       "Ответить на challenge, который вернул moltbook_publish. Ответ считается зачтённым только " +
       "если сервер подтвердил И наша перечитка ветки это увидела. Иначе unconfirmed - и это честный " +
-      "отказ, а не успех.",
+      "отказ, а не успех. parent_id для ответа на комментарий, пустой - для корневого.",
     inputSchema: {
       type: "object",
       properties: {
@@ -4249,7 +4342,7 @@ const TOOLS = [
         verification_code: { type: "string" },
         answer: { type: "string", description: "число вида 42.00 - ровно два знака после запятой" },
       },
-      required: ["post_id", "parent_id", "comment_id", "verification_code", "answer"],
+      required: ["post_id", "comment_id", "verification_code", "answer"],
       additionalProperties: false,
     },
   },

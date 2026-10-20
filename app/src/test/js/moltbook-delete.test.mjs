@@ -76,16 +76,19 @@ function getCalls(api) {
 }
 
 // deps: get reads the scripted thread bodies in order, delete answers with a script.
+// Плагин читает тред в трёх сортировках (new/best/old), и все три относятся к
+// ОДНОМУ моменту времени: сценарий двигается только на `sort=new`, а `best`/`old`
+// отдают тот же снимок. Иначе один поход в тред съедал бы три шага сценария.
 function deps(threads, deleteResponse) {
-  let index = 0;
+  let index = -1;
   const api = {
     now: () => AT,
     key: () => "K",
     calls: [],
     get: async (key, path) => {
       api.calls.push("GET " + path);
+      if (index < 0 || path.indexOf("sort=new") >= 0) index += 1;
       const body = threads[Math.min(index, threads.length - 1)];
-      index += 1;
       return { ok: true, status: 200, path, at: AT, body: String(body === undefined ? "" : body) };
     },
     delete: async (key, path) => {
@@ -162,7 +165,47 @@ await test("a deletion is confirmed by the re-read of the thread", async () => {
   eq(r.counted, false, "a deletion is not work");
   eq(deleteCalls(d).length, 1, "exactly one DELETE request");
   eq(deleteCalls(d)[0].indexOf("/api/v1/comments/c-p") > 0, true, "and it went to the comment");
-  eq(getCalls(d).length, 2, "the thread was read before the DELETE and after it");
+  eq(getCalls(d).length, 6, "тред прочитан в трёх сортировках до DELETE и в трёх после");
+});
+
+// ---- 6b. `sort=new` отстаёт: один new не доказывает отсутствие ----------------------
+// Живая проверка 21.10.2026: свежий комментарий до минуты не появлялся в `new`,
+// хотя в `best`/`old` уже лежал. Чтение одного `new` объявляло его отсутствующим,
+// и DELETE не отправлялся вообще.
+await test("a comment missing from sort=new is still deleted", async () => {
+  const calls = [];
+  const d = {
+    now: () => AT,
+    key: () => "K",
+    get: async (key, path) => {
+      calls.push(path);
+      const sort = /sort=([a-z]+)/.exec(path)[1];
+      const body = sort === "new" ? thread([]) : thread([ourComment("c-lag", "pending")]);
+      return { ok: true, status: 200, path, at: AT, body };
+    },
+    delete: async (key, path) => {
+      calls.push("DELETE " + path);
+      return { ok: true, status: 200, path, at: AT, body: JSON.stringify({ success: true }) };
+    },
+  };
+  const r = await m.moltbookDelete({ post_id: POST, comment_id: "c-lag" }, d);
+  eq(calls.filter((call) => call.startsWith("DELETE")).length, 1, "DELETE was sent despite the lag in new");
+  eq(r.outcome, "deleting", "the server said ok, the lagging view still shows the body");
+});
+
+// ---- 6c. absent - это когда комментария нет НИ В ОДНОЙ сортировке -------------------
+await test("absent only when every sort lacks the comment", async () => {
+  const d = {
+    now: () => AT,
+    key: () => "K",
+    get: async (key, path) => ({ ok: true, status: 200, path, at: AT, body: thread([]) }),
+    delete: async () => {
+      throw new Error("DELETE must not be sent for an absent comment");
+    },
+  };
+  const r = await m.moltbookDelete({ post_id: POST, comment_id: "c-gone" }, d);
+  eq(r.outcome, "absent", "all three views are empty, so the comment is gone");
+  truthy(String(r.reason || "").indexOf("new, best, old") >= 0, "the reason names the sorts that were checked");
 });
 
 // ---- 7. a nested reply is found in the tree -----------------------------------------
