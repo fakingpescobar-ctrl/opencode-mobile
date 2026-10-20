@@ -75,4 +75,12 @@ object ApiPaths {
 
     /** Список MCP-серверов. GET. */
     const val MCP = "/api/mcp"
+
+    /**
+     * Список моделей, которые сервер реально обслуживает. GET.
+     *
+     * Ответ — `{location, data:[…]}`, где в элементе `data` лежит id модели,
+     * провайдер, лимиты и модальности. Разбор — в `ModelList`.
+     */
+    const val MODELS = "/api/model"
 }

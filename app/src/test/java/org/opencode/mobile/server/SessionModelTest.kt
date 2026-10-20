@@ -26,16 +26,16 @@ class SessionModelTest {
 
     @Test
     fun `тело смены содержит id и providerID`() {
-        val body = JSONObject(SessionModel.body("opencode/space-bunny-free")!!)
+        val body = JSONObject(SessionModel.body("opencode/minimax-m3.1-flash-free")!!)
         val model = body.getJSONObject("model")
-        assertEquals("space-bunny-free", model.getString("id"))
+        assertEquals("minimax-m3.1-flash-free", model.getString("id"))
         assertEquals("opencode", model.getString("providerID"))
     }
 
     @Test
     fun `тело без модели не строится`() {
         assertNull(SessionModel.body(null))
-        assertNull(SessionModel.body("space-bunny-free"))
+        assertNull(SessionModel.body("minimax-m3.1-flash-free"))
     }
 
     @Test
@@ -53,7 +53,7 @@ class SessionModelTest {
     @Test
     fun `модель сессии сравнивается вместе с провайдером`() {
         assertTrue(SessionModel.matches("opencode/big-pickle", "opencode/big-pickle"))
-        assertFalse(SessionModel.matches("opencode/big-pickle", "opencode/space-bunny-free"))
+        assertFalse(SessionModel.matches("opencode/big-pickle", "opencode/minimax-m3.1-flash-free"))
         // Тот же id у другого провайдера — другая модель (квоты, цены, эндпоинт).
         assertFalse(SessionModel.matches("zai-coding-plan/big-pickle", "opencode/big-pickle"))
     }
@@ -72,10 +72,10 @@ class SessionModelTest {
     fun `обёртка сессии это data-объект а не массив`() {
         // Живой ответ 2.0.27 на GET /api/session/{id}: {"data":{…,"model":{…}}}.
         // Список сессий отдаёт data-массивом — обе формы обязаны разбираться.
-        val body = "{\"data\":{\"id\":\"ses_1\",\"model\":{\"id\":\"space-bunny-free\",\"providerID\":\"opencode\"}}}"
+        val body = "{\"data\":{\"id\":\"ses_1\",\"model\":{\"id\":\"minimax-m3.1-flash-free\",\"providerID\":\"opencode\"}}}"
         val session = SessionModel.sessionObject(body)
         assertEquals("ses_1", session?.optString("id"))
-        assertEquals("opencode/space-bunny-free", SessionModel.refText(session?.opt("model")))
+        assertEquals("opencode/minimax-m3.1-flash-free", SessionModel.refText(session?.opt("model")))
     }
 
     @Test

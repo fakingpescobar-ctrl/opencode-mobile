@@ -13,8 +13,8 @@ import org.junit.Test
  */
 class RoutingReadinessTest {
     private val routing = ModelRouting(
-        heavy = "opencode/space-bunny-free",
-        light = "opencode/cat-jam-free",
+        heavy = "opencode/minimax-m3.1-flash-free",
+        light = "opencode/deepseek-v4.1-flash-free",
         small = "opencode/mimo-v2.6-flash-free",
     )
 
@@ -47,13 +47,13 @@ class RoutingReadinessTest {
     fun `массивом без обёртки тоже читается - так отдаёт настоящий serve`() {
         val body =
             realConfig(
-                objectModel("space-bunny-free"),
-                """"build":{"model":${objectModel("space-bunny-free")}},
+                objectModel("minimax-m3.1-flash-free"),
+                """"build":{"model":${objectModel("minimax-m3.1-flash-free")}},
                    "title":{"model":${objectModel("mimo-v2.6-flash-free")}}""",
             )
         val served = RoutingReadiness.parseServed(body)
-        assertEquals("opencode/space-bunny-free", served.root)
-        assertEquals(mapOf("build" to "opencode/space-bunny-free", "title" to "opencode/mimo-v2.6-flash-free"), served.agents)
+        assertEquals("opencode/minimax-m3.1-flash-free", served.root)
+        assertEquals(mapOf("build" to "opencode/minimax-m3.1-flash-free", "title" to "opencode/mimo-v2.6-flash-free"), served.agents)
     }
 
     @Test
@@ -62,32 +62,35 @@ class RoutingReadinessTest {
         // отдать её хоть так, хоть разобранным объектом. Читать только объект —
         // значит потерять агента и вечно держать плашку «применить».
         val body =
-            """[{"type":"document","info":{"model":"opencode/space-bunny-free",""" +
-                """"agents":{"build":{"model":"opencode/space-bunny-free"}}}}]"""
+            """[{"type":"document","info":{"model":"opencode/minimax-m3.1-flash-free",""" +
+                """"agents":{"build":{"model":"opencode/minimax-m3.1-flash-free"}}}}]"""
         val served = RoutingReadiness.parseServed(body)
-        assertEquals("opencode/space-bunny-free", served.root)
-        assertEquals(mapOf("build" to "opencode/space-bunny-free"), served.agents)
+        assertEquals("opencode/minimax-m3.1-flash-free", served.root)
+        assertEquals(mapOf("build" to "opencode/minimax-m3.1-flash-free"), served.agents)
         assertTrue(RoutingReadiness.routingServed(served, routing))
     }
 
     @Test
     fun `модель без префикса провайдера не ломает сверку`() {
-        val body = """[{"type":"document","info":{"model":"space-bunny-free","agents":{"build":{"model":"space-bunny-free"}}}}]"""
+        val body =
+            """[{"type":"document","info":{"model":"minimax-m3.1-flash-free",""" +
+                """"agents":{"build":{"model":"minimax-m3.1-flash-free"}}}}]"""
         val served = RoutingReadiness.parseServed(body)
-        assertEquals(mapOf("build" to "space-bunny-free"), served.agents)
+        assertEquals(mapOf("build" to "minimax-m3.1-flash-free"), served.agents)
         assertTrue(RoutingReadiness.routingServed(served, routing))
-        assertFalse(RoutingReadiness.routingServed(servedOf("space-bunny-free", mapOf("build" to "cat-jam-free")), routing))
+        val other = servedOf("minimax-m3.1-flash-free", mapOf("build" to "deepseek-v4.1-flash-free"))
+        assertFalse(RoutingReadiness.routingServed(other, routing))
     }
 
     @Test
     fun `живой ответ со всеми ролями считается применённым`() {
         val body =
             realConfig(
-                objectModel("space-bunny-free"),
-                """"build":{"model":${objectModel("space-bunny-free")}},
-                   "plan":{"model":${objectModel("space-bunny-free")}},
-                   "explore":{"model":${objectModel("cat-jam-free")}},
-                   "general":{"model":${objectModel("cat-jam-free")}},
+                objectModel("minimax-m3.1-flash-free"),
+                """"build":{"model":${objectModel("minimax-m3.1-flash-free")}},
+                   "plan":{"model":${objectModel("minimax-m3.1-flash-free")}},
+                   "explore":{"model":${objectModel("deepseek-v4.1-flash-free")}},
+                   "general":{"model":${objectModel("deepseek-v4.1-flash-free")}},
                    "title":{"model":${objectModel("mimo-v2.6-flash-free")}}""",
             )
         val served = RoutingReadiness.parseServed(body)
@@ -103,10 +106,10 @@ class RoutingReadinessTest {
         val body =
             realConfig(
                 objectModel("big-pickle"),
-                """"build":{"model":${objectModel("space-bunny-free")}},
-                   "plan":{"model":${objectModel("space-bunny-free")}},
-                   "explore":{"model":${objectModel("cat-jam-free")}},
-                   "general":{"model":${objectModel("cat-jam-free")}}""",
+                """"build":{"model":${objectModel("minimax-m3.1-flash-free")}},
+                   "plan":{"model":${objectModel("minimax-m3.1-flash-free")}},
+                   "explore":{"model":${objectModel("deepseek-v4.1-flash-free")}},
+                   "general":{"model":${objectModel("deepseek-v4.1-flash-free")}}""",
             )
         assertFalse(RoutingReadiness.routingServed(RoutingReadiness.parseServed(body), routing))
     }
@@ -114,7 +117,7 @@ class RoutingReadinessTest {
     @Test
     fun `ответ без корневой модели не считается применённым`() {
         val body =
-            """[{"type":"document","info":{"agents":{"build":{"model":${objectModel("space-bunny-free")}}}}}]"""
+            """[{"type":"document","info":{"agents":{"build":{"model":${objectModel("minimax-m3.1-flash-free")}}}}}]"""
         assertFalse(RoutingReadiness.routingServed(RoutingReadiness.parseServed(body), routing))
     }
 
@@ -133,12 +136,12 @@ class RoutingReadinessTest {
     fun `модели агентов читаются из первого документа ответа`() {
         val body =
             config(
-                objectModel("space-bunny-free"),
-                """"build":{"model":${objectModel("space-bunny-free")}},
+                objectModel("minimax-m3.1-flash-free"),
+                """"build":{"model":${objectModel("minimax-m3.1-flash-free")}},
                    "title":{"model":${objectModel("mimo-v2.6-flash-free")}}""",
             )
         val parsed = RoutingReadiness.parseServed(body)
-        assertEquals(mapOf("build" to "opencode/space-bunny-free", "title" to "opencode/mimo-v2.6-flash-free"), parsed.agents)
+        assertEquals(mapOf("build" to "opencode/minimax-m3.1-flash-free", "title" to "opencode/mimo-v2.6-flash-free"), parsed.agents)
     }
 
     @Test
@@ -167,7 +170,7 @@ class RoutingReadinessTest {
         // Агент без model не «молча пропускается»: build обязателен, и его
         // отсутствие в разобранном ответе означает, что сервер не отдал
         // расписание, а не что оно совпало.
-        val body = config(objectModel("space-bunny-free"), """"build":{"description":"никакой модели"},"plan":{}""")
+        val body = config(objectModel("minimax-m3.1-flash-free"), """"build":{"description":"никакой модели"},"plan":{}""")
         val parsed = RoutingReadiness.parseServed(body)
         assertEquals(emptyMap<String, String>(), parsed.agents)
         assertFalse(RoutingReadiness.routingServed(parsed, routing))
@@ -226,17 +229,17 @@ class RoutingReadinessTest {
         val body =
             """[{"type":"document","path":"/data/user/0/x/files/opencode-config/opencode/opencode.jsonc",""" +
                 """"info":{"${'$'}schema":"https://opencode.ai/config.json",""" +
-                """"model":{"providerID":"opencode","model":"space-bunny-free"},""" +
+                """"model":{"providerID":"opencode","model":"minimax-m3.1-flash-free"},""" +
                 """"permissions":[{"action":"question","resource":"*","effect":"ask"}],""" +
-                """"agents":{"build":{"model":{"providerID":"opencode","model":"space-bunny-free"}},""" +
-                """"plan":{"model":{"providerID":"opencode","model":"space-bunny-free"}},""" +
-                """"explore":{"model":{"providerID":"opencode","model":"cat-jam-free"}},""" +
-                """"general":{"model":{"providerID":"opencode","model":"cat-jam-free"}},""" +
+                """"agents":{"build":{"model":{"providerID":"opencode","model":"minimax-m3.1-flash-free"}},""" +
+                """"plan":{"model":{"providerID":"opencode","model":"minimax-m3.1-flash-free"}},""" +
+                """"explore":{"model":{"providerID":"opencode","model":"deepseek-v4.1-flash-free"}},""" +
+                """"general":{"model":{"providerID":"opencode","model":"deepseek-v4.1-flash-free"}},""" +
                 """"title":{"model":{"providerID":"opencode","model":"mimo-v2.6-flash-free"}}},""" +
                 """"mcp":{"servers":{"memory":{"type":"remote","url":"http://127.0.0.1:4199/mcp"}}}}},""" +
                 """{"type":"directory","path":"/data/user/0/x/files/opencode-config/opencode"}]"""
         val served = RoutingReadiness.parseServed(body)
-        assertEquals("opencode/space-bunny-free", served.root)
+        assertEquals("opencode/minimax-m3.1-flash-free", served.root)
         assertEquals(setOf("build", "plan", "explore", "general", "title"), served.agents.keys)
         assertTrue(RoutingReadiness.routingServed(served, routing))
     }

@@ -67,7 +67,7 @@ class RoutingPlanTest {
     @Test
     fun `смена выбора переписывает значения в уже созданном блоке`() {
         val once = applied(managed)
-        val other = routing.copy(heavy = "opencode/space-bunny-free", light = "opencode/nemotron-3.5-lightning-free")
+        val other = routing.copy(heavy = "opencode/minimax-m3.1-flash-free", light = "opencode/nemotron-3.5-super-vl-free")
         val out = written(planRoutingEntry(once, other))
         assertEquals(other.heavy, out.getJSONObject("agent").getJSONObject("build").getString("model"))
         assertEquals(other.light, out.getJSONObject("agent").getJSONObject("general").getString("model"))

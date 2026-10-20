@@ -29,10 +29,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.opencode.mobile.server.CatalogModel
 import org.opencode.mobile.server.ModelCatalog
+import org.opencode.mobile.server.ModelList
 import org.opencode.mobile.server.ModelRouting
 import org.opencode.mobile.server.ModelRoutingPrefs
+import org.opencode.mobile.server.OpencodeServerService
 
 /** Роль агента, за которой закрепляется модель. Список ролей конечен и известен. */
 private enum class RoutingRole(
@@ -84,6 +89,25 @@ internal fun ModelRoutingPicker(
     // сервера, и без этого флага два така подряд поднимали бы второй рестарт
     // поверх первого.
     var applying by remember { mutableStateOf(false) }
+    // Список моделей: сначала встроенный каталог, потом — живой, с сервера.
+    // Провайдер меняет состав моделей без нашего ведома (модель переименовали,
+    // часть убрали, часть добавили), поэтому источник по умолчанию — сервер, а
+    // встроенный список остаётся рабочим вариантом на случай, когда сервер не
+    // поднят или не ответил.
+    var catalog by remember { mutableStateOf(ModelCatalog.all) }
+    var fromServer by remember { mutableStateOf(false) }
+
+    // Живой список спрашиваем отдельно от сверки выбора: ответ сервера
+    // приходит асинхронно и не должен трогать расписание.
+    LaunchedEffect("models") {
+        val live =
+            withContext(Dispatchers.IO) {
+                ModelList.fetch(OpencodeServerService.state.value.port)
+            }
+        if (live.isEmpty()) return@LaunchedEffect
+        catalog = live
+        fromServer = true
+    }
 
     // Рассинхрон может появиться не только из нажатий: перезапуск приложения,
 // правка конфига руками, убитый процесс. Поэтому при открытии карточки
@@ -178,13 +202,17 @@ internal fun ModelRoutingPicker(
         Caption(role.hint, top = 3)
 
         Spacer(Modifier.height(6.dp))
+        val current = modelOf(routing, role)
+        val shown = remember(catalog, current) { ModelCatalog.withCurrent(catalog, current) }
+        Caption(if (fromServer) "ДОСТУПНЫЕ МОДЕЛИ · с сервера" else "ДОСТУПНЫЕ МОДЕЛИ · встроенный список")
         ModelChips(
-            current = modelOf(routing, role),
+            models = shown,
+            current = current,
             enabled = !applying,
             onPick = { commit(setModel(routing, role, it), true) },
         )
 
-        val note = ModelCatalog.all.firstOrNull { it.id == modelOf(routing, role) }?.note ?: ""
+        val note = ModelCatalog.noteFor(current, shown)
         RoutingFooter(note, status, pending, applying, ::applyNow)
     }
 }
@@ -290,16 +318,17 @@ private fun RoleChips(
     }
 }
 
-/** Сетка моделей по две в ряду: подписи вида «Nemotron 3.5 Lightning» влезают
- *  в половину карточки, а id («muse-spark-1.3-contributor-free») — нет. */
+/** Сетка моделей по две в ряду: подписи вида «Nemotron 3.5 Super VL» влезают
+ *  в половину карточки, а id («nemotron-3.5-super-vl-free») — нет. */
 @Composable
 private fun ModelChips(
+    models: List<CatalogModel>,
     current: String,
     enabled: Boolean,
     onPick: (String) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(CHIP_GAP)) {
-        ModelCatalog.all.chunked(MODELS_PER_ROW).forEach { row ->
+        models.chunked(MODELS_PER_ROW).forEach { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(CHIP_GAP)) {
                 row.forEach { model ->
                     RoutingChip(
@@ -397,7 +426,7 @@ private fun setModel(
         RoutingRole.SMALL -> routing.copy(small = id)
     }
 
-/** Моделей в ряду: подпись самой длинной (Nemotron 3.5 Lightning) влезает в
+/** Моделей в ряду: подпись самой длинной (Nemotron 3.5 Super VL) влезает в
  *  половину карточки, в третьей колонке — обрезалась бы многоточием. */
 private const val MODELS_PER_ROW = 2
 
