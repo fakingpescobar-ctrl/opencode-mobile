@@ -408,9 +408,10 @@ function sample() {
 await test("the report names every section", () => {
   const text = renderReport(sample());
   truthy(text.startsWith("# "), "starts with a heading");
-  // Итог, Отложено, Ответы, Не про что, Отказы свидетеля, Живость.
-  eq(text.split(/\n\n/).filter((part) => part.startsWith("## ")).length, 6, "six sections");
+  // Итог, Отложено, Удаления в процессе, Ответы, Не про что, Отказы свидетеля, Живость.
+  eq(text.split(/\n\n/).filter((part) => part.startsWith("## ")).length, 7, "seven sections");
   truthy(text.includes("## Отложено"), "the deferred section is there");
+  truthy(text.includes("## Удаления в процессе"), "the deletions section is there");
   truthy(text.includes("## Живость"), "the liveness section is there");
 });
 
@@ -451,7 +452,7 @@ await test("the report states the full queue size next to the shown one", () => 
 await test("an empty journal renders without throwing and says so", () => {
   const text = renderReport({ at: AT, from: AT, to: AT });
   truthy(text.includes("# "), "still a report");
-  eq(renderReport({}).split(/\n\n/).filter((part) => part.startsWith("## ")).length, 6, "sections survive");
+  eq(renderReport({}).split(/\n\n/).filter((part) => part.startsWith("## ")).length, 7, "sections survive");
   truthy(text.includes("источник не прочитан"), "an unread source is named, not hidden");
 });
 
@@ -510,6 +511,81 @@ await test("an overdue deferred answer says so and is counted apart", () => {
 await test("a report without deferred answers says so", () => {
   const text = renderReport(sample());
   truthy(text.includes("отложенных ответов нет"), "an empty deferred list is stated");
+});
+
+// ---- удаления в процессе ------------------------------------------------------------
+// Мягкое удаление применяется с задержкой: сервер подтвердил, а тело комментария
+// ещё видно. Пока срок не вышел, ожидание видно всегда - иначе проверять потом
+// некому, а удаление тихо забудется.
+await test("a deletion in progress is listed with its deadline", () => {
+  const rows = [
+    {
+      id: "c-d",
+      post_id: "p-1",
+      author: "opencodekz",
+      body: "our old text",
+      status: COMMENT_STATUS.SKIPPED,
+      reply_outcome: REPLY_OUTCOME.DELETING,
+      replied_at: AT,
+      seen_at: AT,
+    },
+  ];
+  const work = projectWork(rows, 0, AT);
+  eq(work.deleting.length, 1, "the pending deletion is counted");
+  eq(work.deletingOverdue.length, 0, "and it is not overdue yet");
+  const text = renderReport({ at: AT, from: 0, to: AT, work });
+  truthy(text.includes("## Удаления в процессе"), "the section is there");
+  truthy(text.includes("пост p-1 / коммент c-d"), "the comment is named");
+  truthy(text.includes("тело ещё видно"), "and the body is still visible");
+  truthy(text.includes("крайний срок"), "and it has a deadline");
+  truthy(text.includes("удалений в процессе: 1"), "the summary counts it");
+});
+
+await test("an overdue deletion says so and is counted apart", () => {
+  const rows = [
+    {
+      id: "c-d",
+      post_id: "p-1",
+      author: "opencodekz",
+      body: "our old text",
+      status: COMMENT_STATUS.SKIPPED,
+      reply_outcome: REPLY_OUTCOME.DELETING,
+      replied_at: AT - 10 * 86_400_000,
+      seen_at: AT,
+    },
+  ];
+  const work = projectWork(rows, 0, AT);
+  eq(work.deleting.length, 1, "it is still a wait");
+  eq(work.deletingOverdue.length, 1, "and it is overdue");
+  const text = renderReport({ at: AT, from: 0, to: AT, work });
+  truthy(text.includes("просрочено"), "the overdue mark is there");
+  truthy(text.includes("из них просрочено: 1"), "and it has a metric of its own");
+});
+
+await test("a failed deletion is not counted as a failed answer", () => {
+  const rows = [
+    {
+      id: "c-d",
+      post_id: "p-1",
+      author: "opencodekz",
+      body: "our old text",
+      status: COMMENT_STATUS.FAILED,
+      reply_outcome: REPLY_OUTCOME.DELETING,
+      replied_at: AT,
+      seen_at: AT,
+    },
+  ];
+  const work = projectWork(rows, 0, AT);
+  eq(work.failed.length, 0, "a failed deletion is not a failed answer");
+  eq(work.deleteFailed.length, 1, "it is a failed deletion");
+  const text = renderReport({ at: AT, from: 0, to: AT, work });
+  truthy(text.includes("удаление не подтверждено"), "the report names it");
+  truthy(text.includes("удалений не подтверждено (провал): 1"), "and it has a metric of its own");
+});
+
+await test("a report without pending deletions says so", () => {
+  const text = renderReport(sample());
+  truthy(text.includes("удалений в процессе нет"), "an empty deletion list is stated");
 });
 
 // ---- a report the PC agent cannot see is said out loud -------------------

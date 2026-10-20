@@ -190,6 +190,14 @@ export const REPLY_OUTCOME = {
   // Отложено: сервер отказал из-за капа глубины вложенности. Ответ не потерян -
   // его надо повторить на верхнем уровне треда, и строка журнала хранит, куда.
   DEFERRED: "deferred",
+  // Мягкое удаление в процессе: сервер подтвердил успех, а тело комментария
+  // ещё видно. Живая проба 20.10.2026: DELETE отвечает 200 и телом
+  // {"success":true,"message":"Comment deleted"}, но сразу после этого перечитка
+  // треда показывает живой узел - полный текст на месте, is_deleted: false.
+  // Через несколько минут тот же узел отдаёт content: "Deleted comment" и
+  // is_deleted: true. Значит удаление применяется С ЗАДЕРЖКОЙ, и «сервер
+  // подтвердил, тело ещё видно» - это ожидание, а не отказ.
+  DELETING: "deleting",
   UNKNOWN: "",
 };
 
@@ -1116,6 +1124,52 @@ export function writeScan(db, posts, comments, now, ourPostIds = [], partialPost
   };
 }
 
+/**
+ * Закрыть ожидания удаления по тому, что видно в скане.
+ *
+ * Скан читает треды и видит узлы. Надгробие (is_deleted или текст
+ * «Deleted comment») у комментария, удаление которого мы запросили, - это
+ * доказательство, что мягкое удаление применилось: ожидание снимается, строка
+ * журнала переводится в SKIPPED, ветка снова открыта.
+ *
+ * Живой узел - противоположный факт: удаление ещё не применилось. Пока срок не
+ * вышел, ожидание живёт (иначе некому потом проверить). А когда срок вышел и
+ * узел всё ещё виден - это провал удаления, и он уходит в «неизвестно/провал»,
+ * а не висит вечно.
+ *
+ * Комментарий, которого в скане не было, ничего не меняет: тред могли не
+ * прочитать, и отсутствие в прочитанном - не доказательство.
+ */
+export function resolveDeleteWaits(db, comments, now) {
+  const result = { confirmed: 0, failed: 0 };
+  if (!db) return result;
+  let rows = [];
+  try {
+    rows = db
+      .prepare("SELECT id, post_id, status, replied_at, seen_at FROM comments WHERE reply_outcome = ?")
+      .all(REPLY_OUTCOME.DELETING);
+  } catch (_) {
+    return result;
+  }
+  const seen = new Map();
+  for (const comment of comments || []) {
+    if (comment && comment.id) seen.set(String(comment.id), comment);
+  }
+  for (const row of rows) {
+    const id = String(row.id || "");
+    const node = seen.get(id);
+    if (!node) continue;
+    if (isTombstone(node)) {
+      if (closeDeleteWait(db, id, now)) result.confirmed += 1;
+      continue;
+    }
+    const at = Number(row.replied_at || 0) || Number(row.seen_at || 0);
+    if (!isOverdue(at, now)) continue;
+    if (markDeleteFailed(db, id, now)) result.failed += 1;
+  }
+  return result;
+}
+
 /** Сколько постов и сколько тредов смотреть за один вызов. */
 export const SCAN_POST_LIMIT = 6;
 /**
@@ -1308,8 +1362,11 @@ export async function moltbookScan(deps) {
       opened = openLedger(false);
       if (!opened.db) return { postsWritten: 0, commentsWritten: 0, commentsSeen: 0, refused: "ledger-missing" };
       const result = writeScan(opened.db, posts, allComments, now, noticeOurPosts, noticePartialPosts);
+      // Ожидания удаления закрываются тем, что скан увидел: надгробие вместо
+      // комментария - удаление подтверждено, живой узел после срока - провал.
+      const deletes = resolveDeleteWaits(opened.db, allComments, now);
       opened.db.close();
-      return result;
+      return Object.assign(result, { deletes: deletes });
     } catch (error) {
       if (opened && opened.db) {
         try {
@@ -1397,6 +1454,9 @@ export async function moltbookScan(deps) {
       // что потерялись до SQLite - и это видно сразу, а не по симптому.
       commentsSeen: written.commentsSeen,
     },
+    // Что скан сделал с ожиданиями удаления: сколько подтвердил надгробием и
+    // сколько закрыл провалом (срок вышел, а комментарий всё ещё виден).
+    deletes: written.deletes || { confirmed: 0, failed: 0 },
     candidates: picked.candidates.map((c) => ({
       post_id: c.post_id,
       comment_id: c.id,
@@ -1870,6 +1930,117 @@ export function markDeleted(db, commentId, now) {
   if (own || branch) return true;
   const known = db.prepare("SELECT COUNT(*) AS n FROM comments WHERE id = ? OR our_reply_id = ?").get(id, id);
   return Number((known && known.n) || 0) === 0;
+}
+
+/**
+ * Исход «мягкое удаление в процессе».
+ *
+ * Живая проба 20.10.2026: DELETE отвечает 200 и телом
+ * {"success":true,"message":"Comment deleted"}, и это правда - удаление принято.
+ * Но сразу после этого перечитка треда показывает ЖИВОЙ узел: полный текст на
+ * месте, is_deleted: false. Через несколько минут тот же узел отдаёт
+ * content: "Deleted comment" и is_deleted: true.
+ *
+ * Значит удаление применяется с задержкой, и «сервер подтвердил, а тело ещё
+ * видно» - это ожидание, а не отказ. Отдельный исход нужен ещё и потому, что
+ * пустой исход значит «не знаем» (строки до пятой версии схемы), а тут мы
+ * знаем ровно одно: сервер сказал «удалено», и осталось подождать.
+ */
+export function isDeletingOutcome(value) {
+  return String(value || "") === REPLY_OUTCOME.DELETING;
+}
+
+/**
+ * Строка журнала про удаление.
+ *
+ * Исход `deleting` означает «эта строка про удаление, а не про ответ».
+ * Что с удалением - покажет статус: SKIPPED - ждём (тело ещё видно), FAILED -
+ * срок вышел, а комментарий всё ещё жив.
+ */
+export function isDeletingRow(row) {
+  if (!row) return false;
+  return isDeletingOutcome(row.reply_outcome);
+}
+
+/**
+ * Записать ожидание удаления.
+ *
+ * Строка журнала - это наш собственный комментарий: автор мы, статус SKIPPED
+ * (наш комментарий не вопрос и ждать ответа не от кого), исход `deleting`, а
+ * время в replied_at - момент запроса удаления. От него считается срок: пока
+ * срок не вышел, удаление в процессе; после срока ожидание становится провалом
+ * (см. markDeleteFailed).
+ *
+ * Тело комментария пишется как есть: по нему видно, что комментарий всё ещё
+ * виден на сайте, - это ровно то, из-за чего удаление и ждём.
+ */
+export function markDeletePending(db, commentId, postId, body, now) {
+  if (!db || !commentId) return false;
+  const id = String(commentId);
+  recordComment(db, {
+    id: id,
+    post_id: String(postId || ""),
+    author: MOLTBOOK_NAME,
+    body: String(body || ""),
+    created_at: 0,
+    status: COMMENT_STATUS.SKIPPED,
+    now: Number(now || 0),
+    replied_at: Number(now || 0),
+    reply_outcome: REPLY_OUTCOME.DELETING,
+  });
+  const stored = db.prepare("SELECT reply_outcome FROM comments WHERE id = ?").get(id);
+  return Boolean(stored) && isDeletingOutcome(stored.reply_outcome);
+}
+
+/**
+ * Провал удаления: срок вышел, а комментарий всё ещё виден.
+ *
+ * Исход остаётся `deleting` - он и говорит, что строка про удаление, а не про
+ * ответ, - и меняется статус на FAILED: работу (снять комментарий) не сделали.
+ * seen_at двигается в now, чтобы провал попал в окно отчёта, а не остался
+ * навсегда в прошлом.
+ */
+export function markDeleteFailed(db, commentId, now) {
+  if (!db || !commentId) return false;
+  return (
+    db
+      .prepare("UPDATE comments SET status = ?, seen_at = ? WHERE id = ? AND reply_outcome = ?")
+      .run(COMMENT_STATUS.FAILED, Number(now || 0), String(commentId), REPLY_OUTCOME.DELETING).changes > 0
+  );
+}
+
+/**
+ * Закрыть ожидание удаления: комментарий уже не жив.
+ *
+ * Тул можно вызвать повторно, и тогда сервер скажет «Comment not found» или
+ * покажет надгробие. Оба ответа означают одно: удаление состоялось, и ждать
+ * больше нечего. Строка журнала переводится в SKIPPED, ветка, на которую
+ * комментарий отвечал, снова открыта.
+ */
+export function closeDeleteWait(db, commentId, now) {
+  return markDeleted(db, commentId, now);
+}
+
+/**
+ * Забыть ожидание удаления, открыв журнал самому.
+ *
+ * Закрытие ожидания - уборка за собой, а не отказ: комментария уже нет, и
+ * отсутствие журнала не должно менять этот факт. Поэтому здесь тихий отказ,
+ * в отличие от writeReply, который честно кричит о недоступном журнале.
+ */
+function forgetDeleteWait(openDb, commentId, now) {
+  let opened = null;
+  try {
+    opened = openDb(false);
+    if (!opened || !opened.db) return false;
+    try {
+      return closeDeleteWait(opened.db, commentId, now);
+    } finally {
+      opened.db.close();
+    }
+  } catch (_) {
+    return false;
+  }
 }
 
 /** Виды записей свидетеля. Согласие пишется рядом с отказом - иначе журнал врёт. */
@@ -2631,6 +2802,26 @@ export function isCommentNotFound(status, body) {
 }
 
 /**
+ * Подтвердил ли сервер удаление.
+ *
+ * Живая проба 20.10.2026: DELETE отвечает 200 и телом
+ * {"success":true,"message":"Comment deleted"}. Это правда - удаление принято, -
+ * но тело комментария после этого ещё видно минутами: сервер применяет мягкое
+ * удаление с задержкой.
+ *
+ * Значит «сервер подтвердил» и «комментарий исчез» - разные факты, и их нельзя
+ * смешивать: подтверждение сервера без подтверждения чтением означает
+ * ожидание, а не отказ.
+ */
+export function deleteConfirmed(status, body) {
+  const code = Number(status || 0);
+  if (!Number.isFinite(code) || code < 200 || code >= 300) return false;
+  const root = safeJson(body);
+  if (!root) return false;
+  return root.success === true;
+}
+
+/**
  * Наш инструмент: убрать свой комментарий, который не прошёл проверку.
  *
  * Проверенный комментарий виден читателям, и удалять его нельзя - это
@@ -2641,14 +2832,19 @@ export function isCommentNotFound(status, body) {
  * `{"success":true}`, а удаление у неё МЯГКОЕ - узел комментария остаётся в
  * дереве, и вместо него остаётся видимая надпись «Deleted comment». Поэтому
  * единственное доказательство удаления - повторное чтение треда, и оно читает
- * три состояния:
+ * четыре состояния:
  *
  *   - узла нет вовсе - сервер убрал его целиком, исход deleted;
  *   - узел есть, но это надгробие (is_deleted или текст «Deleted comment») -
  *     мягкое удаление подтверждено, исход deleted, но след виден;
- *   - узел есть и он живой - исход unconfirmed, удаление не подтверждено.
+ *   - узел есть и он живой, а сервер подтвердил успех - исход deleting:
+ *     мягкое удаление применяется С ЗАДЕРЖКОЙ (живая проба 20.10.2026: тело
+ *     пропало через несколько минут), и ждать есть кому - срок привязан к
+ *     моменту запроса, а отчёт показывает ожидание отдельной секцией;
+ *   - узел есть и он живой, а сервер успех НЕ подтвердил - исход unconfirmed:
+ *     удаление не состоялось.
  *
- * И четвёртое состояние, о котором говорит сам сервер: «Comment not found» -
+ * И пятое состояние, о котором говорит сам сервер: «Comment not found» -
  * комментария нет вообще, исход absent, повторный DELETE не отправляется.
  */
 export async function moltbookDelete(args, deps) {
@@ -2693,6 +2889,7 @@ export async function moltbookDelete(args, deps) {
   const target = findComment(parsedBefore.comments, commentId);
   if (!target) {
     refusals.push("already-absent");
+    forgetDeleteWait(openDb, commentId, now);
     const absent = replyResult("absent", commentId, postId, "", now, requests, refusals, false);
     absent.reason = "комментария уже нет";
     return absent;
@@ -2701,6 +2898,7 @@ export async function moltbookDelete(args, deps) {
   // идёт ДО проверки автора: надгробище чужого комментария тоже удалено.
   if (isTombstone(target)) {
     refusals.push("already-deleted");
+    forgetDeleteWait(openDb, commentId, now);
     const gone = replyResult("absent", commentId, postId, "", now, requests, refusals, false);
     gone.reason = "комментарий уже помечен удалённым: в дереве осталась надпись «" + TOMBSTONE_TEXT + "»";
     return gone;
@@ -2729,33 +2927,63 @@ export async function moltbookDelete(args, deps) {
   // ничего не изменит - только зря съест место в лимите записи.
   if (isCommentNotFound(removed.status, removed.body)) {
     refusals.push("comment-not-found");
+    forgetDeleteWait(openDb, commentId, now);
     const absent = replyResult("absent", commentId, postId, "", now, requests, refusals, false);
     absent.reason = "комментария на сервере уже нет: сервер ответил «Comment not found»";
     return absent;
   }
-  // Подтверждение - только чтением. Непрочитанный тред после DELETE это не
-  // «удалено», а «не знаю»: сказать «удалено» без свидетельства нельзя.
+  // Подтверждение сервера и подтверждение чтением - разные факты.
+  // Живая проба 20.10.2026: DELETE отвечает 200 и телом
+  // {"success":true,"message":"Comment deleted"}, и это правда - удаление
+  // принято. Но мягкое удаление применяется С ЗАДЕРЖКОЙ: сразу после ответа
+  // перечитка треда показывает живой узел с полным текстом.
+  const serverConfirmed = deleteConfirmed(removed.status, removed.body);
   const after = await get(key, threadPath);
   requests.push({ path: after.path, status: after.status, ok: after.ok });
   const parsedAfter = parseComments(after.body);
   if (!parsedAfter.ok) {
+    // Тред после DELETE не прочитан: удаление мы не увидели. Если сервер
+    // подтвердил - это ожидание, а не отказ, и ждать есть кому: срок считается
+    // от момента запроса. Если сервер не подтвердил - удаления не было.
     refusals.push("delete-not-confirmed-" + after.status);
-    const blind = replyResult("unconfirmed", commentId, postId, "", now, requests, refusals, false);
-    blind.reason = "после DELETE тред не прочитан, удаление не подтверждено";
-    blind.server_message = String(removed.body || "").slice(0, SERVER_MESSAGE_CHARS);
-    return blind;
+    if (!serverConfirmed) {
+      const blind = replyResult("unconfirmed", commentId, postId, "", now, requests, refusals, false);
+      blind.reason = "сервер не подтвердил удаление, и после DELETE тред не прочитан: удаление не подтверждено";
+      blind.server_message = String(removed.body || "").slice(0, SERVER_MESSAGE_CHARS);
+      return blind;
+    }
+    writeReply(openDb, (db) => markDeletePending(db, commentId, postId, target.body, now), refusals);
+    const deleting = replyResult("deleting", commentId, postId, "", now, requests, refusals, false);
+    deleting.pending = true;
+    deleting.reason =
+      "сервер подтвердил удаление, но тред после DELETE не прочитан: мягкое удаление применяется с задержкой - проверь тред позже";
+    deleting.server_message = String(removed.body || "").slice(0, SERVER_MESSAGE_CHARS);
+    return deleting;
   }
-  // Три состояния после повторного чтения. Узел может остаться в дереве -
+  // Четыре состояния после повторного чтения. Узел может остаться в дереве -
   // удаление у молтбука МЯГКОЕ, и на месте комментария стоит надпись
   // «Deleted comment». Такой узел и есть доказательство удаления, а не
   // опровержение: комментария больше нет, тело его недоступно.
   const left = findComment(parsedAfter.comments, commentId);
   if (left && !isTombstone(left)) {
-    refusals.push("delete-not-confirmed");
-    const unconfirmed = replyResult("unconfirmed", commentId, postId, "", now, requests, refusals, false);
-    unconfirmed.reason = "сервер ответил успехом, но при повторном чтении комментарий ещё виден";
-    unconfirmed.server_message = String(removed.body || "").slice(0, SERVER_MESSAGE_CHARS);
-    return unconfirmed;
+    // Узел живой. Сервер подтвердил успех - значит удаление в процессе: ждать
+    // есть кому (срок привязан к моменту запроса, отчёт показывает ожидание
+    // отдельной секцией). Не подтвердил - удаления не было, это отказ.
+    if (!serverConfirmed) {
+      refusals.push("delete-not-confirmed");
+      const unconfirmed = replyResult("unconfirmed", commentId, postId, "", now, requests, refusals, false);
+      unconfirmed.reason = "сервер не подтвердил удаление, и при повторном чтении комментарий ещё виден";
+      unconfirmed.server_message = String(removed.body || "").slice(0, SERVER_MESSAGE_CHARS);
+      return unconfirmed;
+    }
+    writeReply(openDb, (db) => markDeletePending(db, commentId, postId, target.body, now), refusals);
+    const deleting = replyResult("deleting", commentId, postId, "", now, requests, refusals, false);
+    deleting.pending = true;
+    deleting.reason =
+      "сервер подтвердил удаление, но тело комментария ещё видно: мягкое удаление применяется с задержкой " +
+      "(живая проверка 20.10.2026: тело пропало через несколько минут). Проверь тред позже";
+    deleting.server_message = String(removed.body || "").slice(0, SERVER_MESSAGE_CHARS);
+    return deleting;
   }
   const soft = Boolean(left);
   appendVerifier(
@@ -2926,8 +3154,17 @@ export function projectWork(rows, from, now) {
   // Провал - это FAILED БЕЗ исхода «отложено». Пока отложенный ответ попадал
   // и сюда, и в список отложенных, отчёт писал «провалов записано: N» и
   // «отложено: M» про ОДИН и тот же ответ.
+  //
+  // Провал УДАЛЕНИЯ сюда не входит: это другая работа (снять комментарий), и
+  // у неё свой счётчик в секции «Удаления в процессе».
   const failed = list
-    .filter((row) => statusIs(row.status, COMMENT_STATUS.FAILED) && !isDeferredRow(row) && Number(row.seen_at || 0) >= from)
+    .filter(
+      (row) =>
+        statusIs(row.status, COMMENT_STATUS.FAILED) &&
+        !isDeferredRow(row) &&
+        !isDeletingRow(row) &&
+        Number(row.seen_at || 0) >= from,
+    )
     .map((row) => ({ id: String(row.id || ""), postId: String(row.post_id || "") }));
   // Отложенные - отдельным списком рядом с провалами. Отказ по капу глубины
   // это не «не сделали»: работа не потеряна, её надо повторить на верхнем
@@ -2961,6 +3198,7 @@ export function projectWork(rows, from, now) {
   const overdue = postponed.filter((row) => isOverdue(row.at, now));
   const deferred = postponed.filter((row) => !isOverdue(row.at, now));
   const unknown = list.filter((row) => posted(row) && repliedAfter(row) && outcome(row) === "").length;
+  const deletions = projectDeletions(list, from, now);
   return {
     created: pick(REPLY_OUTCOME.CREATED),
     verified: pick(REPLY_OUTCOME.VERIFIED),
@@ -2968,8 +3206,43 @@ export function projectWork(rows, from, now) {
     failed,
     deferred,
     overdue,
+    // Удаления в процессе: сервер подтвердил, а мягкое удаление применяется с
+    // задержкой - тело комментария ещё видно. Срок есть, поэтому ожидание
+    // видно всегда, а не только в окне отчёта.
+    deleting: deletions.pending,
+    deletingOverdue: deletions.overdue,
+    deleteFailed: deletions.failed,
     unknown,
   };
+}
+
+/**
+ * Удаления, которые мы ждём, и удаления, которые не подтвердились.
+ *
+ * Разделение по статусу строки: SKIPPED - удаление в процессе (тело ещё
+ * видно), FAILED - срок вышел, а комментарий всё ещё жив.
+ *
+ * Окно у провалов - то же, что у остальных строк журнала: провал жил в своём
+ * окне. А ожидание видно всегда, пока срок не вышел: иначе проверять потом
+ * будет некому, и ожидание превратится в «место, куда девают забытое».
+ */
+export function projectDeletions(rows, from, now) {
+  const list = Array.isArray(rows) ? rows : [];
+  const deleting = list.filter((row) => isDeletingRow(row));
+  const item = (row) => ({
+    id: String(row.id || ""),
+    postId: String(row.post_id || ""),
+    // Момент запроса удаления: replied_at - это когда мы удаляли, seen_at -
+    // когда увидели комментарий.
+    at: Number(row.replied_at || 0) || Number(row.seen_at || 0),
+    body: String(row.body || ""),
+  });
+  const pending = deleting.filter((row) => statusIs(row.status, COMMENT_STATUS.SKIPPED)).map(item);
+  const overdue = pending.filter((row) => isOverdue(row.at, now));
+  const failed = deleting
+    .filter((row) => statusIs(row.status, COMMENT_STATUS.FAILED) && Number(row.seen_at || 0) >= from)
+    .map(item);
+  return { pending, overdue, failed };
 }
 
 /**
@@ -3116,6 +3389,9 @@ export function renderReport(data) {
   const pending = Array.isArray(data.pending) ? data.pending : [];
   const deferred = Array.isArray(work.deferred) ? work.deferred : [];
   const overdue = Array.isArray(work.overdue) ? work.overdue : [];
+  const deleting = Array.isArray(work.deleting) ? work.deleting : [];
+  const deletingOverdue = Array.isArray(work.deletingOverdue) ? work.deletingOverdue : [];
+  const deleteFailed = Array.isArray(work.deleteFailed) ? work.deleteFailed : [];
   const liveness = data.liveness || livenessProof([]);
   const refusals = Array.isArray(data.refusals) ? data.refusals : [];
   const unreadable = Number(data.unreadable || 0);
@@ -3127,6 +3403,9 @@ export function renderReport(data) {
   const postponed = deferred.concat(overdue);
   const overdueItems = postponed.filter((item) => isOverdue(item.at, data.to));
   const pendingItems = postponed.filter((item) => !isOverdue(item.at, data.to));
+  // То же и для удалений: «(просрочено)» в секции и счётчик рядом считаются
+  // от одного момента.
+  const overdueDeletes = deleting.filter((item) => isOverdue(item.at, data.to));
   const out = [];
   out.push("# Отчёт Moltbook");
   out.push("");
@@ -3141,6 +3420,9 @@ export function renderReport(data) {
   out.push(line("провалов записано: " + work.failed.length));
   out.push(line("отложено до повтора на верхнем уровне: " + pendingItems.length));
   out.push(line("просрочено отложенных (срок вышел, ответить заново на верхнем уровне): " + overdueItems.length));
+  out.push(line("удалений в процессе: " + deleting.length));
+  out.push(line("из них просрочено: " + overdueDeletes.length));
+  out.push(line("удалений не подтверждено (провал): " + deleteFailed.length));
   out.push(line("исход неизвестен (строки до v5, работы не считаются): " + work.unknown));
   out.push("");
   out.push("## Отложено");
@@ -3151,6 +3433,24 @@ export function renderReport(data) {
       out.push(
         line("пост " + item.postId + " / заблокированный родитель " + item.id + " / " + resumeTargetText(item.target) +
           " / крайний срок " + deferredDeadline(item.at, data.to)),
+      );
+    }
+  }
+  out.push("");
+  out.push("## Удаления в процессе");
+  if (deleting.length === 0 && deleteFailed.length === 0) {
+    out.push("- удалений в процессе нет");
+  } else {
+    for (const item of deleting) {
+      out.push(
+        line("пост " + item.postId + " / коммент " + item.id + " / тело ещё видно / крайний срок " +
+          deferredDeadline(item.at, data.to)),
+      );
+    }
+    for (const item of deleteFailed) {
+      out.push(
+        line("пост " + item.postId + " / коммент " + item.id +
+          " / удаление не подтверждено: срок вышел, комментарий всё ещё виден"),
       );
     }
   }
@@ -3995,14 +4295,18 @@ const TOOLS = [
       "Удалить свой комментарий в треде, если он не прошёл проверку и виден не всем. " +
       "Удалять можно только свои комментарии: чужой комментарий - refused. " +
       "И только непроверенные: комментарий со статусом verified виден читателям, его не убирают. " +
-      "Успех подтверждается НЕ ответом сервера, а повторным чтением треда: сервер может " +
-      "ответить success, а комментарий останется в дереве живым - тогда исход unconfirmed. " +
+      "Успех подтверждается НЕ ответом сервера, а повторным чтением треда. " +
       "Удаление у молтбука МЯГКОЕ: вместо комментария в дереве остаётся надпись " +
       "«Deleted comment» - это подтверждённое удаление (исход deleted), просто след виден. " +
+      "И мягкое удаление применяется С ЗАДЕРЖКОЙ: сервер отвечает success, а тело комментария " +
+      "ещё видно минутами (живая проверка 20.10.2026: тело пропало через несколько минут). " +
+      "Тогда исход deleting: удаление в процессе, pending=true, тело ещё видно - проверь тред позже, " +
+      "а не удаляй повторно. " +
       "Исходы: deleted (после повторного чтения комментария нет или осталась надпись " +
-      "«Deleted comment»), absent (комментария уже нет, он уже помечен удалённым или сервер " +
-      "ответил «Comment not found»), refused (не наш, уже проверенный или исчерпан лимит записи " +
-      "10 POST/DELETE в минуту), unconfirmed (прочитать не удалось).",
+      "«Deleted comment»), deleting (сервер подтвердил удаление, но тело ещё видно - удаление " +
+      "применяется с задержкой, проверь тред позже), absent (комментария уже нет, он уже помечен " +
+      "удалённым или сервер ответил «Comment not found»), refused (не наш, уже проверенный или " +
+      "исчерпан лимит записи 10 POST/DELETE в минуту), unconfirmed (сервер не подтвердил удаление).",
     inputSchema: {
       type: "object",
       properties: {

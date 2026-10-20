@@ -20,7 +20,7 @@ function join4(...parts) {
   return parts.join("/").replace(/\\/g, "/").replace(/\/+/g, "/");
 }
 
-const { writeScan, countReportable, COMMENT_STATUS, REPLY_OUTCOME, isGeoBlocked, unreadableRefusal, moltbookScan } = await import(
+const { writeScan, countReportable, COMMENT_STATUS, REPLY_OUTCOME, isGeoBlocked, unreadableRefusal, moltbookScan, resolveDeleteWaits } = await import(
   pathToFileURL(MOLTBOOK_JS).href
 );
 
@@ -70,6 +70,15 @@ function freshDb() {
   return db;
 }
 
+// Строка журнала про удаление в процессе: наш комментарий, ожидание с дедлайном.
+// replied_at - момент запроса удаления, от него считается срок.
+function insertDeleting(db, id, at) {
+  db.prepare(
+    "INSERT INTO comments (id,post_id,author,body,created_at,status,our_reply_id,summary_ru,seen_at,replied_at,reply_outcome)" +
+      " VALUES (?,?,?,?,?,?,?,'',?,?,?)",
+  ).run(id, "p-1", "opencodekz", "our old text", 100, "SKIPPED", null, at, at, REPLY_OUTCOME.DELETING);
+}
+
 const POST = {
   id: "p-1",
   title: "Title",
@@ -79,6 +88,8 @@ const POST = {
   created_at: 100,
   repost_of: null,
 };
+// Момент «сейчас» в тестах: сроки удаления считаются от него.
+const AT = 1700000000000;
 const COMMENT = {
   id: "c-1",
   post_id: "p-1",
@@ -369,6 +380,77 @@ await test("the scan reports a geo block as a geo block", async () => {
   truthy(r.refusals.indexOf("feed-geo-blocked") >= 0, "the geo block is named as a geo block");
   eq(r.refusals.indexOf("feed-unreadable-403"), -1, "and it is not the old unreadable feed");
   truthy(r.refusals.indexOf("home-geo-blocked") >= 0, "the home read is blocked by the same wall");
+});
+
+// ---- ожидание удаления закрывается тем, что увидел скан ----------------------------
+// Мягкое удаление применяется с задержкой: сначала тело комментария видно, потом
+// на его месте надпись «Deleted comment». Скан, увидевший надгробие, снимает
+// ожидание: удаление подтверждено, строка журнала - SKIPPED, ветка снова открыта.
+await test("a scan that sees the tombstone closes the deletion wait", () => {
+  const db = freshDb();
+  insertDeleting(db, "c-dead", AT);
+  const resolved = resolveDeleteWaits(db, [{ id: "c-dead", body: "Deleted comment", is_deleted: true }], AT);
+  eq(resolved.confirmed, 1, "the wait is closed");
+  eq(resolved.failed, 0, "and it is not a failure");
+  const row = db.prepare("SELECT status, reply_outcome FROM comments WHERE id = 'c-dead'").get();
+  eq(row.status, "SKIPPED", "the comment is skipped");
+  eq(row.reply_outcome, "", "and the wait is gone from the journal");
+  db.close();
+});
+
+await test("a confirmed deletion opens the branch it answered again", () => {
+  const db = freshDb();
+  insertDeleting(db, "c-dead", AT);
+  db.prepare(
+    "INSERT INTO comments (id,post_id,author,body,created_at,status,our_reply_id,summary_ru,seen_at,replied_at,reply_outcome)" +
+      " VALUES (?,?,?,?,?,?,?,'',?,?,?)",
+  ).run("q-1", "p-1", "alice", "q", 100, "POSTED", "c-dead", 500, 500, "created");
+  resolveDeleteWaits(db, [{ id: "c-dead", body: "Deleted comment", is_deleted: true }], AT);
+  const branch = db.prepare("SELECT status, our_reply_id FROM comments WHERE id = 'q-1'").get();
+  eq(branch.status, "NEW", "the branch is open again");
+  eq(branch.our_reply_id, null, "and points at nothing");
+  db.close();
+});
+
+// Живой узел после срока - это провал удаления, а не «подождём ещё»: неизвестное
+// без срока становится местом, куда девают забытое.
+await test("a scan that sees a live comment past the deadline fails the deletion", () => {
+  const db = freshDb();
+  const past = AT - 10 * 86_400_000;
+  insertDeleting(db, "c-dead", past);
+  const resolved = resolveDeleteWaits(db, [{ id: "c-dead", body: "still here", is_deleted: false }], AT);
+  eq(resolved.failed, 1, "the deletion failed");
+  eq(resolved.confirmed, 0, "and it was not confirmed");
+  const row = db.prepare("SELECT status, reply_outcome, seen_at FROM comments WHERE id = 'c-dead'").get();
+  eq(row.status, "FAILED", "the row is a failure");
+  eq(row.reply_outcome, "deleting", "and it is still known as a deletion");
+  eq(row.seen_at, AT, "the failure is dated");
+  db.close();
+});
+
+await test("a live comment before the deadline keeps waiting", () => {
+  const db = freshDb();
+  insertDeleting(db, "c-dead", AT);
+  const resolved = resolveDeleteWaits(db, [{ id: "c-dead", body: "still here", is_deleted: false }], AT);
+  eq(resolved.failed, 0, "the deadline did not pass yet");
+  eq(resolved.confirmed, 0, "and nothing is confirmed");
+  const row = db.prepare("SELECT status, reply_outcome FROM comments WHERE id = 'c-dead'").get();
+  eq(row.status, "SKIPPED", "the row is still a wait");
+  eq(row.reply_outcome, "deleting", "and the wait is still in the journal");
+  db.close();
+});
+
+// Отсутствие в прочитанном треде - не доказательство: тред могли не прочитать.
+await test("a comment the scan did not see changes nothing", () => {
+  const db = freshDb();
+  const past = AT - 10 * 86_400_000;
+  insertDeleting(db, "c-dead", past);
+  const resolved = resolveDeleteWaits(db, [{ id: "c-other", body: "q", is_deleted: false }], AT);
+  eq(resolved.confirmed, 0, "nothing is confirmed");
+  eq(resolved.failed, 0, "and nothing fails");
+  const row = db.prepare("SELECT status, reply_outcome FROM comments WHERE id = 'c-dead'").get();
+  eq(row.reply_outcome, "deleting", "the wait is still waiting");
+  db.close();
 });
 
 console.log("");

@@ -135,13 +135,21 @@ await test("an unknown status does not block the deletion", async () => {
   eq(r.outcome, "deleted", "an absent status is not a verified status");
 });
 
-// ---- 5. success from the server is not a deletion until we read it again -------------
-await test("success from the server is not a deletion until we read it again", async () => {
+// ---- 5. сервер подтвердил, а тело ещё видно: удаление в процессе --------------------
+// Живая проба 20.10.2026: DELETE отвечает 200 и {"success":true}, но мягкое
+// удаление применяется с задержкой - тело комментария видно ещё несколько
+// минут. Это не отказ (удаление принято), а ожидание: исход deleting, и ждать
+// есть кому - срок привязан к моменту запроса.
+await test("a confirmed delete with a visible body is a deletion in progress", async () => {
   const body = thread([ourComment("c-p", "pending")]);
   const d = deps([body, body]);
   const r = await m.moltbookDelete({ post_id: POST, comment_id: "c-p" }, d);
-  eq(r.outcome, "unconfirmed", "the comment is still visible after the DELETE");
-  truthy(String(r.reason || "").indexOf("ещё виден") >= 0, "and the tool says what it saw");
+  eq(r.outcome, "deleting", "the server confirmed, the body is still visible");
+  eq(r.pending, true, "and the tool says the deletion is pending");
+  eq(r.counted, false, "a pending deletion is not work");
+  eq(r.refusals.indexOf("delete-not-confirmed"), -1, "an expected wait is not a refusal");
+  truthy(String(r.reason || "").indexOf("ещё видно") >= 0, "the reason says the body is still visible");
+  truthy(String(r.reason || "").indexOf("позже") >= 0, "and tells the agent to check later");
   eq(typeof r.server_message, "string", "the server answer is attached, cut to 200 characters");
   eq(r.server_message.length <= 200, true, "the server answer is cut to 200 characters");
 });
@@ -170,11 +178,27 @@ await test("a nested reply is found and can be deleted", async () => {
 });
 
 // ---- 8. a thread we cannot read after the DELETE is not a deletion ------------------
+// Сервер подтвердил удаление, а перечитать тред не вышло: удаление не видно,
+// но и не опровергнуто. Ждать есть кому, поэтому исход - deleting, а не
+// unconfirmed: unconfirmed остаётся для случая, когда сервер НЕ подтвердил.
 await test("a thread we cannot read after the DELETE is not a deletion", async () => {
   const d = deps([thread([ourComment("c-p", "pending")]), "{ not json"]);
   const r = await m.moltbookDelete({ post_id: POST, comment_id: "c-p" }, d);
-  eq(r.outcome, "unconfirmed", "no read-back means no confirmation");
-  truthy(String(r.reason || "").indexOf("не подтверждено") >= 0, "and the tool says why");
+  eq(r.outcome, "deleting", "the server confirmed, so we wait instead of refusing");
+  eq(r.pending, true, "and the wait is marked as pending");
+  truthy(String(r.reason || "").indexOf("не прочитан") >= 0, "and the tool says why");
+});
+
+// ---- 8a. сервер НЕ подтвердил удаление - это unconfirmed -----------------------------
+await test("a delete the server did not confirm stays unconfirmed", async () => {
+  const d = deps(
+    [thread([ourComment("c-p", "pending")]), "{ not json"],
+    { ok: false, status: 500, body: JSON.stringify({ message: "boom" }) },
+  );
+  const r = await m.moltbookDelete({ post_id: POST, comment_id: "c-p" }, d);
+  eq(r.outcome, "unconfirmed", "the server did not confirm");
+  eq(r.pending, undefined, "and nothing is pending");
+  eq(r.counted, false, "and it is not work");
 });
 
 // ---- 9. an unreadable thread refuses instead of deleting blind ----------------------
@@ -318,8 +342,9 @@ await test("a soft delete is recognised by the flag alone", async () => {
   eq(r.soft_delete, true, "and it was a soft delete");
 });
 
-await test("a live node after the DELETE is still unconfirmed", async () => {
-  const d = deps([thread([ourComment("c-p", "pending")]), thread([ourComment("c-p", "pending")])]);
+await test("a live node after a DELETE the server refused is unconfirmed", async () => {
+  const body = thread([ourComment("c-p", "pending")]);
+  const d = deps([body, body], { ok: false, status: 500, body: JSON.stringify({ message: "boom" }) });
   const r = await m.moltbookDelete({ post_id: POST, comment_id: "c-p" }, d);
   eq(r.outcome, "unconfirmed", "a live comment was not deleted");
   truthy(r.refusals.indexOf("delete-not-confirmed") >= 0, "and the tool says the deletion was not confirmed");
@@ -386,13 +411,13 @@ await test("another 403 is not a proof that the comment is gone", async () => {
   eq(deleteCalls(d).length, 1, "the DELETE was sent once");
 });
 
-// ---- 20. два других исхода удаления не сломались -----------------------------------
-// Регрессия: живой узел после DELETE - это unconfirmed, надгробие - подтверждённое
-// мягкое удаление. Новая ветка «Comment not found» не должна была их сдвинуть.
+// ---- 20. три состояния удаления не сломались друг об друга --------------------------
+// Регрессия: сервер подтвердил, а узел живой - это deleting (ожидание);
+// надгробие - подтверждённое мягкое удаление; сервер не подтвердил - unconfirmed.
 await test("the other two delete outcomes are unchanged", async () => {
   const live = deps([thread([ourComment("c-p", "pending")]), thread([ourComment("c-p", "pending")])]);
   const liveResult = await m.moltbookDelete({ post_id: POST, comment_id: "c-p" }, live);
-  eq(liveResult.outcome, "unconfirmed", "a live node after the DELETE is not a deletion");
+  eq(liveResult.outcome, "deleting", "a live node after a confirmed DELETE is a wait, not a refusal");
 
   const soft = deps([
     thread([ourComment("c-p", "pending")]),
@@ -419,6 +444,78 @@ await test("the 'comment not found' answer is recognised by its body", () => {
   );
   eq(m.isCommentNotFound(403, JSON.stringify({ message: "Forbidden" })), false, "another refusal is not a missing comment");
   eq(m.isCommentNotFound(403, "{ not json"), false, "a broken body is not a missing comment");
+});
+
+// ---- 22. подтверждение сервера узнаётся по телу, а не по догадке --------------------
+// «Сервер подтвердил» и «комментарий исчез» - разные факты. Ответ 200 без
+// success в теле подтверждением не считается.
+await test("the server confirmation is read from the body", () => {
+  eq(m.deleteConfirmed(200, JSON.stringify({ success: true, message: "Comment deleted" })), true, "the measured answer");
+  eq(m.deleteConfirmed(200, JSON.stringify({ success: false })), false, "success:false is not a confirmation");
+  eq(m.deleteConfirmed(200, JSON.stringify({ message: "Comment deleted" })), false, "a message without success is not");
+  eq(m.deleteConfirmed(500, JSON.stringify({ success: true })), false, "a failed request confirms nothing");
+  eq(m.deleteConfirmed(200, "{ not json"), false, "a broken body confirms nothing");
+  eq(m.deleteConfirmed(0, ""), false, "no answer at all confirms nothing");
+});
+
+// ---- 23. ожидание удаления пишется в журнал ---------------------------------------
+// Без зароки об ожидании nobody не узнает, что удаление надо проверить позже:
+// отчёт не покажет, срок не посчитать, и удаление тихо забудется.
+await test("a pending deletion is written to the journal with a deadline", async () => {
+  const file = journal([
+    { id: "c-p", post_id: POST, author: "opencodekz", status: "SKIPPED" },
+    { id: "q-1", post_id: POST, author: "alice", status: "POSTED", our_reply_id: "c-p", reply_outcome: "created" },
+  ]);
+  const d = deps([thread([ourComment("c-p", "pending")]), thread([ourComment("c-p", "pending")])]);
+  d.openDb = () => ({ db: new DatabaseSync(file), path: file });
+  const r = await m.moltbookDelete({ post_id: POST, comment_id: "c-p" }, d);
+  eq(r.outcome, "deleting", "the deletion is in progress");
+  const db = new DatabaseSync(file);
+  const own = db.prepare("SELECT status, reply_outcome, replied_at FROM comments WHERE id = ?").get("c-p");
+  const branch = db.prepare("SELECT status, our_reply_id FROM comments WHERE id = ?").get("q-1");
+  db.close();
+  eq(own.reply_outcome, "deleting", "the journal knows the deletion is in progress");
+  eq(own.replied_at, AT, "and the moment of the request is the base of the deadline");
+  eq(own.status, "SKIPPED", "the comment waits for no answer");
+  eq(branch.status, "POSTED", "the branch stays closed while the comment is alive");
+  eq(branch.our_reply_id, "c-p", "and still points at it");
+});
+
+// ---- 24. удаление, которого журнал не знал, тоже ждёт ------------------------------
+await test("a pending deletion is recorded even if the journal never saw the comment", async () => {
+  const file = journal([{ id: "q-1", post_id: POST, author: "alice", status: "NEW" }]);
+  const d = deps([thread([ourComment("c-p", "pending")]), thread([ourComment("c-p", "pending")])]);
+  d.openDb = () => ({ db: new DatabaseSync(file), path: file });
+  const r = await m.moltbookDelete({ post_id: POST, comment_id: "c-p" }, d);
+  eq(r.outcome, "deleting", "the deletion is in progress");
+  const db = new DatabaseSync(file);
+  const own = db.prepare("SELECT status, reply_outcome FROM comments WHERE id = ?").get("c-p");
+  db.close();
+  eq(own.reply_outcome, "deleting", "the wait was written");
+  eq(own.status, "SKIPPED", "and our own comment is not a question");
+});
+
+// ---- 25. надгробие снимает ожидание -------------------------------------------------
+// Мягкое удаление применяется с задержкой: сначала тело видно, потом на его
+// месте надпись «Deleted comment». Повторный вызов тула это видит - и ожидание
+// закрывается, а не плодится.
+await test("a tombstone closes the wait instead of starting a new one", async () => {
+  const file = journal([
+    { id: "c-p", post_id: POST, author: "opencodekz", status: "SKIPPED", reply_outcome: "deleting", replied_at: AT },
+    { id: "q-1", post_id: POST, author: "alice", status: "POSTED", our_reply_id: "c-p", reply_outcome: "created" },
+  ]);
+  const d = deps([thread([tombstone("c-p", { content: "Deleted comment" })])]);
+  d.openDb = () => ({ db: new DatabaseSync(file), path: file });
+  const r = await m.moltbookDelete({ post_id: POST, comment_id: "c-p" }, d);
+  eq(r.outcome, "absent", "a tombstone needs no DELETE");
+  const db = new DatabaseSync(file);
+  const own = db.prepare("SELECT status, reply_outcome FROM comments WHERE id = ?").get("c-p");
+  const branch = db.prepare("SELECT status, our_reply_id FROM comments WHERE id = ?").get("q-1");
+  db.close();
+  eq(own.reply_outcome, "", "the wait is gone");
+  eq(own.status, "SKIPPED", "the comment is skipped");
+  eq(branch.status, "NEW", "the branch it answered is open again");
+  eq(branch.our_reply_id, null, "and it points at nothing");
 });
 
 for (const f of failures) console.log("  FAIL " + f);
