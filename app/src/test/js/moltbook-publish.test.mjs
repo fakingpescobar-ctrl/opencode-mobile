@@ -652,6 +652,69 @@ function countRows(file) {
   eq(postCount(file, PARENT), "POSTED|verified|c-ch", "and the journal advanced from created to verified");
 }
 
+// ---- 34b. проверка корневого комментария тоже оставляет след --------------------------
+// У корня нет родителя, поэтому строка ключуется id комментария. Раньше verify корня
+// закрывал нечего и исход нигде не отмечался.
+{
+  const file = fresh();
+  const d = deps(file, {
+    threads: {
+      new: threadWith([ourAnswer("c-rv", "", "verified")]),
+      best: threadWith([ourAnswer("c-rv", "", "verified")]),
+    },
+    posts: [{ status: 200, body: JSON.stringify({ success: true }) }],
+  });
+  const r = await m.moltbookVerify({ post_id: POST, parent_id: "", comment_id: "c-rv", verification_code: "code", answer: "40.00" }, d);
+  eq(r.outcome, "verified", "корневой комментарий прошёл проверку");
+  eq(r.counted, true, "и это записано в журнал");
+  eq(postCount(file, "c-rv"), "POSTED|root|", "строка ключуется id комментария и остаётся корнем");
+}
+
+// ---- 34c. проверка корня не превращает его в ответ ------------------------------------
+// Исход корня - root, и проверка его не меняет: корень остаётся корнем, просто
+// подтверждённым. Иначе отчёт показывал бы его в «Ответах» и терял бы в «Своих
+// корневых комментариях» (нашёл ревьюер).
+{
+  const file = fresh();
+  seed(file, "DELETE FROM comments");
+  seed(
+    file,
+    "INSERT INTO comments (id,post_id,author,body,created_at,status,our_reply_id,summary_ru,seen_at,replied_at,reply_outcome)" +
+      " VALUES ('c-rp','" + POST + "','opencodekz','hi',1,'POSTED',NULL,'',1,1000,'root')",
+  );
+  const d = deps(file, {
+    threads: {
+      new: threadWith([ourAnswer("c-rp", "", "verified")]),
+      best: threadWith([ourAnswer("c-rp", "", "verified")]),
+    },
+    posts: [{ status: 200, body: JSON.stringify({ success: true }) }],
+  });
+  const r = await m.moltbookVerify({ post_id: POST, parent_id: "", comment_id: "c-rp", verification_code: "code", answer: "40.00" }, d);
+  eq(r.outcome, "verified", "корень подтверждён");
+  eq(r.counted, true, "строку нашли и записали");
+  eq(postCount(file, "c-rp"), "POSTED|root|", "исход остался root, проверка его не переписала");
+}
+
+// ---- 34d. у строки корня есть время ответа ------------------------------------------
+// projectWork отбирает ответы по replied_at. Корень писался с replied_at=0, поэтому
+// попадал в журнал, но ни в один период отчёта - то есть не попадал никуда.
+{
+  const file = fresh();
+  seed(file, "DELETE FROM comments");
+  const d = deps(file, {
+    threads: { new: [threadBody([]), threadBody([ourAnswer("c-rt", "", "verified")])] },
+    posts: [
+      { status: 201, body: JSON.stringify({ success: true, comment: { id: "c-rt", verification_status: "verified" } }) },
+    ],
+  });
+  const r = await m.moltbookPublish({ post_id: POST, content: "hello" }, d);
+  eq(r.counted, true, "корень записан");
+  const db = new DatabaseSync(file);
+  const row = db.prepare("SELECT replied_at FROM comments WHERE id = ?").get("c-rt");
+  db.close();
+  truthy(row && Number(row.replied_at) > 0, "время ответа заполнено, строка видна отчёту");
+}
+
 // ---- 35. verify knows who the parent is before it records anything ---------------------
 {
   const file = fresh();
@@ -994,7 +1057,7 @@ function countRows(file) {
   eq(r.outcome, "created", "корневой комментарий опубликован");
   eq(sent && sent.parent_id, undefined, "parent_id не отправлен: корневой комментарий");
   eq(sent && sent.content, "hello", "текст ушёл как есть");
-  eq(r.counted, false, "у корневого комментария нет строки журнала, закрывать нечего");
+  eq(r.counted, true, "у корня тоже есть строка журнала - по id самого комментария");
   eq(r.refusals.indexOf("journal-not-recorded"), -1, "и это не отказ журнала");
 }
 
@@ -1074,6 +1137,205 @@ function countRows(file) {
   eq(first.sentKey, first.result.idempotency_key, "ключ, который видит вызывающий, ушёл в запрос");
   eq(again.result.idempotency_key, first.result.idempotency_key, "тот же текст - тот же ключ");
   eq(other.result.idempotency_key === first.result.idempotency_key, false, "другой текст - другой ключ");
+}
+
+// ---- 2f. родитель не виден в треде, но известен журналу => это не отказ -----------
+// «Не видно сейчас» - не «удалён». Журнал помнит комментарий alice, значит ответ
+// на него остаётся обязательством: POST уходит, а строка получает автора из журнала.
+{
+  const file = fresh();
+  const other = threadBody([{ id: "c-other", parent_id: null, author: "bob", body: "x", verification_status: "verified" }]);
+  const d = deps(file, {
+    threads: { new: [other, threadWith([ourAnswer("c-led", PARENT, "verified")])] },
+    posts: [
+      {
+        status: 201,
+        body: JSON.stringify({ success: true, comment: { id: "c-led", parent_id: PARENT, verification_status: "verified" } }),
+      },
+    ],
+  });
+  const r = await m.moltbookPublish(args, d);
+  eq(r.outcome, "created", "ответ на невидимого, но известного родителя проходит");
+  eq(r.refusals.indexOf("parent-unknown"), -1, "parent-unknown не выставляется");
+  eq(r.parent_source, "ledger", "источник родителя назван честно");
+  const db = new DatabaseSync(file);
+  const row = db.prepare("SELECT author, reply_outcome FROM comments WHERE id = ?").get(PARENT);
+  db.close();
+  eq(row.author, "alice", "автор родителя взят из журнала");
+  eq(row.reply_outcome, "created", "ответ записан как обязательство");
+}
+
+// ---- 2g. родителя нет ни в треде, ни в журнале => отказ остаётся -------------------
+{
+  const file = fresh();
+  const other = threadBody([{ id: "c-other", parent_id: null, author: "bob", body: "x", verification_status: "verified" }]);
+  const d = deps(file, {
+    threads: { new: [other] },
+    posts: [
+      {
+        status: 201,
+        body: JSON.stringify({ success: true, comment: { id: "c-gone", parent_id: "c-nobody", verification_status: "verified" } }),
+      },
+    ],
+  });
+  const r = await m.moltbookPublish({ post_id: POST, parent_id: "c-nobody", content: "answer" }, d);
+  eq(r.refusals.indexOf("parent-unknown") >= 0, true, "неизвестный родитель по-прежнему отказ");
+  eq(r.parent_source, "none", "источник родителя - никакой");
+}
+
+// ---- 2h. корневой комментарий попадает в журнал под своим id ------------------------
+// У корня нет родителя, поэтому ключ строки - id самого комментария. Без этого
+// удачная публикация не оставляла в журнале ни следа: ответили, а учёта нет.
+{
+  const file = fresh();
+  seed(file, "DELETE FROM comments");
+  const d = deps(file, {
+    threads: { new: [threadBody([]), threadBody([ourAnswer("c-root", "", "verified")])] },
+    posts: [
+      {
+        status: 201,
+        body: JSON.stringify({ success: true, comment: { id: "c-root", verification_status: "verified" } }),
+      },
+    ],
+  });
+  const r = await m.moltbookPublish({ post_id: POST, content: "hello" }, d);
+  eq(r.outcome, "created", "корень опубликован");
+  eq(r.counted, true, "и засчитан в журнал");
+  eq(postCount(file, "c-root"), "POSTED|root|", "строка ключуется id комментария, исход root");
+}
+
+// ---- 2i. чужой корень с тем же текстом не закрывает вопрос --------------------------
+// Наш прежний корневой комментарий под тем же постом тоже без parent_id. Если
+// считать совпадение текста доказательством «уже ответили», живой вопрос навсегда
+// останется без ответа. Поэтому решение принимает parent_id (или id из журнала),
+// а не похожесть тела.
+{
+  const file = fresh();
+  const same = { id: "c-same", parent_id: null, author: "opencodekz", body: "Hello,  WORLD!", verification_status: "verified" };
+  const d = deps(file, {
+    threads: {
+      new: [threadWith([same]), threadWith([same, ourAnswer("c-new", PARENT, "verified")])],
+    },
+    posts: [
+      {
+        status: 201,
+        body: JSON.stringify({ success: true, comment: { id: "c-new", verification_status: "verified" } }),
+      },
+    ],
+  });
+  const r = await m.moltbookPublish({ post_id: POST, parent_id: PARENT, content: "hello world" }, d);
+  eq(r.outcome, "created", "похожий текст без parent_id - не доказательство ответа");
+  eq(r.comment_id, "c-new", "ответ уходит новым комментарием");
+  eq(d.calls.length, 1, "POST состоялся");
+}
+
+// ---- 2j. строка журнала из другого поста не считается нашим родителем ----------------
+// id родителя уникален, но журнал мог сохранить его под другим постом. Если верить
+// такой строке, в запись ответа попадут чужой автор и чужой текст вопроса.
+{
+  const file = fresh();
+  seed(file, "DELETE FROM comments");
+  seed(
+    file,
+    "INSERT INTO comments (id,post_id,author,body,created_at,status,our_reply_id,summary_ru,seen_at,replied_at,reply_outcome)" +
+      " VALUES ('c-foreign','post-other','bob','не тот пост',1,'NEW',NULL,'',1,0,'')",
+  );
+  const d = deps(file, {
+    threads: { new: [threadBody([])] },
+    posts: [
+      {
+        status: 201,
+        body: JSON.stringify({ success: true, comment: { id: "c-x", parent_id: "c-foreign", verification_status: "verified" } }),
+      },
+    ],
+  });
+  const r = await m.moltbookPublish({ post_id: POST, parent_id: "c-foreign", content: "answer" }, d);
+  eq(r.refusals.indexOf("parent-unknown") >= 0, true, "родитель из чужого поста - не наш родитель");
+  eq(r.parent_source, "none", "и источник родителя не подтверждён");
+}
+
+// ---- 34e. корень, выставленный на проверку, всё равно попадает в журнал --------------
+// Сервер комментарий принял (challenge), значит он существует. Раньше такой корень
+// оставался вообще без строки: `journal` при пустом parent_id молчал.
+{
+  const file = fresh();
+  seed(file, "DELETE FROM comments");
+  const d = deps(file, {
+    threads: { new: [threadBody([])] },
+    posts: [
+      {
+        status: 201,
+        body: JSON.stringify({ success: true, id: "c-rc", verification: { verification_code: "vc-9", challenge_text: "1 + 1" } }),
+      },
+    ],
+  });
+  const r = await m.moltbookPublish({ post_id: POST, parent_id: "", content: "root text" }, d);
+  eq(r.outcome, "challenge", "корень ждёт проверки");
+  eq(r.counted, false, "ответом такой корень не считается");
+  eq(postCount(file, "c-rc"), "POSTED|root|", "и всё же строка журнала есть");
+}
+
+// ---- 34f. дедуп корня и провал его проверки не должны терять строку журнала ----
+// Ревью второго круга: ветки reused/misparented/blocked уходили через journal(),
+// а для корня journal - no-op. В итоге опубликованный корень (платформа вернула
+// already_existed) пропадал из отчёта, а отвергнутая проверка оставляла его
+// «опубликованным». Оба случая теперь пишут строку сами.
+{
+  const file = fresh();
+  seed(file, "DELETE FROM comments");
+  const d = deps(file, {
+    threads: { new: [threadBody([])] },
+    posts: [
+      {
+        status: 201,
+        body: JSON.stringify({
+          success: true,
+          already_existed: true,
+          comment: { id: "c-dup-root", verification_status: "verified", parent_id: null },
+        }),
+      },
+    ],
+  });
+  const r = await m.moltbookPublish({ post_id: POST, content: "already said that" }, d);
+  eq(r.outcome, "reused", "дедуп корня остаётся reused");
+  eq(postCount(file, "c-dup-root"), "POSTED|root|", "но строка корня в журнале есть");
+}
+
+// ---- 34g. проверка корня провалилась: строка больше не «опубликована» ----------
+{
+  const file = fresh();
+  seed(file, "DELETE FROM comments");
+  const d = deps(file, {
+    threads: { new: threadWith([]), best: threadWith([]) },
+    posts: [{ status: 200, body: JSON.stringify({ success: false, message: "wrong answer" }) }],
+  });
+  const r = await m.moltbookVerify(
+    { post_id: POST, parent_id: "", comment_id: "c-rj", verification_code: "code", answer: "40.00" },
+    d,
+  );
+  eq(r.outcome, "verification-failed", "проверка отвергнута");
+  eq(postCount(file, "c-rj"), "FAILED||", "корень помечен проваленным");
+}
+
+// ---- 34h. сервер сказал «ок», но корня не видно: тоже провал -------------------
+{
+  const file = fresh();
+  seed(file, "DELETE FROM comments");
+  seed(
+    file,
+    "INSERT INTO comments (id,post_id,author,body,created_at,status,our_reply_id,summary_ru,seen_at,replied_at,reply_outcome)" +
+      " VALUES ('c-rq','" + POST + "','opencodekz','hi',1,'POSTED',NULL,'',1,1000,'root')",
+  );
+  const d = deps(file, {
+    threads: { new: threadWith([]), best: threadWith([]), old: threadWith([]) },
+    posts: [{ status: 200, body: JSON.stringify({ success: true }) }],
+  });
+  const r = await m.moltbookVerify(
+    { post_id: POST, parent_id: "", comment_id: "c-rq", verification_code: "code", answer: "40.00" },
+    d,
+  );
+  eq(r.outcome, "unconfirmed", "невидимый корень не подтверждён");
+  eq(postCount(file, "c-rq"), "FAILED|root|", "и в журнале он больше не опубликован: корень остаётся корнем, но проваленным");
 }
 
 for (const f of failures) console.log("  FAIL " + f);

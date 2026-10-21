@@ -882,6 +882,33 @@ test("an uppercase POSTED row is never counted as reportable work twice", () => 
   eq(counted.reportable, 2, "both casings are real answers");
 });
 
+// Свой корневой комментарий - не ответ на вопрос. Если показать его в «## Ответы»,
+// отчёт соврёт: ответили, а никто не спрашивал.
+await test("our own root comments are not answers", () => {
+  const rows = [
+    {
+      id: "c-root",
+      post_id: "p-1",
+      author: "opencodekz",
+      body: "hello",
+      status: COMMENT_STATUS.POSTED,
+      seen_at: AT,
+      replied_at: AT,
+      reply_outcome: REPLY_OUTCOME.ROOT,
+    },
+  ];
+  const work = projectWork(rows, AT - 3600_000, AT);
+  eq(work.created.length, 0, "корень не записан в ответы");
+  eq(work.roots.length, 1, "корень учтён отдельно");
+  const plain = renderReport(sample());
+  truthy(!plain.includes("Свои корневые комментарии"), "без корней секции нет");
+  const data = sample();
+  data.work.roots = work.roots;
+  const text = renderReport(data);
+  truthy(text.includes("## Свои корневые комментарии"), "заголовок секции есть");
+  truthy(text.includes("c-root"), "и комментарий назван");
+});
+
 console.log("");
 if (bad > 0) {
   console.log("FAILED: " + ok + " ok, " + bad + " broken");

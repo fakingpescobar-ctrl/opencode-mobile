@@ -198,6 +198,10 @@ export const REPLY_OUTCOME = {
   // is_deleted: true. Значит удаление применяется С ЗАДЕРЖКОЙ, и «сервер
   // подтвердил, тело ещё видно» - это ожидание, а не отказ.
   DELETING: "deleting",
+  // Свой корневой комментарий (не ответ): родителя у него нет, строка журнала
+  // ключуется его собственным id. Отдельное значение нужно, чтобы отчёт не
+  // выдавал корень за ответ на чей-то вопрос.
+  ROOT: "root",
   UNKNOWN: "",
 };
 
@@ -887,14 +891,33 @@ function readLedger() {
 export function moltbookStatus() {
   const now = Date.now();
   const ledger = readLedger();
+  const keySource = moltbookKeySource();
   return {
     plugin: PLUGIN_NAME,
     at: now,
     network: "not-used-yet",
-    keyPresent: Boolean(MOLTBOOK_KEY_FILE) && existsSync(MOLTBOOK_KEY_FILE),
+    keyPresent: keySource !== "none",
+    keySource,
     ledger,
     panel: readPanel(now),
   };
+}
+
+/**
+ * Источник ключа для статуса: только файл или ничего.
+ *
+ * MCP_MOLTBOOK_TOKEN сюда не годится: это локальный пароль MCP-сервера
+ * (RuntimeManager.kt:270 генерирует его как UUID), а не ключ платформы.
+ * Отправить его на api.moltbook.com - значит отдать пароль чужому хосту
+ * и всё равно получить 401.
+ */
+export function moltbookKeySource() {
+  if (!MOLTBOOK_KEY_FILE || !existsSync(MOLTBOOK_KEY_FILE)) return "none";
+  try {
+    return readFileSync(MOLTBOOK_KEY_FILE, "utf8").trim() ? "file" : "none";
+  } catch (error) {
+    return "none";
+  }
 }
 
 /** Ключ молтбука. Отсутствие ключа - это отказ, а не «нулевой результат». */
@@ -1851,6 +1874,16 @@ export function dedupReuseOrMisparent(outcome, expectedParentId) {
  * Три исхода, а не два: опубликованный ответ, созданный-но-невидимый (он не отвечает
  * ни на что и блокирует ветку навсегда) и отсутствие ответа.
  */
+/**
+ * Наш ответ на этот вопрос, уже опубликованный или ещё нет.
+ *
+ * Текст здесь СОЗНАТЕЛЬНО не сравнивается. У корневого комментария тоже нет
+ * parent_id, поэтому «наш комментарий без parent_id с тем же текстом» - это
+ * может быть наш прежний корень под тем же постом, а не ответ. Признать его
+ * ответом значит навсегда закрыть живой вопрос без ответа. Повтор после kill
+ * ловится дедупом платформы по точному тексту (живая проба 20.10.2026:
+ * identical body -> reused), а он безопаснее: лишний поиск, не потеря вопроса.
+ */
 export function ourAnswerFor(comments, parentId, ourName, knownReplyId) {
   let unpublished = null;
   const mine = String(ourName || "").trim().toLowerCase();
@@ -1903,7 +1936,10 @@ const RECORD_SQL =
   // Записанная posted строка не переписывается: тело ответа — это доказательство,
   // и потерять его нельзя. Единственный пропускаемый переход — created -> verified,
   // иначе подтверждение никогда не смогло бы довести ответ до verified.
-" WHERE UPPER(comments.status) != 'POSTED' OR (comments.reply_outcome = 'created' AND excluded.reply_outcome = 'verified')";
+" WHERE UPPER(comments.status) != 'POSTED' OR (comments.reply_outcome = 'created' AND excluded.reply_outcome = 'verified')" +
+    // Корень - исключение из «POSTED не трогаем»: платформа может отвергнуть
+    // проверку уже опубликованного корня, и отчёт должен это увидеть.
+    " OR (comments.reply_outcome = 'root' AND excluded.status = 'FAILED')";
 
 export function recordComment(db, row) {
   if (!db || !row || !row.id) return false;
@@ -1962,6 +1998,10 @@ export function markAnswered(db, commentId, ourReplyId, now, outcome, row) {
     created_at: Number(extra.created_at || 0),
     status: COMMENT_STATUS.POSTED,
     our_reply_id: ourReplyId || null,
+    // Состояние родителя идёт вместе с ним: без этих двух полей метка «родитель
+    // не виден» терялась по дороге и в журнал не попадала никогда (нашёл ревьюер).
+    parent_id: extra.parent_id || "",
+    parent_state: extra.parent_state || "",
     now,
     reply_outcome: String(outcome || ""),
   });
@@ -1977,6 +2017,8 @@ export function markFailed(db, commentId, now, row) {
     body: extra.body || "",
     created_at: Number(extra.created_at || 0),
     status: COMMENT_STATUS.FAILED,
+    parent_id: extra.parent_id || "",
+    parent_state: extra.parent_state || "",
     now,
   });
 }
@@ -2425,6 +2467,44 @@ export function verifyVerdict(confirmed) {
   return VERIFIER_KIND.CONFIRMED;
 }
 
+/**
+ * Родитель, которого не видно в прочитанном куске треда, но который есть в журнале.
+ * «Не видно сейчас» - не «удалён»: если журнал когда-то видел этот комментарий,
+ * ответ на него остаётся обязательством. Свой комментарий родителем не считаем.
+ */
+export function ledgerParent(openDb, parentId, postId) {
+  if (!openDb || !parentId) return null;
+  let opened = null;
+  try {
+    opened = openDb(true);
+    if (!opened || !opened.db) return null;
+    // Пост сверяем тоже: id родителя уникален, но строка журнала могла прийти из
+    // другого треда, и тогда в запись ответа попал бы чужой автор и чужой вопрос
+    // (нашёл ревьюер). Пустой post_id - старая строка, её не отбрасываем.
+    const row = opened.db
+      .prepare("SELECT author, body FROM comments WHERE id = ? AND (post_id = ? OR post_id = '' OR post_id IS NULL)")
+      .get(String(parentId), String(postId || ""));
+    const author = String((row && row.author) || "").trim();
+    if (!author || author.toLowerCase() === MOLTBOOK_NAME) return null;
+    return {
+      author,
+      body: String((row && row.body) || ""),
+      parent_id: String(parentId),
+      parent_state: PARENT_UNSEEN,
+    };
+  } catch (_) {
+    return null;
+  } finally {
+    if (opened && opened.db) {
+      try {
+        opened.db.close();
+      } catch (_) {
+        // Закрыть не вышло - не повод терять ответ: журнал прочитан, дело сделано.
+      }
+    }
+  }
+}
+
 export function recordedReplyId(openDb, parentId) {
   if (!openDb || !parentId) return "";
   let opened = null;
@@ -2442,6 +2522,36 @@ export function recordedReplyId(openDb, parentId) {
       } catch (_) {
         // Журнал не закрылся — читать его дальше нельзя, и ответ мы не получили.
         // Молча отдаём пустое: следующий вызов попробует снова.
+      }
+    }
+  }
+}
+
+/**
+ * Знает ли журнал строку нашего корневого комментария.
+ *
+ * Проверка корня ничего нового о нём не узнаёт: исход уже `root`, статус уже
+ * `POSTED`. Писать туда ещё раз нечего (и нельзя - такой UPDATE отбросило бы
+ * WHERE в RECORD_SQL), поэтому «засчитано» надо ответить по факту строки.
+ */
+export function ledgerHasRoot(openDb, commentId) {
+  if (!openDb || !commentId) return false;
+  let opened = null;
+  try {
+    opened = openDb(true);
+    if (!opened || !opened.db) return false;
+    const row = opened.db
+      .prepare("SELECT id FROM comments WHERE id = ? AND UPPER(status) = 'POSTED'")
+      .get(String(commentId));
+    return Boolean(row);
+  } catch (_) {
+    return false;
+  } finally {
+    if (opened && opened.db) {
+      try {
+        opened.db.close();
+      } catch (_) {
+        // не закрылось - следующий вызов прочитает заново
       }
     }
   }
@@ -2735,7 +2845,13 @@ export async function moltbookPublish(args, deps) {
     parsedBefore = parseComments(before.body);
     readStatus = before.status;
   }
-  const parentRow = parentMeta(parsedBefore.comments, parentId);
+  const threadParent = parentMeta(parsedBefore.comments, parentId);
+  // Родителя нет в прочитанном куске - это не «его нет». Если журнал помнит этот
+  // комментарий, он всё равно наш родитель: ответ на него - обязательство, а не
+  // догадка (тот же случай, что `parent_state = unseen` в отчёте).
+  const ledgerRow = threadParent ? null : ledgerParent(openDb, parentId, postId);
+  const parentRow = threadParent || ledgerRow;
+  const parentSource = threadParent ? "thread" : ledgerRow ? "ledger" : "none";
   if (parentId && parsedBefore.ok) {
     const answer = ourAnswerFor(parsedBefore.comments, parentId, MOLTBOOK_NAME, recorded);
     if (answer.kind === "published") {
@@ -2791,6 +2907,9 @@ export async function moltbookPublish(args, deps) {
     : "root-" + simpleHash(postId + "|" + content);
   const finish = (result) => {
     result.idempotency_key = requestKey;
+    // Источник родителя - во всех исходах, где родитель вообще мог быть найден:
+    // иначе одно и то же поле приходило только в одном ответе из шести.
+    if (parentSource) result.parent_source = parentSource;
     return result;
   };
   const payload = parentId ? { content, parent_id: parentId } : { content };
@@ -2805,7 +2924,19 @@ export async function moltbookPublish(args, deps) {
       ? dedupReuseOrMisparent(outcome, parentId)
       : reuseOrMisparent(outcome, parentId);
     if (verdict === "reused") {
-      const written = journal((db) => markAnswered(db, parentId, outcome.commentId, now, REPLY_OUTCOME.REUSED, { post_id: postId, ...parentRow }));
+      // Корень платформа дедуплицирует по точному тексту так же, как ответы:
+      // «уже существует» без родителя - это наш опубликованный корень, и он
+      // обязан попасть в журнал, иначе отчёт его не увидит.
+      const written = !parentId
+        ? recordOwnRoot(openDb, refusals, {
+            id: outcome.commentId,
+            post_id: postId,
+            body: content,
+            created_at: now,
+            accepted: true,
+            now,
+          })
+        : journal((db) => markAnswered(db, parentId, outcome.commentId, now, REPLY_OUTCOME.REUSED, { post_id: postId, ...parentRow }));
       appendVerifier(
         VERIFIER_KIND.CONFIRMED,
         now,
@@ -2855,7 +2986,19 @@ export async function moltbookPublish(args, deps) {
       return finish(deferred);
     }
     refusals.push("post-rejected");
-    journal((db) => markFailed(db, parentId, now, { post_id: postId, ...parentRow }));
+    if (!parentId && outcome.commentId) {
+      // Корень, который сервер отверг: следа в журнале тоже не должно не быть.
+      recordOwnRoot(openDb, refusals, {
+        id: outcome.commentId,
+        post_id: postId,
+        body: content,
+        created_at: now,
+        accepted: false,
+        now,
+      });
+    } else if (parentId) {
+      journal((db) => markFailed(db, parentId, now, { post_id: postId, ...parentRow }));
+    }
     const rejected = replyResult("rejected", "", postId, parentId, now, requests, refusals, false);
     rejected.reason = outcome.message;
     return finish(rejected);
@@ -2866,6 +3009,17 @@ export async function moltbookPublish(args, deps) {
     // быть не решена, и тогда ветка останется неотвеченной - честно.
     refusals.push("needs-verification");
     appendVerifier(VERIFIER_KIND.REFUSED, now, postId, "id=" + outcome.commentId + " ждёт проверки");
+    if (!parentId) {
+      // Комментарий создан (пусть и невидимый) - это уже опубликованный корень.
+      recordOwnRoot(openDb, refusals, {
+        id: outcome.commentId,
+        post_id: postId,
+        body: content,
+        created_at: now,
+        accepted: true,
+        now,
+      });
+    }
     const challenged = replyResult("challenge", outcome.commentId, postId, parentId, now, requests, refusals, false);
     challenged.challenge = outcome.challenge;
     return finish(challenged);
@@ -2877,13 +3031,26 @@ export async function moltbookPublish(args, deps) {
   // Если сверка не видел комментарий — это не работа, а не делано, и записываться нельзя.
   const knownParent = parentRow || confirmed.parent;
   // У корневого комментария родителя нет по определению, и молчать об этом -
-  // нормально. Отказ «родитель неизвестен» относится только к ответу в ветку.
+  // нормально. Отказ «родитель неизвестен» остаётся только для случая, когда
+  // родителя не видно ни в треде, ни в журнале.
   if (parentId && !knownParent) refusals.push("parent-unknown");
   const journalRow = { post_id: postId, ...(knownParent || {}) };
-  const written =
-    kind === VERIFIER_KIND.CONFIRMED
-      ? journal((db) => markAnswered(db, parentId, outcome.commentId, now, REPLY_OUTCOME.CREATED, journalRow))
-      : journal((db) => markFailed(db, parentId, now, journalRow));
+  const written = !parentId
+    ? // У корня ключ строки - id комментария, и пишется он при любом исходе:
+      // иначе неподтверждённый корень не оставлял в журнале следа вообще.
+      outcome.commentId
+        ? recordOwnRoot(openDb, refusals, {
+            id: outcome.commentId,
+            post_id: postId,
+            body: content,
+            created_at: now,
+            accepted: kind === VERIFIER_KIND.CONFIRMED,
+            now,
+          })
+        : { counted: false }
+    : kind !== VERIFIER_KIND.CONFIRMED
+      ? journal((db) => markFailed(db, parentId, now, journalRow))
+      : journal((db) => markAnswered(db, parentId, outcome.commentId, now, REPLY_OUTCOME.CREATED, journalRow));
   appendVerifier(
     kind,
     now,
@@ -2949,7 +3116,9 @@ export async function moltbookVerify(args, deps) {
     requests.push({ path: beforeThread.path, status: beforeThread.status, ok: beforeThread.ok });
   }
   const parsedBefore = parentId ? parseComments(beforeThread.body) : { ok: false, comments: [] };
-  const parentRow = parentId ? parentMeta(parsedBefore.ok ? parsedBefore.comments : [], parentId) : null;
+  const threadParent = parentId ? parentMeta(parsedBefore.ok ? parsedBefore.comments : [], parentId) : null;
+  // Та же логика, что в публикации: невидимый родитель, известный журналу, - наш родитель.
+  const parentRow = threadParent || (parentId ? ledgerParent(openDb, parentId, postId) : null);
   if (parentId && !parentRow) refusals.push("parent-unknown");
 
   // Как и публикация: сначала замысел, потом запрос. Одноразовый код
@@ -2961,7 +3130,10 @@ export async function moltbookVerify(args, deps) {
   const accepted = Boolean(root && root.success === true);
   if (!accepted) {
     refusals.push("verification-rejected");
-    journal((db) => markFailed(db, parentId, now, { post_id: postId, ...(parentRow || {}) }));
+    // Корень проверка не переводит в verified, но отказ обязан быть виден:
+    // иначе отчёт продолжит считать его опубликованным.
+    if (parentId) journal((db) => markFailed(db, parentId, now, { post_id: postId, ...(parentRow || {}) }));
+    else recordOwnRoot(openDb, refusals, { id: commentId, post_id: postId, body: "", created_at: now, accepted: false, now });
     appendVerifier(VERIFIER_KIND.REFUSED, now, postId, "verify answer=" + answer + " id=" + commentId);
     const rejected = replyResult("verification-failed", commentId, postId, parentId, now, requests, refusals, false);
     rejected.server_message = String((root && root.message) || verified.body || "").slice(0, 200);
@@ -2972,15 +3144,48 @@ export async function moltbookVerify(args, deps) {
   const kind = verifyVerdict(confirmed);
   if (kind !== VERIFIER_KIND.CONFIRMED) {
     refusals.push("server-said-ok-but-not-visible");
+    // Сервер сказал «ок», но комментария не видно - и для корня это не повод
+    // оставлять строку опубликованной: отчёт должен показать провал.
+    if (parentId) journal((db) => markFailed(db, parentId, now, { post_id: postId, ...(parentRow || {}) }));
+    else recordOwnRoot(openDb, refusals, { id: commentId, post_id: postId, body: "", created_at: now, accepted: false, now });
     appendVerifier(kind, now, postId, "verify answer=" + answer + " id=" + commentId + " status=" + statusText(confirmed.status));
     const doubted = replyResult("unconfirmed", commentId, postId, parentId, now, requests, refusals, false);
     doubted.verifier = kind;
     doubted.server_status = confirmed.status;
     return doubted;
   }
-  const written = journal((db) =>
-    markAnswered(db, parentId, commentId, now, REPLY_OUTCOME.VERIFIED, { post_id: postId, ...(parentRow || confirmed.parent || {}) }),
-  );
+  // У корня родителя нет: учёт ведётся по id самого комментария (см. публикацию).
+  // Исход остаётся ROOT, а не VERIFIED: это по-прежнему корневой комментарий,
+  // просто теперь подтверждённый. Иначе отчёт выдавал бы его за ответ на чей-то
+  // вопрос и опустошал секцию «Свои корневые комментарии» (нашёл ревьюер).
+  const written = parentId
+    ? journal((db) =>
+        markAnswered(db, parentId, commentId, now, REPLY_OUTCOME.VERIFIED, { post_id: postId, ...(parentRow || confirmed.parent || {}) }),
+      )
+    : ledgerHasRoot(openDb, commentId)
+      ? // Строка уже есть и уже POSTED/root: переписывать нечего, и WHERE её всё
+        // равно отбросил бы. Знание есть - значит засчитано.
+        { counted: true }
+      : writeReply(
+        openDb,
+        (db) =>
+          recordComment(db, {
+            id: commentId,
+            post_id: postId,
+            author: MOLTBOOK_NAME,
+            // Тело и created_at сюда не приходят: тред при проверке корня не
+            // читается. Строка уже есть от публикации, а ON CONFLICT тело не
+            // трогает - пустые значения попадут только в несуществующую строку.
+            body: "",
+            created_at: now,
+            status: COMMENT_STATUS.POSTED,
+            our_reply_id: null,
+            reply_outcome: REPLY_OUTCOME.ROOT,
+            replied_at: now,
+            now,
+          }),
+        refusals,
+      );
   appendVerifier(VERIFIER_KIND.CONFIRMED, now, postId, "verify answer=" + answer + " id=" + commentId + " status=" + statusText(confirmed.status));
   const result = replyResult("verified", commentId, postId, parentId, now, requests, refusals, written.counted);
   result.verifier = kind;
@@ -3275,6 +3480,38 @@ export function writeReply(openDb, action, refusals) {
   }
 }
 
+/**
+ * Строка журнала для своего корневого комментария.
+ *
+ * У корня нет родителя, а журнал ключуется родителем - поэтому ключ здесь id
+ * самого комментария. Раньше корни не учитывались вовсе: опубликованный корень
+ * исчезал из отчёта без следа, а выставленный на проверку - тем более.
+ * `accepted` = платформа комментарий приняла (confirmed или challenge), иначе
+ * строка пишется как FAILED: попытка была, результата нет.
+ */
+export function recordOwnRoot(openDb, refusals, row) {
+  const accepted = row.accepted === true;
+  return writeReply(
+    openDb,
+    (db) =>
+      recordComment(db, {
+        id: row.id,
+        post_id: row.post_id,
+        author: MOLTBOOK_NAME,
+        body: String(row.body || ""),
+        created_at: Number(row.created_at || row.now || 0),
+        status: accepted ? COMMENT_STATUS.POSTED : COMMENT_STATUS.FAILED,
+        our_reply_id: null,
+        reply_outcome: accepted ? REPLY_OUTCOME.ROOT : "",
+        replied_at: accepted ? Number(row.now || 0) : 0,
+        parent_id: "",
+        parent_state: "",
+        now: row.now,
+      }),
+    refusals,
+  );
+}
+
 /** Общий вид ответа публикации: исход, что засчитано, и чем это подтверждено. */
 function replyResult(outcome, commentId, postId, parentId, at, requests, refusals, counted) {
   return {
@@ -3436,6 +3673,9 @@ export function projectWork(rows, from, now) {
     created: pick(REPLY_OUTCOME.CREATED),
     verified: pick(REPLY_OUTCOME.VERIFIED),
     reused: pick(REPLY_OUTCOME.REUSED),
+    // Свои корневые комментарии - опубликованы, но никому не ответ. Отдельная
+    // графа, чтобы не выдавать их за ответы в «## Ответы».
+    roots: pick(REPLY_OUTCOME.ROOT),
     failed,
     deferred,
     overdue,
@@ -3718,6 +3958,16 @@ export function renderReport(data) {
     }
   }
   out.push("");
+  // Секции нет, когда корней не было: отчёт не должен обрастать пустыми
+  // заголовками ради красоты.
+  const roots = Array.isArray(work.roots) ? work.roots : [];
+  if (roots.length > 0) {
+    out.push("## Свои корневые комментарии");
+    for (const root of roots) {
+      out.push(line("пост " + root.postId + " / наш коммент " + root.id + " / " + stamp(root.at)));
+    }
+    out.push("");
+  }
   out.push("## Не про что");
   const pendingTotal = Number.isFinite(data.pendingTotal) ? data.pendingTotal : pending.length;
   if (pending.length === 0) {
@@ -3945,6 +4195,7 @@ export async function moltbookReport(args, deps) {
         created: work.created.length,
         verified: work.verified.length,
         reused: work.reused.length,
+        roots: work.roots.length,
         failed: work.failed.length,
         deferred: work.deferred.length,
         overdue: work.overdue.length,
@@ -4508,7 +4759,9 @@ const TOOLS = [
     description:
       "Ответить на challenge, который вернул moltbook_publish. Ответ считается зачтённым только " +
       "если сервер подтвердил И наша перечитка ветки это увидела. Иначе unconfirmed - и это честный " +
-      "отказ, а не успех. parent_id для ответа на комментарий, пустой - для корневого.",
+      "отказ, а не успех. parent_id для ответа на комментарий, пустой - для корневого. " +
+      "Код и текст задачи приходят строкой, разбор задачи - на тебе: если она не распознана " +
+      "однозначно, НЕ угадывай и НЕ зови этот тул - верни отказ challenge-unparsed, код одноразовый.",
     inputSchema: {
       type: "object",
       properties: {
