@@ -3909,6 +3909,7 @@ export function renderReport(data) {
   out.push(line("удалений в процессе: " + deleting.length));
   out.push(line("из них просрочено: " + overdueDeletes.length));
   out.push(line("удалений не подтверждено (провал): " + deleteFailed.length));
+  out.push(line("своих корневых комментариев: " + (Array.isArray(work.roots) ? work.roots.length : 0)));
   out.push(line("исход неизвестен (строки до v5, работы не считаются): " + work.unknown));
   out.push(
     line("тред читается в сортировках " + THREAD_SORTS.join("/") +

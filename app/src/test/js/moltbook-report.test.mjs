@@ -907,6 +907,7 @@ await test("our own root comments are not answers", () => {
   const text = renderReport(data);
   truthy(text.includes("## Свои корневые комментарии"), "заголовок секции есть");
   truthy(text.includes("c-root"), "и комментарий назван");
+  truthy(text.includes("своих корневых комментариев: 1"), "и счётчик есть в итоге, а не только в JSON");
 });
 
 console.log("");
