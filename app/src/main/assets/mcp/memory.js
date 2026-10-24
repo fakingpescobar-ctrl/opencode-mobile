@@ -959,7 +959,6 @@ async function mobileLaunchApp(args) {
   });
 }
 
-const MEDIA_ACTIONS = ["play", "pause", "play_pause", "next", "previous", "stop"];
 const MEDIA_RATING_ACTIONS = ["like", "unlike", "dislike", "undislike"];
 
 function optionalAndroidPackage(value) {

@@ -189,9 +189,12 @@ announce-вызовов, и клиент примет это за live-state →
 
 - ⛔ **Playback >100 с после холодного старта** не проверен: только короткие прогоны.
   Живой вопрос — деградация позиции, потеря сессии, обрыв MCP-вызова.
-- Мёртвый код: `AppInstallBridge.mediaApps` игнорирует поле `limit` и всегда берёт
-  `DEFAULT_LIST_LIMIT = 50` (поле вводит в заблуждение — убрать или читать честно);
-  `MEDIA_ACTIONS` в `memory.js` не используется, `mobile_media_control` отозван.
+- ✅ **Мёртвые параметры моста (25.10.2026).** `AppInstallBridge.mediaApps` читал
+  `package` из тела GET-запроса (fetch тела на GET не шлёт → всегда null) и прибивал
+  `limit` к `DEFAULT_LIST_LIMIT`, хотя `MediaControlRequestValidator.list` и фильтр
+  в `MediaControlController.listApps` уже были. Теперь `query` и `limit` читаются из
+  query-строки и проходят валидатор; `MEDIA_ACTIONS` из `memory.js` удалён —
+  `mobile_media_control` отозван, константу никто не читал.
 - Гигиена памяти проекта: поправка к устаревшей записи заведена
   (`mem:media-bridge-cleanup-correction-2026-10-01`), но правила нет. Минимум —
   даты коммитов в самих записях.
@@ -221,4 +224,4 @@ SAW-грантом (после `adb install -r` accessibility на ColorOS сб�
 | 2. Сеть без прокси | **Выполнен** — встроенный `Ipv4Proxy` (CONNECT, IPv4-first); туннели к context7/grep/npm открываются автоматически. Legacy `connect_proxy.py` удалён (26.09) |
 | 3. STT turbo на CPU | **Почти готов** — int8-encoder ~2× fp32, **VAD-чанкинг внедрён (первые слова 1–2 s)**, бенч на устройстве прогнан (24.09), **VAD-пороги измерены** (26.09, `56034e9`: `MIN_RMS=0.015` подтверждён свипом 6 порогов × 5 SNR), **WER-счётка готова и покрыта 13 тестами** (26.09, `c7256c1`). Осталось: наполнить корпус доверенными расшифровками и прогнать на устройстве |
 | 4. Безопасность и память | **Выполнен** — Basic Auth (401 без пароля), локальная память MCP (`ensureMcpConfig`, фикс «0 MCP»), протокольная диагностика, e2e чистой установки пройден |
-| 5. День 2: тесты + расследования | **P0 закрыт (25.10.2026):** `AppInstallBridgeTest.kt` — 10 тестов, JSON-формы вынесены в `AppInstallWire`/`MediaWire`; JS-часть уже была покрыта `ynison-bridge.test.mjs` и `SessionControlEnumContractTest`. **P1 не начат:** effective-конфиг MCP не найден, `TIMEOUT` не подтверждён; seed/mirror-цикл `ensurePhone()` не воспроизведён. Остались P2-мелочи (`mediaApps` игнорирует `limit`, `MEDIA_ACTIONS` в `memory.js` мёртв) |
+| 5. День 2: тесты + расследования | **P0 закрыт (25.10.2026):** `AppInstallBridgeTest.kt` — 10 тестов, JSON-формы вынесены в `AppInstallWire`/`MediaWire`; JS-часть уже была покрыта `ynison-bridge.test.mjs` и `SessionControlEnumContractTest`. **P2-мелочи закрыты (25.10):** `/v1/media/apps` читает `query`/`limit` из query-строки через валидатор, мёртвый `MEDIA_ACTIONS` удалён. **P1 не начат:** effective-конфиг MCP не найден, `TIMEOUT` не подтверждён; seed/mirror-цикл `ensurePhone()` не воспроизведён |

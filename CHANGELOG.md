@@ -121,6 +121,17 @@ API
   `SessionControlEnumContractTest` сверяет enum `session_control` с
   `MediaCommand` по исходнику `ynison.js`.
 
+Мост установщика: мёртвые параметры (25.10.2026)
+- `/v1/media/apps` больше не врёт про свои параметры. Раньше `package` читался из
+  тела GET-запроса, а fetch тела на GET не отправляет — значит, фильтр был всегда
+  пустым; `limit` при этом был прибит к 50, хотя валидатор и фильтрация в
+  `MediaControlController.listApps` уже существовали. Теперь `query` и `limit`
+  читаются из query-строки и проходят `MediaControlRequestValidator.list`
+  (1..200, отказ на управляющие символы).
+- `MEDIA_ACTIONS` из `memory.js` удалён: `mobile_media_control` отозван, константу
+  не читал никто. Живой список команд остался один — enum `MediaCommand`, за ним
+  следит `SessionControlEnumContractTest`.
+
 ---
 
 ## Стек и зависимости

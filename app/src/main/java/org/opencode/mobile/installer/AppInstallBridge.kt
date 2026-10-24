@@ -13,7 +13,6 @@ import org.opencode.mobile.account.YandexAccountController
 import org.opencode.mobile.account.YandexAccountRequestValidator
 import org.opencode.mobile.account.YandexPlaylistPlayer
 import org.opencode.mobile.media.CatalogTrack
-import org.opencode.mobile.media.MediaAppListSpec
 import org.opencode.mobile.media.MediaAppSnapshot
 import org.opencode.mobile.media.MediaControlController
 import org.opencode.mobile.media.MediaControlRequestValidator
@@ -557,18 +556,23 @@ object AppInstallBridge {
         )
     }
 
-    /** Какие приложения вообще публикуют MediaSession - нужно, чтобы понять, к кому есть доступ. */
+    /**
+     * Какие приложения вообще публикуют MediaSession - нужно, чтобы понять, к кому есть доступ.
+     *
+     * Параметры читаются из query-строки, а не из тела: маршрут GET, а fetch тела на нём не
+     * отправляет. Раньше `package` брался из `jsonObject(request)`, то есть был null всегда, а
+     * `limit` был прибит к 50 - оба поля выглядели рабочими и не делали ничего.
+     */
     private fun mediaApps(
         output: BufferedOutputStream,
         request: Request,
     ) {
-        val apps =
-            MediaControlController.listApps(
-                MediaAppListSpec(
-                    query = jsonObject(request).optionalString("package"),
-                    limit = MediaControlRequestValidator.DEFAULT_LIST_LIMIT,
-                ),
+        val spec =
+            MediaControlRequestValidator.list(
+                query = parameter(request.query, "query"),
+                limit = optionalIntParameter(request.query, "limit"),
             )
+        val apps = MediaControlController.listApps(spec)
         writeJson(
             output,
             200,
