@@ -138,32 +138,32 @@ WER-бенч, заблокированный отсутствием эталон
   сверяет список wire-имён. Пункт «добавить тест на play_pause» вычеркнут.
 - ⛔ `McpMusicConfigTest` не содержит ни одного утверждения про `TIMEOUT`.
 
-### P0 — закрыть регрессы тестами
+### ✅ P0 — закрыть регрессы тестами (25.10.2026)
 
-Новый `app/src/test/java/.../installer/AppInstallBridgeTest.kt`:
-1. `jsonObject()` на пустом теле → `{}` (был 500, GET без body падал)
-2. `JSONException` → 400, не 500; порядок catch-блоков
-   (`JSONException` **не** наследник `IllegalArgumentException`)
-3. `ok` в `/v1/apps/launch` — литерал `true`, не зависит от признака жизни.
-   Это CRITICAL-регресс: ложный сигнал попал в поле `ok`, а `memory.js` кидает
-   на `!body.ok` — `mobile_launch_app` падал на каждом вызове, а объяснение
-   про BAL до агента не доходило
-4. `toJson` отдаёт `background_launch_allowed` и **не** отдаёт `running`
-5. `media.verified` вложен в `media`, не в корень (читался `undefined` →
-   ложный «NOT verified»)
+`app/src/test/java/.../installer/AppInstallBridgeTest.kt` — 10 тестов. Чтобы эти
+поля вообще можно было проверить, JSON-формы вынесены из приватных обработчиков
+моста в `installer/AppInstallWire.kt` (тело запроса, код ошибки, ответ на запуск)
+и `media/MediaWire.kt` (формы медиа-ответов).
 
-JS (после решения по seam):
-6. `bridge()` не шлёт body на GET/HEAD
-7. `clearTimeout` на **всех** путях (успех/ошибка/парсинг) — иначе таймер течёт
-8. компактный 3-строчный вывод `opSessionStatus` + фильтр по `controlable`
-9. **Кросс-языковая сверка:** enum `session_control` в `ynison.js` ==
-   `MediaCommand.values().map { it.wireName }`. Сейчас источника истины два,
-   и проверяется только Kotlin-сторона — JS разъедется молча. Ровно тот класс
-   расхождения, который стоил C2.
+1. ✅ `jsonObject()` на пустом теле → `{}` (раньше был 400, GET без body падал)
+2. ✅ не-объектное тело → `IllegalArgumentException` → 400, не 500
+3. ✅ `JSONException` (нет обязательного поля) → 400: отдельная ветка, потому что
+   он **не** наследник `IllegalArgumentException`. Тест заодно фиксирует это
+   родство — если оно изменится, ветка перестанет быть нужной молча
+4. ✅ `ok` в `/v1/apps/launch` — литерал `true`, не зависит от
+   `background_launch_allowed`
+5. ✅ `toJson` отдаёт `background_launch_allowed` и **не** отдаёт `running`
+6. ✅ `media.verified` вложен в `media`, в корне его нет
+7. ✅ fallback-тексты ошибок, когда у исключения нет `message`
+8. ✅ `bridge()` не шлёт body на GET/HEAD — уже было в `ynison-bridge.test.mjs`
+9. ✅ `clearTimeout` на всех путях, компактный `opSessionStatus` с фильтром по
+   `controlable` — тоже `ynison-bridge.test.mjs`
+10. ✅ сверка enum `session_control` в `ynison.js` с `MediaCommand` —
+    `SessionControlEnumContractTest.kt` (читает исходник JS)
 
-**Готово когда:** `build.ps1 -Task jstest` зелёный, новый тест в `./gradlew test`,
-и каждый тест проверен на «ловит ли сломанный код» — откат фикса должен давать
-красный тест. Иначе это декоративные тесты, которые зеленеют на любом коде.
+**Проверено:** `build.ps1 -Task verify` — 775 тестов, 0 падений, ktlint и detekt
+чистые; `jstest` зелёный. Каждый тест проверен откатом фикса: с возвращёнными
+регрессами краснеют ровно шесть тестов класса, после отката — зелено.
 
 ### P1 — расследования, не правки
 
@@ -221,4 +221,4 @@ SAW-грантом (после `adb install -r` accessibility на ColorOS сб�
 | 2. Сеть без прокси | **Выполнен** — встроенный `Ipv4Proxy` (CONNECT, IPv4-first); туннели к context7/grep/npm открываются автоматически. Legacy `connect_proxy.py` удалён (26.09) |
 | 3. STT turbo на CPU | **Почти готов** — int8-encoder ~2× fp32, **VAD-чанкинг внедрён (первые слова 1–2 s)**, бенч на устройстве прогнан (24.09), **VAD-пороги измерены** (26.09, `56034e9`: `MIN_RMS=0.015` подтверждён свипом 6 порогов × 5 SNR), **WER-счётка готова и покрыта 13 тестами** (26.09, `c7256c1`). Осталось: наполнить корпус доверенными расшифровками и прогнать на устройстве |
 | 4. Безопасность и память | **Выполнен** — Basic Auth (401 без пароля), локальная память MCP (`ensureMcpConfig`, фикс «0 MCP»), протокольная диагностика, e2e чистой установки пройден |
-| 5. День 2: тесты + расследования | **Не начат.** P0 — `AppInstallBridgeTest.kt` отсутствует, JS-тестов у новых session-тулз нет (в `ynison.js` нет экспортов, все тесты режут исходник по маркерам). P1 — effective-конфиг MCP не найден, `TIMEOUT` не подтверждён; seed/mirror-цикл `ensurePhone()` не воспроизведён |
+| 5. День 2: тесты + расследования | **P0 закрыт (25.10.2026):** `AppInstallBridgeTest.kt` — 10 тестов, JSON-формы вынесены в `AppInstallWire`/`MediaWire`; JS-часть уже была покрыта `ynison-bridge.test.mjs` и `SessionControlEnumContractTest`. **P1 не начат:** effective-конфиг MCP не найден, `TIMEOUT` не подтверждён; seed/mirror-цикл `ensurePhone()` не воспроизведён. Остались P2-мелочи (`mediaApps` игнорирует `limit`, `MEDIA_ACTIONS` в `memory.js` мёртв) |

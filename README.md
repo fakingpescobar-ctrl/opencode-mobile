@@ -548,6 +548,14 @@ app/
         EngineCatalog.kt             # состав и размеры скачиваемых движков
         EngineStore.kt               # скачивание движка (resume, SHA-256, chmod +x)
         EngineLibs.kt                # System.load в порядке зависимостей
+      installer/
+        AppInstallBridge.kt          # loopback RPC для MCP: /v1/apps, /v1/media, /v1/account
+        AppInstallWire.kt            # провод моста: тело запроса, коды ошибок, ответ на запуск
+        ApkInstaller.kt              # скачивание/проверка APK → системный PackageInstaller
+        InstalledAppController.kt    # PackageManager: список и запуск launcher-приложений
+      media/
+        MediaControlController.kt    # MediaSession: status/control/like без запуска activity
+        MediaWire.kt                 # формы медиа-ответов моста (verified живёт внутри media)
       ui/
         ChatOverlay.kt           # нативный чат поверх WebView + настройки
         chat/

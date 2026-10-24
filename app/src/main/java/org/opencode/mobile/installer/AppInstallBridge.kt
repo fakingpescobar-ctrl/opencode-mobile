@@ -3,7 +3,6 @@ package org.opencode.mobile.installer
 import android.content.Context
 import android.util.Log
 import org.json.JSONArray
-import org.json.JSONException
 import org.json.JSONObject
 import org.opencode.mobile.account.LikedPage
 import org.opencode.mobile.account.PlaylistEdit
@@ -18,10 +17,7 @@ import org.opencode.mobile.media.MediaAppListSpec
 import org.opencode.mobile.media.MediaAppSnapshot
 import org.opencode.mobile.media.MediaControlController
 import org.opencode.mobile.media.MediaControlRequestValidator
-import org.opencode.mobile.media.MediaControlResult
-import org.opencode.mobile.media.MediaLikeResult
-import org.opencode.mobile.media.MediaPlaybackSnapshot
-import org.opencode.mobile.media.MediaStatusResult
+import org.opencode.mobile.media.MediaWire
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
@@ -157,16 +153,14 @@ object AppInstallBridge {
             }
             try {
                 route(output, request)
-            } catch (error: IllegalArgumentException) {
-                writeJson(output, 400, error(error.message ?: "invalid request"))
-            } catch (error: JSONException) {
-                // Отсутствующее или нестроковое обязательное поле уезжало в 500, потому что
-                // JSONException - потомок RuntimeException, а не IllegalArgumentException, и мимо
-                // первого catch-а проскакивал в общий. Это плохой вход, а не сбой сервера: 400.
-                writeJson(output, 400, error(error.message ?: "malformed JSON body"))
-            } catch (error: Exception) {
-                Log.w(TAG, "Installer bridge request failed", error)
-                writeJson(output, 500, error(error.message ?: "request failed"))
+            } catch (failure: Exception) {
+                // Разбор кода и текста - в AppInstallWire.httpFailure: там же объяснено, почему
+                // JSONException обязан быть 400, а не 500. Логируем только настоящие сбои.
+                val httpFailure = AppInstallWire.httpFailure(failure)
+                if (httpFailure.code >= AppInstallWire.SERVER_ERROR) {
+                    Log.w(TAG, "Installer bridge request failed", failure)
+                }
+                writeJson(output, httpFailure.code, error(httpFailure.message))
             }
         }
     }
@@ -256,27 +250,7 @@ object AppInstallBridge {
         val body = jsonObject(request)
         val spec = AppControlRequestValidator.launch(body.getString("package"))
         val app = InstalledAppController.launchApp(spec)
-        writeJson(
-            output,
-            200,
-            // ok означает «intent принят», а не «приложение запустилось»: мы не можем знать
-            // второе (см. InstalledAppController). Ставить сюда признак жизни нельзя - потребитель
-            // memory.js бросает на !body.ok, и приложение, у которого нет чему подтвердить запуск,
-            // стало бы падать на КАЖДОМ вызове, включая заведомо успешные запуски.
-            JSONObject()
-                .put("ok", true)
-                .put("app", app.toJson())
-                .put("background_launch_allowed", app.backgroundLaunchAllowed)
-                .put(
-                    "hint",
-                    if (app.backgroundLaunchAllowed) {
-                        "to confirm the app really came up, read its own state (media session)"
-                    } else {
-                        "Android may block this start (BAL_BLOCK): grant SYSTEM_ALERT_WINDOW in " +
-                            "Diagnostics -> Фоновый запуск приложений, then start the app by hand"
-                    },
-                ),
-        )
+        writeJson(output, 200, AppInstallWire.launchResponse(app))
     }
 
     private fun status(
@@ -500,7 +474,7 @@ object AppInstallBridge {
                 packageName = body.optionalString("package"),
             )
         val result = MediaControlController.like(spec)
-        writeJson(output, 200, JSONObject().put("ok", result.ok).put("media", result.toJson()))
+        writeJson(output, 200, MediaWire.likeResponse(result))
     }
 
     /** Текущее состояние плеера через активную MediaSession - без запуска приложения. */
@@ -512,7 +486,7 @@ object AppInstallBridge {
         // package необязателен: контроллер сам найдёт единственную живую сессию и в ошибке
         // перечислит кандидатов. Обязателен он ровно там, где сессий несколько.
         val result = MediaControlController.status(MediaControlRequestValidator.status(body.optionalString("package")))
-        writeJson(output, 200, JSONObject().put("ok", true).put("media", result.toJson()))
+        writeJson(output, 200, MediaWire.statusResponse(result))
     }
 
     /**
@@ -538,7 +512,7 @@ object AppInstallBridge {
                     packageName = body.optionalString("package"),
                 ),
             )
-        writeJson(output, 200, JSONObject().put("ok", result.verified).put("media", result.toJson()))
+        writeJson(output, 200, MediaWire.controlResponse(result))
     }
 
     /**
@@ -749,19 +723,10 @@ object AppInstallBridge {
     }
 
     /**
-     * Тело запроса как объект.
-     *
-     * GET-запросы тела не имеют вовсе, и это не ошибка - это «параметров нет». Раньше пустое тело
-     * падало в 400 "body must be a JSON object", из-за чего /v1/media/apps был недостижим:
-     * отправить "{}" тоже нельзя, fetch запрещает body на GET. Поэтому пустое тело читается
-     * как пустой объект, а не-пустое не-объектное - честная ошибка.
+     * Тело запроса как объект. Разбор и правило «пустое тело = пустой объект» — в
+     * [AppInstallWire.jsonObject]: там же тесты.
      */
-    private fun jsonObject(request: Request): JSONObject {
-        if (request.body.isBlank()) return JSONObject()
-        return runCatching { JSONObject(request.body) }.getOrElse {
-            throw IllegalArgumentException("body must be a JSON object")
-        }
-    }
+    private fun jsonObject(request: Request): JSONObject = AppInstallWire.jsonObject(request.body)
 
     private fun JSONObject.optionalString(name: String): String? =
         if (has(name) && !isNull(name)) getString(name).takeIf { it.isNotBlank() } else null
@@ -772,64 +737,6 @@ object AppInstallBridge {
             .put("label", label)
             .put("component", componentName)
             .put("version", versionName)
-
-    private fun LaunchedAppSnapshot.toJson(): JSONObject =
-        JSONObject()
-            .put("package", packageName)
-            .put("label", label)
-            .put("component", componentName)
-            .put("message", message)
-            .put("background_launch_allowed", backgroundLaunchAllowed)
-
-    private fun MediaLikeResult.toJson(): JSONObject =
-        JSONObject()
-            .put("package", packageName)
-            .put("label", label)
-            .put("action", action)
-            .put("ok", ok)
-            .put("detail", detail ?: JSONObject.NULL)
-            .put("playback", playback.toJson())
-
-    private fun MediaPlaybackSnapshot.toJson(): JSONObject =
-        JSONObject()
-            .put("state", state)
-            .put("is_playing", isPlaying)
-            .put("title", title ?: JSONObject.NULL)
-            .put("artist", artist ?: JSONObject.NULL)
-            .put("album", album ?: JSONObject.NULL)
-            .put("duration_ms", durationMs ?: JSONObject.NULL)
-            .put("position_ms", positionMs ?: JSONObject.NULL)
-            // null читается как «не знаем, есть ли лайк», а не «лайка нет»: доступно только
-            // приложение, которое держит сессию, и у Яндекс Музыки это вторая сторона.
-            .put("liked", liked.asJsonFlag())
-            .put("disliked", disliked.asJsonFlag())
-
-    /** Ответ /v1/media/status: кто это приложение и что сейчас играет. */
-    private fun MediaStatusResult.toJson(): JSONObject =
-        JSONObject()
-            .put("package", packageName)
-            .put("label", label)
-            .put("transport", transport)
-            .put("message", message)
-            .put("playback", playback.toJson())
-
-    /**
-     * Ответ /v1/media/control.
-     *
-     * [MediaControlResult.verified] - главное поле: команда может уйти в сессию и не дать
-     * эффекта (например, next у плейлиста на одном треке). Без before/after агент не отличил бы
-     * «приложение проигнорировало команду» от «команда сработала».
-     */
-    private fun MediaControlResult.toJson(): JSONObject =
-        JSONObject()
-            .put("package", packageName)
-            .put("label", label)
-            .put("transport", transport)
-            .put("command", command)
-            .put("message", message)
-            .put("verified", verified)
-            .put("before", before?.toJson() ?: JSONObject.NULL)
-            .put("after", after?.toJson() ?: JSONObject.NULL)
 
     /**
      * Список приложений с активной MediaSession - кому вообще можно слать команды.
@@ -847,9 +754,6 @@ object AppInstallBridge {
             .put("session_services", org.json.JSONArray().apply { sessionServices.forEach { put(it) } })
             .put("hidden_session_services", hiddenSessionServices)
             .put("media_button_receiver", mediaButtonReceiver ?: JSONObject.NULL)
-
-    /** Трёхзначный флаг: true, false и «сессия не ответила» — это три разных значения. */
-    private fun Boolean?.asJsonFlag(): Any = this ?: JSONObject.NULL
 
     private fun InstallJobSnapshot.toJson(): JSONObject =
         JSONObject()
