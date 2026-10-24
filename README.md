@@ -550,6 +550,11 @@ app/
         EngineLibs.kt                # System.load в порядке зависимостей
       ui/
         ChatOverlay.kt           # нативный чат поверх WebView + настройки
+        chat/
+          ChatApi.kt             # снимок чата: /message + /mcp + плашка → ChatSnapshot
+          SessionOps.kt          # сессии: создать, прервать, удалить, вычистить пустые
+          PromptOps.kt           # промпт, очередь, ответ на запрос сервера (ask)
+          ChatStallTracker.kt    # зависание хода, бюджет повторов, пауза поллинга
         AskCardView.kt           # вёрстка карточки вопроса/разрешения
         SttModelPicker.kt        # выбор модели STT (нескачанная не выбирается)
         EmptyChatArt.kt          # дождь на пустом экране (рисуется кодом)

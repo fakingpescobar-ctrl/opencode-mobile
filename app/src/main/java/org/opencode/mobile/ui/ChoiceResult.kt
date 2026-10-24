@@ -11,6 +11,7 @@ import org.opencode.mobile.server.OpencodeServerService
 import org.opencode.mobile.server.RoutingApply
 import org.opencode.mobile.server.RoutingReadiness
 import org.opencode.mobile.server.SessionModel
+import org.opencode.mobile.ui.chat.ChatCache
 
 /**
  * Итог нажатия на плашку: что показать пользователю и надо ли ещё что-то делать.

@@ -124,7 +124,6 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.filter
@@ -132,20 +131,12 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
-import org.json.JSONObject
 import org.opencode.mobile.R
-import org.opencode.mobile.server.ApiAsk
-import org.opencode.mobile.server.ApiMcp
 import org.opencode.mobile.server.ApiPaths
 import org.opencode.mobile.server.ApiShape
-import org.opencode.mobile.server.ApiStatus
 import org.opencode.mobile.server.AskCard
 import org.opencode.mobile.server.LocalOpenCodeClient
-import org.opencode.mobile.server.MemoryMcp
-import org.opencode.mobile.server.ModelRoutingPrefs
 import org.opencode.mobile.server.PendingAsk
-import org.opencode.mobile.server.SessionModel
-import org.opencode.mobile.server.YnisonMcp
 import org.opencode.mobile.social.MoltbookScanClient
 import org.opencode.mobile.stt.SttModels
 import org.opencode.mobile.stt.WhisperTranscribeService
@@ -153,17 +144,27 @@ import org.opencode.mobile.tts.ElevenLabsSecret
 import org.opencode.mobile.tts.TtsConfig
 import org.opencode.mobile.tts.TtsEngine
 import org.opencode.mobile.tts.TtsNarrator
+import org.opencode.mobile.ui.chat.CONTEXT_LIMIT
+import org.opencode.mobile.ui.chat.ChatCache
+import org.opencode.mobile.ui.chat.RetryState
+import org.opencode.mobile.ui.chat.StallState
+import org.opencode.mobile.ui.chat.abortSession
+import org.opencode.mobile.ui.chat.advanceRetry
+import org.opencode.mobile.ui.chat.advanceStall
+import org.opencode.mobile.ui.chat.answerPendingAsk
+import org.opencode.mobile.ui.chat.createSession
+import org.opencode.mobile.ui.chat.deleteSession
+import org.opencode.mobile.ui.chat.fetchChatSnapshot
+import org.opencode.mobile.ui.chat.nextStableRounds
+import org.opencode.mobile.ui.chat.pollDelayMs
+import org.opencode.mobile.ui.chat.postMessage
+import org.opencode.mobile.ui.chat.pruneEmptySessions
+import org.opencode.mobile.ui.chat.sessionHasMessages
+import org.opencode.mobile.ui.chat.sessionRunning
+import org.opencode.mobile.ui.chat.stopAndPurge
 import java.io.File
 import java.util.Locale
 import kotlin.concurrent.thread
-
-private const val MAX_SHOWN = 120
-
-// Контекст-лимит активной модели (входные токены) — порог, при котором opencode
-// начнёт компакт. big-pickle (opencode free) имеет окно 200000 токенов.
-// Если сменить модель с другим окном — поправить здесь. Круговой индикатор в
-// шапке чата показывает current/limit зрительно.
-private const val CONTEXT_LIMIT = 200_000L
 
 // Идентификаторы выпадающих панелей шапки — ключи для [ChatOverlay] переключателя
 // toggleHeaderPanel. Строками, а не enum: ключ нужен ровно в двух местах
@@ -202,9 +203,6 @@ private const val TAG_PANEL_SETTINGS = "panel_settings"
 private const val TAG_PANEL_STT = "panel_stt"
 private const val TAG_PANEL_TTS = "panel_tts"
 
-// Наносекунды в миллисекундах: замер пинга отдаёт наносекунды, в UI нужны мс.
-private const val NS_PER_MS = 1_000_000L
-
 // Цвета панели ключа ElevenLabs. Вынесены именами, потому что «серый — есть ключ,
 // оранжевый — ключа нет» и «красный — удалить/ошибка» это смысл, а не украшение:
 // по цвету видно состояние, не читая текст. Сами литералы подавлены — цвет задаёт
@@ -234,109 +232,11 @@ private const val MS_PER_MINUTE = 60_000L
 // именно из-за того, что они были константами, любую правку приходилось делать
 // через меня и пересборку APK.
 
-// Вариант B: если модель "думает" (последнее — user, или assistant с пустым текстом)
-// дольше этого времени без какого-либо прогресса в сессии — считаем зависание
-// и снимаем вечный индикатор «… генерируется …». 120_000 = 2 минуты паузы.
-private const val STALL_TIMEOUT_MS = 120_000L
-
-// «Пустой» открытый assistant-шаг (нет ни activity, ни текста, ни выполняемого тула) —
-// модель явно работает (предикт/ранний tool), но молчит БЕЗ частей. Провайдер может
-// держать такую паузу перед первым токеном/тулом достаточно долго (замер ~25-30с на
-// big-pickle перед bash-диагностикой), поэтому таймаут НЕ ставим слишком маленьким,
-// иначе помечаем «Нет ответа» при реально работающей модели. 90с = 1.5 мин паузы.
-private const val STALL_EMPTY_MS = 90_000L
-
-// Мёртвый ход: сервер принял сообщение, но ассистент не создал НИ ОДНОГО шага.
-// Утверждение сильнее, чем «долго думает», поэтому и пород жёстче: сразу после
-// отправки assistant-часть появляется не мгновенно (очередь у провайдера, холодный
-// старт), и 90с тут давали бы ложное «не ответила» на живой сессии. 180с = 3 мин.
-private const val STALL_DEAD_MS = 180_000L
-
-// Интервал опроса serve. КРАЙНЕ ВАЖНО для скорости появления ответа: serve пишет
-// полный ответ мгновенно, но приложение узнаёт о нём только на следующем поллинге.
-// Раз поллинг стоит 2_000мс — ответ «задерживался» на 0..2с (в среднем ~1с), что
-// ощущалось как «рендер через 1.5-2с». Снижено до 400мс: ответ появляется почти
-// сразу (≤400мс). Сам запрос лёгкий (~30-70мс), частая опрашивание безопасна.
-// При 400мс добавляем CDelta-поллинг: snapshot ставится только при реальных
-// изменениях, чтобы не реконсилить LazyColumn на каждый тик.
-private const val POLL_INTERVAL_MS = 400L
-
-// Адаптивный поллинг: в простое (лента статична, нет думания, никто не отвечает)
-// serve-опрос растягивается до POLL_IDLE_MS, чтобы не создавать 3 TCP-соединения
-// каждые 400мс вхолостую (жрёт ~30% CPU UI в idle). Как только детектим активность
-// (thinking=true | новый user-part | сменился liveTool/question) — мгновенно
-// возвращаемся к быстрому 400мс, чтобы отклик на ответ модели не проседал.
-// Idle-интервал → ввод: стоит 900мс (≈1.1 поллинга/с вместо 2.5).
-private const val POLL_IDLE_MS = 900L
-
-// Сколько последовательных «стабильных» поллингов нужно, чтобы перейти в idle.
-// Небольшое значение, чтобы не дёргаться на единичных флапс (скролл не влияет —
-// поллинг не зависит от видимости). Только лента + флаги.
-private const val STABLE_POLL_ROUNDS = 3
-
-// Лёгкий кэш MCP-статуса: /mcp меняется редко (только подключение/отключение
-// серверов), но считывается каждый поллинг (~2.5 раза/с). Чтобы убрать этот
-// HTTP-запрос из большинства опросов — кэшируем сырой JSON на короткое время.
-// При просрочке фонем его на следующем поллинге. Индикатор «N MCP» обновится
-// с задержкой ≤3с — некритично.
-private const val MCP_CACHE_MS = 3_000L
-
 /** Оранжевый плашки «озвучка переехала на другой движок»: предупреждение, не ошибка. */
 private const val TTS_FALLBACK_NOTICE_COLOR = 0xFFFFB74D
 
 /** Отдельная роль для сообщения об ошибке — иначе она уезжает в «Система». */
 private const val ERROR_ROLE_ARGB = 0xFFE05B5B
-
-/** Сколько символов текста реплики и сколько — причины отказа попадает в отладочную строку. */
-private const val DIAG_TEXT_CHARS = 30
-private const val DIAG_NOTICE_CHARS = 40
-
-private object McpCache {
-    @Volatile var raw: String? = null
-
-    @Volatile var at: Long = 0L
-}
-
-// Вернёт сырой JSON MCP из кэша, если он свежий (<MCP_CACHE_MS), иначе загрузит.
-private fun getMcpCached(port: Int): String? {
-    val now = System.currentTimeMillis()
-    val cached = McpCache.raw
-    if (cached != null && now - McpCache.at < MCP_CACHE_MS) return cached
-    val fresh = LocalOpenCodeClient.get(port, ApiPaths.MCP)
-    if (fresh != null) {
-        McpCache.raw = fresh
-        McpCache.at = now
-    }
-    return fresh
-}
-
-// Инкрементальный кэш ленты: самая дорогая операция поллинга — пересоздание
-// списка ChatMsg + вычисление thinking/liveTool/ctxTokens из сырого JSON /message.
-// При 400мс поллинге это происходит ~2.5 раза в секунду даже когда лента НЕ
-// меняется (нет ответа, нет думания). Кэшируем результат парсинга, привязанный
-// к (sessionId, hashCode(сырой /message)): если хэш тот же — лента битово
-// идентична, переиспользуем готовые объекты и НЕ парсим снова. serverRevs держит
-// отдельно, потому что заголовок/метки могут меняться независимо от ленты.
-internal data class ChatParseResult(
-    val messages: List<ChatMsg>,
-    val thinking: Boolean,
-    val liveTool: ChatTool?,
-    val ask: List<AskCard>?,
-    val contextTokens: Long,
-)
-
-/**
- * Кэш разбора ленты активной сессии. internal, а не private: идентификатором
- * сессии пользуется ещё и карточка маршрутизации моделей — ей нужно знать,
- * какой именно сессии менять модель на лету (`POST /session/{id}/model`).
- */
-internal object ChatCache {
-    @Volatile var sessionId: String? = null
-
-    @Volatile var rawHash: Int = 0
-
-    @Volatile var result: ChatParseResult? = null
-}
 
 internal data class ChatMsg(
     val role: String,
@@ -1226,26 +1126,11 @@ fun ChatOverlay(
     }
 
     LaunchedEffect(Unit) {
-        // Вариант B: клиентский таймаут стрима. Как только видим "думает" —
-        // фиксируем момент System.currentTimeMillis(); если за STALL_TIMEOUT_MS
-        // сессия так и не сдвинулась вперёд (нет нового ассистент-part и нет
-        // нового user-part), помечаем stalled -> UI снимает вечный индикатор
-        // и показывает «Нет ответа». Метка сбрасывается при любом прогрессе.
-        var stallSince = 0L
-        // Отдельный счётчик для «пустого» открытого assistant-шага (нет ни одного part:
-        // text пуст). Такой шаг может появиться сразу после вопроса / пока websearch
-        // собирается, и обычно быстро обрастает activity. Если он висит дольше
-        // STALL_EMPTY_MS — случаи abort-lag / зависший tool: снимаем спиннер раньше
-        // общего 120с, чтобы юзер не видел вечного «Модель думает» после Stop.
-        var emptyStallSince = 0L
-        // С какого момента висит плашка причины (retry/error). Отсчёт бюджета
-        // повторов: серверный attempt может не расти при сетевом сбое, а молчание
-        // само по себе не является признаком, пока плашка только что появилась.
-        var retrySince = 0L
-        // Плашка «Ход остановлен» после исчерпания бюджета. Живёт отдельно от
-        // noticeLatch, иначе серверный retry на следующем тике опроса её тихо
-        // затрёт: сервер не знает, что мы остановились, и вернёт свой статус.
-        var retryStop: ChatNotice? = null
+        // Детектор зависания (обычное думание, пустой шаг, мёртвый ход) и бюджет
+        // повторов живут в ui/chat/ChatStallTracker.kt: чистые функции принимают
+        // прошлое состояние и возвращают новое. Здесь только сами состояния.
+        var stall = StallState()
+        var retry = RetryState()
         // Адаптивный поллинг: счётчик «стабильных» итераций. Растёт, пока лента
         // статична и не думается; по достижении STABLE_POLL_ROUNDS поллинг
         // растягивается до POLL_IDLE_MS. При малейшем прогрессе сбрасывается → 400мс.
@@ -1276,52 +1161,11 @@ fun ChatOverlay(
                                 old.liveTool != snap.liveTool ||
                                 old.notice != snap.notice
                         )
-                if (madeProgress) {
-                    stallSince = 0L
-                    emptyStallSince = 0L
-                }
-                var deadStall = false
-                val stalled =
-                    if (!snap.thinking) {
-                        stallSince = 0L
-                        emptyStallSince = 0L
-                        false
-                    } else {
-                        // Пуст ли последний открытый assistant-шаг (модель не дала ни part)?
-                        val lastMsg = snap.messages.lastOrNull()
-                        // Ход МЁРТВ, если последнее сообщение — наше собственное user'ское:
-                        // ассистент не создал ни одного шага. Проверено на живой сессии —
-                        // сервер принял запрос, отдал HTTP 500 и оставил висящий user-part,
-                        // поэтому /session/status пуст и плашка причины тут не поможет.
-                        val deadThinking = lastMsg?.role == "user"
-                        // «Пустой» = открыт assistant-шаг, никакого текста И никакого выполняемого
-                        // тула (liveTool == null). Если модель реально гоняет websearch/тул,
-                        // liveTool не null → идём в общий таймаут 120с (тул может работать долго).
-                        val emptyThinking =
-                            !deadThinking &&
-                                lastMsg != null &&
-                                lastMsg.role == "assistant" &&
-                                lastMsg.text.isBlank() &&
-                                snap.liveTool == null
-                        var el: Long
-                        deadStall = deadThinking
-                        if (deadThinking || emptyThinking) {
-                            if (emptyStallSince == 0L) emptyStallSince = now
-                            el = now - emptyStallSince
-                            val limit = if (deadThinking) STALL_DEAD_MS else STALL_EMPTY_MS
-                            android.util.Log.d("ChatOverlay", "STALL dead=$deadThinking since=${el}ms")
-                            if (el >= limit) true else false
-                        } else {
-                            emptyStallSince = 0L
-                            if (stallSince == 0L) stallSince = now
-                            el = now - stallSince
-                            android.util.Log.d("ChatOverlay", "STALL check thinking=true since=${el}ms")
-                            if (el >= STALL_TIMEOUT_MS) true else false
-                        }
-                    }
+                val verdict = advanceStall(stall, madeProgress, snap, now)
+                stall = verdict.state
                 val final =
-                    if (stalled) {
-                        snap.copy(stalled = true, stalledDead = deadStall)
+                    if (verdict.stalled) {
+                        snap.copy(stalled = true, stalledDead = verdict.dead)
                     } else {
                         snap
                     }
@@ -1334,40 +1178,23 @@ fun ChatOverlay(
                 // успешном шаге модели (thinking снят) - это и есть «проблема решена».
                 // Сравниваем latch ДО присваивания: сравнение после всегда даёт
                 // false и молча пропускало бы перерисовку в UI.
+                // Переход защёлки (серверный retry → наша плашка «Ход остановлен»)
+                // и бюджет повторов живут в ui/chat/ChatStallTracker.kt: здесь
+                // только применяем решение.
                 val latchBefore = noticeLatch
-                noticeLatch = nextRetryLatch(latchBefore, retryStop, final.notice, turnFinished = !final.thinking)
-                if (noticeLatch == null) {
-                    retryStop = null
-                    retrySince = 0L
-                } else if (noticeLatch != null && latchBefore == null && retryStop == null) {
-                    retrySince = now
-                }
-                // Бюджет повторов: без него плашка «Модель повторяет запрос»
-                // может висеть вечно — намеряно 47 раз подряд за 2.5 часа, пока
-                // провайдер рвал сокет. Исчерпали попытки или время → сами
-                // останавливаем ход и честно говорим об этом в плашке.
-                //
-                // Условие `retryStop == null` — не украшение, а страховка от
-                // повторного abort: без неё остановленный ход проверялся бы
-                // снова на каждом тике опроса, а `stoppedRetryNotice` обнуляет
-                // `retrySince`, из-за чего `now - retrySince` всегда больше
-                // бюджета. Итог был — abortSession на сессии по 400 мс, пока
-                // висит плашка.
-                if (retryStop == null && retryExhausted(noticeLatch, now - retrySince)) {
-                    val held = noticeLatch
-                    if (held != null) {
-                        retryStop = stoppedRetryNotice(held, now - retrySince)
-                        noticeLatch = retryStop
-                        val sid = final.activeId
-                        if (sid != null) {
-                            android.util.Log.w(
-                                "ChatOverlay",
-                                "RETRY budget spent attempt=${held.attempt} session=$sid, aborting",
-                            )
-                            // Сеть на главном потоке: этот вызов делает блокирующий
-                            // HttpURLConnection, как и остальные abortSession в файле.
-                            withContext(Dispatchers.IO) { abortSession(serverPort, sid) }
-                        }
+                val retryVerdict = advanceRetry(retry, final.notice, turnFinished = !final.thinking, now = now)
+                retry = retryVerdict.state
+                noticeLatch = retryVerdict.state.latch
+                if (retryVerdict.abort) {
+                    val sid = final.activeId
+                    if (sid != null) {
+                        android.util.Log.w(
+                            "ChatOverlay",
+                            "RETRY budget spent attempt=${retryVerdict.state.stop?.attempt} session=$sid, aborting",
+                        )
+                        // Сеть на главном потоке: этот вызов делает блокирующий
+                        // HttpURLConnection, как и остальные abortSession в файле.
+                        withContext(Dispatchers.IO) { abortSession(serverPort, sid) }
                     }
                 }
                 changed = old == null ||
@@ -1502,13 +1329,8 @@ fun ChatOverlay(
 
             // Адаптивный интервал: активность (thinking / реальное изменение ленты) →
             // быстрая опрашивание 400мс. Стабильность → плавно растягиваем к idle 900мс.
-            val active = snap != null && (snap.thinking || changed)
-            if (active) {
-                stableRounds = 0
-            } else {
-                stableRounds++
-            }
-            delay(if (stableRounds >= STABLE_POLL_ROUNDS) POLL_IDLE_MS else POLL_INTERVAL_MS)
+            stableRounds = nextStableRounds(stableRounds, snap != null && (snap.thinking || changed))
+            delay(pollDelayMs(stableRounds))
         }
     }
 
@@ -3197,18 +3019,6 @@ private fun McpServerList(
     }
 }
 
-// «big-pickle» → «Big Pickle»; пусто/нет — «Модель»
-private fun prettyModel(id: String?): String {
-    if (id.isNullOrBlank()) return "Модель"
-    val words =
-        id
-            .trim()
-            .split('-', '_', '.', '/', ':')
-            .filter { it.isNotBlank() }
-    if (words.isEmpty()) return "Модель"
-    return words.joinToString(" ") { w -> w.replaceFirstChar { c -> c.uppercaseChar() } }
-}
-
 // Доступные шрифты ответов модели: (ключ сохранения, имя в палитре, FontFamily)
 private val fontEntries =
     listOf(
@@ -3589,390 +3399,6 @@ private fun MessageRow(
  */
 private fun typedKeyOf(m: ChatMsg): String = m.id.ifBlank { "${m.role}:${m.text.length}" }
 
-/**
- * Забирает статус хода у сервера. Разбор - в [noticeFromStatus], он чистый и
- * покрыт юнит-тестом; здесь только поход по сети.
- */
-private suspend fun fetchNotice(
-    port: Int,
-    sessionId: String,
-): ChatNotice? = noticeFromStatus(ApiStatus.forSession(port, sessionId), sessionId)
-
-private suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
-    withContext(Dispatchers.IO) {
-        val p = port ?: return@withContext null
-        try {
-            // Замер пинга: оборачиваем первый запрос, который и так уходит каждый
-            // тик. Отдельный /health-запрос не делаем — это лишний трафик и лишняя
-            // нагрузка на сервер ради цифры в шапке.
-            val pingStart = System.nanoTime()
-            val sessionsBody = LocalOpenCodeClient.get(p, ApiPaths.SESSIONS)
-            val pingMs = (System.nanoTime() - pingStart) / NS_PER_MS
-            if (sessionsBody == null) {
-                // Сервер не ответил. Снапшот строить не из чего, но сам факт
-                // «недоступен» важен шапке — возвращаем пустой снапшот с
-                // reachable=false, чтобы в шапке горело Offline, а не вечный
-                // спиннер. Иначе отказ сервера выглядит как «сообщение не отправляется».
-                return@withContext ChatSnapshot(
-                    messages = emptyList(),
-                    label = "нет связи с сервером",
-                    activeId = null,
-                    pingMs = pingMs,
-                    reachable = false,
-                )
-            }
-            val sessionsRaw = sessionsBody
-            val sessions = ApiShape.sessions(sessionsRaw) ?: JSONArray()
-            var bestId: String? = null
-            var bestTs = -1L
-            var bestModelId = ""
-            for (i in 0 until sessions.length()) {
-                val s = sessions.getJSONObject(i)
-                val t = s.optJSONObject("time")?.optLong("updated") ?: -1L
-                if (t > bestTs) {
-                    bestTs = t
-                    bestId = s.optString("id").takeIf(String::isNotBlank)
-                    bestModelId = s.optJSONObject("model")?.optString("id", "") ?: ""
-                }
-            }
-            if (bestId == null) {
-                return@withContext ChatSnapshot(
-                    emptyList(),
-                    "нет сессий",
-                    null,
-                    pingMs = pingMs,
-                    reachable = true,
-                )
-            }
-            val activeId = bestId
-            val label = titleOf(sessions, activeId)
-            // Лента — единственный блокирующий вызов, тянуть больше нечего.
-            val msgDeferred = async { LocalOpenCodeClient.get(p, ApiPaths.message(activeId)) }
-            // Статус хода от сервера: квота/ретрай провайдера. Отдельным async,
-            // чтобы не добавлять его задержку к ленте — оба вызова блокирующие.
-            // Опрашиваем ТОЛЬКО пока ход незавершён: в покое статус не может дать
-            // новое (проверено — на успешном ходе он и так пустой), а лишний запрос
-            // на каждом тике поллинга это чистый оверхед. Решение берём по thinking
-            // прошлого тика; на первом тике после старта кэша ещё нет, догоняем
-            // следующим (разница — доли секунды, статус виден только как плашка).
-            val noticeDeferred = async {
-                if (ChatCache.result?.thinking == true) fetchNotice(p, activeId) else null
-            }
-            // Запросы, на которых сервер ждёт пользователя: команда под «ask» либо
-            // вопрос агента. Отдельным async, чтобы лента не ждала этот вызов.
-            // Опрос всегда, а не по thinking: ждущий запрос держит ход открытым,
-            // но thinking по ленте к этому моменту уже снят.
-            val askDeferred = async { ApiAsk.askPending(p, activeId) }
-            // MCP-серверы: GET /mcp → Record<name, McpServer{name,enabled,status,...}> (иначе пустой {}).
-            // Читаем из кэша (обновляется раз в MCP_CACHE_MS), чтобы не дёргать сервис каждый поллинг.
-            // Подключёнными считаем тех, у кого status == "connected". Показываем «N MCP».
-            var mcpConnected = 0
-            var mcpTotal = 0
-            val mcpServers = ArrayList<McpInfo>()
-            // Счётчики инструментов спрашиваем у наших локальных серверов (кэш 30с):
-            // числа в коде разъехались бы с реальностью после обновления приложения.
-            // Музыка жива только при подключённом Яндексе; нет токена — её toolCounts
-            // вернёт пустую карту, и строка в списке просто не получит счётчик.
-            val mcpToolCounts = MemoryMcp.toolCounts() + YnisonMcp.toolCounts()
-            try {
-                val mcpRaw = getMcpCached(p)
-                if (mcpRaw != null) {
-                    val marr = ApiMcp.servers(mcpRaw)
-                    if (marr != null) {
-                        mcpTotal = marr.length()
-                        for (i in 0 until marr.length()) {
-                            val ms = marr.optJSONObject(i)
-                            val name = ms?.optString("name", "") ?: ""
-                            val status = ms?.optString("status", "") ?: ""
-                            if (status == "connected") mcpConnected++
-                            if (name.isNotBlank()) mcpServers.add(McpInfo(name, status, mcpToolCounts[name]))
-                        }
-                    }
-                }
-            } catch (_: Exception) {
-                // MCP недоступен — покажем 0 красным
-            }
-            val notice = noticeDeferred.await()
-            val ask = askDeferred.await()
-            // Лента не пришла, но запрос разрешения виден — карточку всё равно
-            // показываем: текст вопроса соберётся следующим тиком, когда лента
-            // вернётся. null из /permission означает «не ответил», а не «нет».
-            val askAlone = ask?.map { ApiAsk.card(it, JSONArray()) }
-                ?: ChatCache.result?.takeIf { ChatCache.sessionId == activeId }?.ask
-            val msgRaw =
-                msgDeferred.await()
-                    ?: return@withContext ChatSnapshot(
-                        emptyList(),
-                        label,
-                        activeId,
-                        pingMs = pingMs,
-                        ask = askAlone,
-                        reachable = true,
-                        notice = notice,
-                    )
-            // Инкрементальный кэш: если за этой сессией тот же самый сырой JSON /message
-            // (hash совпал) — лента и все производные (thinking/liveTool/ctxTokens)
-            // гарантированно идентичны. Переиспользуем готовые объекты, НЕ пересоздавая
-            // их: это убирает самое тяжёлое — полный JSON-парсинг и построение строк —
-            // на каждый тик поллинга (2.5 раза/с), пока контент чата статичен.
-            val rawHash = msgRaw.hashCode()
-            val cached = ChatCache.result
-            if (ChatCache.sessionId == activeId && ChatCache.rawHash == rawHash && cached != null) {
-                val thinking = cached.thinking
-                val liveTool = cached.liveTool
-                val take = cached.messages
-                // Запросы разрешений в кэш не кладутся: карточка — это побочный
-                // опрос, и запрос может появиться, когда лента не менялась ни
-                // байтом (инструмент уже в ленте, разрешение доехало позже).
-                // Тогда кэш молчал бы, а ход висел бы. Пересобираем карточки
-                // только когда набор id реально изменился — на каждом тике
-                // поллинга парсить ленту заново нельзя.
-                val freshIds = ask?.map { it.id }.orEmpty()
-                val cachedIds = cached.ask?.map { it.ask.id }.orEmpty()
-                val askCards =
-                    when {
-                        ask == null -> cached.ask
-                        freshIds == cachedIds -> cached.ask
-                        else -> ApiShape.messages(msgRaw)?.let { arr -> ask.map { ApiAsk.card(it, arr) } }
-                    }
-                val snap =
-                    ChatSnapshot(
-                        take,
-                        "$label",
-                        activeId,
-                        thinking,
-                        prettyModel(bestModelId),
-                        liveTool = liveTool,
-                        contextTokens = cached.contextTokens,
-                        // Пинг/доступность НЕ из кэша: это свойство текущего запроса,
-                        // а не ленты. Из кэша тянуть нельзя — иначе в шапке застынет
-                        // первое измерение и «Offline» не появится, когда сервер ляжет.
-                        pingMs = pingMs,
-                        ask = askCards,
-                        reachable = true,
-                        // Расход Zen из кэша ленты: если сырой JSON тот же, то и число
-                        // завершённых ответов то же — пересчитывать незачем. Новый
-                        // ответ меняет /message, значит меняет hash и кэш протухает.
-                        mcpConnected = mcpConnected,
-                        mcpTotal = mcpTotal,
-                        mcpServers = mcpServers,
-                        notice = notice,
-                    )
-                android.util.Log.d(
-                    "ChatOverlay",
-                    "FETCH(cached) out=${take.size} thinking=$thinking " +
-                        "notice=${notice != null} ask=${snap.ask?.size ?: 0} " +
-                        "label=$label model=$bestModelId",
-                )
-                return@withContext snap
-            }
-            val arr = ApiShape.messages(msgRaw) ?: JSONArray()
-            // Текст вопроса лежит не в запросе (там resources:["*"]), а в части
-            // ленты с тем же id вызова. Склеиваем здесь, где лента ещё в JSON.
-            // null здесь означает «/permission не ответил», а не «запросов нет»:
-            // прятать карточку на таком тике нельзя, иначе вопрос останется без
-            // способа ответить. Поэтому при непрочитанном ответе держим прошлую.
-            val previousAsk = cached?.takeIf { ChatCache.sessionId == activeId }?.ask
-            val askCards = ask?.map { ApiAsk.card(it, arr) } ?: previousAsk
-            val out = ArrayList<ChatMsg>(arr.length())
-            // Состояние последнего сырого сообщения нужно отдельно от видимых строк:
-            // assistant с одним tool-чатом и step-finish скрывается из ленты ниже, но всё
-            // равно завершает ответ. Без этих полей последней видимой строкой остался бы
-            // user, и UI после Stop продолжал бы показывать «Модель думает…».
-            var latestRole: String? = null
-            var latestActivity = false
-            var latestFinish = false
-            // Ход с причиной отказа закончен по определению: ни step-finish, ни
-            // time.completed в v2 у него не бывает (finish:"error" это не завершение).
-            // Без этого признака лента с провалившимся ответом светила бы «генерируется…»
-            // до общего таймаута.
-            var latestFailed = false
-            var latestCompleted = false
-            // Живой инструмент, вызываемый моделью в ТЕКУЩЕМ ответе. Накопительный по
-            // assistant-шагам одного ответа (сбрасывается на новом user-сообщении), поэтому
-            // чип НЕ моргает между tool-вызовами. На шагах с тулом запоминаем его; пустой
-            // промежуточный шаг сохраняет предыдущий тул. Из UI показывается только пока
-            // думает (thinking=true) — после завершения ответа гаснет.
-            var lastTool: ChatTool? = null
-            // ЧЕСТНАЯ оценка активного контекста сессии: сумма символов всех текущих
-            // частей (text + tool output/input + reasoning). `tokens.input` из /session
-            // кумулятивный (включает уже компактированные хвосты), поэтому для индикатора
-            // считаем именно активное окно: символы -> токены (≈ /4) + overhead (×1.15).
-            var ctxChars = 0L
-            for (i in 0 until arr.length()) {
-                val msg = arr.getJSONObject(i)
-                val info = msg.optJSONObject("info") ?: continue
-                val role = info.optString("role", "system")
-                val parts = msg.optJSONArray("parts") ?: continue
-                val messageCompleted =
-                    info.optJSONObject("time")?.optLong("completed", 0L)?.let { it > 0L } == true
-                val sb = StringBuilder()
-                // Причина отказа идёт отдельным полем, а не в текст: озвучка читает
-                // только text, и диагностику «модель устарела» не должно произносить
-                // вслух; счётчик ответов тоже смотрит на text. Здесь hasText всё
-                // равно ставится — иначе ход с одной лишь причиной был бы выброшен
-                // как пустой завершённый.
-                val notice = StringBuilder()
-                var hasText = false
-                var finish = false
-                var activity = false
-                // Новый ВОПРОС (user-сообщение) — сбрасываем живой тул: начинается новый
-                // ответ модели, чип должен отражать только инструменты ЭТОГО ответа.
-                // На assistant-шагах НЕ сбрасываем: между tool-вызовами одного ответа есть
-                // пустые промежуточные шаги, и live-чип не должен моргать (bash→пусто→bash).
-                if (role == "user") {
-                    lastTool = null
-                }
-                for (ph in 0 until parts.length()) {
-                    val part = parts.getJSONObject(ph)
-                    val type = part.optString("type", "")
-                    // Часть типа error — это текст провалившийся хода (см.
-                    // ApiShape.roleFor): рисуем как обычный текст, иначе ход
-                    // выглядел бы пустым и был бы молча отфильтрован.
-                    if (type == "text") {
-                        hasText = true
-                        val t = part.optString("text", "")
-                        ctxChars += t.length
-                        if (sb.isNotEmpty() && t.isNotEmpty()) sb.append("\n")
-                        sb.append(t)
-                    } else if (type == ApiShape.ERROR_PART) {
-                        hasText = true
-                        val t = part.optString("text", "")
-                        ctxChars += t.length
-                        if (notice.isNotEmpty() && t.isNotEmpty()) notice.append("\n")
-                        notice.append(t)
-                    } else if (type == "step-finish") {
-                        finish = true
-                    } else if (type == "tool") {
-                        activity = true
-                        ctxChars += (part.optJSONObject("state")?.optString("output", "") ?: "").length
-                        // Запомнить имя инструмента + краткое действие (команда/запрос).
-                        val st = part.optJSONObject("state")
-                        val input = st?.optJSONObject("input")
-                        val title = st?.optString("title", "") ?: ""
-                        val cmd = input?.optString("command", "") ?: ""
-                        val qry = input?.optString("query", "") ?: ""
-                        val det =
-                            when {
-                                cmd.isNotBlank() -> cmd
-                                qry.isNotBlank() -> qry
-                                title.isNotBlank() -> title
-                                else -> ""
-                            }
-                        lastTool = ChatTool(part.optString("tool", ""), det)
-                    } else if (type == "step-start" || type == "reasoning") {
-                        activity = true
-                        ctxChars += part.optString("text", "").length
-                    }
-                }
-                latestRole = role
-                latestActivity = activity
-                latestFinish = finish
-                latestFailed = notice.isNotEmpty()
-                latestCompleted = messageCompleted
-                // Завершённый tool-only шаг (step-start->tool...->step-finish без text)
-                // не должен отображаться как «… генерируется …» — это не зависание,
-                // а просто шаг без текста. Фильтруем его из ленты. ДУМАЮЩИЙ assistant
-                // (без step-finish) остаётся, чтобы UI показал «генерируется».
-                if (role == "assistant" && !hasText && finish) continue
-                out.add(
-                    ChatMsg(
-                        role = role,
-                        text = sb.toString(),
-                        notice = notice.toString().ifBlank { null },
-                        id = info.optString("id"),
-                    ),
-                )
-            }
-            val take = if (out.size > MAX_SHOWN) out.subList(out.size - MAX_SHOWN, out.size) else out
-            val last = out.lastOrNull()
-            // «Думает» = последнее сырое сообщение открывает новый ответ. У завершённого
-            // assistant проверяем даже скрытый tool-only шаг: после Stop opencode может
-            // завершить его без step-finish, но с info.time.completed.
-            // Провал — тоже конец хода, даже если opencode не проставил ни того,
-            // ни другого: иначе «генерируется…» горит до общего таймаута.
-            val thinking =
-                when (latestRole) {
-                    null -> false
-                    "user" -> true
-                    "assistant" -> !latestFinish && !latestCompleted && !latestFailed
-                    else -> false
-                }
-
-            // Live-чип показываем только пока модель ещё работает (thinking). Когда она
-            // закончила (дала финальный ответ) — lastTool не показываем как «текущее».
-            val liveTool = if (thinking) lastTool else null
-            // Токены оцениваем через суммарную длину активных частей сессии (ctxChars):
-            // ≈ символов/4 (ok для кода/HTML/русского в среднем), плюс небольшой
-            // оверхед на системный промпт/структуру (×1.15). Это и есть ТЕКУЩИЙ
-            // активный контекст, а не кумулятивный tokens.input.
-            val ctxTokens = (ctxChars / 4L * 115 / 100)
-            // Записываем кэш ТОЛЬКО после успешного полного парсинга.
-            ChatCache.sessionId = activeId
-            ChatCache.rawHash = rawHash
-            ChatCache.result =
-                ChatParseResult(
-                    take,
-                    thinking,
-                    liveTool,
-                    ask = askCards,
-                    ctxTokens,
-                )
-            val snap =
-                ChatSnapshot(
-                    take,
-                    "$label",
-                    activeId,
-                    thinking,
-                    prettyModel(bestModelId),
-                    liveTool = liveTool,
-                    contextTokens = ctxTokens,
-                    pingMs = pingMs,
-                    ask = askCards,
-                    reachable = true,
-                    // Расход Zen — из БАЗЫ СЕРВЕРА, который обновляется раз в
-                    // ZEN_REFRESH_MS. Лента тут не годится: она покрывает только
-                    // активную сессию, а день мог начаться в нескольких сессиях.
-                    mcpConnected = mcpConnected,
-                    mcpTotal = mcpTotal,
-                    mcpServers = mcpServers,
-                    notice = notice,
-                )
-            // notice тоже печатаем: он уехал из text, и без него в логе не видно, что
-// причина отказа вообще доехала до экрана, а не потерялась по дороге.
-            val lastDiag = last?.let {
-                "role=${it.role} text='${it.text.take(DIAG_TEXT_CHARS)}' " +
-                    "notice='${it.notice?.take(DIAG_NOTICE_CHARS) ?: ""}'"
-            } ?: "null"
-            android.util.Log.d(
-                "ChatOverlay",
-                "FETCH parse out=${out.size} take=${take.size} thinking=$thinking " +
-                    "ask=${snap.ask?.size ?: 0} label=$label " +
-                    "model=$bestModelId liveTool=${liveTool?.name} LAST=[$lastDiag] " +
-                    "latestRole=$latestRole latestAct=$latestActivity latestFin=$latestFinish " +
-                    "latestCompleted=$latestCompleted",
-            )
-            snap
-        } catch (e: Exception) {
-            if (e is InterruptedException) throw e
-            null
-        }
-    }
-
-private fun titleOf(
-    sessions: JSONArray,
-    id: String,
-): String {
-    for (i in 0 until sessions.length()) {
-        val s = sessions.getJSONObject(i)
-        if (s.optString("id") == id) {
-            val t = s.optString("title", "")
-            return if (t.isBlank()) "сессия" else t
-        }
-    }
-    return "сессия"
-}
-
 private suspend fun scrollToBottomFull(
     state: LazyListState,
     target: Int,
@@ -4028,302 +3454,6 @@ private fun playNotificationSound(context: Context) {
         }
     } catch (_: Exception) {
     }
-}
-
-/**
- * Новая сессия сразу на выбранной модели.
- *
- * `POST /api/session` принимает `model` в теле (проверено по OpenAPI и на живом
- * 2.0.27), а переключение через `POST /api/session/{id}/model` есть только у уже
- * родившейся сессии. Поэтому модель выбирается здесь, на создании: так новая
- * сессия не зависит от того, успел ли сервер перечитать конфиг (он читает его
- * только при старте процесса).
- *
- * Отказ по модели НЕ ломает создание: если сервер её не принял (протухла,
- * выпала из каталога), повторяем пустым телом — сообщение должно уйти любой
- * ценой, а выбор модели это настройка, не условие работы чата. Худший случай
- * такой попытки — лишняя пустая сессия, их и так чистит `pruneEmptySessions`.
- */
-private fun createSession(
-    port: Int,
-    context: Context,
-): String? {
-    val model = if (ModelRoutingPrefs.isEnabled(context)) ModelRoutingPrefs.current(context).heavy else null
-    val withModel = LocalOpenCodeClient.post(port, ApiPaths.SESSIONS, SessionModel.createBody(model))
-    return createdSessionId(withModel)
-        ?: createdSessionId(LocalOpenCodeClient.post(port, ApiPaths.SESSIONS, SessionModel.EMPTY_BODY))
-}
-
-private fun createdSessionId(body: String?): String? = body?.let { ApiShape.session(it)?.optString("id") }?.takeIf(String::isNotBlank)
-
-/**
- * Прерывает текущую генерацию модели в сессии. opencode serve принимает
- * POST /session/{id}/abort (200 + "true"). Ответ приходит сразу, блокировать
- * нечего — это не долгий стрим.
- *
- * Осторожно, bool здесь обманчив: на несуществующей сессии тот же эндпоинт
- * отдаёт 200 + HTML (SPA-fallback на любой путь), то есть true бывает даже
- * когда ничего не прервалось. Проверять надо через [sessionRunning].
- */
-private fun abortSession(
-    port: Int,
-    sessionId: String,
-): Boolean = LocalOpenCodeClient.post(port, ApiPaths.interrupt(sessionId), "") != null
-
-/**
- * Есть ли запись сессии в карте занятости, то есть считает ли сервер её ход
- * незавершённым.
- *
- * Нужна потому, что по коду ответа abort узнать «прервалось ли» нельзя (см.
- * [abortSession]). Единственный честный признак — уехала ли запись из карты
- * статусов после abort.
- */
-private fun sessionRunning(
-    port: Int,
-    sessionId: String,
-): Boolean {
-    val raw = ApiStatus.forSession(port, sessionId) ?: return false
-    return try {
-        JSONObject(raw).has(sessionId)
-    } catch (_: Exception) {
-        false
-    }
-}
-
-/**
- * Откат только что созданной сессии. Нужен потому, что создание и отправка -
- * одна операция: если отправка не ушла, сессия остаётся сиротой (одно событие
- * session.created, ноль сообщений) и засоряет список сессий. На живом сервере
- * DELETE /session/{id} отвечает 200 и сессия исчезает.
- */
-private fun deleteSession(
-    port: Int,
-    sessionId: String,
-): Boolean = LocalOpenCodeClient.delete(port, ApiPaths.session(sessionId))
-
-/**
- * Есть ли в сессии хоть одно сообщение. Разделяет «сервер не получил запрос»
- * (тогда сессию можно откатить) и «сервер записал, но ответил ошибкой»
- * (тогда откат съел бы чужое сообщение).
- */
-private fun sessionHasMessages(
-    port: Int,
-    sessionId: String,
-): Boolean =
-    try {
-        val raw = LocalOpenCodeClient.get(port, ApiPaths.message(sessionId))
-        raw != null && (ApiShape.messages(raw)?.length() ?: 0) > 0
-    } catch (_: Exception) {
-        // Не смогли узнать — считаем, что сохранилось: на неопределённости не стираем.
-        true
-    }
-
-/**
- * Множество сессий, занятых сервером прямо сейчас (значения из карты
- * занятости). null — статус не прочился, и это НЕ то же самое, что
- * «никто не занят»: удалять сессии вслепую нельзя (см. [purgeAllowed]).
- */
-private fun busySessionIds(port: Int): Set<String>? =
-    try {
-        val raw = ApiStatus.record(port) ?: return null
-        val obj = JSONObject(raw)
-        val out = LinkedHashSet<String>()
-        for (k in obj.keys()) {
-            if (k.isNotBlank()) out.add(k)
-        }
-        out
-    } catch (_: Exception) {
-        null
-    }
-
-/**
- * Сколько раз переспрашиваем /session/status, прежде чем признать ход незаглушенным.
- */
-private const val PURGE_CONFIRM_TRIES = 5
-
-/**
- * Пауза между попытками подтвердить, что abort дождался сервера.
- */
-private const val PURGE_CONFIRM_STEP_MS = 200L
-
-/**
- * Остановить сессию и только потом удалить её.
- *
- * Прежний порядок (abort → delete, без паузы и без проверки) давал
- * FOREIGN KEY constraint failed: сервер держит сессию в памяти и продолжает
- * писать message/part уже после удаления строки. abort отвечает мгновенно, но
- * это не значит, что цикл записи остановился, поэтому здесь ждём ухода записи
- * из /session/status.
- *
- * Если статус недоступен или ход так и не ушёл — сессия остаётся. Это осознанный
- * размен: лишняя сессия в ленте её удалит сам позже, а удалённая насильно
- * ломает базу насмерть (см. [purgeAllowed]).
- */
-private suspend fun stopAndPurge(
-    port: Int,
-    sessionId: String,
-) {
-    if (sessionRunning(port, sessionId)) {
-        abortSession(port, sessionId)
-        var tries = 0
-        while (sessionRunning(port, sessionId) && tries < PURGE_CONFIRM_TRIES) {
-            delay(PURGE_CONFIRM_STEP_MS)
-            tries++
-        }
-    }
-    val reachable = ApiStatus.reachable(port)
-    if (!purgeAllowed(reachable, sessionRunning(port, sessionId))) {
-        android.util.Log.w(
-            "ChatOverlay",
-            "PURGE skipped session=$sessionId: ход не подтверждённо остановлен, удаление сломало бы внешние ключи",
-        )
-        return
-    }
-    deleteSession(port, sessionId)
-}
-
-/**
- * Подчистить сессии-сироты: созданные, но так и не использованные.
- *
- * Откуда они берутся: создание сессии и отправка первого сообщения — две
- * операции. Между ними остаётся окно, в котором сессия уже есть в списке, а
- * сообщений в ней ещё нет. Если отправка не ушла (сеть, сервер, неизвестная
- * модель), сессия навсегда остаётся пустой мусором в ленте.
- *
- * Удаляются ТОЛЬКО сессии без единого сообщения: потерять нечего. Сессии с
- * перепиской, текущая и любая busy не трогаются. Если список отдать не удалось
- * или у сессии не удалось прочитать сообщения — тоже не стираем.
- *
- * Отдельный запрос на каждую сессию: список обычно короткий, а лезть в
- * сообщения всех подряд ради пустых — лишняя работа на каждый чих.
- */
-private fun pruneEmptySessions(
-    port: Int,
-    keep: Set<String>,
-) {
-    val raw = LocalOpenCodeClient.get(port, ApiPaths.SESSIONS) ?: return
-    val ids =
-        try {
-            val arr = ApiShape.sessions(raw) ?: JSONArray()
-            (0 until arr.length())
-                .mapNotNull { arr.getJSONObject(it).optString("id").takeIf(String::isNotBlank) }
-        } catch (_: Exception) {
-            // Список не разобрали — идти не по чему, но это не повод заглянуть
-            // в pruneAllowed или логировать: ниже всё равно ничего не удалится.
-            emptyList()
-        }
-    var removed = 0
-    // Список busy берём ОДИН раз на весь проход: /session/status отдаёт объект,
-    // где ключи — занятые сессии. Проверять надо обязательно: у busy-сессии
-    // сообщений может быть ноль (генерация только началась), и без этой
-    // проверки такая сессия попала бы под нож вместе с живым ответом.
-    val busy = busySessionIds(port)
-    if (busy == null) {
-        // Статус не прочитали — значит, «занята ли сессия», мы не знаем.
-        // Мусор в ленте дешевле, чем удаление бегущей сессии: см. [purgeAllowed].
-        android.util.Log.w("ChatOverlay", "PRUNE skipped: /session/status недоступен")
-        return
-    }
-    for (sid in ids) {
-        // Текущую и те, что мы сами бережём, не трогаем.
-        if (sid in keep) continue
-        // Занятые сервером — не мусор, это идущая генерация.
-        if (sid in busy) continue
-        if (sessionHasMessages(port, sid)) continue
-        if (deleteSession(port, sid)) {
-            removed++
-            android.util.Log.d("ChatOverlay", "подчистил пустую сессию $sid")
-        }
-    }
-    if (removed > 0) {
-        android.util.Log.i("ChatOverlay", "подчищено пустых сессий: $removed")
-    }
-}
-
-/**
- * Отправка сообщения в сессию.
- *
- * [delivery] намеренно НЕ задаётся по умолчанию: без поля сервер ведёт себя как
- * `steer`, то есть сообщение вплетается в идущий ход. Так ведёт себя обычная
- * реплика пользователя, и менять это нельзя — человек должен уметь вмешаться в
- * генерацию. Очередь нужна только для ответа на вопрос агента, и её ставит
- * [answerPendingAsk] явно.
- */
-private fun postMessage(
-    port: Int,
-    sessionId: String,
-    text: String,
-    delivery: String? = null,
-): Boolean {
-    val body = ApiShape.promptBody(text, delivery).toString()
-    return LocalOpenCodeClient.postAsync(port, ApiPaths.prompt(sessionId), body)
-}
-
-/**
- * Постановка ответа на вопрос в очередь — в отличие от обычной реплики, ждём
- * ответа сервера.
- *
- * [LocalOpenCodeClient.postAsync] возвращает true сразу после записи тела и
- * HTTP-код не читает. Для обычного сообщения это неважно (оно либо дойдёт,
- * либо пользователь увидит, что чат не обновился), а здесь — нет: если
- * сервер отклонит сообщение в очереди, а мы всё равно отклоним висящий
- * вопрос, инструмент упадёт, ход завершится, и ответ пропадёт молча.
- */
-private fun queueMessage(
-    port: Int,
-    sessionId: String,
-    text: String,
-): Boolean {
-    val body = ApiShape.promptBody(text, ApiShape.DELIVERY_QUEUE).toString()
-    return LocalOpenCodeClient.postAccepted(port, ApiPaths.prompt(sessionId), body)
-}
-
-/** Что получилось при ответе на запрос сервера. */
-private data class AskOutcome(
-    val replied: Boolean,
-    val answered: Boolean,
-)
-
-/**
- * Ответ на запрос, ждущий ответа.
- *
- * Для команды под «ask» всё просто: разрешить — и ход идёт дальше, это на
- * живом сервере проверено целиком.
- *
- * Для ВОПРОСА приходится идти в обход. Замерено на живом сервере 2.0.27:
- * ответ на вопрос в саму карточку (`decision:once` + `message`) запрос снимает,
- * но ход НЕ продолжается — инструмент навсегда остаётся `status=running`, а
- * сессия для `ApiStatus.isBusy` выглядит занятой навсегда, так что новые
- * сообщения в неё больше не доходят. Проверено и вручную, и из приложения.
- * Работает другая последовательность: ответ уходит обычным сообщением с
- * `delivery:"queue"` (его модель прочтёт следующим ходом), а висящий запрос
- * отклоняется — это единственный способ прекратить инструмент и дать очереди
- * отработать. На застрявшей сессии `ses_ecda34d…` это дало `pending` 1 → 0,
- * `TOOL question` → `status=error` и настоящий ответ модели `finish=stop`.
- * Порядок именно такой: сначала сообщение, чтобы ответ не потерялся, если
- * отклонение не пройдёт.
- *
- * Повторный вызов после частичного провала передаёт [message] равным null:
- * ответ тогда уже в очереди, и второй раз слать его нельзя — иначе модель
- * получила бы один и тот же ответ дважды. Отклонение при этом повторяется,
- * и именно оно снимает висящий инструмент.
- *
- * Для команды обе операции не нужны и не выполняются.
- */
-private fun answerPendingAsk(
-    port: Int,
-    sessionId: String,
-    ask: PendingAsk,
-    decision: String,
-    message: String?,
-): AskOutcome {
-    val isQuestion = ask.action == ApiAsk.QUESTION
-    val answer = if (isQuestion && !message.isNullOrBlank()) message else null
-    if (answer != null && !queueMessage(port, sessionId, answer)) {
-        return AskOutcome(replied = false, answered = false)
-    }
-    val replied = ApiAsk.replyAsk(port, sessionId, ask.id, if (isQuestion) ApiAsk.REJECT else decision, message)
-    return AskOutcome(replied = replied, answered = answer != null)
 }
 
 /** Ряд-переключатель в стиле панели STT: активен или нет. */
