@@ -128,6 +128,7 @@ import org.opencode.mobile.tts.TtsEngine
 import org.opencode.mobile.tts.TtsNarrator
 import org.opencode.mobile.ui.chat.AudioRecorder
 import org.opencode.mobile.ui.chat.CONTEXT_LIMIT
+import org.opencode.mobile.ui.chat.ChatAppearance
 import org.opencode.mobile.ui.chat.ChatCache
 import org.opencode.mobile.ui.chat.ContextGauge
 import org.opencode.mobile.ui.chat.DeadRow
@@ -138,6 +139,7 @@ import org.opencode.mobile.ui.chat.MessageRow
 import org.opencode.mobile.ui.chat.NoticeRow
 import org.opencode.mobile.ui.chat.QuotaBadge
 import org.opencode.mobile.ui.chat.RetryState
+import org.opencode.mobile.ui.chat.SharedPreferencesAppearanceStore
 import org.opencode.mobile.ui.chat.StallState
 import org.opencode.mobile.ui.chat.StalledRow
 import org.opencode.mobile.ui.chat.ThinkingRow
@@ -347,35 +349,13 @@ fun ChatOverlay(
     var prevMsgCount by remember { mutableIntStateOf(0) }
     var userScrolledUp by remember { mutableStateOf(false) }
 
-    // Настройка шрифта ответов модели: хранится в SharedPreferences, меняется на лету.
+    // Шрифт и цвет ответов модели плюс полосы расхода: шесть значений и правила их
+    // записи в prefs живут в ChatAppearance, где их держит юнит-тест. Здесь остаются
+    // только производные для отрисовки.
     val prefs = remember { context.getSharedPreferences("chat_overlay", Context.MODE_PRIVATE) }
-    var modelFontKey by remember { mutableStateOf(prefs.getString("model_font_key", "mono") ?: "mono") }
-    val modelFont = remember(modelFontKey) { fontFor(modelFontKey) }
-
-    // Настройка цвета ответов модели: hex-строка без '#', меняется на лету через цветовой пикер.
-    var modelColorHex by remember { mutableStateOf(prefs.getString("model_color", "D97706") ?: "D97706") }
-    val modelColor = remember(modelColorHex) { parseHexColor(modelColorHex) }
-
-    fun setModelColor(hex: String) {
-        modelColorHex = hex
-        prefs.edit().putString("model_color", hex).apply()
-    }
-
-    // ---- Настройки полос расхода (контекст и Zen-квота) ----
-    // Читаются из того же prefs и живут в mutableStateOf, поэтому ползунок в
-    // панели шестерёнки перерисовывает полосу в ту же секунду — без перезапуска.
-    // В prefs пишем по завершении перетаскивания, а не на каждом кадре: запись
-    // в файл на каждое движение ползунка — это лишний ввод-вывод в UI-потоке.
-    var ctxShape by remember { mutableStateOf(prefs.readGaugeShape(CTX_PREFIX)) }
-    var zenShape by remember { mutableStateOf(prefs.readGaugeShape(ZEN_PREFIX)) }
-    var gaugePalette by remember { mutableStateOf(prefs.readGaugePalette()) }
-    var gaugeBarGap by remember { mutableStateOf(prefs.readGaugeBarGap()) }
-
-    fun persistCtxShape() = prefs.writeGaugeShape(CTX_PREFIX, ctxShape)
-
-    fun persistZenShape() = prefs.writeGaugeShape(ZEN_PREFIX, zenShape)
-
-    fun persistBarGap() = prefs.writeGaugeBarGap(gaugeBarGap)
+    val appearance = remember { ChatAppearance(SharedPreferencesAppearanceStore(prefs)) }
+    val modelFont = remember(appearance.fontKey) { fontFor(appearance.fontKey) }
+    val modelColor = remember(appearance.colorHex) { parseHexColor(appearance.colorHex) }
 
     // Голосовой ввод: системный распознаватель (SpeechRecognizer). Удержание кнопки — запись, отпускание — распознавание и отправка.
     val speechRecognizer = remember { createSpeechRecognizer(context) }
@@ -1494,8 +1474,8 @@ fun ChatOverlay(
                 ContextGauge(
                     filled = snapshot?.contextTokens ?: 0L,
                     limit = CONTEXT_LIMIT,
-                    shape = ctxShape,
-                    palette = gaugePalette,
+                    shape = appearance.ctxShape,
+                    palette = appearance.palette,
                     modifier = Modifier.weight(1f).testTag(TAG_CTX_GAUGE),
                 )
             }
@@ -1507,9 +1487,9 @@ fun ChatOverlay(
             ZenMeter(
                 used = zenUsedState,
                 exact = zenExactState,
-                shape = zenShape,
-                palette = gaugePalette,
-                modifier = Modifier.padding(top = gaugeBarGap.dp).testTag(TAG_ZEN_METER),
+                shape = appearance.zenShape,
+                palette = appearance.palette,
+                modifier = Modifier.padding(top = appearance.barGap.dp).testTag(TAG_ZEN_METER),
             )
             // Выпадающий список подключённых MCP-серверов (тап по индикатору «N MCP»).
             // У каждого имени — мигающая точка: зелёная (работает) / красная (нет).
@@ -1551,19 +1531,31 @@ fun ChatOverlay(
                                 detectTapGestures { off ->
                                     val h = (off.x / pickSize).coerceIn(0f, 1f) * 360f
                                     val v = 1f - (off.y / pickSize).coerceIn(0f, 1f)
-                                    setModelColor("%06X".format(android.graphics.Color.HSVToColor(floatArrayOf(h, 1f, v)) and 0xFFFFFF))
+                                    appearance.chooseColor(
+                                        "%06X".format(
+                                            android.graphics.Color.HSVToColor(floatArrayOf(h, 1f, v)) and 0xFFFFFF
+                                        )
+                                    )
                                 }
                             }.pointerInput(Unit) {
                                 detectDragGestures(
                                     onDragStart = { off ->
                                         val h = (off.x / pickSize).coerceIn(0f, 1f) * 360f
                                         val v = 1f - (off.y / pickSize).coerceIn(0f, 1f)
-                                        setModelColor("%06X".format(android.graphics.Color.HSVToColor(floatArrayOf(h, 1f, v)) and 0xFFFFFF))
+                                        appearance.chooseColor(
+                                            "%06X".format(
+                                                android.graphics.Color.HSVToColor(floatArrayOf(h, 1f, v)) and 0xFFFFFF
+                                            )
+                                        )
                                     },
                                     onDrag = { change, _ ->
                                         val h = (change.position.x / pickSize).coerceIn(0f, 1f) * 360f
                                         val v = 1f - (change.position.y / pickSize).coerceIn(0f, 1f)
-                                        setModelColor("%06X".format(android.graphics.Color.HSVToColor(floatArrayOf(h, 1f, v)) and 0xFFFFFF))
+                                        appearance.chooseColor(
+                                            "%06X".format(
+                                                android.graphics.Color.HSVToColor(floatArrayOf(h, 1f, v)) and 0xFFFFFF
+                                            )
+                                        )
                                     },
                                 )
                             },
@@ -1604,7 +1596,12 @@ fun ChatOverlay(
                                 .background(modelColor)
                                 .border(1.dp, Color.White, CircleShape),
                         )
-                        Text("#$modelColorHex", color = Color(0xFFBDBDBD), fontSize = 12.sp, modifier = Modifier.padding(start = 10.dp))
+                        Text(
+                            "#${appearance.colorHex}",
+                            color = Color(0xFFBDBDBD),
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(start = 10.dp)
+                        )
                     }
                 }
             }
@@ -1619,31 +1616,19 @@ fun ChatOverlay(
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                 ) {
                     GaugeSettings(
-                        ctxShape = ctxShape,
-                        onCtxShapeChange = { ctxShape = it },
-                        onCtxShapePersist = { persistCtxShape() },
-                        zenShape = zenShape,
-                        onZenShapeChange = { zenShape = it },
-                        onZenShapePersist = { persistZenShape() },
-                        palette = gaugePalette,
-                        onColorChange = { k, c ->
-                            gaugePalette = gaugePalette.copyWith(k, c)
-                            prefs.writeGaugeColor(k, c)
-                        },
+                        ctxShape = appearance.ctxShape,
+                        onCtxShapeChange = { appearance.ctxShape = it },
+                        onCtxShapePersist = { appearance.persistCtxShape() },
+                        zenShape = appearance.zenShape,
+                        onZenShapeChange = { appearance.zenShape = it },
+                        onZenShapePersist = { appearance.persistZenShape() },
+                        palette = appearance.palette,
+                        onColorChange = { k, c -> appearance.choosePaletteColor(k, c) },
                         onPalettePersist = { /* цвета уже записаны по клику */ },
-                        barGap = gaugeBarGap,
-                        onBarGapChange = { gaugeBarGap = it },
-                        onBarGapPersist = { persistBarGap() },
-                        onResetDefaults = {
-                            ctxShape = GaugeShape.DEFAULT
-                            zenShape = GaugeShape.DEFAULT
-                            gaugePalette = GaugePalette.DEFAULT
-                            gaugeBarGap = GaugeBarGap.DEFAULT
-                            persistCtxShape()
-                            persistZenShape()
-                            persistBarGap()
-                            GaugeColorKey.entries.forEach { prefs.writeGaugeColor(it, it.argb(GaugePalette.DEFAULT)) }
-                        },
+                        barGap = appearance.barGap,
+                        onBarGapChange = { appearance.barGap = it },
+                        onBarGapPersist = { appearance.persistBarGap() },
+                        onResetDefaults = { appearance.resetGauges() },
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
@@ -2030,13 +2015,12 @@ fun ChatOverlay(
                                 Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        modelFontKey = key
-                                        prefs.edit().putString("model_font_key", key).apply()
+                                        appearance.chooseFont(key)
                                         closeHeaderPanel(PANEL_FONT)
                                     }.padding(vertical = 6.dp),
                         ) {
                             Text(
-                                if (key == modelFontKey) "● " else "○ ",
+                                if (key == appearance.fontKey) "● " else "○ ",
                                 color = modelColor,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
