@@ -11,6 +11,7 @@
     verify   : ktlint + detekt + compileDebugKotlin (быстрая проверка)
     debug    : assembleDebug
     release  : assembleRelease
+    bundle   : bundleRelease — AAB для Play (Play принимает только .aab, APK не берёт)
     native   : assembleDebug c полной сборкой нативной части
                (требует whisper.cpp + VulkanSDK, см. -WhisperCppDir/-VulkanSdkDir)
 
@@ -49,10 +50,11 @@
     .\build.ps1 -Task utest
     .\build.ps1 -Task native -WhisperCppDir C:\src\whisper.cpp
     .\build.ps1 -Task release -SkipNative
+    .\build.ps1 -Task bundle -SkipNative   # AAB dlya Play
     .\build.ps1 -Task binary          # polozhit ves komplekt nativov v jniLibs
 #>
 param(
-    [ValidateSet('verify', 'jstest', 'utest', 'debug', 'release', 'native', 'binary')]
+    [ValidateSet('verify', 'jstest', 'utest', 'debug', 'release', 'bundle', 'native', 'binary')]
     [string]$Task = 'debug',
     [string]$WhisperCppDir = '',
     [string]$VulkanSdkDir = '',
@@ -108,7 +110,7 @@ function Quote-Arg([string]$a) {
     return $a
 }
 $vcvars = ''
-if (-not $SkipNative -and ($Task -eq 'debug' -or $Task -eq 'release' -or $Task -eq 'native')) {
+if (-not $SkipNative -and ($Task -eq 'debug' -or $Task -eq 'release' -or $Task -eq 'bundle' -or $Task -eq 'native')) {
     $vcvars = Find-VcVars
     if (-not $vcvars) {
         throw 'Visual Studio Build Tools (VC++) ne naideny: nuzhny dlya vulkan-shaders-gen (host MSVC). Ustanovite VS s "Desktop development with C++"'
@@ -126,7 +128,7 @@ if ($Task -eq 'binary') {
     & pwsh -ExecutionPolicy Bypass -File $fetchBinary
     exit $LASTEXITCODE
 }
-if (-not $SkipBinary -and ($Task -eq 'debug' -or $Task -eq 'release')) {
+if (-not $SkipBinary -and ($Task -eq 'debug' -or $Task -eq 'release' -or $Task -eq 'bundle')) {
     # Skript sam znaet polnyy spisok nativov i sveryaet kazhdyy po sha256,
     # poetomu zdes tolko ego vyvod - inache katalog rassypayetsya v dvukh
     # mestakh i odin iz nih poteryayet pravila pro verzii.
@@ -189,6 +191,10 @@ switch ($Task) {
     'utest'   { $gradleArgs += ':app:testDebugUnitTest' }
     'debug'   { $gradleArgs += ':app:assembleDebug' }
     'release' { $gradleArgs += ':app:assembleRelease' }
+    # Play принимает только AAB. Отдельная задача, а не флаг у release: у них разные
+    # артефакты и разные адреса, а сборка AAB без проверки нативов дала бы «валидный»
+    # бандл без сервера внутри - ровно тот случай, который ловится предсборочной проверкой.
+    'bundle'  { $gradleArgs += ':app:bundleRelease' }
     'native'  { $gradleArgs += ':app:assembleDebug' }
 }
 if ($SkipNative) { $gradleArgs += '-PskipNativeBuild=true' }
@@ -212,5 +218,21 @@ if ($exitCode -ne 0) {
     Write-Error "FAILED: $Task (exit $exitCode). Polnyi log: $Log"
     exit 1
 }
+
+if ($Task -eq 'bundle') {
+    # Play принимает только AAB и запоминает versionCode: повторный аплоад с тем же номером
+    # отклоняется. Номер живёт одной строкой в app/build.gradle.kts, поэтому печатаем его
+    # здесь - иначе о нём вспоминают уже в консоли, после отказа загрузки.
+    $aab = Get-ChildItem (Join-Path $Root 'app\build\outputs\bundle\release\*.aab') -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $versionLine = Select-String -Path (Join-Path $Root 'app\build.gradle.kts') -Pattern '^\s*versionCode\s*=\s*(\d+)' |
+        Select-Object -First 1
+    $versionCode = if ($versionLine) { $versionLine.Matches[0].Groups[1].Value } else { '?' }
+    if ($aab) {
+        Write-Host ("AAB: {0} ({1:N0} bayt) versionCode={2}" -f $aab.FullName, $aab.Length, $versionCode)
+    }
+    Write-Host "Play: sleduyushchiy aplodad trebuyet versionCode > $versionCode"
+}
+
 "OK: $Task (log: $Log)"
 exit 0
