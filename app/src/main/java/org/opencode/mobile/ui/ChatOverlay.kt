@@ -14,13 +14,9 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -28,16 +24,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.InvertColors
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.TextFormat
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -52,15 +39,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.unit.dp
@@ -86,26 +70,31 @@ import org.opencode.mobile.ui.chat.AndroidElevenKeyStore
 import org.opencode.mobile.ui.chat.AndroidTtsStore
 import org.opencode.mobile.ui.chat.AskActions
 import org.opencode.mobile.ui.chat.AudioRecorder
-import org.opencode.mobile.ui.chat.CONTEXT_LIMIT
 import org.opencode.mobile.ui.chat.ChatAppearance
 import org.opencode.mobile.ui.chat.ChatCache
 import org.opencode.mobile.ui.chat.ChatFeed
 import org.opencode.mobile.ui.chat.ChatFeedState
+import org.opencode.mobile.ui.chat.ChatHeader
+import org.opencode.mobile.ui.chat.ChatHeaderActions
+import org.opencode.mobile.ui.chat.ChatHeaderState
 import org.opencode.mobile.ui.chat.ChatInput
 import org.opencode.mobile.ui.chat.ChatInputActions
 import org.opencode.mobile.ui.chat.ChatInputState
 import org.opencode.mobile.ui.chat.ChatPollState
 import org.opencode.mobile.ui.chat.ChatUiState
-import org.opencode.mobile.ui.chat.ContextGauge
 import org.opencode.mobile.ui.chat.ElevenKeySettings
 import org.opencode.mobile.ui.chat.FontPanel
 import org.opencode.mobile.ui.chat.GaugePanel
-import org.opencode.mobile.ui.chat.MCPIndicator
 import org.opencode.mobile.ui.chat.McpPanel
 import org.opencode.mobile.ui.chat.ModelColorPanel
 import org.opencode.mobile.ui.chat.MoltbookCard
 import org.opencode.mobile.ui.chat.NarrationInput
-import org.opencode.mobile.ui.chat.QuotaBadge
+import org.opencode.mobile.ui.chat.PANEL_COLOR
+import org.opencode.mobile.ui.chat.PANEL_FONT
+import org.opencode.mobile.ui.chat.PANEL_MCP
+import org.opencode.mobile.ui.chat.PANEL_MOLTBOOK
+import org.opencode.mobile.ui.chat.PANEL_SETTINGS
+import org.opencode.mobile.ui.chat.PANEL_STT
 import org.opencode.mobile.ui.chat.ServerSendTransport
 import org.opencode.mobile.ui.chat.SharedPreferencesAppearanceStore
 import org.opencode.mobile.ui.chat.SharedPreferencesVoiceStore
@@ -116,7 +105,6 @@ import org.opencode.mobile.ui.chat.TtsSettings
 import org.opencode.mobile.ui.chat.VoiceEngine
 import org.opencode.mobile.ui.chat.VoiceHoldActions
 import org.opencode.mobile.ui.chat.VoiceSettings
-import org.opencode.mobile.ui.chat.ZenMeter
 import org.opencode.mobile.ui.chat.abortSession
 import org.opencode.mobile.ui.chat.advancePoll
 import org.opencode.mobile.ui.chat.answerPendingAsk
@@ -135,16 +123,6 @@ import org.opencode.mobile.ui.chat.vibrate
 import java.io.File
 import java.util.Locale
 
-// Идентификаторы выпадающих панелей шапки — ключи для [ChatOverlay] переключателя
-// toggleHeaderPanel. Строками, а не enum: ключ нужен ровно в двух местах
-// (объявление и клик по иконке), а enum здесь стоил бы лишней печати.
-private const val PANEL_MCP = "mcp"
-private const val PANEL_MOLTBOOK = "moltbook"
-private const val PANEL_COLOR = "color"
-private const val PANEL_FONT = "font"
-private const val PANEL_SETTINGS = "settings"
-private const val PANEL_STT = "stt"
-
 // Как часто открытая панель Moltbook перечитывает ledger. Быстрее 10 секунд —
 // это долбить базу впустую, медленнее минуты — панель успевает соврать.
 private const val MOLTBOOK_PANEL_REFRESH_MS = 10_000L
@@ -156,13 +134,6 @@ private const val MOLTBOOK_PANEL_REFRESH_MS = 10_000L
 // на карточке свежие» и «мы не долбим чужой сервис». Скан сам по себе умеет
 // ждать до минуты, поэтому задержка сверху не копится.
 private const val MOLTBOOK_SCAN_EVERY_MS = 5 * 60_000L
-
-// testTag-метки для проверки геометрии по дампу uiautomator (resource-id).
-// Читать их в коде не нужно - это якоря для инструментов, а не логика.
-// Сегменты полос сознательно НЕ помечены: 90 ячеек на гейдж дали бы 180 узлов
-// ради арифметики, которая восстанавливается из ширины ряда и cellGap.
-private const val TAG_CTX_GAUGE = "ctx_gauge"
-private const val TAG_ZEN_METER = "zen_meter"
 
 // Миллисекунд в минуте для паузы между обходами сессий.
 private const val MS_PER_MINUTE = 60_000L
@@ -1081,153 +1052,31 @@ fun ChatOverlay(
         color = Color(0xFF101010),
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // Статус связи с сервером и пинг: «Online 42ms» зелёным, «Offline»
-                // красным. Отдельная от ContextGauge строка — индикатор занятости
-                // контекста уехал ниже, чтобы шапка не расползалась: раньше круг
-                // занимал всю свободную ширину и отжимал индикаторы вправо.
-                QuotaBadge(
-                    reachable = ui.snapshot?.reachable,
-                    pingMs = ui.snapshot?.pingMs ?: 0L,
-                    rejected = ui.snapshot?.notice != null,
-                    modifier = Modifier.weight(1f),
-                )
-                // Индикатор MCP-серверов (НЕОНОВЫЙ): «N MCP» + мигающая точка.
-                // Зелёный — все N подключённых серверов работают; красный — какой-то
-                // из них не работает (или их нет вовсе). Стоит ЛЕВЕЕ выбора цвета.
-                MCPIndicator(
-                    connected = ui.snapshot?.mcpConnected ?: 0,
-                    total = ui.snapshot?.mcpTotal ?: 0,
-                    onClick = { toggleHeaderPanel(PANEL_MCP) },
-                    modifier = Modifier.padding(start = 4.dp),
-                )
-                // «М» — Moltbook: автономный агент. Буква с бейджем неотвеченных
-                // вместо иконки намеренно: это не сервис, а сам агент, и цифра на нём —
-                // не «сколько серверов сломано», а «кого мы ещё не ответили».
-                MoltbookIndicator(
-                    awaiting = moltbookStats.awaiting,
-                    active = showMoltbookPanel,
-                    onClick = { toggleHeaderPanel(PANEL_MOLTBOOK) },
-                )
-                // Цветовой пикер для ответов модели. ИКОНКА — готовая «капля»
-                // (Material Icons: Icons.Filled.InvertColors) — узнаваемая капля,
-                // тонируется ТЕКУЩИМ выбранным цветом ответов (modelColor).
-                Icon(
-                    imageVector = Icons.Filled.InvertColors,
-                    contentDescription = "Цвет ответов модели",
-                    tint = modelColor,
-                    modifier =
-                        Modifier
-                            .padding(start = 4.dp)
-                            .size(22.dp)
-                            .clip(CircleShape)
-                            .background(if (showColorPicker) Color(0xFF3A3A3A) else Color.Transparent)
-                            .clickable { toggleHeaderPanel(PANEL_COLOR) }
-                            .padding(3.dp),
-                )
-                Icon(
-                    imageVector = Icons.Filled.TextFormat,
-                    contentDescription = "Шрифт ответов модели",
-                    tint = if (showFontPicker) modelColor else Color(0xFF8A8A8A),
-                    modifier =
-                        Modifier
-                            .padding(start = 4.dp)
-                            .size(22.dp)
-                            .clip(CircleShape)
-                            .background(if (showFontPicker) Color(0xFF3A3A3A) else Color.Transparent)
-                            .clickable { toggleHeaderPanel(PANEL_FONT) }
-                            .padding(3.dp),
-                )
-                Icon(
-                    imageVector = Icons.Filled.Settings,
-                    contentDescription = "Настройки гейджа",
-                    tint = if (showSettings) Color.White else Color(0xFFBDBDBD),
-                    modifier =
-                        Modifier
-                            .padding(start = 4.dp)
-                            .size(22.dp)
-                            .clip(CircleShape)
-                            .background(if (showSettings) Color(0xFF3A3A3A) else Color.Transparent)
-                            .clickable { toggleHeaderPanel(PANEL_SETTINGS) }
-                            .padding(3.dp),
-                )
-                Icon(
-                    imageVector = Icons.Filled.Mic,
-                    contentDescription = "Настройки голосового ввода (STT)",
-                    tint = if (showSttSettings) Color.White else Color(0xFFBDBDBD),
-                    modifier =
-                        Modifier
-                            .padding(start = 4.dp)
-                            .size(22.dp)
-                            .clip(CircleShape)
-                            .background(if (showSttSettings) Color(0xFF3A3A3A) else Color.Transparent)
-                            .clickable { toggleHeaderPanel(PANEL_STT) }
-                            .padding(3.dp),
-                )
-                // Диагностика: состояние сервера, STT-модели и хвост лога serve.
-                // Полноэкранный оверлей (DiagnosticsScreen), рисуется поверх всего.
-                Icon(
-                    imageVector = Icons.Filled.Info,
-                    contentDescription = "Диагностика",
-                    tint = if (showDiagnostics) Color.White else Color(0xFFBDBDBD),
-                    modifier =
-                        Modifier
-                            .padding(start = 4.dp)
-                            .size(22.dp)
-                            .clip(CircleShape)
-                            .background(if (showDiagnostics) Color(0xFF3A3A3A) else Color.Transparent)
-                            .clickable {
-                                // Прячем клавиатуру/фокус: корневой Surface чата сдвинут
-                                // imePadding(), иначе полноэкранный оверлей «съехал» бы вверх,
-                                // оставив полосу чата под клавиатурой.
-                                keyboard?.hide()
-                                focusManager.clearFocus()
-                                showDiagnostics = !showDiagnostics
-                            }.padding(3.dp),
-                )
-                // «Новая сессия»: тап — создать свежую (старые остаются в списке);
-                // long-press — «очистить все сессии» (диалог подтверждения).
-                // Подсветка по creatingSession (UI-19), а не showMcpList.
-                Icon(
-                    imageVector = Icons.Filled.Add,
-                    contentDescription = "Новая сессия (long-press — очистить все сессии)",
-                    tint = if (creatingSession) Color(0xFF7BD88F) else Color(0xFFBDBDBD),
-                    modifier =
-                        Modifier
-                            .padding(start = 4.dp)
-                            .size(22.dp)
-                            .clip(CircleShape)
-                            .background(Color.Transparent)
-                            .combinedClickable(
-                                onClick = { newSession() },
-                                onLongClick = { confirmClearAll = true },
-                            ).padding(3.dp),
-                )
-            }
-            // Индикатор заполнения контекста — своей строкой ПОД шапкой со статусом.
-            // Показывает, сколько накоплено входных токенов сессии относительно
-            // лимита модели (CONTEXT_LIMIT). Зелёный → жёлтый → красный по мере
-            // приближения к компакту; внутри — процент заполнения.
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                ContextGauge(
-                    filled = ui.snapshot?.contextTokens ?: 0L,
-                    limit = CONTEXT_LIMIT,
-                    shape = appearance.ctxShape,
-                    palette = appearance.palette,
-                    modifier = Modifier.weight(1f).testTag(TAG_CTX_GAUGE),
-                )
-            }
-            // Расход дневной Zen-квоты — ПОД индикатором контекста, отдельной
-            // строкой и в его же стиле. В шапку он больше не влезает: там ряд
-            // иконок, и любая полоса ломает выравнивание по центру. Зазор
-            // настраивается пользователем, чтобы полосы читались как блок, но
-            // не слипались.
-            ZenMeter(
-                used = zenUsedState,
-                exact = zenExactState,
-                shape = appearance.zenShape,
-                palette = appearance.palette,
-                modifier = Modifier.padding(top = appearance.barGap.dp).testTag(TAG_ZEN_METER),
+            ChatHeader(
+                state =
+                    ChatHeaderState(
+                        reachable = ui.snapshot?.reachable,
+                        pingMs = ui.snapshot?.pingMs ?: 0L,
+                        rejected = ui.snapshot?.notice != null,
+                        mcpConnected = ui.snapshot?.mcpConnected ?: 0,
+                        mcpTotal = ui.snapshot?.mcpTotal ?: 0,
+                        moltbookAwaiting = moltbookStats.awaiting,
+                        activePanel = activePanel,
+                        modelColor = modelColor,
+                        creatingSession = creatingSession,
+                        diagnostics = showDiagnostics,
+                        contextTokens = ui.snapshot?.contextTokens ?: 0L,
+                        zenUsed = zenUsedState,
+                        zenExact = zenExactState,
+                        appearance = appearance,
+                    ),
+                actions =
+                    ChatHeaderActions(
+                        onTogglePanel = ::toggleHeaderPanel,
+                        onDiagnostics = { showDiagnostics = !showDiagnostics },
+                        onNewSession = { newSession() },
+                        onClearAll = { confirmClearAll = true },
+                    ),
             )
             if (showMcpList) {
                 McpPanel(ui.snapshot?.mcpServers ?: emptyList())
