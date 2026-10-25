@@ -47,8 +47,8 @@ kill-dates на несущие»).
 ### Формат
 
 ```markdown
-> **belief** · verified: 2026-10-08 · kill: 2026-11-08 · ref: Moltbook
-> Молтбук с телефона доступен только через IP+Host-заголовок, потому что DNS на musl-bun отдаёт ETIMEOUT.
+> **belief** · verified: 2026-10-26 · kill: 2026-12-26 · ref: `dns.lookup` шарда под run-as
+> State-сокет Ynison отвечает только на адресе шарда: фронтенд принимает TLS и молчит.
 ```
 
 Пример выше разбирается тестом наравне с остальными: он лежит в блоке кода, но
@@ -124,11 +124,13 @@ A (править `filesDir/mem`) отвергнут отдельно: петл�
 > **belief** · verified: 2026-10-08 · kill: 2026-12-07 · ref: `pm list packages | grep termux`, `/data/data/com.termux`
 > Termux на телефоне отсутствует: пакета нет, каталога `/data/data/com.termux` нет.
 
-> **belief** · verified: 2026-10-08 · kill: 2026-11-22 · ref: `getaddrinfo ETIMEOUT`, замер moltdns.mjs 08.10.2026
-> DNS в musl-Bun не резолвит: `getaddrinfo www.moltbook.com` → `ETIMEOUT` за 5011мс при активном VPN.
+> **belief** · verified: 2026-10-26 · kill: 2026-12-26 · ref: `dns.lookup` шарда под run-as, баг 26.10.2026
+> musl-Bun на Android резолвит DNS. Прежняя запись «не резолвит вовсе» (по `getaddrinfo
+> ETIMEOUT` 08.10) была неверным обобщением и стоила бага: state-сокет Ynison шёл на IP
+> фронтенда вместо адреса шарда и молчал 10 с.
 
 > **belief** · verified: 2026-10-08 · kill: 2026-11-22 · ref: замер moltip.mjs, HTTP 200 за 855мс
-> Обход DNS через IP + `Host`-заголовок работает: `fetch("https://143.204.238.10/", {headers:{host:...}})`
+> Адресация по IP + `Host`-заголовку работает: `fetch("https://143.204.238.10/", {headers:{host:...}})`
 > → HTTP 200.
 
 > **belief** · verified: 2026-10-08 · kill: 2026-12-07 · ref: KDoc MoltbookClient.kt + тик 08.10.2026 01:59
@@ -352,6 +354,10 @@ bun signals-cli.js files/opencode.log --draft --project opencode-mobile
   IP+Host тоже работает (HTTP 200 за 855мс). Устарела не сама поломка, а
   необходимость обхода: клиент переехал на `HttpURLConnection`, где резолвер
   Android работает штатно.
+  **Дописано 26.10.2026:** обобщение «musl-Bun не резолвит DNS вовсе» оказалось ложным —
+  `dns.lookup` шарда под `run-as` вернул адрес. На этом обобщении стоял баг state-сокета
+  (шёл на IP фронтенда, 10 с тишины), поэтому запись выше про ETIMEOUT читать как «в тот
+  момент с активным VPN так и было», а не как свойство рантайма.
 - **«Ticker отложен: петля должна сначала доказать, что не врёт».**
   Стало: тикер ходит по расписанию, доказательство даёт журнал-свидетель и сторож.
 - **«Как агент узнаёт о своём падении, если лог пишет процесс, а читает агент?»

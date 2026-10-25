@@ -552,9 +552,11 @@ object OpencodeRuntime {
     }
 
     /**
-     * Прокси для musl-Bun. Ресолвер Android доступен из Kotlin, а встроенный musl-Bun
-     * не резолвит DNS, поэтому его fetch падает с transport-ошибкой (status 0), а не
-     * с HTTP-кодом. Тот же приём, что у serve ([startServe]), вынесен отдельно: память
+     * Прокси для musl-Bun. Прежнее обоснование «встроенный musl-Bun не резолвит DNS,
+     * поэтому его fetch падает с transport-ошибкой (status 0)» оказалось неверным
+     * (замер 26.10.2026: `dns.lookup` резолвит). Настоящая причина — в [Ipv4Proxy]:
+     * DNS отдаёт IPv6, сеть устройства его не маршрутизирует, а у bun нет отката на
+     * IPv4. Тот же приём, что у serve ([startServe]), вынесен отдельно: память
      * и музыки наружу не ходят и прокси не получают.
      */
     private fun proxyEnv(): Map<String, String> {

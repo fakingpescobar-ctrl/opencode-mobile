@@ -52,10 +52,13 @@ const SELF_ID = process.env.YNISON_DEVICE_ID || "opencode-mobile";
 // is written into opencode.jsonc (as {env:...}) and is the only thing standing between a
 // random app on the device and a full Yandex.Music session. Two secrets, two env vars.
 const MCP_TOKEN = process.env.MCP_YNISON_TOKEN || "";
-// musl-Bun on Android cannot resolve DNS at all (no /etc/resolv.conf, no netd bridge),
-// so the app resolves these hosts in Java and hands us IPs. We then dial the IP and send
-// the real hostname as the `Host` header. Measured on-device: a plain hostname fetch dies
-// with `getaddrinfo ETIMEOUT` in ~5s, the IP+Host form answers in ~0.3s.
+// The app resolves these hosts in Java and hands us IPs as a FALLBACK; we then dial the IP
+// and send the real hostname as the `Host` header. This used to be justified with "musl-Bun
+// on Android cannot resolve DNS at all" - that generalisation was wrong and cost a bug on
+// 26.10.2026: `dns.lookup` in the same bun resolved the shard to 77.88.48.156, while the
+// state socket kept dialling an IP taken from the handshake and the frontend stayed silent
+// for 10s. The IP plumbing stays because the redirect address still arrives from Java
+// (`RESOLVED_*_IP`); the state socket resolves its own shard (see resolveStateHost).
 const YNISON_HOST = "ynison.music.yandex.ru";
 const API_HOST = "api.music.yandex.net";
 const RESOLVED_YNISON_IP = process.env.YNISON_WS_IP || "";
@@ -147,8 +150,8 @@ function version() {
 // A minimal WebSocket client over Bun.connect, replacing the built-in WebSocket for the
 // Ynison sockets. Both failures it works around were measured on the device, not guessed:
 //
-//  1. musl-Bun cannot resolve DNS at all, so the URL would have to carry an IP. An IP URL
-//     makes the built-in client put that IP in the TLS SNI, and nginx (the front for
+//  1. The address we dial may be an IP (the app hands one over as a fallback), and an IP URL
+//     makes the built-in client put that IP in the TLS SNI. nginx (the front for
 //     ynison.music.yandex.ru) tears such connections down - `onerror` in ~250ms, while a
 //     plain `Bun.connect` with `tls.servername` set to the real host handshakes fine.
 //  2. Ynison's Sec-WebSocket-Protocol must be sent as a raw header anyway (see
@@ -1096,8 +1099,8 @@ function parseApiResponse(raw) {
 // One HTTPS GET to the catalog API, over Bun.connect rather than fetch.
 //
 // The reason is the same one the WebSocket client above documents, and it was measured on
-// the device: musl-Bun cannot resolve DNS, so the app hands us the API address as an IP, and
-// fetch on an IP URL puts that IP into the TLS SNI. The certificate then does not verify -
+// the device: the app hands us the API address as an IP (fallback), and fetch on an IP URL
+// puts that IP into the TLS SNI. The certificate then does not verify -
 // "unknown certificate verification error" on roughly 1 call in 5, which surfaced as "the
 // agent found no track". tls.servername is the fix, and Bun.connect is the only client here
 // that can set it, so the REST path now uses it instead of living on a retry.
