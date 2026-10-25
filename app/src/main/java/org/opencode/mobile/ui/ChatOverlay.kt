@@ -141,6 +141,7 @@ import org.opencode.mobile.ui.chat.MessageRow
 import org.opencode.mobile.ui.chat.NarrationInput
 import org.opencode.mobile.ui.chat.NoticeRow
 import org.opencode.mobile.ui.chat.QuotaBadge
+import org.opencode.mobile.ui.chat.ServerSendTransport
 import org.opencode.mobile.ui.chat.SharedPreferencesAppearanceStore
 import org.opencode.mobile.ui.chat.SharedPreferencesVoiceStore
 import org.opencode.mobile.ui.chat.StalledRow
@@ -157,12 +158,11 @@ import org.opencode.mobile.ui.chat.answerPendingAsk
 import org.opencode.mobile.ui.chat.createSession
 import org.opencode.mobile.ui.chat.createSpeechRecognizer
 import org.opencode.mobile.ui.chat.deleteSession
+import org.opencode.mobile.ui.chat.deliverPrompt
 import org.opencode.mobile.ui.chat.fetchChatSnapshot
 import org.opencode.mobile.ui.chat.playNotificationSound
-import org.opencode.mobile.ui.chat.postMessage
 import org.opencode.mobile.ui.chat.pruneEmptySessions
 import org.opencode.mobile.ui.chat.readWavPcm16
-import org.opencode.mobile.ui.chat.sessionHasMessages
 import org.opencode.mobile.ui.chat.sessionRunning
 import org.opencode.mobile.ui.chat.stopAndPurge
 import org.opencode.mobile.ui.chat.typedKeyOf
@@ -557,37 +557,15 @@ fun ChatOverlay(
         sending = true
         userScrolledUp = false
         scope.launch {
-            // Создание сессии идёт ВНУТРИ той же операции, что и отправка.
-            // Раньше сессия создавалась, а отправка могла не уйти - и оставалась
-            // сирота с одним session.created.1 и нулём сообщений (три такие
-            // нашлись в базе при разборе). Молчание было худшей частью: у
-            // пользователя сообщение выглядело отправленным, а текст оставался
-            // в поле случайно.
-            val (ok, createdHere) =
+            // Создание сессии и отправка — одна операция, и правило «сервер мог
+            // сохранить сообщение и всё равно ответить ошибкой» живёт в
+            // ui/chat/ChatSendFlow.kt с тестом. Здесь только вызов и реакция UI.
+            val outcome =
                 withContext(Dispatchers.IO) {
-                    if (sessionId != null) {
-                        postMessage(serverPort, sessionId, text) to null
-                    } else {
-                        val fresh = createSession(serverPort, context)
-                        when {
-                            fresh == null -> false to null
-                            postMessage(serverPort, fresh, text) -> true to null
-                            else -> {
-                                // postAsync отдаёт true сразу после записи тела, поэтому
-                                // false означает «успешного ответа не было». Но сервер мог
-                                // успеть сохранить сообщение и упасть уже после этого —
-                                // проверено на живой сессии: неизвестная модель даёт
-                                // HTTP 500, а user-сообщение уже лежит в базе. Стирать
-                                // такую сессию нельзя, поэтому сначала спрашиваем сервер.
-                                val saved = sessionHasMessages(serverPort, fresh)
-                                if (!saved) deleteSession(serverPort, fresh)
-                                false to fresh
-                            }
-                        }
-                    }
+                    deliverPrompt(ServerSendTransport(serverPort, context), sessionId, text)
                 }
             sending = false
-            if (ok) {
+            if (outcome.delivered) {
                 draft = ""
                 keyboard?.hide()
                 focusManager.clearFocus()
@@ -605,8 +583,8 @@ fun ChatOverlay(
                         Toast.LENGTH_LONG,
                     )
                 toast.show()
-                if (createdHere != null) {
-                    android.util.Log.w("ChatOverlay", "откат новой сессии $createdHere после сбоя отправки")
+                outcome.createdSession?.let {
+                    android.util.Log.w("ChatOverlay", "откат новой сессии $it после сбоя отправки")
                 }
             }
         }
