@@ -571,6 +571,7 @@ app/
           VoiceSettings.kt       # движок распознавания и модель whisper: миграция ncnn, отбраковка
           TtsSettings.kt         # озвучка: движок/голос/sid, включённость = engine != Off
           TtsNarration.kt        # курсор озвучки: какой оборот и реплика уже отданы
+          ElevenKeySettings.kt   # ключ ElevenLabs: черновик не чистится при сбое
         AskCardView.kt           # вёрстка карточки вопроса/разрешения
         SttModelPicker.kt        # выбор модели STT (нескачанная не выбирается)
         EmptyChatArt.kt          # дождь на пустом экране (рисуется кодом)

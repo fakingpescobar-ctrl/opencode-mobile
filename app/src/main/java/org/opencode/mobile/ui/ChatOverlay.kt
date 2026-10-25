@@ -121,10 +121,10 @@ import org.opencode.mobile.server.LocalOpenCodeClient
 import org.opencode.mobile.server.PendingAsk
 import org.opencode.mobile.social.MoltbookScanClient
 import org.opencode.mobile.stt.WhisperTranscribeService
-import org.opencode.mobile.tts.ElevenLabsSecret
 import org.opencode.mobile.tts.TtsConfig
 import org.opencode.mobile.tts.TtsEngine
 import org.opencode.mobile.tts.TtsNarrator
+import org.opencode.mobile.ui.chat.AndroidElevenKeyStore
 import org.opencode.mobile.ui.chat.AndroidTtsStore
 import org.opencode.mobile.ui.chat.AudioRecorder
 import org.opencode.mobile.ui.chat.CONTEXT_LIMIT
@@ -132,6 +132,7 @@ import org.opencode.mobile.ui.chat.ChatAppearance
 import org.opencode.mobile.ui.chat.ChatCache
 import org.opencode.mobile.ui.chat.ContextGauge
 import org.opencode.mobile.ui.chat.DeadRow
+import org.opencode.mobile.ui.chat.ElevenKeySettings
 import org.opencode.mobile.ui.chat.LiveToolRow
 import org.opencode.mobile.ui.chat.MCPIndicator
 import org.opencode.mobile.ui.chat.McpServerList
@@ -409,15 +410,9 @@ fun ChatOverlay(
     // показывал бы причину отката через раз. collectAsState перерисовывает панель
     // и когда движок пересобрался сам (докачали модель, вставили ключ).
     val ttsFallback by TtsNarrator.fallbackReason.collectAsState()
-    // Черновик ключа намеренно НЕ восстанавливается из хранилища: в поле
-    // лежит только то, что юзер вводит прямо сейчас. Сам ключ читает
-    // движок из ElevenLabsSecret, и в UI он не показывается никогда.
-    var elevenKeyDraft by remember { mutableStateOf("") }
-    var elevenHasKey by remember { mutableStateOf(ElevenLabsSecret.hasKey(context)) }
-    // Причина, по которой последнее сохранение не вышло, или null. Само
-    // ElevenLabsSecret вернёт её в SaveResult.Failed — здесь она просто
-    // показывается под полем ввода ключа.
-    var elevenKeyError by remember { mutableStateOf<String?>(null) }
+    // Ключ ElevenLabs: черновик, отметка «задан» и причина отказа. Правило «при
+    // сбое сохранения черновик не чистим» живёт в ElevenKeySettings с тестом.
+    val elevenKey = remember { ElevenKeySettings(AndroidElevenKeyStore(context)) }
     // Курсор озвучки: какие реплики уже отданы нарратору и в какой сессии.
     // Правила («первый снапшот не читает историю», «смена сессии гасит речь»,
     // «новый вопрос сбрасывает курсор») живут в TtsNarration, где их держит тест.
@@ -1694,22 +1689,17 @@ fun ChatOverlay(
                             ) {
                                 Text(
                                     when {
-                                        !elevenHasKey -> "API-ключ не задан"
+                                        !elevenKey.hasKey -> "API-ключ не задан"
                                         else ->
                                             "API-ключ сохранён " +
-                                                (ElevenLabsSecret.preview(context) ?: "(зашифрован)")
+                                                (elevenKey.preview ?: "(зашифрован)")
                                     },
-                                    color = if (elevenHasKey) ElevenKeyPalette.HintOk else ElevenKeyPalette.HintMissing,
+                                    color = if (elevenKey.hasKey) ElevenKeyPalette.HintOk else ElevenKeyPalette.HintMissing,
                                     fontSize = 11.sp,
                                 )
                                 BasicTextField(
-                                    value = elevenKeyDraft,
-                                    onValueChange = {
-                                        elevenKeyDraft = it
-                                        // Правка черновика — новая попытка, поэтому
-                                        // старая ошибка больше не про текущий текст.
-                                        elevenKeyError = null
-                                    },
+                                    value = elevenKey.draft,
+                                    onValueChange = elevenKey::edit,
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .background(Color(0xFF1C1C1C), RoundedCornerShape(8.dp))
@@ -1727,7 +1717,7 @@ fun ChatOverlay(
                                     ),
                                     decorationBox = { inner ->
                                         Box {
-                                            if (elevenKeyDraft.isEmpty()) {
+                                            if (elevenKey.draft.isEmpty()) {
                                                 Text(
                                                     "sk_…",
                                                     color = Color(0xFF777777),
@@ -1741,47 +1731,29 @@ fun ChatOverlay(
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Text(
                                         "Сохранить",
-                                        color = if (elevenKeyDraft.isBlank()) ElevenKeyPalette.SaveIdle else ElevenKeyPalette.SaveReady,
+                                        color = if (elevenKey.draft.isBlank()) ElevenKeyPalette.SaveIdle else ElevenKeyPalette.SaveReady,
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold,
                                         modifier = Modifier
-                                            .clickable(enabled = elevenKeyDraft.isNotBlank()) {
-                                                when (val r = ElevenLabsSecret.save(context, elevenKeyDraft)) {
-                                                    is ElevenLabsSecret.SaveResult.Ok -> {
-                                                        elevenKeyDraft = ""
-                                                        elevenHasKey = true
-                                                        elevenKeyError = null
-                                                        // Ключ сменился — движок надо пересоздать,
-                                                        // иначе он продолжит работать со старым.
-                                                        TtsNarrator.stop()
-                                                    }
-                                                    is ElevenLabsSecret.SaveResult.Failed -> {
-                                                        // Черновик НЕ чистим: ключ юзера остаётся
-                                                        // в поле, чтобы он не вводил его заново
-                                                        // из-за сбоя хранилища.
-                                                        elevenKeyError = r.reason
-                                                    }
-                                                }
+                                            .clickable(enabled = elevenKey.draft.isNotBlank()) {
+                                                elevenKey.save()
                                             }.padding(horizontal = 8.dp, vertical = 4.dp),
                                     )
-                                    if (elevenHasKey) {
+                                    if (elevenKey.hasKey) {
                                         Text(
                                             "Удалить",
                                             color = ElevenKeyPalette.Danger,
                                             fontSize = 12.sp,
                                             modifier = Modifier
                                                 .clickable {
-                                                    ElevenLabsSecret.clear(context)
-                                                    elevenHasKey = false
-                                                    elevenKeyError = null
-                                                    TtsNarrator.stop()
+                                                    elevenKey.remove()
                                                 }.padding(horizontal = 8.dp, vertical = 4.dp),
                                         )
                                     }
                                 }
                                 // Причина отказа от сохранения — иначе юзер видит
                                 // неподвижную кнопку и гадает, куда делся ключ.
-                                elevenKeyError?.let { why ->
+                                elevenKey.error?.let { why ->
                                     Text(
                                         "не сохранено: $why",
                                         color = ElevenKeyPalette.Danger,
