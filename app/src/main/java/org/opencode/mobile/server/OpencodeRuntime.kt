@@ -207,33 +207,42 @@ object OpencodeRuntime {
         pb.redirectErrorStream(true)
         pb.redirectOutput(ProcessBuilder.Redirect.PIPE)
 
-        return runCatching {
-            val proc = pb.start()
-            if (logFile.parentFile?.exists() != true) logFile.parentFile?.mkdirs()
-            val out = FileOutputStream(logFile, true)
-            // Поток-логгер: читает stdout serve (уже слитый со stderr) и пишет в файл.
-            Thread {
-                try {
-                    val buf = ByteArray(8192)
-                    var n: Int
-                    proc.inputStream.use { inp ->
-                        while (inp.read(buf).also { n = it } != -1) {
-                            out.write(buf, 0, n)
-                            out.flush()
-                        }
+        val proc =
+            runCatching { pb.start() }
+                .onFailure { e -> android.util.Log.e("OpencodeRuntime", "failed to start opencode: ${e.message}") }
+                .getOrNull() ?: return null
+        // Лог открывается уже после старта. Если это не удалось (нет места, не создался
+        // каталог), ребёнок держит порт 4096, а его stdout никто не читает — он повиснет
+        // на заполненной трубе, и следующий старт упрётся в занятый порт. Такой отказ
+        // обязан убить процесс.
+        val out =
+            runCatching {
+                if (logFile.parentFile?.exists() != true) logFile.parentFile?.mkdirs()
+                FileOutputStream(logFile, true)
+            }.onFailure { e ->
+                android.util.Log.e("OpencodeRuntime", "failed to open serve log, killing child: ${e.message}")
+                proc.destroy()
+            }.getOrNull() ?: return null
+        // Поток-логгер: читает stdout serve (уже слитый со stderr) и пишет в файл.
+        Thread {
+            try {
+                val buf = ByteArray(8192)
+                var n: Int
+                proc.inputStream.use { inp ->
+                    while (inp.read(buf).also { n = it } != -1) {
+                        out.write(buf, 0, n)
+                        out.flush()
                     }
-                } catch (_: Exception) {
-                } finally {
-                    runCatching { out.close() }
                 }
-            }.apply {
-                isDaemon = true
-                name = "opencode-log"
-            }.start()
-            proc
-        }.onFailure { e ->
-            android.util.Log.e("OpencodeRuntime", "failed to start opencode: ${e.message}")
-        }.getOrNull()
+            } catch (_: Exception) {
+            } finally {
+                runCatching { out.close() }
+            }
+        }.apply {
+            isDaemon = true
+            name = "opencode-log"
+        }.start()
+        return proc
     }
 
     private fun nativeLibraryDir(context: Context): String = context.applicationInfo.nativeLibraryDir
@@ -1066,6 +1075,16 @@ object OpencodeRuntime {
     internal fun mcpBlockForTest(): String = mcpBlock()
 
     /**
+     * Вставка managed-блока после `$schema`. Видна тесту, потому что дефект здесь
+     * строковый: разделитель между полями решается одной запятой, и на устройстве
+     * ошибка выглядит как «сервер больше не поднимается», без единой подсказки.
+     */
+    internal fun insertAfterSchemaForTest(
+        text: String,
+        managedBlock: String,
+    ): String? = insertAfterSchema(text, managedBlock)
+
+    /**
      * Пара записей «память + телефон» без обрамляющего объекта.
      *
      * Видна снаружи объекта по той же причине, что и [mcpBlockForTest]: [planMusicEntry]
@@ -1122,10 +1141,15 @@ object OpencodeRuntime {
         file: File,
         upgraded: String,
     ): Boolean =
-        if (upgraded.contains(LAUNCH_PERMISSION_KEY)) {
-            writeMemoryConfigText(file, upgraded)
-        } else {
-            ensureManagedLaunchPermission(file, upgraded)
+        when {
+            upgraded.contains(LAUNCH_PERMISSION_KEY) -> writeMemoryConfigText(file, upgraded)
+            // Пользовательская секция permission без нашего ключа: чужие разрешения
+            // не трогаем, но и обновление mcp не выбрасываем. Раньше здесь вызывался
+            // [ensureManagedLaunchPermission], упирался в ветку «user-managed» и
+            // возвращал true, ничего не записав: двухсерверный mcp терялся на каждом
+            // старте, и телефонный сервер не регистрировался никогда.
+            file.readTextOrEmpty().contains("\"permission\"") -> writeMemoryConfigText(file, upgraded)
+            else -> ensureManagedLaunchPermission(file, upgraded)
         }
 
     private fun ensureManagedLaunchPermission(
@@ -1164,12 +1188,7 @@ object OpencodeRuntime {
         val text = if (file.exists()) file.readText() else ""
         val updated: String? =
             if (text.contains(schemaMarker)) {
-                // Вставляем после строки $schema (opencode всегда создаёт её первым полем).
-                // $0 в replacement — вся matched строка (схема + запятая, если была).
-                text.replaceFirst(
-                    Regex("(\"\\\$schema\"\\s*:\\s*\"[^\"]*\"\\s*,?)"),
-                    "$0\n  $managedBlock,",
-                )
+                insertAfterSchema(text, managedBlock)
             } else if (text.isBlank()) {
                 "{\n  \"\$schema\": \"https://opencode.ai/config.json\",\n  $managedBlock\n}"
             } else {
@@ -1183,6 +1202,30 @@ object OpencodeRuntime {
             }
         if (updated == null) return false
         return writeMemoryConfigText(file, updated)
+    }
+
+    /**
+     * Вставляет managed-блок сразу после поля `$schema`.
+     *
+     * Запятая после блока ставится по тому, что идёт дальше: перед закрывающей
+     * скобкой она была бы ошибкой, а перед следующим полем её отсутствие — тоже.
+     * Раньше запятая ставилась всегда, и конфиг, где `$schema` — последнее поле,
+     * превращался в невалидный JSON (схема без запятой, блок без разделителя).
+     * [looksLikeManagedConfig] такую порчу не видит — она считает только скобки, —
+     * поэтому битый файл записывался, и сервер уже не поднимался.
+     */
+    private fun insertAfterSchema(
+        text: String,
+        managedBlock: String,
+    ): String? {
+        val match = Regex("\"\\\$schema\"\\s*:\\s*\"[^\"]*\"").find(text) ?: return null
+        val afterField = text.substring(match.range.last + 1)
+        // Свою запятую у схемы выбрасываем: ниже она ставится нами, ровно одна.
+        val commaAt = afterField.indexOfFirst { !it.isWhitespace() }
+        val hadComma = commaAt >= 0 && afterField[commaAt] == ','
+        val rest = if (hadComma) afterField.removeRange(commaAt, commaAt + 1) else afterField
+        val comma = if (rest.trimStart().startsWith("}")) "" else ","
+        return text.substring(0, match.range.last + 1) + ",\n  " + managedBlock + comma + rest
     }
 
     /**
@@ -1205,15 +1248,20 @@ object OpencodeRuntime {
         }
         val previous = if (file.exists()) runCatching { file.readText() }.getOrNull() else null
         file.parentFile?.mkdirs()
-        val tmp = File(file.parentFile, "opencode.jsonc.tmp")
+        // Имя tmp уникальное: конфиг пишут и сервис, и UI (applyModelRouting). Общий
+        // opencode.jsonc.tmp означал, что второй писатель мог подменить файл первому
+        // между writeText и renameTo — и чья-то правка терялась молча.
+        var tmp: File? = null
         return runCatching {
-            tmp.writeText(text)
-            check(tmp.renameTo(file)) { "tmp->rename failed" }
+            val target = File.createTempFile("opencode.jsonc", ".tmp", file.parentFile)
+            tmp = target
+            target.writeText(text)
+            check(target.renameTo(file)) { "tmp->rename failed" }
             check(file.readText() == text) { "config verification after write failed" }
             android.util.Log.i("OpencodeRuntime", "ensureMcpConfig: memory MCP config updated in ${file.absolutePath}")
             true
         }.onFailure { error ->
-            tmp.delete()
+            tmp?.delete()
             previous?.let { runCatching { file.writeText(it) } }
             android.util.Log.e("OpencodeRuntime", "ensureMcpConfig: atomic config update failed: ${error.message}")
         }.getOrDefault(false)
