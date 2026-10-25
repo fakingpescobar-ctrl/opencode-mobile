@@ -24,10 +24,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -82,6 +79,7 @@ import org.opencode.mobile.ui.chat.ChatInputActions
 import org.opencode.mobile.ui.chat.ChatInputState
 import org.opencode.mobile.ui.chat.ChatPollState
 import org.opencode.mobile.ui.chat.ChatUiState
+import org.opencode.mobile.ui.chat.ConfirmDialog
 import org.opencode.mobile.ui.chat.ElevenKeySettings
 import org.opencode.mobile.ui.chat.FontPanel
 import org.opencode.mobile.ui.chat.GaugePanel
@@ -1170,22 +1168,15 @@ fun ChatOverlay(
         // Подтверждение жёсткой очистки всех сессий (long-press на +): удаление
         // необратимое (включая активную сессию) — только через явный диалог.
         if (confirmClearAll) {
-            AlertDialog(
-                onDismissRequest = { confirmClearAll = false },
-                containerColor = Color(0xFF1C1C1C),
-                titleContentColor = Color(0xFFE6E6E6),
-                textContentColor = Color(0xFFBDBDBD),
-                title = { Text("Очистить все сессии?") },
-                text = { Text("Будут удалены ВСЕ сессии, включая активную. История чата пропадёт безвозвратно.") },
-                confirmButton = {
-                    TextButton(onClick = {
-                        confirmClearAll = false
-                        clearAllSessions()
-                    }) { Text("Очистить", color = Color(0xFFFF6F5A)) }
+            ConfirmDialog(
+                title = "Очистить все сессии?",
+                text = "Будут удалены ВСЕ сессии, включая активную. История чата пропадёт безвозвратно.",
+                confirmLabel = "Очистить",
+                onConfirm = {
+                    confirmClearAll = false
+                    clearAllSessions()
                 },
-                dismissButton = {
-                    TextButton(onClick = { confirmClearAll = false }) { Text("Отмена", color = Color(0xFFBDBDBD)) }
-                },
+                onDismiss = { confirmClearAll = false },
             )
         }
 
@@ -1193,30 +1184,18 @@ fun ChatOverlay(
         // Сессию-зомби не спасает даже abort, но в ней может быть вся переписка,
         // поэтому удаление — только через явный диалог.
         if (confirmResetDead) {
-            AlertDialog(
-                onDismissRequest = { confirmResetDead = false },
-                containerColor = Color(0xFF1C1C1C),
-                titleContentColor = Color(0xFFE6E6E6),
-                textContentColor = Color(0xFFBDBDBD),
-                title = { Text("Удалить зависшую сессию?") },
-                text = {
-                    Text(
-                        "Сессия не отвечает даже на прерывание. Она будет удалена " +
-                            "безвозвратно вместе с историей, и откроется новая пустая. " +
-                            "Если переписка нужна — сначала попробуй «Прервать ход».",
-                    )
+            ConfirmDialog(
+                title = "Удалить зависшую сессию?",
+                text =
+                    "Сессия не отвечает даже на прерывание. Она будет удалена " +
+                        "безвозвратно вместе с историей, и откроется новая пустая. " +
+                        "Если переписка нужна — сначала попробуй «Прервать ход».",
+                confirmLabel = "Удалить и начать заново",
+                onConfirm = {
+                    confirmResetDead = false
+                    ui.snapshot?.activeId?.let(::resetDeadSession)
                 },
-                confirmButton = {
-                    TextButton(onClick = {
-                        confirmResetDead = false
-                        ui.snapshot?.activeId?.let(::resetDeadSession)
-                    }) { Text("Удалить и начать заново", color = Color(0xFFFF6F5A)) }
-                },
-                dismissButton = {
-                    TextButton(onClick = { confirmResetDead = false }) {
-                        Text("Отмена", color = Color(0xFFBDBDBD))
-                    }
-                },
+                onDismiss = { confirmResetDead = false },
             )
         }
     }
