@@ -125,6 +125,7 @@ import org.opencode.mobile.tts.ElevenLabsSecret
 import org.opencode.mobile.tts.TtsConfig
 import org.opencode.mobile.tts.TtsEngine
 import org.opencode.mobile.tts.TtsNarrator
+import org.opencode.mobile.ui.chat.AndroidTtsStore
 import org.opencode.mobile.ui.chat.AudioRecorder
 import org.opencode.mobile.ui.chat.CONTEXT_LIMIT
 import org.opencode.mobile.ui.chat.ChatAppearance
@@ -144,6 +145,7 @@ import org.opencode.mobile.ui.chat.StallState
 import org.opencode.mobile.ui.chat.StalledRow
 import org.opencode.mobile.ui.chat.ThinkingRow
 import org.opencode.mobile.ui.chat.TtsRadioRow
+import org.opencode.mobile.ui.chat.TtsSettings
 import org.opencode.mobile.ui.chat.VoiceEngine
 import org.opencode.mobile.ui.chat.VoiceSettings
 import org.opencode.mobile.ui.chat.ZenMeter
@@ -396,9 +398,9 @@ fun ChatOverlay(
     var showDiagnostics by remember { mutableStateOf(false) }
 
     // Озвучка ответов (§12.3/§12.5). Выключатель — здесь же, в панели STT.
-    // Настройки живут в том же prefs "chat_overlay": tts_engine/tts_model/tts_sid.
-    var ttsConfig by remember { mutableStateOf(TtsConfig.read(context)) }
-    var ttsOn by remember { mutableStateOf(TtsConfig.read(context).isEnabled) }
+    // Настройки и правило «включённость = engine != Off» живут в TtsSettings.
+    val tts = remember { TtsSettings(AndroidTtsStore(context)) }
+    val ttsOn = tts.on
 // Причина отката движка, если озвучка пошла не тем голосом, что выбран.
     // Источник - поток TtsNarrator: движок грузится лениво на первом ответе, то
     // есть задолго после открытия панели, и опрос с потолком в несколько секунд
@@ -1706,14 +1708,12 @@ fun ChatOverlay(
                         fontWeight = FontWeight.SemiBold,
                     )
                     TtsRadioRow("Читать вслух", ttsOn) {
-                        ttsOn = !ttsOn
-                        TtsNarrator.setEnabled(context, ttsOn)
-                        if (ttsOn) ttsConfig = TtsConfig.read(context)
+                        tts.setEnabled(!ttsOn)
                     }
                     if (!ttsOn) {
                         Text(
                             if (TtsConfig.read(context).modelInstalled(context)) {
-                                "Supertonic offline: модель на месте, 2 потока, sid ${ttsConfig.sid}"
+                                "Supertonic offline: модель на месте, 2 потока, sid ${tts.config.sid}"
                             } else {
                                 "Модель Supertonic не скачана — скачай её в Настройки -> Диагностика"
                             },
@@ -1723,15 +1723,11 @@ fun ChatOverlay(
                         )
                     }
                     if (ttsOn) {
-                        TtsRadioRow("Supertonic (offline, русский)", ttsConfig.engine == TtsEngine.Sherpa) {
-                            ttsConfig = ttsConfig.copy(engine = TtsEngine.Sherpa)
-                            TtsConfig.save(context, ttsConfig)
-                            TtsNarrator.stop()
+                        TtsRadioRow("Supertonic (offline, русский)", tts.config.engine == TtsEngine.Sherpa) {
+                            tts.chooseEngine(TtsEngine.Sherpa)
                         }
-                        TtsRadioRow("ElevenLabs (облако, нужен VPN)", ttsConfig.engine == TtsEngine.ElevenLabs) {
-                            ttsConfig = ttsConfig.copy(engine = TtsEngine.ElevenLabs)
-                            TtsConfig.save(context, ttsConfig)
-                            TtsNarrator.stop()
+                        TtsRadioRow("ElevenLabs (облако, нужен VPN)", tts.config.engine == TtsEngine.ElevenLabs) {
+                            tts.chooseEngine(TtsEngine.ElevenLabs)
                         }
                         // Что СЕЙЧАС реально озвучит, если выбранный движок не поднялся.
                         // Без этой строки юзер выбирает облако, слышит тишину и гадает
@@ -1753,7 +1749,7 @@ fun ChatOverlay(
                                 modifier = Modifier.padding(start = 20.dp, top = 2.dp),
                             )
                         }
-                        if (ttsConfig.engine.isCloud) {
+                        if (tts.config.engine.isCloud) {
                             // Облако идёт в сеть, поэтому честно предупреждаем про VPN:
                             // из России api.elevenlabs.io без него не отвечает, и юзер
                             // иначе гадает, почему озвучка молчит.
@@ -1871,10 +1867,9 @@ fun ChatOverlay(
                                     fontSize = 11.sp,
                                 )
                                 BasicTextField(
-                                    value = ttsConfig.elevenVoice,
-                                    onValueChange = {
-                                        ttsConfig = ttsConfig.copy(elevenVoice = it)
-                                        TtsConfig.save(context, ttsConfig)
+                                    value = tts.config.elevenVoice,
+                                    onValueChange = { value ->
+                                        tts.update { it.copy(elevenVoice = value) }
                                     },
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -1885,7 +1880,7 @@ fun ChatOverlay(
                                     singleLine = true,
                                 )
                                 Text(
-                                    "Модель: ${ttsConfig.elevenModel}",
+                                    "Модель: ${tts.config.elevenModel}",
                                     color = Color(0xFF8A8A8A),
                                     fontSize = 11.sp,
                                 )
@@ -1894,7 +1889,7 @@ fun ChatOverlay(
                         // Локальный sid к облаку отношения не имеет: там голос выбирается
                         // Voice ID выше. Показывать 1..10 при выбранном ElevenLabs — значит
                         // предлагать юзеру переключатель, который ничего не делает.
-                        if (!ttsConfig.engine.isCloud) {
+                        if (!tts.config.engine.isCloud) {
                             Text(
                                 "Голос:",
                                 color = Color(0xFF8A8A8A),
@@ -1906,7 +1901,7 @@ fun ChatOverlay(
                                 for (row in (0..TtsConfig.MAX_SID).chunked(SID_CHUNK)) {
                                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                         for (sid in row) {
-                                            val active = ttsConfig.sid == sid
+                                            val active = tts.config.sid == sid
                                             Text(
                                                 "${sid + 1}",
                                                 color = if (active) Color(0xFF1C1C1C) else Color(0xFFE6E6E6),
@@ -1918,8 +1913,7 @@ fun ChatOverlay(
                                                     .background(
                                                         if (active) Color(0xFFBDBDBD) else Color(0xFF2A2A2A),
                                                     ).clickable {
-                                                        ttsConfig = ttsConfig.copy(sid = sid)
-                                                        TtsConfig.save(context, ttsConfig)
+                                                        tts.update { it.copy(sid = sid) }
                                                         TtsNarrator.stop()
                                                     }.padding(horizontal = 12.dp, vertical = 5.dp),
                                             )
@@ -1932,15 +1926,14 @@ fun ChatOverlay(
                         // (float32, без заголовка). По нему видно длительность и паузы
                         // каждого фрагмента — то, чего не показывает лог. Нужен, чтобы
                         // проверять озвучку без возможности послушать.
-                        TtsRadioRow("Дамп PCM (диагностика)", ttsConfig.dumpPcm) {
-                            ttsConfig = ttsConfig.copy(dumpPcm = !ttsConfig.dumpPcm)
-                            TtsConfig.save(context, ttsConfig)
+                        TtsRadioRow("Дамп PCM (диагностика)", tts.config.dumpPcm) {
+                            tts.update { it.copy(dumpPcm = !it.dumpPcm) }
                             // Применяем к живой озвучке сразу: dumpOut переживает смену
                             // голоса и движка, иначе файл писался бы до перезапуска.
                             TtsNarrator.applyDumpPref(context)
                             TtsNarrator.stop()
                         }
-                        if (ttsConfig.dumpPcm) {
+                        if (tts.config.dumpPcm) {
                             Text(
                                 "Пишет files/tts-dump.pcm. Забрать: adb exec-out run-as " +
                                     "org.opencode.mobile.debug cat files/tts-dump.pcm > dump.pcm",

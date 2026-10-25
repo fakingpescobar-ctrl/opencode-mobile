@@ -569,6 +569,7 @@ app/
           MessageBubbles.kt      # реплика: заголовок роли, печать по буквам, TTS-выбор
           ChatAppearance.kt      # шрифт/цвет ответов, форма и палитра полос + правила записи в prefs
           VoiceSettings.kt       # движок распознавания и модель whisper: миграция ncnn, отбраковка
+          TtsSettings.kt         # озвучка: движок/голос/sid, включённость = engine != Off
         AskCardView.kt           # вёрстка карточки вопроса/разрешения
         SttModelPicker.kt        # выбор модели STT (нескачанная не выбирается)
         EmptyChatArt.kt          # дождь на пустом экране (рисуется кодом)
