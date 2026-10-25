@@ -15,8 +15,6 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -25,7 +23,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -35,10 +32,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -111,28 +106,24 @@ import org.opencode.mobile.ui.chat.AudioRecorder
 import org.opencode.mobile.ui.chat.CONTEXT_LIMIT
 import org.opencode.mobile.ui.chat.ChatAppearance
 import org.opencode.mobile.ui.chat.ChatCache
+import org.opencode.mobile.ui.chat.ChatFeed
+import org.opencode.mobile.ui.chat.ChatFeedState
 import org.opencode.mobile.ui.chat.ChatPollState
 import org.opencode.mobile.ui.chat.ChatUiState
 import org.opencode.mobile.ui.chat.ContextGauge
-import org.opencode.mobile.ui.chat.DeadRow
 import org.opencode.mobile.ui.chat.ElevenKeySettings
 import org.opencode.mobile.ui.chat.FontPanel
 import org.opencode.mobile.ui.chat.GaugePanel
-import org.opencode.mobile.ui.chat.LiveToolRow
 import org.opencode.mobile.ui.chat.MCPIndicator
 import org.opencode.mobile.ui.chat.McpPanel
-import org.opencode.mobile.ui.chat.MessageRow
 import org.opencode.mobile.ui.chat.ModelColorPanel
 import org.opencode.mobile.ui.chat.MoltbookCard
 import org.opencode.mobile.ui.chat.NarrationInput
-import org.opencode.mobile.ui.chat.NoticeRow
 import org.opencode.mobile.ui.chat.QuotaBadge
 import org.opencode.mobile.ui.chat.ServerSendTransport
 import org.opencode.mobile.ui.chat.SharedPreferencesAppearanceStore
 import org.opencode.mobile.ui.chat.SharedPreferencesVoiceStore
-import org.opencode.mobile.ui.chat.StalledRow
 import org.opencode.mobile.ui.chat.SttPanel
-import org.opencode.mobile.ui.chat.ThinkingRow
 import org.opencode.mobile.ui.chat.TtsNarration
 import org.opencode.mobile.ui.chat.TtsPanel
 import org.opencode.mobile.ui.chat.TtsSettings
@@ -153,7 +144,6 @@ import org.opencode.mobile.ui.chat.pruneEmptySessions
 import org.opencode.mobile.ui.chat.readWavPcm16
 import org.opencode.mobile.ui.chat.sessionRunning
 import org.opencode.mobile.ui.chat.stopAndPurge
-import org.opencode.mobile.ui.chat.typedKeyOf
 import org.opencode.mobile.ui.chat.vibrate
 import java.io.File
 import java.util.Locale
@@ -1273,109 +1263,22 @@ fun ChatOverlay(
             if (showFontPicker) {
                 FontPanel(appearance, modelColor) { closeHeaderPanel(PANEL_FONT) }
             }
-            val msgs = ui.snapshot?.messages ?: emptyList()
-            // The empty-state art fades out on the first message instead of
-            // blinking off. It is driven here rather than inside the branch that
-            // draws it, because a branch flip cannot be animated.
-            val emptyAlpha by animateFloatAsState(
-                targetValue = if (msgs.isEmpty()) 1f else 0f,
-                animationSpec = tween(durationMillis = 450),
-                label = "empty-art",
-            )
-            LaunchedEffect(msgs.size, ui.snapshot?.thinking, ui.snapshot?.liveTool) {
-                android.util.Log.d(
-                    "ChatOverlay",
-                    "RENDER msgs=${msgs.size} thinking=${ui.snapshot?.thinking} live=${ui.snapshot?.liveTool?.name}",
-                )
-            }
-            // The box keeps weight(1f) whatever is inside it: it is what pins
-            // the input row with the mic and Stop to the bottom of the screen.
-            // Without a flexible child the column collapses to its content and
-            // the input rides to the top, which is what a new or cleared session
-            // used to do.
-            //
-            // The octopus is composed even while the feed has messages, so it can
-            // fade out instead of blinking off. It sits under the feed.
-            Box(
+            ChatFeed(
+                state =
+                    ChatFeedState(
+                        messages = ui.snapshot?.messages ?: emptyList(),
+                        snapshot = ui.snapshot,
+                        noticeLatch = ui.noticeLatch,
+                        modelFont = modelFont,
+                        modelColor = modelColor,
+                        typingKey = typingKey,
+                        onTyped = { typingKey = it },
+                    ),
+                listState = listState,
                 modifier = Modifier.weight(1f),
-                contentAlignment = Alignment.Center,
-            ) {
-                EmptyChatArt(alpha = emptyAlpha)
-                if (msgs.isNotEmpty()) {
-                    LazyColumn(
-                        state = listState,
-                        modifier =
-                            Modifier
-                                .fillMaxSize()
-                                .padding(top = 6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        // Позиционный ключ (без кастомного key). Кастомный key из контента
-                        // крашил LazyColumn (Key "…was already used") при дубликатах сообщений
-                        // (например, дважды отправленная команда «Стой»). Лента append-only,
-                        // добавление в конец не трогает существующие позиции — позиционный
-                        // ключ безопасен и полностью устраняет этот краш.
-                        itemsIndexed(msgs) { idx, m ->
-                            // Печать — только ПОСЛЕДНЕЙ реплике модели и только один
-                            // раз на её текст. Ключ гасится в onTyped: иначе каждая
-                            // пересборка ленты (опрос сервера каждые доли секунды)
-                            // начинала бы печать заново, а возврат в чат
-                            // перепечатывал бы всю историю.
-                            // Условие «последняя» обязательно: без него печаталась бы
-                            // каждая реплика, ключ которой ещё не погашен, то есть
-                            // вся лента целиком при каждом новом ответе.
-                            val last = idx == msgs.lastIndex
-                            // Пустой ответ модели (шаг с одними вызовами
-                            // инструментов) печатать нечего: MessageText для
-                            // него вообще не вызывается, значит и гасить ключ
-                            // некому — иначе typingKey навсегда остался бы на
-                            // предыдущем ответе.
-                            val printable = last && m.role == "assistant" && m.text.isNotBlank()
-                            MessageRow(
-                                m,
-                                ui.snapshot?.modelName ?: "Модель",
-                                modelFont,
-                                modelColor,
-                                onTyped =
-                                    if (printable && typingKey != typedKeyOf(m)) {
-                                        { typingKey = typedKeyOf(m) }
-                                    } else {
-                                        null
-                                    },
-                            )
-                        }
-                        if (ui.snapshot?.thinking == true) {
-                            val snap = requireNotNull(ui.snapshot)
-                            item(key = if (snap.stalled) "stalled" else "thinking") {
-                                when {
-                                    snap.stalledDead ->
-                                        DeadRow(
-                                            onAbort = { snap.activeId?.let(::recoverDeadTurn) },
-                                            onReset = { snap.activeId?.let { confirmResetDead = true } },
-                                        )
-                                    snap.stalled -> StalledRow()
-                                    else -> ThinkingRow()
-                                }
-                            }
-                            // Живой чип «какой тул выполняет модель» — поверх индикатора думания.
-                            snap.liveTool?.let { t ->
-                                item(key = "livetool_${t.name}_${t.detail.hashCode()}") {
-                                    LiveToolRow(t)
-                                }
-                            }
-                        }
-                        // Причина отказа сервера (квота/ретрай) — всегда последняя строка,
-                        // чтобы её не съедал автоскролл вниз и она читалась как вывод.
-                        // Рендерим защёлку: плашка должна висеть, пока сервер держит
-                        // ту же причину, даже если конкретный тик опроса её не увидел.
-                        (ui.noticeLatch ?: ui.snapshot?.notice)?.let { n ->
-                            item(key = "notice_${n.title}_${n.attempt}") {
-                                NoticeRow(n, context)
-                            }
-                        }
-                    }
-                }
-            }
+                onAbortDead = ::recoverDeadTurn,
+                onResetDead = { confirmResetDead = true },
+            )
             if (listening || speechError != null || whisperBusy) {
                 Text(
                     when {
