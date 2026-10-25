@@ -120,7 +120,6 @@ import org.opencode.mobile.server.AskCard
 import org.opencode.mobile.server.LocalOpenCodeClient
 import org.opencode.mobile.server.PendingAsk
 import org.opencode.mobile.social.MoltbookScanClient
-import org.opencode.mobile.stt.SttModels
 import org.opencode.mobile.stt.WhisperTranscribeService
 import org.opencode.mobile.tts.ElevenLabsSecret
 import org.opencode.mobile.tts.TtsConfig
@@ -140,10 +139,13 @@ import org.opencode.mobile.ui.chat.NoticeRow
 import org.opencode.mobile.ui.chat.QuotaBadge
 import org.opencode.mobile.ui.chat.RetryState
 import org.opencode.mobile.ui.chat.SharedPreferencesAppearanceStore
+import org.opencode.mobile.ui.chat.SharedPreferencesVoiceStore
 import org.opencode.mobile.ui.chat.StallState
 import org.opencode.mobile.ui.chat.StalledRow
 import org.opencode.mobile.ui.chat.ThinkingRow
 import org.opencode.mobile.ui.chat.TtsRadioRow
+import org.opencode.mobile.ui.chat.VoiceEngine
+import org.opencode.mobile.ui.chat.VoiceSettings
 import org.opencode.mobile.ui.chat.ZenMeter
 import org.opencode.mobile.ui.chat.abortSession
 import org.opencode.mobile.ui.chat.advanceRetry
@@ -362,25 +364,14 @@ fun ChatOverlay(
     var listening by remember { mutableStateOf(false) }
     var speechError by remember { mutableStateOf<String?>(null) }
     var whisperBusy by remember { mutableStateOf(false) }
-    // Настройки голоса: движок распознавания ("system" | "whisper").
-    //
-    // ncnn-движок выпилен 14.10.2026 вместе с его моделью (1,2 ГБ): на этом
-    // Adreno он падал в SIGSEGV на энкодере, а на CPU был вчетверо медленнее
-    // whisper.cpp. Подробности и таблицы - docs/VOICE-REPORT.md. Сохранённое
-    // значение "ncnn" мигрирует на "whisper", чтобы настройка не осталась
-    // в несуществующем движке.
-    val savedEngine = prefs.getString("stt_engine", "system")
-    val defaultEngine = if (savedEngine == "ncnn") "whisper" else (savedEngine ?: "system")
-    var sttEngine by remember { mutableStateOf(defaultEngine) }
+    // Движок распознавания и модель whisper.cpp: значения и правила их чтения
+    // (миграция выпиленного ncnn, отбраковка неизвестной модели) живут в
+    // VoiceSettings, где их держит юнит-тест.
+    val voice = remember { VoiceSettings(SharedPreferencesVoiceStore(prefs)) }
 
     // Модель выбирается из каталога [SttModels]; в продукте она одна
     // (small), но ключ остаётся прежним: перевыбор в будущем не должен
     // ломать сохранённую настройку.
-    //
-    // Модель читается из prefs В МОМЕНТ записи, а не из remember. Копия в
-    // remember замораживалась на момент запуска приложения: скачал turbo,
-    // перевыбрал движок — а распознавание всё равно шло на base. Настройки на
-    // диске, remember про них ничего не знает.
 
     /**
      * Модель whisper.cpp на момент записи — просто то, что выбрал человек.
@@ -397,19 +388,7 @@ fun ChatOverlay(
      * Диагностика», а не молчаливая подмена на другую модель, которую человек
      * не выбирал.
      */
-    fun chosenWhisperModel(): String {
-        val stored = prefs.getString("stt_model_whisper", SttModels.DEFAULT_ID) ?: SttModels.DEFAULT_ID
-        return SttModels.byId(stored)?.id ?: SttModels.DEFAULT_ID
-    }
-
-    /** Модель для распознавания: движок один, значит и ключ один. */
-    fun sttModel(): String = chosenWhisperModel()
-
-    // Выбор модели в панели: состояние дублирует prefs, чтобы перерисовка была
-    // мгновенной, а на диск пишется сразу — источник правды всё равно prefs.
-    var whisperModelId by remember {
-        mutableStateOf(prefs.getString("stt_model_whisper", SttModels.DEFAULT_ID) ?: SttModels.DEFAULT_ID)
-    }
+    fun sttModel(): String = voice.sttModel()
     // Движок больше не переключается принудительно: whisper.cpp собран
     // с GGML_VULKAN=ON под Adreno и выбирается пользователем.
     // Полноэкранная диагностика: состояние сервера, STT-модели, лог serve.
@@ -857,8 +836,8 @@ fun ChatOverlay(
 
     fun startVoice() {
         speechError = null
-        Log.d("VOICE", "startVoice: engine=$sttEngine")
-        if (sttEngine == "whisper") {
+        Log.d("VOICE", "startVoice: engine=${voice.sttEngine}")
+        if (voice.sttEngine == VoiceEngine.WHISPER) {
             // Локальный движок: запись PCM16 16 кГц в буфер.
             try {
                 val ar = AudioRecorder(context.applicationContext)
@@ -893,7 +872,7 @@ fun ChatOverlay(
     }
 
     fun stopVoice() {
-        if (sttEngine == "whisper") {
+        if (voice.sttEngine == VoiceEngine.WHISPER) {
             val ar = whisperRecorder ?: return
             whisperRecorder = null
             listening = false
@@ -1660,14 +1639,11 @@ fun ChatOverlay(
                             Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    sttEngine = "system"
-                                    prefs.edit().putString("stt_engine", "system").apply()
+                                    voice.chooseEngine(VoiceEngine.SYSTEM)
                                 }.padding(vertical = 6.dp),
                     ) {
                         Text(
-                            if (sttEngine ==
-                                "system"
-                            ) {
+                            if (voice.sttEngine == VoiceEngine.SYSTEM) {
                                 "● "
                             } else {
                                 "○ "
@@ -1684,18 +1660,15 @@ fun ChatOverlay(
                             Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    sttEngine = "whisper"
+                                    voice.chooseEngine(VoiceEngine.WHISPER)
                                     // Модель НЕ подставляется здесь: её выбирает человек
                                     // списком ниже. Раньше движок молча затирал модель на
                                     // base, и выбрать turbo было невозможно — настройка
                                     // «движок» затирала настройку «модель».
-                                    prefs.edit().putString("stt_engine", "whisper").apply()
                                 }.padding(vertical = 6.dp),
                     ) {
                         Text(
-                            if (sttEngine ==
-                                "whisper"
-                            ) {
+                            if (voice.sttEngine == VoiceEngine.WHISPER) {
                                 "● "
                             } else {
                                 "○ "
@@ -1707,13 +1680,10 @@ fun ChatOverlay(
                         Text("Локальные модели (whisper.cpp / sherpa-onnx)", color = Color(0xFFE6E6E6), fontSize = 13.sp)
                     }
                     // Список моделей — только для локального движка.
-                    if (sttEngine == "whisper") {
+                    if (voice.sttEngine == VoiceEngine.WHISPER) {
                         SttModelPicker(
-                            selected = whisperModelId,
-                            onSelect = { picked ->
-                                whisperModelId = picked
-                                prefs.edit().putString("stt_model_whisper", picked).apply()
-                            },
+                            selected = voice.whisperModelId,
+                            onSelect = { picked -> voice.chooseWhisperModel(picked) },
                         )
                     }
                 }
