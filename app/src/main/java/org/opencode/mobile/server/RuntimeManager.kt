@@ -289,18 +289,6 @@ class RuntimeManager(
                     MoltbookToken.remember(context, moltbookToken)
                 }
 
-                // Регистрируем локальную память в конфиге serve как remote MCP
-                // (иначе serve о ней не знает — индикатор «0 MCP», инструменты
-                // памяти недоступны модели). До старта serve: он читает конфиг
-                // при инициализации MCP. Не фатал — память продолжит работать
-                // как TCP-сервер, просто без регистрации.
-                OpencodeRuntime.ensureMcpConfig(
-                    memoryToken,
-                    ynisonToken,
-                    moltbookStarted,
-                    ModelRoutingPrefs.read(context),
-                )
-
                 // Локальная память MCP как HTTP/TCP-сервер (MEMORY_PORT) — ДО serve.
                 // Не стартовала/умерла — НЕ фатал: serve продолжит, статус DEGRADED.
                 // Живой process != поднятая память: startMemoryServer возвращает процесс,
@@ -343,6 +331,22 @@ class RuntimeManager(
                         )
                     }
                 }
+
+                // Регистрируем MCP в конфиге serve (иначе serve о них не знает — индикатор
+                // «0 MCP», инструменты недоступны модели). Строго до старта serve: он читает
+                // конфиг при инициализации MCP, позже записанная секция уже не подхватится.
+                //
+                // Музыка регистрируется по РЕЗУЛЬТАТУ старта, а не по наличию токена.
+                // Токен создаётся раньше (см. выше) и говорит только о подключённом аккаунте:
+                // если ynison.js не открыл порт, запись в конфиге отдавала модели шесть
+                // инструментов, которые не отвечают. syncMusicEntry с null эту запись снимает.
+                // Не фатал — память продолжит работать как TCP-сервер, просто без регистрации.
+                OpencodeRuntime.ensureMcpConfig(
+                    memoryToken,
+                    ynisonToken.takeIf { ynisonStarted },
+                    moltbookStarted,
+                    ModelRoutingPrefs.read(context),
+                )
 
                 emit { copy(stage = RuntimeStage.STARTING_SERVER) }
                 val proc =
