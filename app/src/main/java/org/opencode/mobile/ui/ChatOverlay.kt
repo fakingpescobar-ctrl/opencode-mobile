@@ -136,6 +136,7 @@ import org.opencode.mobile.ui.chat.LiveToolRow
 import org.opencode.mobile.ui.chat.MCPIndicator
 import org.opencode.mobile.ui.chat.McpServerList
 import org.opencode.mobile.ui.chat.MessageRow
+import org.opencode.mobile.ui.chat.NarrationInput
 import org.opencode.mobile.ui.chat.NoticeRow
 import org.opencode.mobile.ui.chat.QuotaBadge
 import org.opencode.mobile.ui.chat.RetryState
@@ -144,6 +145,7 @@ import org.opencode.mobile.ui.chat.SharedPreferencesVoiceStore
 import org.opencode.mobile.ui.chat.StallState
 import org.opencode.mobile.ui.chat.StalledRow
 import org.opencode.mobile.ui.chat.ThinkingRow
+import org.opencode.mobile.ui.chat.TtsNarration
 import org.opencode.mobile.ui.chat.TtsRadioRow
 import org.opencode.mobile.ui.chat.TtsSettings
 import org.opencode.mobile.ui.chat.VoiceEngine
@@ -416,21 +418,10 @@ fun ChatOverlay(
     // ElevenLabsSecret вернёт её в SaveResult.Failed — здесь она просто
     // показывается под полем ввода ключа.
     var elevenKeyError by remember { mutableStateOf<String?>(null) }
-    // Сколько user-реплик уже было озвучено: рост счётчика означает новый вопрос.
-// -1 = «ещё не знаю, что было в ленте», первый снапшот только запомнит счётчик.
-    var ttsSeenUserMsgs by remember { mutableIntStateOf(-1) }
-
-    /**
-     * Индекс assistant-сообщения, которое сейчас растёт и озвучивается.
-     * -1 = в этом обороте ещё ничего не отдано нарратору.
-     */
-    var ttsSaidAssistants by remember { mutableIntStateOf(-1) }
-
-    /** Сессия, для которой считается состояние озвучки выше. */
-    var ttsSessionId by remember { mutableStateOf<String?>(null) }
-    // Озвучка включается лишь после первого нового вопроса: иначе при запуске
-    // приложение читает вслух последнее сообщение из истории.
-    var ttsArmed by remember { mutableStateOf(false) }
+    // Курсор озвучки: какие реплики уже отданы нарратору и в какой сессии.
+    // Правила («первый снапшот не читает историю», «смена сессии гасит речь»,
+    // «новый вопрос сбрасывает курсор») живут в TtsNarration, где их держит тест.
+    val ttsNarration = remember { TtsNarration() }
     LaunchedEffect(ttsOn) {
         if (!ttsOn) TtsNarrator.stop()
     }
@@ -1164,94 +1155,31 @@ fun ChatOverlay(
                 if (changed) {
                     snapshot = final
                     // Озвучка: раскладываем растущий текст ответа на предложения.
-                    // Новый вопрос юзера — жёсткий сброс: очередь чистим, игра гасится.
-                    val userCount = final.messages.count { it.role == "user" }
-                    // Смена сессии — жёсткая граница озвучки. Гасим речь и НЕ
-                    // вооружаемся: у новой сессии своя история, читать её вслух
-                    // без запроса пользователя нельзя. Озвучка включится на первом
-                    // новом вопросе уже внутри неё.
-                    if (ttsSessionId != final.activeId) {
-                        if (ttsSessionId != null) {
-                            TtsNarrator.stop()
+                    // Все правила (первый снапшот не читает историю, смена сессии
+                    // гасит речь, новый вопрос сбрасывает курсор, живое сообщение
+                    // уходит на каждом снапшоте) живут в TtsNarration, где их держит
+                    // тест. Здесь только применяем решение: реплики — текущий оборот,
+                    // срез после последнего вопроса, пустые отброшены.
+                    val lastUserIdx = final.messages.indexOfLast { it.role == "user" }
+                    val plan = ttsNarration.onSnapshot(
+                        NarrationInput(
+                            sessionId = final.activeId,
+                            userCount = final.messages.count { it.role == "user" },
+                            thinking = final.thinking,
+                            assistants = final.messages
+                                .drop(lastUserIdx + 1)
+                                .filter { it.role == "assistant" && it.text.isNotEmpty() }
+                                .map { it.text },
+                        ),
+                    )
+                    if (plan.stop) TtsNarrator.stop()
+                    if (ttsOn && plan.speak) {
+                        if (plan.finishPrevious) TtsNarrator.onNewAssistantMessage()
+                        plan.finalMessages.forEach {
+                            TtsNarrator.onAssistantText(context, it, isFinal = true)
                         }
-                        ttsSessionId = final.activeId
-                        ttsArmed = false
-                        ttsSeenUserMsgs = userCount
-                        ttsSaidAssistants = -1
-                    } else if (ttsSeenUserMsgs < 0) {
-                        // Первый снапшот после запуска: запоминаем, что уже было в ленте,
-                        // и НЕ озвучиваем старое. Иначе приложение при запуске читает
-                        // вслух последний ответ из истории.
-                        ttsSeenUserMsgs = userCount
-                    } else if (userCount != ttsSeenUserMsgs) {
-                        ttsSeenUserMsgs = userCount
-                        ttsArmed = true
-                        ttsSaidAssistants = -1
-                        TtsNarrator.stop()
-                    } else if (!ttsArmed && final.thinking) {
-                        // Смена сессии и новый вопрос могут прийти ОДНИМ снапшотом
-                        // (пользователь успевает отправить сообщение до следующего тика
-                        // поллинга). Тогда счётчик вопросов уже включает новый вопрос, и
-                        // ветка выше его не видит — первый ответ молча пропал бы. Ориентир:
-                        // у живой переписки thinking=true, у истории он снят.
-                        ttsArmed = true
-                        ttsSaidAssistants = -1
-                    }
-                    if (ttsOn && ttsArmed) {
-                        // Пустой текст — это начало thinking или tool call, а не откат
-                        // ответа. Если such отдать в нарратор, он примет снапшот короче
-                        // уже озвученного, сбросит чанкер и погасит речь на каждом
-                        // таком шаге (в логе 6 сбросов на 6 шагов).
-                        //
-                        // Берём ВСЕ assistant-сообщения, а не только последнее: агент
-                        // часто пишет несколько предложений подряд (рассуждение ->
-                        // tool call -> новый текст), и `lastOrNull` молча ронял
-                        // предыдущие. Каждое новое сообщение доигрывает остаток
-                        // предыдущего, а не гасит его.
-                        //
-                        // Последнее (растущее) сообщение отдаём нарратору на КАЖДОМ
-                        // снапшоте — именно по нему считается дельта. Оно летит даже
-                        // когда ничего не изменилось: пока thinking=true, isFinal=false
-                        // и чанкер держит текст до конца предложения; без повторной
-                        // передачи этот текст никогда не доигран (регрессия a2e85b9 —
-                        // озвучка молчала целиком).
-                        //
-                        // Срез ТОЛЬКО текущего оборота: сообщения после последнего
-                        // user-реплики. Фильтр по всей ленте читал вслух историю
-                        // сессии заново на каждом новом вопросе, а при переключении
-                        // сессий — прочитанное из чужой переписки.
-                        //
-                        // Список НЕ фильтруется по наличию диагностики. Причина отказа
-                        // лежит в отдельном поле notice, в text её нет, поэтому читать
-                        // вслух нечего. А фильтр сдвигал бы индексы на ходу: пока ход
-                        // стримится, error в нём ещё нет и сообщение в список попадает,
-                        // а после проваза исчезает — хвост списка отъезжал назад, и
-                        // последнее предложение начинало читаться заново с предыдущей
-                        // реплики. Ошибок без своего текста в этот список не попадают
-                        // вовсе: у них роль error.
-                        val lastUserIdx = final.messages.indexOfLast { it.role == "user" }
-                        val assistants = final.messages
-                            .drop(lastUserIdx + 1)
-                            .filter { it.role == "assistant" && it.text.isNotEmpty() }
-                        if (assistants.isNotEmpty()) {
-                            val lastIdx = assistants.size - 1
-                            if (lastIdx > ttsSaidAssistants) {
-                                // Сообщение на позиции ttsSaidAssistants — то, что уже
-                                // пошло в озвучку и расти больше не будет: доигрываем его
-                                // остаток. -1 означает «ещё ни одного не начато», тогда
-                                // доигрывать нечего, а все новые сообщения (включая
-                                // ПЕРВОЕ, индекс 0) озвучиваются целиком.
-                                if (ttsSaidAssistants >= 0) TtsNarrator.onNewAssistantMessage()
-                                for (i in maxOf(ttsSaidAssistants + 1, 0) until lastIdx) {
-                                    TtsNarrator.onAssistantText(context, assistants[i].text, isFinal = true)
-                                }
-                                ttsSaidAssistants = lastIdx
-                            }
-                            TtsNarrator.onAssistantText(
-                                context,
-                                assistants.last().text,
-                                isFinal = !final.thinking,
-                            )
+                        plan.liveText?.let {
+                            TtsNarrator.onAssistantText(context, it, isFinal = plan.liveIsFinal)
                         }
                     }
                 }
