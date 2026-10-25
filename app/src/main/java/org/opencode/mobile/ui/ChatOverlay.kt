@@ -3,7 +3,6 @@ package org.opencode.mobile.ui
 import android.Manifest
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -14,21 +13,15 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -36,17 +29,12 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.InvertColors
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.TextFormat
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -69,19 +57,13 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.Dispatchers
@@ -102,12 +84,16 @@ import org.opencode.mobile.stt.WhisperTranscribeService
 import org.opencode.mobile.tts.TtsNarrator
 import org.opencode.mobile.ui.chat.AndroidElevenKeyStore
 import org.opencode.mobile.ui.chat.AndroidTtsStore
+import org.opencode.mobile.ui.chat.AskActions
 import org.opencode.mobile.ui.chat.AudioRecorder
 import org.opencode.mobile.ui.chat.CONTEXT_LIMIT
 import org.opencode.mobile.ui.chat.ChatAppearance
 import org.opencode.mobile.ui.chat.ChatCache
 import org.opencode.mobile.ui.chat.ChatFeed
 import org.opencode.mobile.ui.chat.ChatFeedState
+import org.opencode.mobile.ui.chat.ChatInput
+import org.opencode.mobile.ui.chat.ChatInputActions
+import org.opencode.mobile.ui.chat.ChatInputState
 import org.opencode.mobile.ui.chat.ChatPollState
 import org.opencode.mobile.ui.chat.ChatUiState
 import org.opencode.mobile.ui.chat.ContextGauge
@@ -128,6 +114,7 @@ import org.opencode.mobile.ui.chat.TtsNarration
 import org.opencode.mobile.ui.chat.TtsPanel
 import org.opencode.mobile.ui.chat.TtsSettings
 import org.opencode.mobile.ui.chat.VoiceEngine
+import org.opencode.mobile.ui.chat.VoiceHoldActions
 import org.opencode.mobile.ui.chat.VoiceSettings
 import org.opencode.mobile.ui.chat.ZenMeter
 import org.opencode.mobile.ui.chat.abortSession
@@ -1279,147 +1266,46 @@ fun ChatOverlay(
                 onAbortDead = ::recoverDeadTurn,
                 onResetDead = { confirmResetDead = true },
             )
-            if (listening || speechError != null || whisperBusy) {
-                Text(
-                    when {
-                        listening -> "Слушаю… отпусти кнопку — текст уйдёт в чат"
-                        whisperBusy -> "Распознаю голос…"
-                        else -> "Распознавание: $speechError"
-                    },
-                    color = if (listening) Color(0xFFFF6F5A) else Color(0xFF8A8A8A),
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(top = 6.dp),
-                )
-            }
-            // Запрос, на котором сервер ждёт: команда под «ask» или вопрос
-            // агента. Приколот над полем ввода, а не в ленте. В ленте он был
-            // последним элементом, и автоскролл уезжал на индекс конца
-            // сообщений — то есть на строку «думаю», а карточка оставалась под
-            // сгибом. Блокирующий вопрос обязан быть виден всегда, поэтому
-            // скроллить его не нужно вовсе.
-            ui.snapshot?.ask?.firstOrNull()?.let { card ->
-                Box(modifier = Modifier.padding(top = 8.dp)) {
-                    AskCardView(
-                        card = card,
-                        busy = askBusy,
-                        error = askError,
-                        onReply = { m -> answerAsk(card.ask, "once", m) },
-                        onReject = { answerAsk(card.ask, "reject", null) },
-                    )
-                }
-            }
-            Row(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                // Поле ввода с микрофоном внутри. Раньше три круга по 46 dp стояли
-                // в одном ряду и съедали 162 dp из 339: на текст оставалось меньше
-                // половины ширины экрана. Микрофон переехал внутрь поля — высота
-                // блока не изменилась (46 dp), а текст стал шире на 46 dp.
-                Row(
-                    modifier =
-                        Modifier
-                            .weight(1f)
-                            .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
-                            .padding(horizontal = 5.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    BasicTextField(
-                        value = ui.draft,
-                        onValueChange = { ui.draft = it },
-                        modifier =
-                            Modifier
-                                .weight(1f)
-                                .padding(start = 8.dp, end = 4.dp),
-                        textStyle = TextStyle(color = Color(0xFFF0F0F0), fontSize = 15.sp),
-                        cursorBrush = SolidColor(Color(0xFF7BA6F8)),
-                        maxLines = 4,
-                        keyboardOptions =
-                            KeyboardOptions(
-                                capitalization = KeyboardCapitalization.Sentences,
-                                imeAction = ImeAction.Send,
-                            ),
-                        keyboardActions = KeyboardActions(onSend = { send() }),
-                        decorationBox = { inner ->
-                            Box {
-                                if (ui.draft.isEmpty()) {
-                                    Text(
-                                        "Напиши сообщение…",
-                                        color = Color(0xFF777777),
-                                        fontSize = 15.sp,
-                                    )
-                                }
-                                inner()
-                            }
+            ChatInput(
+                state =
+                    ChatInputState(
+                        draft = ui.draft,
+                        stopping = ui.stopping,
+                        listening = listening,
+                        speechError = speechError,
+                        whisperBusy = whisperBusy,
+                        ask = ui.snapshot?.ask?.firstOrNull(),
+                        askBusy = askBusy,
+                        askError = askError,
+                    ),
+                actions =
+                    ChatInputActions(
+                        onDraftChange = { ui.draft = it },
+                        onSend = { send() },
+                        onStop = { stopGen() },
+                    ),
+                ask =
+                    AskActions(
+                        onReply = { m ->
+                            ui.snapshot
+                                ?.ask
+                                ?.firstOrNull()
+                                ?.let { answerAsk(it.ask, "once", m) }
                         },
-                    )
-// Микрофон живёт в поле, а не рядом с ним, и уходит, как только
-                    // пользователь начал печатать: в пустом поле он занимает
-                    // место, в котором нет смысла держать голосовой ввод.
-                    // Пока идёт запись (listening) он остаётся — иначе нечем
-                    // остановить её.
-                    AnimatedVisibility(
-                        visible = ui.draft.isEmpty() || listening,
-                        enter = fadeIn(),
-                        exit = fadeOut(),
-                    ) {
-                        Surface(
-                            modifier =
-                                Modifier
-                                    .size(38.dp)
-                                    .pointerInput(Unit) {
-                                        detectTapGestures(
-                                            onPress = {
-                                                if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
-                                                    PackageManager.PERMISSION_GRANTED
-                                                ) {
-                                                    micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                                } else {
-                                                    startVoice()
-                                                }
-                                                try {
-                                                    awaitRelease()
-                                                } finally {
-                                                    stopVoice()
-                                                }
-                                            },
-                                        )
-                                    },
-                            shape = CircleShape,
-                            color = if (listening) Color(0xFFB71C1C) else Color(0xFF252525),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Mic,
-                                contentDescription = "Голосовой ввод (удерживай для записи)",
-                                tint = if (listening) Color.White else Color(0xFFE0E0E0),
-                                modifier = Modifier.fillMaxSize().padding(8.dp),
-                            )
-                        }
-                    }
-                }
-                // Кнопка Stop: ВСЕГДА видна рядом с микрофоном.
-                // Прерывает текущую генерацию модели (POST /session/{id}/abort).
-                // Если модель не думает — abort просто не сработает, сессия не сломается.
-                Surface(
-                    modifier =
-                        Modifier
-                            .padding(start = 8.dp)
-                            .size(38.dp)
-                            .clickable(enabled = !ui.stopping) { stopGen() },
-                    shape = CircleShape,
-                    color = if (ui.stopping) Color(0xFF3A3A3A) else Color(0xFF9E1C1C),
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Stop,
-                        contentDescription = "Прервать генерацию",
-                        tint = Color.White,
-                        modifier = Modifier.fillMaxSize().padding(8.dp),
-                    )
-                }
-            }
+                        onReject = {
+                            ui.snapshot
+                                ?.ask
+                                ?.firstOrNull()
+                                ?.let { answerAsk(it.ask, "reject", null) }
+                        },
+                    ),
+                voice =
+                    VoiceHoldActions(
+                        onRequestMic = { micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO) },
+                        onStart = { startVoice() },
+                        onStop = { stopVoice() },
+                    ),
+            )
         }
 
         // Экран диагностики — ПОСЛЕДНИМ в корневом Surface (поверх чата и панелей):
