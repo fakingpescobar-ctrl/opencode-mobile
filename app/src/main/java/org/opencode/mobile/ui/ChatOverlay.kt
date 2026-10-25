@@ -130,6 +130,7 @@ import org.opencode.mobile.ui.chat.AudioRecorder
 import org.opencode.mobile.ui.chat.CONTEXT_LIMIT
 import org.opencode.mobile.ui.chat.ChatAppearance
 import org.opencode.mobile.ui.chat.ChatCache
+import org.opencode.mobile.ui.chat.ChatPollState
 import org.opencode.mobile.ui.chat.ContextGauge
 import org.opencode.mobile.ui.chat.DeadRow
 import org.opencode.mobile.ui.chat.ElevenKeySettings
@@ -140,10 +141,8 @@ import org.opencode.mobile.ui.chat.MessageRow
 import org.opencode.mobile.ui.chat.NarrationInput
 import org.opencode.mobile.ui.chat.NoticeRow
 import org.opencode.mobile.ui.chat.QuotaBadge
-import org.opencode.mobile.ui.chat.RetryState
 import org.opencode.mobile.ui.chat.SharedPreferencesAppearanceStore
 import org.opencode.mobile.ui.chat.SharedPreferencesVoiceStore
-import org.opencode.mobile.ui.chat.StallState
 import org.opencode.mobile.ui.chat.StalledRow
 import org.opencode.mobile.ui.chat.ThinkingRow
 import org.opencode.mobile.ui.chat.TtsNarration
@@ -153,22 +152,18 @@ import org.opencode.mobile.ui.chat.VoiceEngine
 import org.opencode.mobile.ui.chat.VoiceSettings
 import org.opencode.mobile.ui.chat.ZenMeter
 import org.opencode.mobile.ui.chat.abortSession
-import org.opencode.mobile.ui.chat.advanceRetry
-import org.opencode.mobile.ui.chat.advanceStall
+import org.opencode.mobile.ui.chat.advancePoll
 import org.opencode.mobile.ui.chat.answerPendingAsk
 import org.opencode.mobile.ui.chat.createSession
 import org.opencode.mobile.ui.chat.createSpeechRecognizer
 import org.opencode.mobile.ui.chat.deleteSession
 import org.opencode.mobile.ui.chat.fetchChatSnapshot
-import org.opencode.mobile.ui.chat.nextStableRounds
 import org.opencode.mobile.ui.chat.playNotificationSound
-import org.opencode.mobile.ui.chat.pollDelayMs
 import org.opencode.mobile.ui.chat.postMessage
 import org.opencode.mobile.ui.chat.pruneEmptySessions
 import org.opencode.mobile.ui.chat.readWavPcm16
 import org.opencode.mobile.ui.chat.sessionHasMessages
 import org.opencode.mobile.ui.chat.sessionRunning
-import org.opencode.mobile.ui.chat.snapshotChanged
 import org.opencode.mobile.ui.chat.stopAndPurge
 import org.opencode.mobile.ui.chat.typedKeyOf
 import org.opencode.mobile.ui.chat.vibrate
@@ -347,10 +342,6 @@ fun ChatOverlay(
     // восстанавливает сохранённый Bundle, и тогда последний ответ не напечатался
     // бы вообще — хуже, чем лишняя перепечатка при пересоздании Activity.
     var typingKey by remember { mutableStateOf<String?>(null) }
-    // Флаг «базовая линия зафиксирована»: истина после первого поллинга.
-    // Нужен чтобы первый реальный ответ (в т.ч. в пустой сессии) корректно
-    // вибрировал, а старые ответы при старте — нет.
-    var baselineDone by remember { mutableStateOf(false) }
     // Счётчик размера ленты на прошлой автопрокрутке. Если лента ВЫРОСЛА
     // (появилось новое сообщение — от юзера или модели) — принудительно
     // спускаемся к низу, даже если юзер перед этим листал вверх (userScrolledUp).
@@ -1064,15 +1055,11 @@ fun ChatOverlay(
     }
 
     LaunchedEffect(Unit) {
-        // Детектор зависания (обычное думание, пустой шаг, мёртвый ход) и бюджет
-        // повторов живут в ui/chat/ChatStallTracker.kt: чистые функции принимают
-        // прошлое состояние и возвращают новое. Здесь только сами состояния.
-        var stall = StallState()
-        var retry = RetryState()
-        // Адаптивный поллинг: счётчик «стабильных» итераций. Растёт, пока лента
-        // статична и не думается; по достижении STABLE_POLL_ROUNDS поллинг
-        // растягивается до POLL_IDLE_MS. При малейшем прогрессе сбрасывается → 400мс.
-        var stableRounds = 0
+        // Тик опроса — одно решение из нескольких правил: зависание хода, бюджет
+        // повторов, защёлка причины, дельта-публикация и адаптивная пауза. Всё это
+        // живёт в ui/chat/ChatPollTick.kt с тестом; здесь только цикл и побочные
+        // эффекты: запрос снапшота, обрыв хода, озвучка и запись в состояние Compose.
+        var poll = ChatPollState()
         while (true) {
             // Экономия батареи/CPU в фоне: если Activity не видна (на заднем плане),
             // обновлять UI бессмысленно. Пропускаем поллинг и спим длинным квантом.
@@ -1081,123 +1068,66 @@ fun ChatOverlay(
             // сервер НЕ трогается — это лишь пауза обновления скрытого чата.
             if (lifecycleState.currentState != Lifecycle.State.RESUMED) {
                 delay(2_000L)
-                stableRounds = 0
+                poll = poll.copy(stableRounds = 0)
                 continue
             }
-// Счётчик Zen обновляем отдельным циклом раз в минуту (см. LaunchedEffect ниже).
-// Здесь только читаем кэш: поллинг чата идёт 2.5 раза/с, обход сессий туда не втыкаем.
-            val snap = fetchChatSnapshot(serverPort)
-            var changed = false
-            if (snap != null) {
-                val now = System.currentTimeMillis()
-                val completed = snap.messages.count { it.role == "assistant" && it.text.isNotBlank() && it.notice == null }
-                val old = snapshot
-                val madeProgress =
-                    old != null &&
-                        (
-                            old.messages != snap.messages ||
-                                old.liveTool != snap.liveTool ||
-                                old.notice != snap.notice
-                        )
-                val verdict = advanceStall(stall, madeProgress, snap, now)
-                stall = verdict.state
-                val final =
-                    if (verdict.stalled) {
-                        snap.copy(stalled = true, stalledDead = verdict.dead)
-                    } else {
-                        snap
-                    }
-                // Дельта-поллинг: ставим snapshot в UI только если содержимое реально
-                // изменилось (messages + thinking + stalled одинаковы — пропускаем).
-                // При частом поллинге это не даёт Compose реконсилить всю
-                // ленту без необходимости, сохраняя рендер максимально дешёвым.
-                // Защёлка: сервер может моргнуть статусом на один тик, а причина у
-                // пользователя должна висеть, пока он её не закрыл. Гасим только на
-                // успешном шаге модели (thinking снят) - это и есть «проблема решена».
-                // Сравниваем latch ДО присваивания: сравнение после всегда даёт
-                // false и молча пропускало бы перерисовку в UI.
-                // Переход защёлки (серверный retry → наша плашка «Ход остановлен»)
-                // и бюджет повторов живут в ui/chat/ChatStallTracker.kt: здесь
-                // только применяем решение.
-                val latchBefore = noticeLatch
-                val retryVerdict = advanceRetry(retry, final.notice, turnFinished = !final.thinking, now = now)
-                retry = retryVerdict.state
-                noticeLatch = retryVerdict.state.latch
-                if (retryVerdict.abort) {
-                    val sid = final.activeId
-                    if (sid != null) {
-                        android.util.Log.w(
-                            "ChatOverlay",
-                            "RETRY budget spent attempt=${retryVerdict.state.stop?.attempt} session=$sid, aborting",
-                        )
-                        // Сеть на главном потоке: этот вызов делает блокирующий
-                        // HttpURLConnection, как и остальные abortSession в файле.
-                        withContext(Dispatchers.IO) { abortSession(serverPort, sid) }
-                    }
-                }
-                // Правило «что считать изменением» живёт в ui/chat/ChatSnapshotDelta
-                // с тестом: здесь только применяем решение. Именно там закреплено,
-                // что статус MCP обновляется и в простое — без этого шапка
-                // навсегда застревала на «0 MCP».
-                changed = snapshotChanged(old, final, latchBefore, noticeLatch)
-                if (changed) {
-                    snapshot = final
-                    // Озвучка: раскладываем растущий текст ответа на предложения.
-                    // Все правила (первый снапшот не читает историю, смена сессии
-                    // гасит речь, новый вопрос сбрасывает курсор, живое сообщение
-                    // уходит на каждом снапшоте) живут в TtsNarration, где их держит
-                    // тест. Здесь только применяем решение: реплики — текущий оборот,
-                    // срез после последнего вопроса, пустые отброшены.
-                    val lastUserIdx = final.messages.indexOfLast { it.role == "user" }
-                    val plan = ttsNarration.onSnapshot(
+            // Счётчик Zen обновляем отдельным циклом раз в минуту (см. LaunchedEffect
+            // ниже). Здесь только читаем кэш: поллинг чата идёт 2.5 раза/с, обход
+            // сессий туда не втыкаем.
+            val decision =
+                advancePoll(
+                    previous = poll,
+                    shown = snapshot,
+                    fresh = fetchChatSnapshot(serverPort),
+                    now = System.currentTimeMillis(),
+                )
+            poll = decision.state
+            noticeLatch = decision.latch
+            knownMsgs = decision.knownMsgs
+            decision.baselineRendered?.let { knownRendered = it }
+            decision.abort?.let { abort ->
+                android.util.Log.w(
+                    "ChatOverlay",
+                    "RETRY budget spent attempt=${abort.attempt} session=${abort.sessionId}, aborting",
+                )
+                // Сеть на главном потоке: этот вызов делает блокирующий
+                // HttpURLConnection, как и остальные abortSession в файле.
+                withContext(Dispatchers.IO) { abortSession(serverPort, abort.sessionId) }
+            }
+            val publish = decision.publish
+            if (publish != null) {
+                snapshot = publish
+                // Озвучка: раскладываем растущий текст ответа на предложения.
+                // Все правила (первый снапшот не читает историю, смена сессии
+                // гасит речь, новый вопрос сбрасывает курсор, живое сообщение
+                // уходит на каждом снапшоте) живут в TtsNarration, где их держит
+                // тест. Здесь только применяем решение: реплики — текущий оборот,
+                // срез после последнего вопроса, пустые отброшены.
+                val lastUserIdx = publish.messages.indexOfLast { it.role == "user" }
+                val plan =
+                    ttsNarration.onSnapshot(
                         NarrationInput(
-                            sessionId = final.activeId,
-                            userCount = final.messages.count { it.role == "user" },
-                            thinking = final.thinking,
-                            assistants = final.messages
+                            sessionId = publish.activeId,
+                            userCount = publish.messages.count { it.role == "user" },
+                            thinking = publish.thinking,
+                            assistants = publish.messages
                                 .drop(lastUserIdx + 1)
                                 .filter { it.role == "assistant" && it.text.isNotEmpty() }
                                 .map { it.text },
                         ),
                     )
-                    if (plan.stop) TtsNarrator.stop()
-                    if (ttsOn && plan.speak) {
-                        if (plan.finishPrevious) TtsNarrator.onNewAssistantMessage()
-                        plan.finalMessages.forEach {
-                            TtsNarrator.onAssistantText(context, it, isFinal = true)
-                        }
-                        plan.liveText?.let {
-                            TtsNarrator.onAssistantText(context, it, isFinal = plan.liveIsFinal)
-                        }
+                if (plan.stop) TtsNarrator.stop()
+                if (ttsOn && plan.speak) {
+                    if (plan.finishPrevious) TtsNarrator.onNewAssistantMessage()
+                    plan.finalMessages.forEach {
+                        TtsNarrator.onAssistantText(context, it, isFinal = true)
+                    }
+                    plan.liveText?.let {
+                        TtsNarrator.onAssistantText(context, it, isFinal = plan.liveIsFinal)
                     }
                 }
-                // База уведомлений двигается в ОБЕ стороны. Счётчик исключает
-                // провалившиеся ходы (у них появляется диагностика), поэтому он может
-                // уменьшиться: ход, который при стриминге шёл как обычный ответ, после
-                // отказа провайдера перестаёт в нём учитываться. Если бы база только
-                // росла, следующий настоящий ответ не дал бы completed > knownMsgs —
-                // и уведомление пропало бы. ЗВУК НЕ играем здесь: snapshot ещё не
-                // отрисован — иначе вибрация опережала бы рендер сообщения на 1-2с.
-                // Вибрация живёт в отдельном LaunchedEffect, привязанном к фактической
-                // видимости ответа; здесь только фиксируем факт.
-                if (completed != knownMsgs && (completed > knownMsgs || snap.messages.isNotEmpty())) {
-                    knownMsgs = completed
-                }
-                // Базовая линия на ПЕРВОМ поллинге приложения: фиксируем ИНДЕКС
-                // последнего завершённого ответа как «уже известный», чтобы старые
-                // ответы (если сессия не пуста в момент открытия чата) НЕ вызывали
-                // вибрацию. Выполняется один раз. Последующие новые ответы
-                // (idx > knownRendered) завибрируют строго после отрисовки.
-                if (!baselineDone) {
-                    baselineDone = true
-                    knownRendered = snap.messages.indexOfLast { it.role == "assistant" && it.text.isNotBlank() && it.notice == null }
-                }
             }
-
-            // Адаптивный интервал: активность (thinking / реальное изменение ленты) →
-            // быстрая опрашивание 400мс. Стабильность → плавно растягиваем к idle 900мс.
-            stableRounds = nextStableRounds(stableRounds, snap != null && (snap.thinking || changed))
-            delay(pollDelayMs(stableRounds))
+            delay(decision.delayMs)
         }
     }
 
