@@ -19,6 +19,13 @@ style:
     # .editorconfig: max_line_length = 140
     maxLineLength: 140
 
+  MagicNumber:
+    # В @Composable литералы — это dp, sp и цвета: они читаются глазами рядом с
+    # текстом, которому принадлежат, и вынос их в константы прячет геометрию от
+    # того, кто её правит. Панели шапки при выносе из ChatOverlay дали 80 таких
+    # находок, и все они про размеры, а не про забытую математику.
+    ignoreAnnotated: ['Composable']
+
 naming:
   FunctionNaming:
     active: true

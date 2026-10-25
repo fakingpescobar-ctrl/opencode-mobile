@@ -19,13 +19,10 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
@@ -33,14 +30,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -79,29 +73,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.Font
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -114,7 +97,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
-import org.opencode.mobile.R
 import org.opencode.mobile.server.ApiPaths
 import org.opencode.mobile.server.ApiShape
 import org.opencode.mobile.server.AskCard
@@ -122,8 +104,6 @@ import org.opencode.mobile.server.LocalOpenCodeClient
 import org.opencode.mobile.server.PendingAsk
 import org.opencode.mobile.social.MoltbookScanClient
 import org.opencode.mobile.stt.WhisperTranscribeService
-import org.opencode.mobile.tts.TtsConfig
-import org.opencode.mobile.tts.TtsEngine
 import org.opencode.mobile.tts.TtsNarrator
 import org.opencode.mobile.ui.chat.AndroidElevenKeyStore
 import org.opencode.mobile.ui.chat.AndroidTtsStore
@@ -136,10 +116,14 @@ import org.opencode.mobile.ui.chat.ChatUiState
 import org.opencode.mobile.ui.chat.ContextGauge
 import org.opencode.mobile.ui.chat.DeadRow
 import org.opencode.mobile.ui.chat.ElevenKeySettings
+import org.opencode.mobile.ui.chat.FontPanel
+import org.opencode.mobile.ui.chat.GaugePanel
 import org.opencode.mobile.ui.chat.LiveToolRow
 import org.opencode.mobile.ui.chat.MCPIndicator
-import org.opencode.mobile.ui.chat.McpServerList
+import org.opencode.mobile.ui.chat.McpPanel
 import org.opencode.mobile.ui.chat.MessageRow
+import org.opencode.mobile.ui.chat.ModelColorPanel
+import org.opencode.mobile.ui.chat.MoltbookCard
 import org.opencode.mobile.ui.chat.NarrationInput
 import org.opencode.mobile.ui.chat.NoticeRow
 import org.opencode.mobile.ui.chat.QuotaBadge
@@ -147,9 +131,10 @@ import org.opencode.mobile.ui.chat.ServerSendTransport
 import org.opencode.mobile.ui.chat.SharedPreferencesAppearanceStore
 import org.opencode.mobile.ui.chat.SharedPreferencesVoiceStore
 import org.opencode.mobile.ui.chat.StalledRow
+import org.opencode.mobile.ui.chat.SttPanel
 import org.opencode.mobile.ui.chat.ThinkingRow
 import org.opencode.mobile.ui.chat.TtsNarration
-import org.opencode.mobile.ui.chat.TtsRadioRow
+import org.opencode.mobile.ui.chat.TtsPanel
 import org.opencode.mobile.ui.chat.TtsSettings
 import org.opencode.mobile.ui.chat.VoiceEngine
 import org.opencode.mobile.ui.chat.VoiceSettings
@@ -162,6 +147,7 @@ import org.opencode.mobile.ui.chat.createSpeechRecognizer
 import org.opencode.mobile.ui.chat.deleteSession
 import org.opencode.mobile.ui.chat.deliverPrompt
 import org.opencode.mobile.ui.chat.fetchChatSnapshot
+import org.opencode.mobile.ui.chat.fontFor
 import org.opencode.mobile.ui.chat.playNotificationSound
 import org.opencode.mobile.ui.chat.pruneEmptySessions
 import org.opencode.mobile.ui.chat.readWavPcm16
@@ -201,29 +187,6 @@ private const val MOLTBOOK_SCAN_EVERY_MS = 5 * 60_000L
 private const val TAG_CTX_GAUGE = "ctx_gauge"
 private const val TAG_ZEN_METER = "zen_meter"
 
-private const val TAG_PANEL_MCP = "panel_mcp"
-private const val TAG_PANEL_COLOR = "panel_color"
-private const val TAG_PANEL_FONT = "panel_font"
-private const val TAG_PANEL_SETTINGS = "panel_settings"
-private const val TAG_PANEL_STT = "panel_stt"
-private const val TAG_PANEL_TTS = "panel_tts"
-
-// Цвета панели ключа ElevenLabs. Вынесены именами, потому что «серый — есть ключ,
-// оранжевый — ключа нет» и «красный — удалить/ошибка» это смысл, а не украшение:
-// по цвету видно состояние, не читая текст. Сами литералы подавлены — цвет задаёт
-// палитра тёмной темы, а не формула.
-@Suppress("MagicNumber")
-private object ElevenKeyPalette {
-    val HintOk = Color(0xFF8A8A8A)
-    val HintMissing = Color(0xFFE6A23C)
-    val SaveIdle = Color(0xFF5A5A5A)
-    val SaveReady = Color(0xFF7BA6F8)
-    val Danger = Color(0xFFE57373)
-}
-
-// Голоса в сетке: пять на строку — на шапке телефона шесть уже не помещались.
-private const val SID_CHUNK = 5
-
 // Миллисекунд в минуте для паузы между обходами сессий.
 private const val MS_PER_MINUTE = 60_000L
 
@@ -231,9 +194,6 @@ private const val MS_PER_MINUTE = 60_000L
 // из панели шестерёнки в шапке. Констант GAUGE_* здесь больше нет намеренно:
 // именно из-за того, что они были константами, любую правку приходилось делать
 // через меня и пересборку APK.
-
-/** Оранжевый плашки «озвучка переехала на другой движок»: предупреждение, не ошибка. */
-private const val TTS_FALLBACK_NOTICE_COLOR = 0xFFFFB74D
 
 internal data class ChatMsg(
     val role: String,
@@ -1292,455 +1252,26 @@ fun ChatOverlay(
                 palette = appearance.palette,
                 modifier = Modifier.padding(top = appearance.barGap.dp).testTag(TAG_ZEN_METER),
             )
-            // Выпадающий список подключённых MCP-серверов (тап по индикатору «N MCP»).
-            // У каждого имени — мигающая точка: зелёная (работает) / красная (нет).
             if (showMcpList) {
-                McpServerList(
-                    servers = ui.snapshot?.mcpServers ?: emptyList(),
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(top = 8.dp, bottom = 2.dp)
-                            .testTag(TAG_PANEL_MCP),
-                )
+                McpPanel(ui.snapshot?.mcpServers ?: emptyList())
             }
-            // Сводка Moltbook: сколько комментов ждут ответа, сколько репостов на
-            // наши посты, кому именно мы не ответили. Тот же тёмный кард, что и MCP.
             if (showMoltbookPanel) {
-                MoltbookPanel(
-                    state = moltbookStats,
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 2.dp),
-                )
+                MoltbookCard(moltbookStats)
             }
-            // Цветовой пикер для ответов модели: квадрат-градиент (X — оттенок, Y — яркость), тап/драг точкой.
             if (showColorPicker) {
-                val pickSize = with(LocalDensity.current) { 300.dp.toPx() }
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp, bottom = 2.dp)
-                        .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
-                        .testTag(TAG_PANEL_COLOR)
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                ) {
-                    Text("Цвет ответов модели (тап/тяни точку):", color = Color(0xFF8A8A8A), fontSize = 11.sp)
-                    Canvas(
-                        Modifier
-                            .padding(top = 6.dp)
-                            .size(300.dp)
-                            .pointerInput(Unit) {
-                                detectTapGestures { off ->
-                                    val h = (off.x / pickSize).coerceIn(0f, 1f) * 360f
-                                    val v = 1f - (off.y / pickSize).coerceIn(0f, 1f)
-                                    appearance.chooseColor(
-                                        "%06X".format(
-                                            android.graphics.Color.HSVToColor(floatArrayOf(h, 1f, v)) and 0xFFFFFF
-                                        )
-                                    )
-                                }
-                            }.pointerInput(Unit) {
-                                detectDragGestures(
-                                    onDragStart = { off ->
-                                        val h = (off.x / pickSize).coerceIn(0f, 1f) * 360f
-                                        val v = 1f - (off.y / pickSize).coerceIn(0f, 1f)
-                                        appearance.chooseColor(
-                                            "%06X".format(
-                                                android.graphics.Color.HSVToColor(floatArrayOf(h, 1f, v)) and 0xFFFFFF
-                                            )
-                                        )
-                                    },
-                                    onDrag = { change, _ ->
-                                        val h = (change.position.x / pickSize).coerceIn(0f, 1f) * 360f
-                                        val v = 1f - (change.position.y / pickSize).coerceIn(0f, 1f)
-                                        appearance.chooseColor(
-                                            "%06X".format(
-                                                android.graphics.Color.HSVToColor(floatArrayOf(h, 1f, v)) and 0xFFFFFF
-                                            )
-                                        )
-                                    },
-                                )
-                            },
-                    ) {
-                        drawRect(
-                            Brush.horizontalGradient(
-                                listOf(
-                                    Color(0xFFFF0000),
-                                    Color(0xFFFFFF00),
-                                    Color(0xFF00FF00),
-                                    Color(0xFF00FFFF),
-                                    Color(0xFF0000FF),
-                                    Color(0xFFFF00FF),
-                                    Color(0xFFFF0000),
-                                ),
-                                startX = 0f,
-                                endX = size.width,
-                            ),
-                        )
-                        drawRect(
-                            Brush.verticalGradient(
-                                listOf(Color.White.copy(alpha = 0f), Color.Black),
-                                startY = 0f,
-                                endY = size.height,
-                            ),
-                        )
-                        val hsv = FloatArray(3)
-                        android.graphics.Color.colorToHSV(modelColor.toArgb(), hsv)
-                        val mark = Offset(hsv[0] / 360f * size.width, (1f - hsv[2]) * size.height)
-                        drawCircle(Color.Black, radius = 10.dp.toPx(), center = mark, style = Stroke(width = 1.dp.toPx()))
-                        drawCircle(Color.White, radius = 10.dp.toPx(), center = mark, style = Stroke(width = 2.dp.toPx()))
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
-                        Box(
-                            Modifier
-                                .size(26.dp)
-                                .clip(CircleShape)
-                                .background(modelColor)
-                                .border(1.dp, Color.White, CircleShape),
-                        )
-                        Text(
-                            "#${appearance.colorHex}",
-                            color = Color(0xFFBDBDBD),
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(start = 10.dp)
-                        )
-                    }
-                }
+                ModelColorPanel(appearance, modelColor)
             }
-            // Панель настроек: движок голосового распознавания (system | whisper).
             if (showSettings) {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp, bottom = 2.dp)
-                        .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
-                        .testTag(TAG_PANEL_SETTINGS)
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                ) {
-                    GaugeSettings(
-                        ctxShape = appearance.ctxShape,
-                        onCtxShapeChange = { appearance.ctxShape = it },
-                        onCtxShapePersist = { appearance.persistCtxShape() },
-                        zenShape = appearance.zenShape,
-                        onZenShapeChange = { appearance.zenShape = it },
-                        onZenShapePersist = { appearance.persistZenShape() },
-                        palette = appearance.palette,
-                        onColorChange = { k, c -> appearance.choosePaletteColor(k, c) },
-                        onPalettePersist = { /* цвета уже записаны по клику */ },
-                        barGap = appearance.barGap,
-                        onBarGapChange = { appearance.barGap = it },
-                        onBarGapPersist = { appearance.persistBarGap() },
-                        onResetDefaults = { appearance.resetGauges() },
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        if (ttsTestRunning) "TTS-тест: синтезирую и распознаю…" else "Диагностика: синтез → распознавание (см. лог VOICE)",
-                        color = Color(0xFF5A8DEE),
-                        fontSize = 11.sp,
-                        modifier =
-                            Modifier
-                                .padding(top = 6.dp)
-                                .clickable(enabled = !ttsTestRunning) { runTtsTest() },
-                    )
-                }
+                GaugePanel(appearance, ttsTestRunning) { runTtsTest() }
             }
-            // Панель выбора голосового движка (system | whisper). Отдельная от showSettings:
-            // GaugeSettings отвечает только за полосы гейджа. Открывается иконкой Mic в хедере.
             if (showSttSettings) {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp, bottom = 2.dp)
-                        .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
-                        .testTag(TAG_PANEL_STT)
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                ) {
-                    Text("Голосовое распознавание:", color = Color(0xFFBDBDBD), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    voice.chooseEngine(VoiceEngine.SYSTEM)
-                                }.padding(vertical = 6.dp),
-                    ) {
-                        Text(
-                            if (voice.sttEngine == VoiceEngine.SYSTEM) {
-                                "● "
-                            } else {
-                                "○ "
-                            },
-                            color = Color(0xFFFF6D00),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                        )
-                        Text("Системный Android (Google)", color = Color(0xFFE6E6E6), fontSize = 13.sp)
-                    }
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    voice.chooseEngine(VoiceEngine.WHISPER)
-                                    // Модель НЕ подставляется здесь: её выбирает человек
-                                    // списком ниже. Раньше движок молча затирал модель на
-                                    // base, и выбрать turbo было невозможно — настройка
-                                    // «движок» затирала настройку «модель».
-                                }.padding(vertical = 6.dp),
-                    ) {
-                        Text(
-                            if (voice.sttEngine == VoiceEngine.WHISPER) {
-                                "● "
-                            } else {
-                                "○ "
-                            },
-                            color = Color(0xFFFF6D00),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                        )
-                        Text("Локальные модели (whisper.cpp / sherpa-onnx)", color = Color(0xFFE6E6E6), fontSize = 13.sp)
-                    }
-                    // Список моделей — только для локального движка.
-                    if (voice.sttEngine == VoiceEngine.WHISPER) {
-                        SttModelPicker(
-                            selected = voice.whisperModelId,
-                            onSelect = { picked -> voice.chooseWhisperModel(picked) },
-                        )
-                    }
-                }
+                SttPanel(voice)
             }
-            // Панель озвучки. Открывается там же, где STT, и живёт по тем же правилам:
-            // настройка в prefs, переключение — сразу, без рестарта чата.
             if (showSttSettings) {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp, bottom = 2.dp)
-                        .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
-                        .testTag(TAG_PANEL_TTS)
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                ) {
-                    Text(
-                        "Озвучка ответов:",
-                        color = Color(0xFFBDBDBD),
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    TtsRadioRow("Читать вслух", ttsOn) {
-                        tts.setEnabled(!ttsOn)
-                    }
-                    if (!ttsOn) {
-                        Text(
-                            if (TtsConfig.read(context).modelInstalled(context)) {
-                                "Supertonic offline: модель на месте, 2 потока, sid ${tts.config.sid}"
-                            } else {
-                                "Модель Supertonic не скачана — скачай её в Настройки -> Диагностика"
-                            },
-                            color = Color(0xFF90A4AE),
-                            fontSize = 10.sp,
-                            modifier = Modifier.padding(start = 20.dp, top = 2.dp),
-                        )
-                    }
-                    if (ttsOn) {
-                        TtsRadioRow("Supertonic (offline, русский)", tts.config.engine == TtsEngine.Sherpa) {
-                            tts.chooseEngine(TtsEngine.Sherpa)
-                        }
-                        TtsRadioRow("ElevenLabs (облако, нужен VPN)", tts.config.engine == TtsEngine.ElevenLabs) {
-                            tts.chooseEngine(TtsEngine.ElevenLabs)
-                        }
-                        // Что СЕЙЧАС реально озвучит, если выбранный движок не поднялся.
-                        // Без этой строки юзер выбирает облако, слышит тишину и гадает
-                        // почему: причина была только в Log.w и в UI не попадала.
-                        // Текст приходит из ttsFallback - состояния, которое
-                        // LaunchedEffect выше подтягивает из TtsNarrator. Считать его
-                        // здесь нельзя: панель перерисовывается на каждый кадр, а
-                        // File.length() по модели - это I/O на main thread.
-                        // Локальная копия: ttsFallback - делегированное свойство, и Kotlin
-                        // не smart-cast'ит такие (значение может измениться между
-                        // проверкой и использованием).
-                        val notice = ttsFallback
-                        if (notice != null) {
-                            Text(
-                                notice,
-                                color = Color(TTS_FALLBACK_NOTICE_COLOR),
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Medium,
-                                modifier = Modifier.padding(start = 20.dp, top = 2.dp),
-                            )
-                        }
-                        if (tts.config.engine.isCloud) {
-                            // Облако идёт в сеть, поэтому честно предупреждаем про VPN:
-                            // из России api.elevenlabs.io без него не отвечает, и юзер
-                            // иначе гадает, почему озвучка молчит.
-                            Text(
-                                "api.elevenlabs.io из РФ закрыт — нужен включённый VPN. Без сети " +
-                                    "фраза уйдёт в локальный движок.",
-                                color = Color(0xFF90A4AE),
-                                fontSize = 10.sp,
-                                modifier = Modifier.padding(start = 20.dp, top = 2.dp),
-                            )
-                            Column(
-                                modifier = Modifier.padding(start = 20.dp, top = 6.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                Text(
-                                    when {
-                                        !elevenKey.hasKey -> "API-ключ не задан"
-                                        else ->
-                                            "API-ключ сохранён " +
-                                                (elevenKey.preview ?: "(зашифрован)")
-                                    },
-                                    color = if (elevenKey.hasKey) ElevenKeyPalette.HintOk else ElevenKeyPalette.HintMissing,
-                                    fontSize = 11.sp,
-                                )
-                                BasicTextField(
-                                    value = elevenKey.draft,
-                                    onValueChange = elevenKey::edit,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(Color(0xFF1C1C1C), RoundedCornerShape(8.dp))
-                                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                                    textStyle = TextStyle(color = Color(0xFFF0F0F0), fontSize = 13.sp),
-                                    cursorBrush = SolidColor(Color(0xFF7BA6F8)),
-                                    singleLine = true,
-                                    // Маскируем: ключ — доступ к облачному синтезу за счёт
-                                    // юзера, и подсветка под телефоном его не защитит,
-                                    // а вот случайный скриншот или демо стрима — защитит.
-                                    visualTransformation = PasswordVisualTransformation(),
-                                    keyboardOptions = KeyboardOptions(
-                                        keyboardType = KeyboardType.Password,
-                                        imeAction = ImeAction.Done,
-                                    ),
-                                    decorationBox = { inner ->
-                                        Box {
-                                            if (elevenKey.draft.isEmpty()) {
-                                                Text(
-                                                    "sk_…",
-                                                    color = Color(0xFF777777),
-                                                    fontSize = 13.sp,
-                                                )
-                                            }
-                                            inner()
-                                        }
-                                    },
-                                )
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text(
-                                        "Сохранить",
-                                        color = if (elevenKey.draft.isBlank()) ElevenKeyPalette.SaveIdle else ElevenKeyPalette.SaveReady,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier
-                                            .clickable(enabled = elevenKey.draft.isNotBlank()) {
-                                                elevenKey.save()
-                                            }.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    )
-                                    if (elevenKey.hasKey) {
-                                        Text(
-                                            "Удалить",
-                                            color = ElevenKeyPalette.Danger,
-                                            fontSize = 12.sp,
-                                            modifier = Modifier
-                                                .clickable {
-                                                    elevenKey.remove()
-                                                }.padding(horizontal = 8.dp, vertical = 4.dp),
-                                        )
-                                    }
-                                }
-                                // Причина отказа от сохранения — иначе юзер видит
-                                // неподвижную кнопку и гадает, куда делся ключ.
-                                elevenKey.error?.let { why ->
-                                    Text(
-                                        "не сохранено: $why",
-                                        color = ElevenKeyPalette.Danger,
-                                        fontSize = 11.sp,
-                                        modifier = Modifier.padding(top = 2.dp),
-                                    )
-                                }
-                                Text(
-                                    "Voice ID:",
-                                    color = Color(0xFF8A8A8A),
-                                    fontSize = 11.sp,
-                                )
-                                BasicTextField(
-                                    value = tts.config.elevenVoice,
-                                    onValueChange = { value ->
-                                        tts.update { it.copy(elevenVoice = value) }
-                                    },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(Color(0xFF1C1C1C), RoundedCornerShape(8.dp))
-                                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                                    textStyle = TextStyle(color = Color(0xFFF0F0F0), fontSize = 12.sp),
-                                    cursorBrush = SolidColor(Color(0xFF7BA6F8)),
-                                    singleLine = true,
-                                )
-                                Text(
-                                    "Модель: ${tts.config.elevenModel}",
-                                    color = Color(0xFF8A8A8A),
-                                    fontSize = 11.sp,
-                                )
-                            }
-                        }
-                        // Локальный sid к облаку отношения не имеет: там голос выбирается
-                        // Voice ID выше. Показывать 1..10 при выбранном ElevenLabs — значит
-                        // предлагать юзеру переключатель, который ничего не делает.
-                        if (!tts.config.engine.isCloud) {
-                            Text(
-                                "Голос:",
-                                color = Color(0xFF8A8A8A),
-                                fontSize = 11.sp,
-                                modifier = Modifier.padding(start = 20.dp, top = 4.dp),
-                            )
-                            /** Голоса в две строки по пять: на шапке телефона одна строка уже не помещалась. */
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                for (row in (0..TtsConfig.MAX_SID).chunked(SID_CHUNK)) {
-                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        for (sid in row) {
-                                            val active = tts.config.sid == sid
-                                            Text(
-                                                "${sid + 1}",
-                                                color = if (active) Color(0xFF1C1C1C) else Color(0xFFE6E6E6),
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                textAlign = TextAlign.Center,
-                                                modifier = Modifier
-                                                    .clip(RoundedCornerShape(6.dp))
-                                                    .background(
-                                                        if (active) Color(0xFFBDBDBD) else Color(0xFF2A2A2A),
-                                                    ).clickable {
-                                                        tts.update { it.copy(sid = sid) }
-                                                        TtsNarrator.stop()
-                                                    }.padding(horizontal = 12.dp, vertical = 5.dp),
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        // Диагностика озвучки: дамп сырого PCM в filesDir/tts-dump.pcm
-                        // (float32, без заголовка). По нему видно длительность и паузы
-                        // каждого фрагмента — то, чего не показывает лог. Нужен, чтобы
-                        // проверять озвучку без возможности послушать.
-                        TtsRadioRow("Дамп PCM (диагностика)", tts.config.dumpPcm) {
-                            tts.update { it.copy(dumpPcm = !it.dumpPcm) }
-                            // Применяем к живой озвучке сразу: dumpOut переживает смену
-                            // голоса и движка, иначе файл писался бы до перезапуска.
-                            TtsNarrator.applyDumpPref(context)
-                            TtsNarrator.stop()
-                        }
-                        if (tts.config.dumpPcm) {
-                            Text(
-                                "Пишет files/tts-dump.pcm. Забрать: adb exec-out run-as " +
-                                    "org.opencode.mobile.debug cat files/tts-dump.pcm > dump.pcm",
-                                color = Color(0xFF90A4AE),
-                                fontSize = 10.sp,
-                                modifier = Modifier.padding(start = 20.dp, top = 2.dp),
-                            )
-                        }
-                    }
-                }
+                TtsPanel(context, tts, ttsOn, ttsFallback, elevenKey)
+            }
+            if (showFontPicker) {
+                FontPanel(appearance, modelColor) { closeHeaderPanel(PANEL_FONT) }
             }
             val msgs = ui.snapshot?.messages ?: emptyList()
             // The empty-state art fades out on the first message instead of
@@ -1756,51 +1287,6 @@ fun ChatOverlay(
                     "ChatOverlay",
                     "RENDER msgs=${msgs.size} thinking=${ui.snapshot?.thinking} live=${ui.snapshot?.liveTool?.name}",
                 )
-            }
-            // Палитра шрифтов (настройка): тап по варианту — мгновенно применяется и сохраняется.
-            if (showFontPicker) {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp, bottom = 2.dp)
-                        .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
-                        .testTag(TAG_PANEL_FONT)
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                ) {
-                    Text("Шрифт ответов модели (тап — применить):", color = Color(0xFF8A8A8A), fontSize = 11.sp)
-                    fontEntries.forEach { (key, name, ff) ->
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier =
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        appearance.chooseFont(key)
-                                        closeHeaderPanel(PANEL_FONT)
-                                    }.padding(vertical = 6.dp),
-                        ) {
-                            Text(
-                                if (key == appearance.fontKey) "● " else "○ ",
-                                color = modelColor,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                            )
-                            Text(
-                                name,
-                                color = Color(0xFF9E9E9E),
-                                fontSize = 10.sp,
-                                modifier = Modifier.width(88.dp),
-                            )
-                            Text(
-                                "Привет, я модель!",
-                                color = modelColor,
-                                fontFamily = ff,
-                                fontSize = 16.sp,
-                                maxLines = 1,
-                            )
-                        }
-                    }
-                }
             }
             // The box keeps weight(1f) whatever is inside it: it is what pins
             // the input row with the mic and Stop to the bottom of the screen.
@@ -2097,33 +1583,6 @@ fun ChatOverlay(
         }
     }
 }
-
-// Доступные шрифты ответов модели: (ключ сохранения, имя в палитре, FontFamily)
-private val fontEntries =
-    listOf(
-        Triple("mono", "Моноширинный", FontFamily.Monospace),
-        Triple("jbm", "JetBrains Mono", FontFamily(Font(R.font.jbm))),
-        Triple("play", "Play", FontFamily(Font(R.font.play))),
-        Triple("lobster", "Lobster", FontFamily(Font(R.font.lobster))),
-        Triple("vt323", "VT323", FontFamily(Font(R.font.vt323))),
-        Triple("caveat", "Caveat", FontFamily(Font(R.font.caveat))),
-        Triple("montserrat", "Montserrat", FontFamily(Font(R.font.montserrat))),
-        Triple("russo", "Russo One", FontFamily(Font(R.font.russo_one))),
-        Triple("neucha", "Neucha", FontFamily(Font(R.font.neucha))),
-        Triple("badscript", "Bad Script", FontFamily(Font(R.font.bad_script))),
-        Triple("raleway", "Raleway", FontFamily(Font(R.font.raleway))),
-        Triple("rubik", "Rubik", FontFamily(Font(R.font.rubik))),
-        Triple("exo2", "Exo 2", FontFamily(Font(R.font.exo2))),
-        Triple("ptsans", "PT Sans", FontFamily(Font(R.font.ptsans))),
-        Triple("ptserif", "PT Serif", FontFamily(Font(R.font.ptserif))),
-        Triple("dancing", "Dancing Script", FontFamily(Font(R.font.dancing))),
-        Triple("comfortaa", "Comfortaa", FontFamily(Font(R.font.comfortaa))),
-        Triple("kurale", "Kurale", FontFamily(Font(R.font.kurale))),
-        Triple("pangolin", "Pangolin", FontFamily(Font(R.font.pangolin))),
-        Triple("cormorant", "Cormorant", FontFamily(Font(R.font.cormorant))),
-    )
-
-private fun fontFor(key: String): FontFamily = fontEntries.firstOrNull { it.first == key }?.third ?: FontFamily.Monospace
 
 private fun parseHexColor(hex: String): Color =
     try {
