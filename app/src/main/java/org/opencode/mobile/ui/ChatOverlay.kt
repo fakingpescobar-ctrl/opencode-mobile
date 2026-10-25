@@ -72,6 +72,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -326,7 +327,13 @@ fun ChatOverlay(
     // квота не восстановится. Поэтому держим плашку, пока идёт ход, и гасим только
     // когда opencode дошёл до успешного assistant-шага (thinking снят).
     var noticeLatch by remember { mutableStateOf<ChatNotice?>(null) }
-    var draft by remember { mutableStateOf("") }
+    // Черновик переживает и пересоздание Activity, и убийство процесса: строка —
+    // saveable тип, а терять набранный текст из-за смены размера шрифта или
+    // возврата из другого приложения нельзя. Остальные состояния НЕ saveable
+    // намеренно: восстановленный sending=true оставил бы кнопку вечно занятой
+    // (корутины отправки после смерти процесса уже нет), а noticeLatch и typingKey
+    // восстановились бы без своего контекста.
+    var draft by rememberSaveable { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     var stopping by remember { mutableStateOf(false) }
     var whisperRecorder: AudioRecorder? = null
