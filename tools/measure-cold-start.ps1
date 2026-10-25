@@ -22,10 +22,16 @@ $musicPkg = "ru.yandex.music"
 function Adb([string]$cmd) { & $adb -s $Serial shell $cmd 2>&1 }
 
 function Get-McpToken([string]$name) {
-    $serve = (Adb "pgrep -f 'serve --port 4096'" | Select-Object -First 1)
-    if (-not $serve) { throw "serve is not running - start the app first" }
-    $line = (Adb "run-as $pkg sh -c 'tr `"\0`" `"\n`" < /proc/$serve/environ | grep ^${name}='" | Out-String).Trim()
-    return ($line -replace "^${name}=", "").Trim()
+    # pgrep -f матчит сам себя и соседние процессы, поэтому первый pid часто уже мёртв
+    # (на замере 26.10.2026 это дало пустой токен и "no closing quote" вместо ответа).
+    # Берём первый pid, из которого переменная реально читается.
+    $pids = (Adb "pgrep -f 'serve --port 4096'" | Out-String) -split "\s+" | Where-Object { $_ }
+    if (-not $pids) { throw "serve is not running - start the app first" }
+    foreach ($serve in $pids) {
+        $line = (Adb "run-as $pkg sh -c 'tr `"\0`" `"\n`" < /proc/$serve/environ | grep ^${name}='" | Out-String).Trim()
+        if ($line -like "${name}=*") { return ($line -replace "^${name}=", "").Trim() }
+    }
+    throw "$name not found in any serve process environment"
 }
 
 function Call-MusicTool([string]$tool, [hashtable]$toolArgs, [string]$token) {

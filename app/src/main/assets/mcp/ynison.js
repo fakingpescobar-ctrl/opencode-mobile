@@ -43,6 +43,7 @@
 // client and MarshalX/yandex-music-api (LGPL, used as a protocol reference only).
 import { readFileSync, appendFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { promises as dns } from "node:dns";
 
 const OAUTH = process.env.YNISON_TOKEN || "";
 const TCP_PORT = Number(process.env.YNISON_TCP_PORT) || 0;
@@ -158,6 +159,11 @@ function version() {
 class YnisonWs {
   constructor({ path, address, servername, protocol }) {
     this.path = path; // "/service.Name/Method"
+    // Socket tag for the trace: "state" or "redirect". Without it the rx/tx lines of the
+    // two connections are indistinguishable, and a state failure reads as a redirect
+    // failure - on the 26.10.2026 investigation that cost an hour: 220B+426B were the
+    // redirect, while the timeout belonged to state.
+    this.tag = (path.split("/")[1] || "ws").split(".")[0].replace("ynison_", "");
     this.address = address; // IP when resolved by the app, hostname otherwise
     this.servername = servername; // real hostname: HTTP Host + TLS SNI
     this.protocol = protocol; // raw Sec-WebSocket-Protocol value
@@ -175,6 +181,10 @@ class YnisonWs {
 
   connect() {
     return new Promise((resolve, reject) => {
+      // What we are actually aiming at: the address is either an IP the app resolved or the
+      // shard host resolved in JS, while Host/SNI always comes from the redirect. If the two
+      // disagree, the trace shows it here instead of looking like a silent server.
+      trace(this.tag, "connect:", this.address, "sni:", this.servername, "path:", this.path);
       // Bun.connect resolves to the socket; the real socket object arrives with the first
       // handler call, which is why it is stored there and not off the connect() result.
       Bun.connect({
@@ -184,6 +194,7 @@ class YnisonWs {
         socket: {
           handshake: (s) => {
             this.socket = s;
+            trace(this.tag, "tls ok, upgrade request sent");
             s.write(this.upgradeRequest());
           },
           data: (s, chunk) => this.onData(chunk),
@@ -219,17 +230,26 @@ class YnisonWs {
   }
 
   onData(chunk) {
-    if (DEBUG) trace("rx", chunk.length + "B", chunk.subarray(0, 10).toString("hex"));
+    if (DEBUG) trace(this.tag, "rx", chunk.length + "B", chunk.subarray(0, 64).toString("hex"));
     if (this.upgraded) {
       this.feed(chunk);
       return;
     }
     this.buffer = this.buffer.length ? Buffer.concat([this.buffer, chunk]) : Buffer.from(chunk);
     const end = this.buffer.indexOf("\r\n\r\n");
-    if (end < 0) return;
+    if (end < 0) {
+      // Seen on 26.10.2026: 647 bytes arrived, the terminator never did, and the call died as
+      // "state open timeout" - the trace showed only 10 bytes, so the actual status line was
+      // invisible. Remember the tail of what we got for the timeout message.
+      this.pendingHead = this.buffer.subarray(0, 200).toString("latin1");
+      return;
+    }
     const head = this.buffer.subarray(0, end).toString("latin1");
     const rest = this.buffer.subarray(end + 4);
     this.buffer = Buffer.alloc(0);
+    // The status line is the only thing that says whether the server accepted the Upgrade.
+    // Without it a 4xx/5xx rejection looked like "the socket says nothing".
+    trace(this.tag, "head:", head.split("\r\n")[0], `${head.length}B`);
     if (!head.startsWith("HTTP/1.1 101")) {
       const status = head.split("\r\n")[0];
       this.fail(`upgrade rejected: ${status}`);
@@ -238,6 +258,7 @@ class YnisonWs {
     }
     this.upgraded = true;
     this.settled = true;
+    trace(this.tag, "upgrade ok");
     this.resolveOpen?.();
     this.onopen?.();
     if (rest.length) this.feed(rest);
@@ -283,6 +304,9 @@ class YnisonWs {
       } else if (opcode === 0x9) {
         this.writeFrame(0xa, payload);
       } else if (opcode === 0x8) {
+        // The code and reason are the only thing the server says when it drops a session, and
+        // "state open timeout" hides them. Logged before closing so the trace shows why.
+        trace(this.tag, "close frame:", payload.length ? payload.toString("hex") : "(no payload)");
         this.socket.end();
       }
     }
@@ -319,7 +343,7 @@ class YnisonWs {
     const mask = Buffer.from(crypto.getRandomValues(new Uint8Array(4)));
     const masked = Buffer.allocUnsafe(data.length);
     for (let i = 0; i < data.length; i++) masked[i] = data[i] ^ mask[i & 3];
-    if (DEBUG) trace("tx", opcode, data.length + "B", Buffer.concat([header, mask]).toString("hex"), data.subarray(0, 24).toString("utf8"));
+    if (DEBUG) trace(this.tag, "tx", opcode, data.length + "B", Buffer.concat([header, mask]).toString("hex"), data.subarray(0, 24).toString("utf8"));
     this.socket.write(Buffer.concat([header, mask, masked]));
   }
 
@@ -369,6 +393,31 @@ class YnisonWs {
 // one form that works: the upgrade succeeds and the server replies normally.
 function subprotocolHeader(inner) {
   return ["Bearer", "v2", encodeURIComponent(JSON.stringify(inner))].join(", ");
+}
+
+/**
+ * IPv4 of the shard host that the redirect just named, resolved on the device.
+ *
+ * The state service answers only on the shard's own address. Pointing the socket at the
+ * frontend IP - which is what the app resolves and passes in as RESOLVED_YNISON_IP - makes the
+ * frontend accept the TLS connection and the request and then never answer at all. Measured
+ * 26.10.2026 from both the phone and a PC: the frontend IP gave 0 bytes in 10s ("state open
+ * timeout"), the shard IP answered 101 in 0.16s, with the same Host, path and token.
+ *
+ * So the shard is resolved here instead of reusing the frontend IP. Bun does resolve names on
+ * Android (measured on the device: lookup -> 77.88.48.156), which the app-side resolveIpv4 was
+ * written to work around.
+ */
+async function resolveStateHost(host) {
+  try {
+    const { address } = await dns.lookup(host, { family: 4 });
+    trace("state host:", host, "->", address);
+    return address;
+  } catch (e) {
+    // A named failure, because the alternative is a silent socket that dies as "open timeout"
+    // ten seconds later and names the wrong thing.
+    throw new Error(`cannot resolve ${host} for the ynison state socket: ${e.code || e.message}`);
+  }
 }
 
 // YNISON_DUMP=<file> records every frame sent, for diffing a working run against a
@@ -645,6 +694,10 @@ async function openSessionOnce(seed = null) {
     ws.connect();
   });
 
+  // The redirect payload is the only place the server states which host and session it wants;
+  // when the state socket is dropped, this line says whether the ticket even looked right.
+  trace("redirect:", JSON.stringify(redirect).slice(0, 300));
+
   if (!redirect.host || !redirect.session_id) {
     // This is what an under-scoped token produces. Worth naming explicitly: it looks
     // identical to a network failure unless you check host/session_id.
@@ -660,7 +713,8 @@ async function openSessionOnce(seed = null) {
 
   const ws = new YnisonWs({
     path: `/${STATE_SERVICE}`,
-    address: RESOLVED_YNISON_IP || redirect.host,
+    // The shard's own address, never the frontend IP: see resolveStateHost for the measurement.
+    address: await resolveStateHost(redirect.host),
     servername: redirect.host,
     protocol: subprotocolHeader(inner),
   });
@@ -677,10 +731,22 @@ async function openSessionOnce(seed = null) {
       trace("state frame non-JSON:", String(e.data).slice(0, 200));
     }
   };
-  ws.onclose = () => trace("state socket closed by server");
+  ws.onclose = () => {
+    trace("state socket closed by server");
+    // An early close used to be invisible: the promise only rejected on the 10s timer, so a
+    // dropped connection was reported as "state open timeout" - a lie that sends the reader
+    // looking at the server's silence instead of at the drop. rejectOpen is the promise's own
+    // reject, stored by connect(), so this rejects the very wait below.
+    if (!ws.upgraded) ws.rejectOpen?.(new Error("state socket closed before upgrade"));
+  };
 
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { ws.terminate(); reject(new Error("state open timeout")); }, STEP_TIMEOUT_MS);
+    const timer = setTimeout(() => {
+      ws.terminate();
+      const seen = ws.pendingHead ? `, got: ${ws.pendingHead.split("\r\n")[0] || ws.pendingHead}` : "";
+      const buffered = ws.buffer ? ws.buffer.length : 0;
+      reject(new Error(`state open timeout${seen}, buffered ${buffered}B`));
+    }, STEP_TIMEOUT_MS);
     ws.onerror = (e) => { clearTimeout(timer); reject(new Error(`ynison state connect failed: ${e.message}`)); };
     ws.connect().then(() => { clearTimeout(timer); resolve(); }).catch((e) => { clearTimeout(timer); reject(e); });
   });
