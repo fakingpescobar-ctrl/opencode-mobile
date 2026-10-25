@@ -43,9 +43,11 @@ function slice(from, to) {
 // (throwIfBanned / throwIfGoAwayFrame) live in between and are part of the same decision.
 const BAN_BLOCK = slice("function errorDetail(", "async function openSessionOnce(seed = null)");
 const RETRY_BLOCK = slice("const PERMANENT_OPEN_ERRORS", "// ---- the handoff ---");
+const HANDOFF_BLOCK = slice("async function handoffUntil(", "// The phone refuses to resume from a non-zero position");
+const TRACE_BLOCK = slice("const trace = (...a) => {", "// ---- protocol helpers");
 
 /** Runs the real goAwayError and openSession against a scripted openSessionOnce. */
-function load({ failWith, attempts = 3 }) {
+function load({ failWith, attempts = 3, savedBan = null } = {}) {
   let opens = 0;
   const openSessionOnce = async () => {
     opens++;
@@ -56,11 +58,27 @@ function load({ failWith, attempts = 3 }) {
   const wait = async (ms) => { waits.push(ms); };
   const trace = () => {};
 
+  // The deadline is persisted next to the state cache, so the block under test reads and
+  // writes a file. Both are stubbed: the point is the decision, not the filesystem.
+  const cacheDir = "/data/files/ynison";
+  const goAwayFile = `${cacheDir}/ynison-goaway.json`;
+  const writes = [];
+  const readFileSync = (path) => {
+    if (path !== goAwayFile || savedBan === null) throw new Error("ENOENT");
+    return JSON.stringify(savedBan);
+  };
+  const writeFileSync = (path, data) => { writes.push({ path, saved: JSON.parse(data) }); };
+
   const factory = new Function(
     "openSessionOnce", "wait", "trace", "OPEN_ATTEMPTS",
-    `${BAN_BLOCK}\n${RETRY_BLOCK}\n return { openSession, goAwayError, throwIfBanned, throwIfGoAwayFrame };`,
+    "STATE_CACHE", "readFileSync", "writeFileSync",
+    `${BAN_BLOCK}\n${RETRY_BLOCK}\n return { openSession, goAwayError, throwIfBanned, throwIfGoAwayFrame, loadGoAway };`,
   );
-  return { api: factory(openSessionOnce, wait, trace, attempts), opens: () => opens, waits };
+  const api = factory(
+    openSessionOnce, wait, trace, attempts,
+    `${cacheDir}/ynison-state.json`, readFileSync, writeFileSync,
+  );
+  return { api, opens: () => opens, waits, writes, goAwayFile };
 }
 
 const GO_AWAY = { "ynison-error-code": "400090001", "ynison-go-away-for-seconds": "3600" };
@@ -254,6 +272,97 @@ await test("проверка стоит после handshake, а не тольк
     afterHandshake.includes("throwIfGoAwayFrame(frames, ws)"),
     "после handshake нет проверки бана - вызов снова умрёт на no player_state",
   );
+});
+
+console.log("\nслед бана переживает рестарт и подписан временем");
+
+await test("в трассе есть время: иначе непонятно, какой вызов получил бан", () => {
+  // Measured 25.10.2026: the trace showed three retries and a fresh 3600s ban, and nothing in
+  // it said when any of that happened - so "which call opened the session" stayed a guess.
+  const lines = [];
+  const factory = new Function(
+    "DEBUG", "TRACE_FILE", "appendFileSync", "console",
+    `${TRACE_BLOCK}\n return trace;`,
+  );
+  const trace = factory(true, "/tmp/trace.log", (path, line) => lines.push(line), { error: () => {} });
+  trace("attempt", 1, "of 3");
+  eq(lines.length, 1, "строка трассы не записана");
+  ok(
+    /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(lines[0]),
+    `в строке нет отметки времени: ${lines[0]}`,
+  );
+  ok(lines[0].includes("attempt 1 of 3"), `сообщение потерялось: ${lines[0]}`);
+});
+
+await test("бан, записанный до рестарта, соблюдается после него", () => {
+  // The server is a child process the app restarts on its own; the deadline used to live only
+  // in memory, so the first call after a restart opened a socket and collected a new 3600s.
+  const until = Date.now() + 3_600_000;
+  const { api, opens } = load({ failWith: null, savedBan: { until } });
+  let thrown = null;
+  try { api.throwIfBanned(); } catch (e) { thrown = e; }
+  ok(thrown !== null, "после рестарта бан забыт - сокет откроется и продлит его");
+  eq(thrown.permanent, true, "сохранённый бан ретраится");
+  eq(opens(), 0, "сокет открывался, хотя бан ещё идёт");
+});
+
+await test("истёкший записанный бан не блокирует музыку навсегда", () => {
+  const { api } = load({ failWith: null, savedBan: { until: Date.now() - 1000 } });
+  eq(api.loadGoAway(), 0, "истёкший дедлайн прочитан как действующий бан");
+  api.throwIfBanned(); // не должно выбросить
+});
+
+await test("битый файл бана не ломает запуск", () => {
+  const factory = new Function(
+    "STATE_CACHE", "readFileSync", "writeFileSync",
+    `${BAN_BLOCK}\n return { throwIfBanned };`,
+  );
+  const api = factory("/data/files/ynison/ynison-state.json",
+    () => { throw new Error("ENOENT"); }, () => {});
+  api.throwIfBanned();
+});
+
+await test("новый бан записывается на диск", () => {
+  const { api, writes, goAwayFile } = load({ failWith: null });
+  const before = Date.now();
+  api.goAwayError(NESTED_503);
+  eq(writes.length, 1, "дедлайн не сохранён - рестарт снова попросит новый бан");
+  eq(writes[0].path, goAwayFile, "дедлайн записан не туда");
+  const until = writes[0].saved.until;
+  ok(until >= before + 3_600_000, `дедлайн короче интервала бана: ${until - before} мс`);
+  ok(until <= Date.now() + 3_600_000, `дедлайн длиннее интервала бана: ${until - before} мс`);
+});
+
+await test("бан в записи: одна попытка, а не три", async () => {
+  // The trace of 25.10.2026 had "attempt 1 of 3" through "attempt 3 of 3", each refused before
+  // a socket opened - three identical lines and three wasted round trips per tool call.
+  const ban = Object.assign(new Error("Ynison is still asking this device to stay away"), { permanent: true });
+  let calls = 0;
+  const factory = new Function(
+    "handoff", "waitForState", "trace", "WRITE_ATTEMPTS",
+    `${HANDOFF_BLOCK}\n return handoffUntil;`,
+  );
+  const write = factory(async () => { calls++; throw ban; }, async () => null, () => {}, 3);
+  let thrown = null;
+  try { await write(() => {}, () => {}); } catch (e) { thrown = e; }
+  ok(thrown === ban, "исходная ошибка бана потерялась");
+  eq(calls, 1, "бан в записи отретраен - это те же три строки в трассе");
+});
+
+await test("обычный сбой записи по-прежнему ретраится", async () => {
+  let calls = 0;
+  const factory = new Function(
+    "handoff", "waitForState", "trace", "WRITE_ATTEMPTS",
+    `${HANDOFF_BLOCK}\n return handoffUntil;`,
+  );
+  const write = factory(
+    async () => { calls++; throw new Error("phone did not start"); },
+    async () => null, () => {}, 3,
+  );
+  let thrown = null;
+  try { await write(() => {}, () => {}); } catch (e) { thrown = e; }
+  eq(calls, 3, "обычный сбой записи перестал ретраиться - правка слишком широкая");
+  eq(String(thrown.message), "phone did not start", "подменили исходную ошибку");
 });
 
 console.log(`\n${failures.length ? "ПРОВАЛЕНО" : "зелёное"}: ${passed} ок, ${failures.length} сломалось\n`);

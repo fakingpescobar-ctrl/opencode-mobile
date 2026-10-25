@@ -108,7 +108,11 @@ const STATE_CACHE = process.env.YNISON_STATE_CACHE
   || (TRACE_FILE ? TRACE_FILE.replace(/[\\/][^\\/]*$/, "") + "/ynison-state.json" : "");
 const trace = (...a) => {
   if (!DEBUG) return;
-  const line = "[ynison] " + a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ") + "\n";
+  // The stamp is not decoration: a ban is a deadline in the future, so "when did this
+  // happen" is the first question. Without it the trace of 25.10.2026 showed three
+  // retries and a fresh 3600s ban with no way to tell which call opened the session.
+  const line = "[ynison] " + new Date().toISOString() + " "
+    + a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ") + "\n";
   console.error(line.trimEnd());
   // The child's stderr is a pipe the app consumes, so stderr never reaches logcat.
   // With a trace file set we append there too, which is the only channel that survives.
@@ -528,7 +532,33 @@ function errorDetail(payload) {
 // counted per device id, and every tool call that opens a socket anyway is another connection
 // from the id being penalised. The deadline is in memory because the MCP server outlives the
 // call, and it is a deadline rather than a flag so an expired ban lifts by itself.
-let goAwayUntil = 0;
+//
+// It is also written next to the state cache, because the process is not as long-lived as the
+// ban: measured 25.10.2026, the server restarted at 21:57 and the deadline set before that was
+// gone, so the first call afterwards opened a socket and collected a fresh 3600s. A restart
+// must not turn "wait out the ban" into "ask for another one".
+const GO_AWAY_FILE = STATE_CACHE ? STATE_CACHE.replace(/[^\\/]*$/, "") + "ynison-goaway.json" : "";
+
+function loadGoAway(now = Date.now()) {
+  if (!GO_AWAY_FILE) return 0;
+  try {
+    const until = Number(JSON.parse(readFileSync(GO_AWAY_FILE, "utf8")).until) || 0;
+    return until > now ? until : 0;
+  } catch {
+    return 0; // нет файла, битый файл, нет прав - бана просто нет
+  }
+}
+
+function saveGoAway(until) {
+  if (!GO_AWAY_FILE) return;
+  try {
+    writeFileSync(GO_AWAY_FILE, JSON.stringify({ until }));
+  } catch {
+    /* the ban still holds in memory; losing it costs one extra connection */
+  }
+}
+
+let goAwayUntil = loadGoAway();
 
 function goAwayError(payload) {
   const detail = errorDetail(payload);
@@ -539,7 +569,10 @@ function goAwayError(payload) {
   // a 503 without one is a plain server error and must stay retryable.
   if (code !== "400090001" && !seconds) return null;
   const secs = seconds || "some";
-  if (seconds) goAwayUntil = Math.max(goAwayUntil, Date.now() + seconds * 1000);
+  if (seconds) {
+    goAwayUntil = Math.max(goAwayUntil, Date.now() + seconds * 1000);
+    saveGoAway(goAwayUntil);
+  }
   const reason = (payload.error && payload.error.message) || "";
   const e = new Error(
     code === "400090001"
@@ -1325,6 +1358,10 @@ async function handoffUntil(mutate, expect, seed = null) {
     } catch (e) {
       lastError = e;
       trace("attempt", i + 1, "failed:", e.message);
+      // A ban is not a flaky write: the next attempt is refused before it opens a socket, so
+      // three attempts only produce three identical lines (measured 25.10.2026: "attempt 1 of
+      // 3" ... "attempt 3 of 3", all "still asking this device to stay away").
+      if (e.permanent) break;
     }
   }
   if (lastError) throw lastError;
