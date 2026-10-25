@@ -132,6 +132,7 @@ import org.opencode.mobile.ui.chat.CONTEXT_LIMIT
 import org.opencode.mobile.ui.chat.ChatAppearance
 import org.opencode.mobile.ui.chat.ChatCache
 import org.opencode.mobile.ui.chat.ChatPollState
+import org.opencode.mobile.ui.chat.ChatUiState
 import org.opencode.mobile.ui.chat.ContextGauge
 import org.opencode.mobile.ui.chat.DeadRow
 import org.opencode.mobile.ui.chat.ElevenKeySettings
@@ -321,21 +322,9 @@ fun ChatOverlay(
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
-    var snapshot by remember { mutableStateOf<ChatSnapshot?>(null) }
-    // Защёлка на плашку причины. Retry/ошибка провайдера - УСТОЙЧИВОЕ состояние,
-    // а не событие: сервер будет отдавать free_tier_limit и после любого TTL, пока
-    // квота не восстановится. Поэтому держим плашку, пока идёт ход, и гасим только
-    // когда opencode дошёл до успешного assistant-шага (thinking снят).
-    var noticeLatch by remember { mutableStateOf<ChatNotice?>(null) }
-    // Черновик переживает и пересоздание Activity, и убийство процесса: строка —
-    // saveable тип, а терять набранный текст из-за смены размера шрифта или
-    // возврата из другого приложения нельзя. Остальные состояния НЕ saveable
-    // намеренно: восстановленный sending=true оставил бы кнопку вечно занятой
-    // (корутины отправки после смерти процесса уже нет), а noticeLatch и typingKey
-    // восстановились бы без своего контекста.
-    var draft by rememberSaveable { mutableStateOf("") }
-    var sending by remember { mutableStateOf(false) }
-    var stopping by remember { mutableStateOf(false) }
+    // Снимок ленты, черновик, отправка/остановка и плашка причины живут в ChatUiState:
+    // правила записи и что переживает смерть процесса — там, у полей. Здесь отрисовка.
+    val ui = rememberSaveable(saver = ChatUiState.saver) { ChatUiState() }
     var whisperRecorder: AudioRecorder? = null
     val listState = rememberLazyListState()
     var knownMsgs by remember { mutableIntStateOf(0) }
@@ -440,7 +429,7 @@ fun ChatOverlay(
     // другую сессию. Иначе после частичного провала (ответ ушёл в очередь, но
     // отклонить не удалось) тап «Разрешить» с новым текстом ушёл бы без текста:
     // answerPendingAsk решил бы, что этот ответ уже отправляли.
-    val shownCard = snapshot?.ask?.firstOrNull()
+    val shownCard = ui.snapshot?.ask?.firstOrNull()
     val shownAskId = shownCard?.ask?.id
     LaunchedEffect(shownAskId) {
         askAnswerSent = null
@@ -457,7 +446,7 @@ fun ChatOverlay(
         decision: String,
         message: String? = null,
     ) {
-        val sessionId = snapshot?.activeId ?: return
+        val sessionId = ui.snapshot?.activeId ?: return
         if (askBusy) return
         askBusy = true
         askError = null
@@ -483,7 +472,7 @@ fun ChatOverlay(
                     askAnswerSent = null
                     askError = null
                     userScrolledUp = false
-                    scrollToBottomFull(listState, (snapshot?.messages?.size ?: 0) - 1)
+                    scrollToBottomFull(listState, (ui.snapshot?.messages?.size ?: 0) - 1)
                 }
             }
         }
@@ -558,10 +547,10 @@ fun ChatOverlay(
     val moltbookStats = rememberMoltbookState(moltbookRefresh)
 
     fun send() {
-        val text = draft.trim()
-        if (text.isEmpty() || sending) return
-        val sessionId = snapshot?.activeId
-        sending = true
+        val text = ui.draft.trim()
+        if (text.isEmpty() || ui.sending) return
+        val sessionId = ui.snapshot?.activeId
+        ui.sending = true
         userScrolledUp = false
         scope.launch {
             // Создание сессии и отправка — одна операция, и правило «сервер мог
@@ -571,14 +560,14 @@ fun ChatOverlay(
                 withContext(Dispatchers.IO) {
                     deliverPrompt(ServerSendTransport(serverPort, context), sessionId, text)
                 }
-            sending = false
+            ui.sending = false
             if (outcome.delivered) {
-                draft = ""
+                ui.draft = ""
                 keyboard?.hide()
                 focusManager.clearFocus()
                 // Оптимистично: мгновенно показываем своё сообщение в ленте.
-                snapshot = snapshot?.let { it.copy(messages = it.messages + ChatMsg("user", text)) }
-                scrollToBottomFull(listState, (snapshot?.messages?.size ?: 0) - 1)
+                ui.snapshot = ui.snapshot?.let { it.copy(messages = it.messages + ChatMsg("user", text)) }
+                scrollToBottomFull(listState, (ui.snapshot?.messages?.size ?: 0) - 1)
             } else {
                 // Черновик намеренно остаётся: сообщение не ушло, повтор должен
                 // быть возможен одним нажатием. Молчаливый отказ - это тот баг,
@@ -598,15 +587,15 @@ fun ChatOverlay(
     }
 
     fun stopGen() {
-        if (stopping) return
-        val sessionId = snapshot?.activeId ?: return
-        stopping = true
+        if (ui.stopping) return
+        val sessionId = ui.snapshot?.activeId ?: return
+        ui.stopping = true
         scope.launch {
             val ok =
                 try {
                     withContext(Dispatchers.IO) { abortSession(serverPort, sessionId) }
                 } finally {
-                    stopping = false
+                    ui.stopping = false
                 }
             if (ok) {
                 vibrate(context)
@@ -783,7 +772,7 @@ fun ChatOverlay(
                     val best = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim()
                     if (!best.isNullOrEmpty()) {
                         speechError = null
-                        draft = best
+                        ui.draft = best
                         send()
                     } else {
                         speechError = "не расслышал, попробуй ещё"
@@ -912,7 +901,7 @@ fun ChatOverlay(
                 whisperBusy = false
                 if (!text.isNullOrBlank() && !text.startsWith("ОШИБКА")) {
                     speechError = null
-                    draft = text
+                    ui.draft = text
                     send()
                 } else {
                     speechError = if (text.startsWith("ОШИБКА")) text else "не распознал голос, попробуй ещё"
@@ -989,9 +978,9 @@ fun ChatOverlay(
     // Если юзер сам листал вверх, автопрокрутка СТАРОЙ ленты не дёргает его,
     // НО когда приходит НОВОЕ сообщение (лента выросла) — принудительно
     // спускаемся к низу, чтобы последнее сообщение всегда было видно.
-    LaunchedEffect(snapshot?.messages?.size, snapshot?.thinking, snapshot?.liveTool) {
+    LaunchedEffect(ui.snapshot?.messages?.size, ui.snapshot?.thinking, ui.snapshot?.liveTool) {
         delay(90) // дождаться рекомпозиции LazyColumn — здесь новый ответ УЖЕ отрисован
-        val snap = snapshot ?: return@LaunchedEffect
+        val snap = ui.snapshot ?: return@LaunchedEffect
         val n = snap.messages.size
         val newMsg = n > prevMsgCount // появилось новое сообщение (свой вопрос или ответ модели)
         if (n > 0 && (!userScrolledUp || newMsg)) {
@@ -1009,7 +998,7 @@ fun ChatOverlay(
     // (композиция/измерение заняли время), вибрируем строго после показа текста.
     // knownRendered — индекс последнего, на который уже «вибрировали» (высчитывается
     // как количество завершённых ответов на момент последней вибрации).
-    val lastResp = snapshot?.messages?.indexOfLast { it.role == "assistant" && it.text.isNotBlank() && it.notice == null }
+    val lastResp = ui.snapshot?.messages?.indexOfLast { it.role == "assistant" && it.text.isNotBlank() && it.notice == null }
     LaunchedEffect(lastResp) {
         val idx = lastResp ?: return@LaunchedEffect
         if (idx < 0) return@LaunchedEffect
@@ -1029,7 +1018,7 @@ fun ChatOverlay(
         snapshotFlow { listState.firstVisibleItemIndex }
             .collect { idx ->
                 if (idx < 0) return@collect
-                val total = snapshot?.messages?.size ?: 0
+                val total = ui.snapshot?.messages?.size ?: 0
                 if (idx >= total - 1) {
                     userScrolledUp = false // юзер на самом низу — автоскролл можно
                 } else if (prevIdx >= 0 && idx < prevIdx) {
@@ -1062,12 +1051,12 @@ fun ChatOverlay(
             val decision =
                 advancePoll(
                     previous = poll,
-                    shown = snapshot,
+                    shown = ui.snapshot,
                     fresh = fetchChatSnapshot(serverPort),
                     now = System.currentTimeMillis(),
                 )
             poll = decision.state
-            noticeLatch = decision.latch
+            ui.noticeLatch = decision.latch
             knownMsgs = decision.knownMsgs
             decision.baselineRendered?.let { knownRendered = it }
             decision.abort?.let { abort ->
@@ -1081,7 +1070,7 @@ fun ChatOverlay(
             }
             val publish = decision.publish
             if (publish != null) {
-                snapshot = publish
+                ui.snapshot = publish
                 // Озвучка: раскладываем растущий текст ответа на предложения.
                 // Все правила (первый снапшот не читает историю, смена сессии
                 // гасит речь, новый вопрос сбрасывает курсор, живое сообщение
@@ -1161,17 +1150,17 @@ fun ChatOverlay(
                 // контекста уехал ниже, чтобы шапка не расползалась: раньше круг
                 // занимал всю свободную ширину и отжимал индикаторы вправо.
                 QuotaBadge(
-                    reachable = snapshot?.reachable,
-                    pingMs = snapshot?.pingMs ?: 0L,
-                    rejected = snapshot?.notice != null,
+                    reachable = ui.snapshot?.reachable,
+                    pingMs = ui.snapshot?.pingMs ?: 0L,
+                    rejected = ui.snapshot?.notice != null,
                     modifier = Modifier.weight(1f),
                 )
                 // Индикатор MCP-серверов (НЕОНОВЫЙ): «N MCP» + мигающая точка.
                 // Зелёный — все N подключённых серверов работают; красный — какой-то
                 // из них не работает (или их нет вовсе). Стоит ЛЕВЕЕ выбора цвета.
                 MCPIndicator(
-                    connected = snapshot?.mcpConnected ?: 0,
-                    total = snapshot?.mcpTotal ?: 0,
+                    connected = ui.snapshot?.mcpConnected ?: 0,
+                    total = ui.snapshot?.mcpTotal ?: 0,
                     onClick = { toggleHeaderPanel(PANEL_MCP) },
                     modifier = Modifier.padding(start = 4.dp),
                 )
@@ -1284,7 +1273,7 @@ fun ChatOverlay(
             // приближения к компакту; внутри — процент заполнения.
             Row(verticalAlignment = Alignment.CenterVertically) {
                 ContextGauge(
-                    filled = snapshot?.contextTokens ?: 0L,
+                    filled = ui.snapshot?.contextTokens ?: 0L,
                     limit = CONTEXT_LIMIT,
                     shape = appearance.ctxShape,
                     palette = appearance.palette,
@@ -1307,7 +1296,7 @@ fun ChatOverlay(
             // У каждого имени — мигающая точка: зелёная (работает) / красная (нет).
             if (showMcpList) {
                 McpServerList(
-                    servers = snapshot?.mcpServers ?: emptyList(),
+                    servers = ui.snapshot?.mcpServers ?: emptyList(),
                     modifier =
                         Modifier
                             .fillMaxWidth()
@@ -1753,7 +1742,7 @@ fun ChatOverlay(
                     }
                 }
             }
-            val msgs = snapshot?.messages ?: emptyList()
+            val msgs = ui.snapshot?.messages ?: emptyList()
             // The empty-state art fades out on the first message instead of
             // blinking off. It is driven here rather than inside the branch that
             // draws it, because a branch flip cannot be animated.
@@ -1762,10 +1751,10 @@ fun ChatOverlay(
                 animationSpec = tween(durationMillis = 450),
                 label = "empty-art",
             )
-            LaunchedEffect(msgs.size, snapshot?.thinking, snapshot?.liveTool) {
+            LaunchedEffect(msgs.size, ui.snapshot?.thinking, ui.snapshot?.liveTool) {
                 android.util.Log.d(
                     "ChatOverlay",
-                    "RENDER msgs=${msgs.size} thinking=${snapshot?.thinking} live=${snapshot?.liveTool?.name}",
+                    "RENDER msgs=${msgs.size} thinking=${ui.snapshot?.thinking} live=${ui.snapshot?.liveTool?.name}",
                 )
             }
             // Палитра шрифтов (настройка): тап по варианту — мгновенно применяется и сохраняется.
@@ -1858,7 +1847,7 @@ fun ChatOverlay(
                             val printable = last && m.role == "assistant" && m.text.isNotBlank()
                             MessageRow(
                                 m,
-                                snapshot?.modelName ?: "Модель",
+                                ui.snapshot?.modelName ?: "Модель",
                                 modelFont,
                                 modelColor,
                                 onTyped =
@@ -1869,8 +1858,8 @@ fun ChatOverlay(
                                     },
                             )
                         }
-                        if (snapshot?.thinking == true) {
-                            val snap = requireNotNull(snapshot)
+                        if (ui.snapshot?.thinking == true) {
+                            val snap = requireNotNull(ui.snapshot)
                             item(key = if (snap.stalled) "stalled" else "thinking") {
                                 when {
                                     snap.stalledDead ->
@@ -1893,7 +1882,7 @@ fun ChatOverlay(
                         // чтобы её не съедал автоскролл вниз и она читалась как вывод.
                         // Рендерим защёлку: плашка должна висеть, пока сервер держит
                         // ту же причину, даже если конкретный тик опроса её не увидел.
-                        (noticeLatch ?: snapshot?.notice)?.let { n ->
+                        (ui.noticeLatch ?: ui.snapshot?.notice)?.let { n ->
                             item(key = "notice_${n.title}_${n.attempt}") {
                                 NoticeRow(n, context)
                             }
@@ -1919,7 +1908,7 @@ fun ChatOverlay(
             // сообщений — то есть на строку «думаю», а карточка оставалась под
             // сгибом. Блокирующий вопрос обязан быть виден всегда, поэтому
             // скроллить его не нужно вовсе.
-            snapshot?.ask?.firstOrNull()?.let { card ->
+            ui.snapshot?.ask?.firstOrNull()?.let { card ->
                 Box(modifier = Modifier.padding(top = 8.dp)) {
                     AskCardView(
                         card = card,
@@ -1950,8 +1939,8 @@ fun ChatOverlay(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     BasicTextField(
-                        value = draft,
-                        onValueChange = { draft = it },
+                        value = ui.draft,
+                        onValueChange = { ui.draft = it },
                         modifier =
                             Modifier
                                 .weight(1f)
@@ -1967,7 +1956,7 @@ fun ChatOverlay(
                         keyboardActions = KeyboardActions(onSend = { send() }),
                         decorationBox = { inner ->
                             Box {
-                                if (draft.isEmpty()) {
+                                if (ui.draft.isEmpty()) {
                                     Text(
                                         "Напиши сообщение…",
                                         color = Color(0xFF777777),
@@ -1984,7 +1973,7 @@ fun ChatOverlay(
                     // Пока идёт запись (listening) он остаётся — иначе нечем
                     // остановить её.
                     AnimatedVisibility(
-                        visible = draft.isEmpty() || listening,
+                        visible = ui.draft.isEmpty() || listening,
                         enter = fadeIn(),
                         exit = fadeOut(),
                     ) {
@@ -2030,9 +2019,9 @@ fun ChatOverlay(
                         Modifier
                             .padding(start = 8.dp)
                             .size(38.dp)
-                            .clickable(enabled = !stopping) { stopGen() },
+                            .clickable(enabled = !ui.stopping) { stopGen() },
                     shape = CircleShape,
-                    color = if (stopping) Color(0xFF3A3A3A) else Color(0xFF9E1C1C),
+                    color = if (ui.stopping) Color(0xFF3A3A3A) else Color(0xFF9E1C1C),
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Stop,
@@ -2096,7 +2085,7 @@ fun ChatOverlay(
                 confirmButton = {
                     TextButton(onClick = {
                         confirmResetDead = false
-                        snapshot?.activeId?.let(::resetDeadSession)
+                        ui.snapshot?.activeId?.let(::resetDeadSession)
                     }) { Text("Удалить и начать заново", color = Color(0xFFFF6F5A)) }
                 },
                 dismissButton = {
