@@ -168,6 +168,7 @@ import org.opencode.mobile.ui.chat.pruneEmptySessions
 import org.opencode.mobile.ui.chat.readWavPcm16
 import org.opencode.mobile.ui.chat.sessionHasMessages
 import org.opencode.mobile.ui.chat.sessionRunning
+import org.opencode.mobile.ui.chat.snapshotChanged
 import org.opencode.mobile.ui.chat.stopAndPurge
 import org.opencode.mobile.ui.chat.typedKeyOf
 import org.opencode.mobile.ui.chat.vibrate
@@ -1134,19 +1135,11 @@ fun ChatOverlay(
                         withContext(Dispatchers.IO) { abortSession(serverPort, sid) }
                     }
                 }
-                changed = old == null ||
-                    old.messages != final.messages ||
-                    old.thinking != final.thinking ||
-                    old.stalled != final.stalled ||
-                    old.stalledDead != final.stalledDead ||
-                    old.liveTool != final.liveTool ||
-                    old.notice != final.notice ||
-                    // ask обязателен: запрос разрешения может прийти позже той же
-                    // tool-части, что уже в ленте, и тогда ни лента, ни thinking, ни
-                    // liveTool не меняются. Без этого пункта карточка не доедет до UI
-                    // и ход останется висеть.
-                    old.ask != final.ask ||
-                    latchBefore != noticeLatch
+                // Правило «что считать изменением» живёт в ui/chat/ChatSnapshotDelta
+                // с тестом: здесь только применяем решение. Именно там закреплено,
+                // что статус MCP обновляется и в простое — без этого шапка
+                // навсегда застревала на «0 MCP».
+                changed = snapshotChanged(old, final, latchBefore, noticeLatch)
                 if (changed) {
                     snapshot = final
                     // Озвучка: раскладываем растущий текст ответа на предложения.

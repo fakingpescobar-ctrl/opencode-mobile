@@ -572,6 +572,7 @@ app/
           TtsSettings.kt         # озвучка: движок/голос/sid, включённость = engine != Off
           TtsNarration.kt        # курсор озвучки: какой оборот и реплика уже отданы
           ElevenKeySettings.kt   # ключ ElevenLabs: черновик не чистится при сбое
+          ChatSnapshotDelta.kt   # что считать изменением снапшота (гейт перерисовки)
         AskCardView.kt           # вёрстка карточки вопроса/разрешения
         SttModelPicker.kt        # выбор модели STT (нескачанная не выбирается)
         EmptyChatArt.kt          # дождь на пустом экране (рисуется кодом)
