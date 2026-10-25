@@ -4,16 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.media.AudioAttributes
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
-import android.media.RingtoneManager
-import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.os.VibrationEffect
-import android.os.Vibrator
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -24,11 +15,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -64,7 +51,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Info
@@ -82,7 +68,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -96,10 +81,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -118,7 +101,6 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -144,27 +126,44 @@ import org.opencode.mobile.tts.ElevenLabsSecret
 import org.opencode.mobile.tts.TtsConfig
 import org.opencode.mobile.tts.TtsEngine
 import org.opencode.mobile.tts.TtsNarrator
+import org.opencode.mobile.ui.chat.AudioRecorder
 import org.opencode.mobile.ui.chat.CONTEXT_LIMIT
 import org.opencode.mobile.ui.chat.ChatCache
+import org.opencode.mobile.ui.chat.ContextGauge
+import org.opencode.mobile.ui.chat.DeadRow
+import org.opencode.mobile.ui.chat.LiveToolRow
+import org.opencode.mobile.ui.chat.MCPIndicator
+import org.opencode.mobile.ui.chat.McpServerList
+import org.opencode.mobile.ui.chat.MessageRow
+import org.opencode.mobile.ui.chat.NoticeRow
+import org.opencode.mobile.ui.chat.QuotaBadge
 import org.opencode.mobile.ui.chat.RetryState
 import org.opencode.mobile.ui.chat.StallState
+import org.opencode.mobile.ui.chat.StalledRow
+import org.opencode.mobile.ui.chat.ThinkingRow
+import org.opencode.mobile.ui.chat.TtsRadioRow
+import org.opencode.mobile.ui.chat.ZenMeter
 import org.opencode.mobile.ui.chat.abortSession
 import org.opencode.mobile.ui.chat.advanceRetry
 import org.opencode.mobile.ui.chat.advanceStall
 import org.opencode.mobile.ui.chat.answerPendingAsk
 import org.opencode.mobile.ui.chat.createSession
+import org.opencode.mobile.ui.chat.createSpeechRecognizer
 import org.opencode.mobile.ui.chat.deleteSession
 import org.opencode.mobile.ui.chat.fetchChatSnapshot
 import org.opencode.mobile.ui.chat.nextStableRounds
+import org.opencode.mobile.ui.chat.playNotificationSound
 import org.opencode.mobile.ui.chat.pollDelayMs
 import org.opencode.mobile.ui.chat.postMessage
 import org.opencode.mobile.ui.chat.pruneEmptySessions
+import org.opencode.mobile.ui.chat.readWavPcm16
 import org.opencode.mobile.ui.chat.sessionHasMessages
 import org.opencode.mobile.ui.chat.sessionRunning
 import org.opencode.mobile.ui.chat.stopAndPurge
+import org.opencode.mobile.ui.chat.typedKeyOf
+import org.opencode.mobile.ui.chat.vibrate
 import java.io.File
 import java.util.Locale
-import kotlin.concurrent.thread
 
 // Идентификаторы выпадающих панелей шапки — ключи для [ChatOverlay] переключателя
 // toggleHeaderPanel. Строками, а не enum: ключ нужен ровно в двух местах
@@ -194,8 +193,7 @@ private const val MOLTBOOK_SCAN_EVERY_MS = 5 * 60_000L
 // ради арифметики, которая восстанавливается из ширины ряда и cellGap.
 private const val TAG_CTX_GAUGE = "ctx_gauge"
 private const val TAG_ZEN_METER = "zen_meter"
-private const val TAG_CTX_ROW = "ctx_row"
-private const val TAG_ZEN_ROW = "zen_row"
+
 private const val TAG_PANEL_MCP = "panel_mcp"
 private const val TAG_PANEL_COLOR = "panel_color"
 private const val TAG_PANEL_FONT = "panel_font"
@@ -219,11 +217,6 @@ private object ElevenKeyPalette {
 // Голоса в сетке: пять на строку — на шапке телефона шесть уже не помещались.
 private const val SID_CHUNK = 5
 
-// Пороги цвета полосы расхода Zen: с 60% жёлтый («прибереги квоту»), с 90% красный
-// («почти всё»). Ровно как у шкалы заполнения контекста.
-private const val ZEN_WARN_RATIO = 0.6f
-private const val ZEN_DANGER_RATIO = 0.9f
-
 // Миллисекунд в минуте для паузы между обходами сессий.
 private const val MS_PER_MINUTE = 60_000L
 
@@ -234,9 +227,6 @@ private const val MS_PER_MINUTE = 60_000L
 
 /** Оранжевый плашки «озвучка переехала на другой движок»: предупреждение, не ошибка. */
 private const val TTS_FALLBACK_NOTICE_COLOR = 0xFFFFB74D
-
-/** Отдельная роль для сообщения об ошибке — иначе она уезжает в «Система». */
-private const val ERROR_ROLE_ARGB = 0xFFE05B5B
 
 internal data class ChatMsg(
     val role: String,
@@ -2364,661 +2354,6 @@ fun ChatOverlay(
     }
 }
 
-@Composable
-private fun ThinkingRow() {
-    val transition = rememberInfiniteTransition(label = "thinking")
-    val bars =
-        listOf(
-            transition.animateFloat(
-                initialValue = 0.35f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(tween(380, delayMillis = 0), RepeatMode.Reverse),
-                label = "bar0",
-            ),
-            transition.animateFloat(
-                initialValue = 0.35f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(tween(380, delayMillis = 130), RepeatMode.Reverse),
-                label = "bar1",
-            ),
-            transition.animateFloat(
-                initialValue = 0.35f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(tween(380, delayMillis = 260), RepeatMode.Reverse),
-                label = "bar2",
-            ),
-        )
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.padding(vertical = 6.dp),
-    ) {
-        bars.forEach { h ->
-            Box(
-                Modifier
-                    .padding(horizontal = 1.5.dp)
-                    .size(width = 5.dp, height = 16.dp * h.value)
-                    .background(Color(0xFF7BD88F), RoundedCornerShape(2.dp)),
-            )
-        }
-        Spacer(Modifier.width(10.dp))
-        Text("Модель думает…", color = Color(0xFF8A8A8A), fontSize = 13.sp)
-    }
-}
-
-@Composable
-private fun LiveToolRow(tool: ChatTool) {
-    // Живой чип: какой инструмент модель вызывает ПРЯМО СЕЙЧАС (пока работает).
-    val transition = rememberInfiniteTransition(label = "liveTool")
-    val pulse by transition.animateFloat(
-        initialValue = 0.4f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(460, delayMillis = 0), RepeatMode.Reverse),
-        label = "pulse",
-    )
-    // Иконка по типу инструмента.
-    val (icon, accent) =
-        when (tool.name) {
-            "websearch", "webfetch", "context7" -> "🔍" to Color(0xFF5B9BD5)
-            "bash", "shell" -> "🛠" to Color(0xFFD97706)
-            "read", "grep", "glob" -> "📄" to Color(0xFF7BD88F)
-            "write", "edit" -> "✏️" to Color(0xFFB48AD9)
-            else -> "⚙️" to Color(0xFF9AA5B1)
-        }
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier =
-            Modifier
-                .padding(vertical = 6.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(accent.copy(alpha = 0.12f * pulse))
-                .border(width = 1.dp, color = accent.copy(alpha = 0.5f), shape = RoundedCornerShape(14.dp))
-                .padding(horizontal = 12.dp, vertical = 7.dp),
-    ) {
-        // Пульсирующая точка «активно».
-        Box(
-            Modifier
-                .size(8.dp)
-                .graphicsLayer { alpha = pulse }
-                .background(accent, CircleShape),
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            "$icon ${tool.name}",
-            color = Color.White.copy(alpha = 0.92f),
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Bold,
-        )
-        if (tool.detail.isNotBlank()) {
-            Spacer(Modifier.width(10.dp))
-            Text(
-                tool.detail,
-                color = Color.White.copy(alpha = 0.72f),
-                fontSize = 12.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-    }
-}
-
-/**
- * Палитра плашки причины отказа: тёмно-коричневый фон (не красный — это не
- * ошибка приложения, а отказ провайдера), янтарный акцент и приглушённый вторичный.
- */
-@Suppress("MagicNumber")
-private object NoticePalette {
-    val bg = Color(0xFF2A1F1A)
-    val accent = Color(0xFFFFC107)
-    val dim = Color(0xFF9A8C7A)
-}
-
-/**
- * Плашка причины, по которой сервер не двигает ход (исчерпанная квота провайдера,
- * ретрай после ошибки). Показывается вместо безликого «зависло»: у пользователя
- * должно быть конкретное действие, а не гипотеза про сеть.
- */
-@Composable
-private fun NoticeRow(
-    notice: ChatNotice,
-    context: Context,
-) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 6.dp)
-            .background(NoticePalette.bg, RoundedCornerShape(12.dp))
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .size(10.dp)
-                    .background(NoticePalette.accent, RoundedCornerShape(3.dp)),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                notice.title,
-                color = NoticePalette.accent,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-            )
-            if (notice.attempt > 0) {
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    "попытка ${notice.attempt}",
-                    color = NoticePalette.dim,
-                    fontSize = 11.sp,
-                )
-            }
-        }
-        Text(
-            notice.message,
-            color = Color(0xFFEDEDED),
-            fontSize = 13.sp,
-            lineHeight = 18.sp,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-        val link = notice.actionLink
-        val label = notice.actionLabel
-        if (!link.isNullOrBlank() && !label.isNullOrBlank()) {
-            Text(
-                label,
-                color = Color(0xFF7BD88F),
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                modifier =
-                    Modifier
-                        .padding(top = 6.dp)
-                        .clickable {
-                            try {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)))
-                            } catch (_: Exception) {
-                                // Без браузера — просто молча оставляем текст.
-                            }
-                        },
-            )
-        }
-    }
-}
-
-@Composable
-private fun StalledRow() {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.padding(vertical = 6.dp),
-    ) {
-        Box(
-            Modifier
-                .size(10.dp)
-                .background(Color(0xFFE25822), RoundedCornerShape(3.dp)),
-        )
-        Spacer(Modifier.width(10.dp))
-        Text(
-            "Нет ответа (зависло) — проверь сеть/провайдера",
-            color = Color(0xFFE25822),
-            fontSize = 13.sp,
-        )
-    }
-}
-
-/**
- * Плашка МЁРТВОГО хода: сервер принял запрос, но ассистент не создал ни одного
- * шага — обычно он уже ответил ошибкой (неизвестная модель, 500 провайдера) или
- * списал квоту в ретрае. Отличать от «долго думает» принципиально: там модель
- * работает и надо ждать, тут она не вернётся сама и ждать бессмысленно.
- *
- * Само по себе «текст + иди жди» — это тупик: ход не завершится никогда, и
- * единственный выход (сменить сессию) надо ещё и догадаться. Поэтому здесь два
- * действия, и они неравнозначны по цене:
- *   [onAbort] — «прервать ход»: abort через сервер, история остаётся целой.
- *   [onReset] — «начать заново»: удалить сессию-зомби и создать новую.
- * Удаление необратимо, поэтому второй путь открывается только через диалог
- * подтверждения (см. resetDeadSession).
- */
-@Composable
-private fun DeadRow(
-    onAbort: () -> Unit,
-    onReset: () -> Unit,
-) {
-    Column(Modifier.padding(vertical = 6.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .size(10.dp)
-                    .background(NoticePalette.accent, RoundedCornerShape(3.dp)),
-            )
-            Spacer(Modifier.width(10.dp))
-            Text(
-                "Модель не ответила — запрос не прошёл",
-                color = NoticePalette.accent,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-            )
-        }
-        Text(
-            "Сервер принял сообщение, но шага ответа не создал. Проверь квоту " +
-                "провайдера и отправь сообщение ещё раз.",
-            color = Color(0xFFEDEDED),
-            fontSize = 13.sp,
-            lineHeight = 18.sp,
-            modifier = Modifier.padding(top = 2.dp),
-        )
-
-        // Два выхода из тупика, цена разная и это видно по цвету: зелёный —
-        // бесплатный (abort), красный — необратимый (удаление сессии).
-        Row(
-            Modifier.padding(top = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "Прервать ход",
-                color = Color(0xFF7BD88F),
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.clickable(onClick = onAbort),
-            )
-            Text(
-                "·",
-                color = NoticePalette.dim,
-                fontSize = 13.sp,
-                modifier = Modifier.padding(horizontal = 8.dp),
-            )
-            Text(
-                "Начать заново",
-                color = Color(0xFFFF6F5A),
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.clickable(onClick = onReset),
-            )
-        }
-    }
-}
-
-/**
- * Индикатор заполнения контекста (в шапке чата) — горизонтальная ПОЛОСКА из
- * наклонных кубиков (ромбов). Показывает `filled` (входные токены сессии)
- * относительно `limit` (контекст-лимит модели, CONTEXT_LIMIT). Заполненные
- * кубики окрашены цветом прогресса, который меняется по мере приближения к
- * компакту: зелёный (<50%) → жёлтый (50-80%) → красный (>80%). Пустые кубики
- * — тёмные. Зрительно видно, сколько контекста накоплено и когда скоро будет
- * компакт. Полоска занимает всю доступную ширину (weight 1f).
- */
-
-/**
- * Статус связи с сервером + пинг: «Online 42ms» зелёным, «Offline» красным.
- *
- * Что именно показывает. Сервер opencode НЕ умеет отдавать остаток квоты — в его
- * API нет ни одного эндпоинта про usage/limits/billing (проверено по схеме /doc).
- * Поэтому честный сигнал здесь один: прошёл ли последний запрос и что на него
- * ответили. «Online» = сервер ответил и не отказал в квоте; «Offline» = либо не
- * ответил вовсе, либо ответил отказом (reason/message провайдера — квота или ретрай).
- *
- * Почему `rejected` отдельным флагом, а не через `reachable`: отказ по квоте — это
- * УСПЕШНЫй HTTP-ответ с телом про отказ. Сервер доступен, но квоты нет — и по одному
- * факту «досстучались» это не отличить от успеха. Без отдельного флага плашка горела
- * бы «Online» ровно тогда, когда модель уже не отвечает.
- *
- * @param reachable null → состояние неизвестно (ни разу не достучались). Показываем
- *   серый «Online?» вместо красного «Offline»: врать об отказе хуже, чем не знать.
- * @param rejected сервер ответил отказом по квоте/ретраю (текст — в плашке под лентой).
- * @param pingMs задержка последнего запроса, мс. Показываем только когда есть чему
- *   верить: при reachable == null замер обрывается и цифра бессмысленна.
- */
-@Composable
-private fun QuotaBadge(
-    reachable: Boolean?,
-    pingMs: Long,
-    rejected: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    val offline = reachable == false || rejected
-    val unknown = reachable == null
-    val color =
-        when {
-            offline -> Color(0xFFE53935)
-            unknown -> Color(0xFF9E9E9E)
-            else -> Color(0xFF7BD88F)
-        }
-    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(color),
-        )
-        Text(
-            text = if (offline) "Offline" else "Online",
-            color = color,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold,
-            // ОДНА строка любой ценой: бейдж живёт в weight(1f)-слоте шапки, и при
-            // нехватке ширины Compose переносил «Online 69ms» на вторую строку —
-            // хедер вздваивался по высоте. Лучше обрезать хвост, чем ломать вёрстку.
-            softWrap = false,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(start = 6.dp),
-        )
-        // Пинг цифрами — только при подтверждённом контакте. На неизвестном
-        // состоянии показывать «—ms» значило бы рисовать число, которого нет.
-        val pingSuffix =
-            when {
-                reachable == null -> ""
-                else -> " ${pingMs}ms"
-            }
-        if (pingSuffix.isNotEmpty()) {
-            Text(
-                text = pingSuffix,
-                color = Color(0xFF8A8A8A),
-                fontSize = 11.sp,
-                softWrap = false,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 4.dp),
-            )
-        }
-    }
-}
-
-/**
- * Расход дневной Zen-квоты — та же полоса-кубики, что индикатор контекста,
- * строкой ниже него.
- *
- * Ровно та же функция [GaugeBars], тот же цвет кубиков для «свободного места»,
- * та же высота. Различается только цвет заливки: у контекста он зелёно-жёлто-
- * красный по мере заполнения, у квоты — голубой, пока есть запас, и жёлто-красный
- * на последних процентах (там опасно уже не «много занято», а «скоро кончится»).
- *
- * Ни цифр, ни процентов, ни подписи: сколько именно занято, полоса показывает
- * сама. Держать рядом ещё и текст значило бы дублировать одно и то же дважды и
- * забирать высоту у чата.
- *
- * Пока точного замера не было (`exact = false`), полоса пустая: неизвестное
- * значение нельзя рисовать как «почти пусто», иначе 2000 потраченных запросов
- * выглядели бы как 0.
- */
-@Suppress("MagicNumber")
-@Composable
-private fun ZenMeter(
-    used: Int,
-    exact: Boolean,
-    shape: GaugeShape,
-    palette: GaugePalette,
-    modifier: Modifier = Modifier,
-) {
-    val ratio = ZenQuota.ratio(used, ZenQuota.DAILY_LIMIT).coerceIn(0f, 1f)
-    val active =
-        when {
-            ratio >= ZEN_DANGER_RATIO -> Color(palette.zenDanger)
-            ratio >= ZEN_WARN_RATIO -> Color(palette.zenWarn)
-            else -> Color(palette.zenCalm)
-        }
-    GaugeBars(
-        ratio = if (exact) ratio else 0f,
-        colors = GaugeColors(active, Color(palette.track)),
-        shape = shape,
-        rowTag = TAG_ZEN_ROW,
-        modifier = modifier.height(shape.height).fillMaxWidth(),
-    )
-}
-
-@Suppress("MagicNumber")
-@Composable
-private fun ContextGauge(
-    filled: Long,
-    limit: Long,
-    shape: GaugeShape,
-    palette: GaugePalette,
-    modifier: Modifier = Modifier,
-) {
-    val ratio = if (limit <= 0) 0f else (filled.toFloat() / limit.toFloat()).coerceIn(0f, 1f)
-    val active =
-        when {
-            ratio < 0.50f -> Color(palette.ctxLow)
-            ratio < 0.80f -> Color(palette.ctxMid)
-            else -> Color(palette.ctxHigh)
-        }
-    GaugeBars(
-        ratio = ratio,
-        colors = GaugeColors(active, Color(palette.track)),
-        shape = shape,
-        rowTag = TAG_CTX_ROW,
-        modifier = modifier.height(shape.height).fillMaxWidth(),
-    )
-}
-
-/**
- * Общая полоса-кубики для индикаторов расхода.
- *
- * Её используют и контекст, и Zen-квота. Раньше каждый рисовал кубики сам, и они
- * разошлись: у квоты ромбики вышли наклонены в другую сторону и вдвое ниже. Общая
- * функция сделана, чтобы они больше не могли стать разными по сюжету.
- *
- * Форма — наклонная лента: параллелограмм, у которого верхнее ребро сдвинуто
- * вправо на `lean = GAUGE_LEAN * height`. Поверх заливки лента нарезана щелями
- * на [GAUGE_CELLS] ячеек, щели идут параллельно наклону.
- *
- * Почему лента, а не кубики: ячейки должны быть узкими (90 штук на всю
- * ширину), а наклон — заметным. У кубика наклон задаётся сдвигом вершины на
- * величину порядка его ширины, поэтому 90 узких ячеек плюс сильный наклон
- * вместе невозможны — ячейки либо слипаются в гладкую полосу без делений, либо
- * наклон получается нулевым. Лента решает это: наклон идёт по всей длине, а
- * ячейки остаются видимыми.
- */
-
-/**
- * Активная заливка и подложка индикатора одной парой.
- *
- * Два цвета всегда приходят вместе — по одному полосу не нарисовать, — а держать
- * их отдельными параметрами раздувало список аргументов [GaugeBars] до шести.
- */
-private data class GaugeColors(
-    val active: Color,
-    val track: Color,
-)
-
-@Composable
-private fun GaugeBars(
-    ratio: Float,
-    colors: GaugeColors,
-    shape: GaugeShape,
-    rowTag: String,
-    modifier: Modifier = Modifier,
-) {
-    // Щели рисуются цветом фона шапки, поэтому выглядят как пустота между
-    // ячейками, а не как линии поверх полосы.
-    val backdrop = Color(0xFF101010)
-    val fill = ratio.coerceIn(0f, 1f)
-    val cells = shape.cells
-    val leanRatio = shape.lean
-    val gapDp = shape.cellGapDp
-    // Canvas сам по себе не создаёт узла доступности, поэтому ряду нужен
-    // явный testTag - иначе в дампе не видно, где полоса и какова её высота.
-    Canvas(modifier.testTag(rowTag)) {
-        val h = size.height
-        val lean = h * leanRatio
-        // Лента вписана в холст по диагонали: нижний левый угол у левого края,
-        // верхний правый — у правого, поэтому ничего не обрезается.
-        val bandW = (size.width - lean).coerceAtLeast(1f)
-        drawPath(leanBand(0f, bandW, lean, h), colors.track)
-        if (fill > 0f) {
-            drawPath(leanBand(0f, bandW * fill, lean, h), colors.active)
-        }
-        val step = bandW / cells
-        val gap = gapDp.dp.toPx()
-        if (gap > 0f && gap < step * 0.5f) {
-            for (k in 1 until cells) {
-                val x = step * k
-                drawLine(
-                    color = backdrop,
-                    start = Offset(x, h),
-                    end = Offset(x + lean, 0f),
-                    strokeWidth = gap,
-                )
-            }
-        }
-    }
-}
-
-/** Параллелограмм-лента: низ от [left] до [left] + [width], верх сдвинут на [lean]. */
-private fun leanBand(
-    left: Float,
-    width: Float,
-    lean: Float,
-    height: Float,
-) = Path().apply {
-    moveTo(left, height)
-    lineTo(left + width, height)
-    lineTo(left + width + lean, 0f)
-    lineTo(left + lean, 0f)
-    close()
-}
-
-/**
- * Неоновый индикатор MCP-серверов: «N MCP» + мигающая точка-светодиод.
- * Зелёный — все подключённые серверы работают (connected==total>0);
- * красный — какой-то не работает или их нет. Стилистика — неон: яркий
- * цвет, мягкое свечение вокруг точки (shadowBlur), точка плавно мигает.
- */
-@Composable
-private fun MCPIndicator(
-    connected: Int,
-    total: Int,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit = {},
-) {
-    // Все работают: есть серверы, и все подключённые дошли до connected.
-    val allOk = total > 0 && connected == total
-    val neon = if (allOk) Color(0xFF39FF88) else Color(0xFFFF3B3B)
-    val hasServers = total > 0
-    // Мягкое «дыхание» точки через ДИСКРЕТНЫЙ таймер, а не через infiniteTransition.
-    // infiniteTransition тикал каждый кадр (60fps) = RenderThread постоянно занят.
-    // Здесь alpha обновляется ~16 раз/с (delay 60мс) циклом, давая плавный пульс,
-    // но массивно дешевле. ИТОГОВАЯ защита CPU — тройная:
-    //  1) без MCP (total==0) — цикл вообще не запускается, точка статична;
-    //  2) цикл дискретный (не 60fps);
-    //  3) в фоне (lifecycle паузы) — эффект спит, не тикает.
-    var blink by remember { mutableFloatStateOf(if (hasServers) 0.5f else 0.45f) }
-    if (hasServers) {
-        val lc = LocalLifecycleOwner.current.lifecycle
-        LaunchedEffect(total) {
-            if (lc.currentState != Lifecycle.State.RESUMED) {
-                // При старте в фоне — стоим, пока не вернёмся на передний план.
-                // Возобновляем по перезаходу (эффект перезапустится на рекомпозиции).
-                return@LaunchedEffect
-            }
-            // Пульс 0.35 → 1.0 → 0.35 по синусу. ДИСКРЕТНО: апдейт раз в 120мс
-            // (≈8 тиков за цикл ~1с). Это «дышащий» пульс — плавный на глаз, но
-            // в ~7 раз дешевле 60fps-infiniteTransition (RenderThread рисует Canvas
-            // только при смене alpha). Пауза в фоне — ниже.
-            var t = 0.0
-            while (true) {
-                // Если Activity ушла в фон — перестаём тикать (экономия батареи).
-                if (lc.currentState != Lifecycle.State.RESUMED) {
-                    blink = 0.5f
-                    delay(2_000L)
-                    continue
-                }
-                val a = 0.35f + 0.65f * ((kotlin.math.sin(t) + 1.0) / 2.0).toFloat()
-                blink = a
-                t += 0.785 // ~0.785 рад/тик → период волны ≈ 8 тиков ≈ 0.96с
-                if (t > kotlin.math.PI * 2.0) t -= kotlin.math.PI * 2.0
-                delay(120)
-            }
-        }
-    }
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier.clickable { onClick() }) {
-        // Аккуратная мигающая точка-светодиод (без ореола/свечения).
-        Box(Modifier.size(22.dp), contentAlignment = Alignment.Center) {
-            Canvas(Modifier.size(22.dp)) {
-                val c = Offset(size.width / 2f, size.height / 2f)
-                val rDot = 4.dp.toPx()
-                drawCircle(neon.copy(alpha = blink), radius = rDot, center = c)
-            }
-        }
-        Spacer(Modifier.width(4.dp))
-        // «N MCP» — сначала число, потом слово; надпись ВСЕГДА бирюзовая (яркий неон),
-        // не зависит от статуса. Статус показывает только точка-светодиод.
-        Text(
-            "$connected MCP",
-            color = Color(0xFF00E5FF),
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 1.sp,
-            softWrap = false,
-            maxLines = 1,
-        )
-    }
-}
-
-/**
- * Выпадающий список MCP-серверов (по тапу на индикатор MCP в шапке). Для каждого
- * имени — точка-светодиод: зелёная (работает, status=="connected") или красная
- * (не работает / отключён), плюс голубое число = сколько инструментов отдаёт
- * сервер (если сервер наш локальный и ответил tools/list). Пусто — «нет MCP».
- */
-@Composable
-private fun McpServerList(
-    servers: List<McpInfo>,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier
-            .background(Color(0xFF161616), RoundedCornerShape(12.dp))
-            .border(1.dp, Color(0xFF2A2A2A), RoundedCornerShape(12.dp))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-    ) {
-        Text(
-            "MCP-серверы",
-            color = Color(0xFF00E5FF),
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 1.sp,
-        )
-        Spacer(Modifier.height(6.dp))
-        if (servers.isEmpty()) {
-            Text("Нет подключённых MCP", color = Color(0xFF8A8A8A), fontSize = 12.sp)
-        } else {
-            servers.forEach { srv ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // Точка статуса СТАТИЧНАЯ (без rememberInfiniteTransition) — как в
-                    // MCPIndicator. Статус передаёт цвет, а не мигание: не грузим
-                    // RenderThread постоянно, даже при открытом списке серверов.
-                    val ok = srv.status == "connected"
-                    val dotColor = if (ok) Color(0xFF39FF88) else Color(0xFFFF3B3B)
-                    Canvas(Modifier.size(12.dp)) {
-                        drawCircle(dotColor.copy(alpha = 0.9f), radius = size.minDimension / 2f)
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        srv.name,
-                        color = Color(0xFFE6E6E6),
-                        fontSize = 13.sp,
-                    )
-                    // Сколько инструментов отдаёт сервер — считает сам сервер
-                    // (MemoryMcp.toolCounts), для чужих серверов вывода нет.
-                    srv.tools?.let { count ->
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            "$count",
-                            color = Color(0xFF00E5FF),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        if (ok) "работает" else "не работает",
-                        color = if (ok) Color(0xFF39FF88) else Color(0xFFFF3B3B),
-                        fontSize = 11.sp,
-                    )
-                }
-                Spacer(Modifier.height(5.dp))
-            }
-        }
-    }
-}
-
 // Доступные шрифты ответов модели: (ключ сохранения, имя в палитре, FontFamily)
 private val fontEntries =
     listOf(
@@ -3053,352 +2388,6 @@ private fun parseHexColor(hex: String): Color =
         Color(0xFFD97706)
     }
 
-// Создаёт системный распознаватель речи, если он доступен на устройстве.
-private fun createSpeechRecognizer(context: Context): SpeechRecognizer? =
-    if (SpeechRecognizer.isRecognitionAvailable(context)) {
-        SpeechRecognizer.createSpeechRecognizer(context.applicationContext)
-    } else {
-        null
-    }
-
-/** Чтение PCM16 WAV → FloatArray 16кГц моно (микс каналов средним + ресемпл линейной интерполяцией). */
-private fun readWavPcm16(
-    f: File,
-    targetRate: Int = 16000,
-): FloatArray {
-    val b = f.readBytes()
-
-    fun le16(o: Int) = ((b[o + 1].toInt() and 0xFF) shl 8) or (b[o].toInt() and 0xFF)
-
-    fun le32(o: Int) =
-        ((b[o + 3].toInt() and 0xFF) shl 24) or ((b[o + 2].toInt() and 0xFF) shl 16) or
-            ((b[o + 1].toInt() and 0xFF) shl 8) or (b[o].toInt() and 0xFF)
-    if (b.size < 44 || String(b, 0, 4, Charsets.US_ASCII) != "RIFF" || String(b, 8, 4, Charsets.US_ASCII) != "WAVE") {
-        throw RuntimeException("не WAV-файл")
-    }
-    var pos = 12
-    var channels = 1
-    var rate = 16000
-    var bits = 16
-    var dataStart = -1
-    var dataLen = 0
-    while (pos + 8 <= b.size) {
-        val id = String(b, pos, 4, Charsets.US_ASCII)
-        val len = le32(pos + 4)
-        if (id == "fmt ") {
-            channels = le16(pos + 10)
-            rate = le32(pos + 12)
-            bits = le16(pos + 22)
-        } else if (id == "data") {
-            dataStart = pos + 8
-            dataLen = len
-        }
-        pos += 8 + len + (len and 1)
-    }
-    if (dataStart < 0 || channels < 1 || bits != 16) throw RuntimeException("WAV: нет data/не PCM16 (bits=$bits)")
-    val n = (dataLen / (2 * channels)).coerceAtMost((b.size - dataStart) / (2 * channels))
-    val mono =
-        FloatArray(n) { i ->
-            var acc = 0
-            for (c in 0 until channels) acc += le16(dataStart + (i * channels + c) * 2).toShort().toInt()
-            (acc / channels) / 32768f
-        }
-    if (rate == targetRate) return mono
-    // линейный ресемпл
-    val ratio = rate.toDouble() / targetRate
-    val outLen = (n / ratio).toInt()
-    return FloatArray(outLen) { i ->
-        val src = i * ratio
-        val i0 = src.toInt()
-        val i1 = (i0 + 1).coerceAtMost(n - 1)
-        val frac = (src - i0).toFloat()
-        mono[i0] * (1 - frac) + mono[i1] * frac
-    }
-}
-
-// Запись голоса для локального Whisper.
-// Пишем 48000 Гц (нативная частота телефона) и ресемплим в 16к СВОИМ FIR-фильтром:
-// встроенный ресемплер OPPO сыпет паразитные пики 2.5/4/6/7.5 кГц, от которых
-// whisper путает слова. Стерео: L/R — два микрофона, берём более громкий.
-private class AudioRecorder(
-    private val context: Context,
-    private val sampleRate: Int = 16000,
-) {
-    private val captureRate = 48000 // частота захвата (нативная)
-    private var recorder: AudioRecord? = null
-    private var thread: Thread? = null
-
-    @Volatile private var running = false
-    private val raw = mutableListOf<Short>() // interleaved (L,R,L,R…) если стерео
-    private var channels = 1
-
-    @Suppress("ReturnCount")
-    private fun buildRecorder(
-        fmt: Int,
-        bufSize: Int,
-    ): AudioRecord? {
-        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            return null
-        }
-        // UNPROCESSED (сырой тракт): MIC-тракт OPPO замусорен артефактами
-        // ресемплинга (паразитные пики 2.5/4/7.5 кГц у Найквиста) — whisper
-        // на таком сигнале путает слова. Если UNPROCESSED не поддержан — MIC.
-        val sources =
-            listOf(
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION, // телефонный тракт с AGC: самый громкий и чистый
-                MediaRecorder.AudioSource.UNPROCESSED,
-                MediaRecorder.AudioSource.MIC,
-            )
-        for (src in sources) {
-            try {
-                val r = AudioRecord(src, captureRate, fmt, AudioFormat.ENCODING_PCM_16BIT, bufSize)
-                if (r.state == AudioRecord.STATE_INITIALIZED) {
-                    Log.d("VOICE", "recorder source=$src (${if (src == MediaRecorder.AudioSource.UNPROCESSED) "UNPROCESSED" else "MIC"})")
-                    return r
-                }
-                r.release()
-            } catch (_: Throwable) {
-                // пробуем следующий source
-            }
-        }
-        return null
-    }
-
-    fun start() {
-        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            throw SecurityException("RECORD_AUDIO permission is not granted")
-        }
-        val enc = AudioFormat.ENCODING_PCM_16BIT
-        var fmt = AudioFormat.CHANNEL_IN_STEREO
-        var minBuf = AudioRecord.getMinBufferSize(captureRate, fmt, enc)
-        var r = if (minBuf > 0) buildRecorder(fmt, maxOf(minBuf * 4, 8192)) else null
-        if (r != null) {
-            channels = 2
-        } else {
-            fmt = AudioFormat.CHANNEL_IN_MONO
-            minBuf = AudioRecord.getMinBufferSize(captureRate, fmt, enc)
-            r = buildRecorder(fmt, maxOf(minBuf * 4, 8192)) ?: throw RuntimeException("микрофон не инициализирован")
-            channels = 1
-        }
-        val bufSize = maxOf(minBuf * 4, 8192)
-        recorder = r
-        raw.clear()
-        running = true
-        r.startRecording()
-        Log.d("VOICE", "recorder: channels=$channels, ${captureRate}Hz")
-        thread =
-            thread(name = "whisper-record") {
-                val buf = ShortArray(bufSize / 2)
-                while (running) {
-                    val n = r.read(buf, 0, buf.size)
-                    if (n > 0) synchronized(raw) { for (i in 0 until n) raw.add(buf[i]) }
-                }
-            }
-    }
-
-    fun stop(): FloatArray {
-        running = false
-        thread?.join(1500)
-        val r = recorder ?: return FloatArray(0)
-        try {
-            r.stop()
-        } catch (_: Exception) {
-        }
-        r.release()
-        recorder = null
-        val data = synchronized(raw) { raw.toShortArray() }
-        if (data.isEmpty()) return FloatArray(0)
-        var l: FloatArray
-        var rr: FloatArray
-        if (channels == 2 && data.size >= 2) {
-            val n = data.size / 2
-            l = resample4to1(FloatArray(n) { data[it * 2] / 32768f })
-            rr = resample4to1(FloatArray(n) { data[it * 2 + 1] / 32768f })
-        } else {
-            l = resample4to1(FloatArray(data.size) { data[it] / 32768f })
-            rr = FloatArray(0)
-        }
-        // High-pass 150 Гц: убираем сетевой фон 100 Гц.
-        l = highPass(l)
-        if (rr.isNotEmpty()) rr = highPass(rr)
-        val rmsL = rms(l)
-        val rmsR = if (rr.isNotEmpty()) rms(rr) else -1.0
-        val best = if (rmsL >= rmsR) l else rr
-        Log.d("VOICE", "48к→16к: rmsL=${"%.3f".format(rmsL)} rmsR=${"%.3f".format(rmsR)} → беру ${if (rmsL >= rmsR) "L" else "R"}")
-        return best
-    }
-
-    /** Качественный ресемпл 48000→16000: FIR low-pass (Хэмминг, 63 тапа, срез 7.4к) + децимация 4:1. */
-    private fun resample4to1(x: FloatArray): FloatArray {
-        val taps = 63
-        val cut = 7400.0 / 48000.0
-        val h =
-            DoubleArray(taps) { i ->
-                val n = i - (taps - 1) / 2.0
-                val sinc = if (n == 0.0) 2 * cut else kotlin.math.sin(2 * Math.PI * cut * n) / (Math.PI * n)
-                sinc * (0.54 - 0.46 * kotlin.math.cos(2 * Math.PI * i / (taps - 1)))
-            }
-        val hSum = h.sum()
-        for (i in h.indices) h[i] /= hSum
-        val half = (taps - 1) / 2
-        val outLen = x.size / 4
-        val out = FloatArray(outLen)
-        for (k in 0 until outLen) {
-            var acc = 0.0
-            val base = k * 4
-            for (t in 0 until taps) {
-                val idx = base - half + t
-                if (idx in x.indices) acc += h[t] * x[idx]
-            }
-            out[k] = acc.toFloat()
-        }
-        return out
-    }
-
-    /** High-pass 150 Гц (биквад RBJ, Q=0.707) — срез сетевого фона 100 Гц. */
-    private fun highPass(
-        x: FloatArray,
-        fc: Double = 150.0,
-        q: Double = 0.707,
-    ): FloatArray {
-        val w0 = 2.0 * Math.PI * fc / sampleRate
-        val cosw = Math.cos(w0)
-        val sinw = Math.sin(w0)
-        val alpha = sinw / (2.0 * q)
-        val b0 = (1.0 + cosw) / 2.0
-        val b1 = -(1.0 + cosw)
-        val b2 = (1.0 + cosw) / 2.0
-        val a0 = 1.0 + alpha
-        val a1 = -2.0 * cosw
-        val a2 = 1.0 - alpha
-        val out = FloatArray(x.size)
-        var x1 = 0f
-        var x2 = 0f
-        var y1 = 0f
-        var y2 = 0f
-        for (i in x.indices) {
-            val y = ((b0 / a0) * x[i] + (b1 / a0) * x1 + (b2 / a0) * x2 - (a1 / a0) * y1 - (a2 / a0) * y2).toFloat()
-            x2 = x1
-            x1 = x[i]
-            y2 = y1
-            y1 = y
-            out[i] = y
-        }
-        return out
-    }
-
-    private fun rms(x: FloatArray): Double {
-        var s = 0.0
-        for (v in x) s += v.toDouble() * v
-        return kotlin.math.sqrt(s / x.size)
-    }
-}
-
-/**
- * Текст реплики.
- *
- * [onTyped] == null — печатать не надо (своя реплика, служебная строка, уже
- * напечатанный ответ). Непустой — текст проявляется по буквам, и колбэк
- * вызывается один раз, когда печать дошла до конца.
- */
-@Composable
-private fun MessageText(
-    m: ChatMsg,
-    isModel: Boolean,
-    modelFont: FontFamily,
-    modelColor: Color,
-    onTyped: (() -> Unit)?,
-) {
-    val style =
-        TextStyle(
-            color = if (isModel) modelColor else Color(0xFFEDEDED),
-            fontFamily = if (isModel) modelFont else FontFamily.Default,
-            fontSize = 14.sp,
-            lineHeight = 19.sp,
-        )
-    // Один и тот же composable в обоих случаях: смена ветки означала бы, что при
-    // гашении ключа поддерево печати выбрасывается из композиции, а вместе с ним
-    // и remember с накопленным прогрессом. Здесь меняется только флаг.
-    TypewriterText(
-        text = m.text,
-        animate = onTyped != null,
-        style = style,
-        key = typedKeyOf(m),
-        onTyped = { onTyped?.invoke() },
-    )
-}
-
-@Composable
-private fun MessageRow(
-    m: ChatMsg,
-    modelName: String = "Модель",
-    modelFont: FontFamily = FontFamily.Monospace,
-    modelColor: Color = Color(0xFFD97706),
-    onTyped: (() -> Unit)? = null,
-) {
-    val isModel = m.role == "assistant"
-    val roleColor =
-        when (m.role) {
-            "user" -> Color(0xFF8AB4F8)
-            "assistant" -> Color(0xFF9C27B0)
-            "error" -> Color(ERROR_ROLE_ARGB)
-            else -> Color(0xFFB0B0B0)
-        }
-    val roleLabel =
-        when (m.role) {
-            "user" -> "Ты"
-            "assistant" -> modelName
-            // Отдельная роль, а не «Система»: ход, у которого осталась только
-            // причина отказа, показываем как отказ, иначе он читается как
-            // служебная реплика приложения.
-            "error" -> "Ошибка"
-            else -> "Система"
-        }
-    Column(Modifier.fillMaxWidth()) {
-        Text(
-            roleLabel,
-            color = roleColor,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold,
-        )
-        if (m.text.isNotBlank()) {
-            MessageText(
-                m = m,
-                isModel = isModel,
-                modelFont = modelFont,
-                modelColor = modelColor,
-                onTyped = onTyped,
-            )
-        }
-        // Причина отказа лежит отдельно от текста, поэтому и рисуется отдельно:
-        // под репликой модели её не спутать с самим ответом.
-        if (m.notice != null) {
-            SelectionContainer {
-                Text(
-                    m.notice,
-                    color = Color(ERROR_ROLE_ARGB),
-                    fontSize = 13.sp,
-                    lineHeight = 18.sp,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-            }
-        }
-    }
-}
-
-/**
- * Ключ реплики для анимации печати.
- *
- * Ключ — идентификатор сообщения от сервера. Индекс в ленте для этого не годится:
- * лента обрезается до MAX_SHOWN, при каждом обновлении индексы прыгают, и уже
- * напечатанная реплика начинает печататься заново (жалоба пользователя 14.10).
- * Длина текста тоже не годится по той же причине — она меняется при дописывании.
- * У клиентских реплик (своё сообщение) идентификатора нет, поэтому fallback —
- * роль и длина: две такие реплики подряд дадут разные ключи, лишь одинаковые
- * тексты совпадут, и второй просто не напечатается.
- */
-private fun typedKeyOf(m: ChatMsg): String = m.id.ifBlank { "${m.role}:${m.text.length}" }
-
 private suspend fun scrollToBottomFull(
     state: LazyListState,
     target: Int,
@@ -3415,68 +2404,5 @@ private suspend fun scrollToBottomFull(
         val overflow = (last.offset + last.size) - info.viewportEndOffset
         if (overflow <= 0) return
         state.scrollBy(overflow.toFloat())
-    }
-}
-
-private fun vibrate(context: Context) {
-    try {
-        val v = context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator ?: return
-        if (Build.VERSION.SDK_INT >= 26) {
-            v.vibrate(VibrationEffect.createOneShot(90, VibrationEffect.DEFAULT_AMPLITUDE))
-        } else {
-            @Suppress("DEPRECATION")
-            v.vibrate(90)
-        }
-    } catch (_: Exception) {
-    }
-}
-
-// Системный звук уведомления — тот самый тон, что юзер выбрал в настройках
-// Android для нотификаций. Играет при появлении нового ответа, чтобы оповещение
-// было слышным (не только вибрация). Ringtone.play() может блокировать — гоняем
-// на Dispatchers.IO. Не создаём NotificationChannel: просто воспроизводим тон.
-private fun playNotificationSound(context: Context) {
-    try {
-        val uri: Uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-        if (uri != null) {
-            val rt = RingtoneManager.getRingtone(context.applicationContext, uri)
-            if (rt != null) {
-                if (Build.VERSION.SDK_INT >= 28) {
-                    rt.audioAttributes =
-                        AudioAttributes
-                            .Builder()
-                            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                            .build()
-                }
-                rt.play()
-            }
-        }
-    } catch (_: Exception) {
-    }
-}
-
-/** Ряд-переключатель в стиле панели STT: активен или нет. */
-@Composable
-private fun TtsRadioRow(
-    label: String,
-    active: Boolean,
-    onClick: () -> Unit,
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onClick)
-                .padding(vertical = 6.dp),
-    ) {
-        Text(
-            if (active) "● " else "○ ",
-            color = Color(0xFFFF6D00),
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Bold,
-        )
-        Text(label, color = Color(0xFFE6E6E6), fontSize = 13.sp)
     }
 }

@@ -132,6 +132,23 @@ API
   не читал никто. Живой список команд остался один — enum `MediaCommand`, за ним
   следит `SessionControlEnumContractTest`.
 
+ChatOverlay разобран на четыре файла (25.10.2026)
+- `ui/ChatOverlay.kt` — 3482 → 2410 строк. Из него ушли: строки ленты
+  (`chat/ChatRows.kt` — thinking, live-tool, плашка, «завис», отказ), индикаторы
+  шапки (`chat/HeaderIndicators.kt` — статус/пинг, Zen-квота, контекст, MCP-список),
+  запись WAV и распознавание речи (`chat/VoiceInput.kt`), реплика с печатью по
+  буквам и TTS-выбором (`chat/MessageBubbles.kt`).
+- Перенос дословный, поведение не менялось: 775 тестов, ktlint и detekt зелёные.
+  Видимость `internal` — только там, где функцию зовёт сам `ChatOverlay`; всё, что
+  живёт внутри файла (`GaugeBars`, `leanBand`, `NoticePalette`, `MessageText`,
+  `typedKeyOf`, `GaugeColors`), осталось `private`.
+- Вместе с блоками переехали их константы: `TAG_CTX_ROW`/`TAG_ZEN_ROW` и пороги
+  `ZEN_WARN_RATIO`/`ZEN_DANGER_RATIO` — в `HeaderIndicators.kt`, `ERROR_ROLE_ARGB`
+  — в `MessageBubbles.kt`. Док `ContextGauge`, висевший над `QuotaBadge`, вернулся
+  к своему composable.
+- `detekt-baseline.xml` перегенерирован: записи `ChatOverlay.kt` переехали под новые
+  файлы, устаревшие записи (нарушения, которых в коде уже нет) удалены.
+
 ---
 
 ## Стек и зависимости
