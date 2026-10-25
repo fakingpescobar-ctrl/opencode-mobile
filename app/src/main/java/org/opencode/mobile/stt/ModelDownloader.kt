@@ -180,12 +180,16 @@ object ModelDownloader {
         if (expected == null || !HEX_64.matches(expected)) {
             return ModelIntegrity.NO_MANIFEST
         }
+        // Хеш пишется в нижнем регистре, но формат принимает и A-F. Сравниваем без
+        // учёта регистра: иначе валидный манифест, набранный руками, превращается
+        // в ложный CORRUPT и модель просят скачать заново.
+        val expectedHex = expected.lowercase()
         val stamp = file.length() to file.lastModified()
         integrityCache[file.absolutePath]?.let { if (it == stamp) return ModelIntegrity.VALID }
         val digest =
             sha256Of(file)
                 ?: return ModelIntegrity.CORRUPT // файл не читается — деградировал, это повреждение
-        val ok = digest == expected
+        val ok = digest == expectedHex
         // TOCTOU-защита: кэшируем ЗЕЛЁНЫЙ статус только если файл не менялся
         // между снятием stamp и хэшированием (иначе в кэш ляжет штамп от старого
         // содержимого — ложный VALID до следующего изменения файла).
