@@ -167,12 +167,36 @@ WER-бенч, заблокированный отсутствием эталон
 
 ### P1 — расследования, не правки
 
-**Effective-конфиг MCP.** `/data/data/.../opencode.jsonc` на устройстве не
-содержит `ynison`, хотя инструменты `music_*`/`session_*` работают. Источник
-не найден → `YNISON_MCP_TIMEOUT_MS = 180000` не подтверждён как действующий.
-Порядок: найти, кто собирает финальный конфиг (рантайм-генерация, приходит с
-сервера, merge, кэш) → **отдельно** замерить, где рвётся таймаут (клиент,
-MCP-прослойка или сервер). Таймаут не чинить, пока не найден источник конфига.
+**Effective-конфиг MCP — источник найден (25.10.2026), замеры ждут телефон.**
+
+Прежняя формулировка («`/data/data/.../opencode.jsonc` не содержит `ynison`,
+источник не найден») описывала не тот файл. Конфиг целиком пишет приложение:
+
+| Путь | Кто пишет | Роль |
+|---|---|---|
+| `<filesDir>/opencode-config/opencode/opencode.jsonc` | `OpencodeRuntime.ensureMcpConfig` | **действующий**: serve стартует с `XDG_CONFIG_HOME=<filesDir>/opencode-config` (`startServe`) |
+| `<base>/config-mirror/opencode.jsonc` | `mirrorConfig` после успешного `ensureMcpConfig` | эталон для чтения по USB, односторонняя копия |
+| `<base>/opencode/opencode.jsonc` | старый путь до переезда на ext4 | остаётся на диске после разовой миграции (`migrateConfigFrom`) и больше не обновляется — вероятно, именно его и смотрели |
+
+Порядок записи: `ensureMcpConfig` → `ensureMemorySection` (создаёт управляемую
+mcp-секцию) → `syncMusicEntry` (добавляет/убирает `ynison` по наличию
+`runtimeAccessToken()`) → `syncMoltbookEntry` → `syncModelEntry` → `mirrorConfig`.
+Отказ любого шага — отказ файла целиком (fail-closed), зеркало не пишется.
+
+`YNISON_MCP_TIMEOUT_MS = 180000` **подтверждён как действующий**: в схеме
+opencode 2.0.27 (бинарь `@opencode/cli-linux-arm64-musl@2.0.27`, объект
+`McpRemoteConfig`) есть поле `timeout` — «Timeout in ms for MCP server requests,
+Defaults to 5000»; в документации opencode то же поле у remote-серверов. То есть
+приложение пишет не мёртвый ключ. Имя и значение закреплены тестом
+`McpMusicConfigTest.«music получает timeout 180000 мс…»`; проверено откатом:
+`timeout` → `timeoutMs` краснит ровно этот тест.
+
+Осталось (нужен телефон): замерить, где рвётся вызов — клиент opencode,
+MCP-прослойка или `ensurePhone` в `ynison.js`, и хватает ли 180 с на холодный
+старт. Проверка на устройстве:
+`adb shell run-as org.opencode.mobile.debug cat files/opencode-config/opencode/opencode.jsonc`
+— при подключённом Яндексе там должен быть `"ynison"` с `"timeout": 180000`;
+если блока нет, в логе искать `Managed mcp block has unexpected formatting`.
 
 Зацепка из прошлых сессий: `RuntimeManager` уже умеет fail-closed на конфиге —
 ответ может лежать там. И отдельно: в `mem:opencode-mobile-installer-final-20260925`
@@ -224,4 +248,4 @@ SAW-грантом (после `adb install -r` accessibility на ColorOS сб�
 | 2. Сеть без прокси | **Выполнен** — встроенный `Ipv4Proxy` (CONNECT, IPv4-first); туннели к context7/grep/npm открываются автоматически. Legacy `connect_proxy.py` удалён (26.09) |
 | 3. STT turbo на CPU | **Почти готов** — int8-encoder ~2× fp32, **VAD-чанкинг внедрён (первые слова 1–2 s)**, бенч на устройстве прогнан (24.09), **VAD-пороги измерены** (26.09, `56034e9`: `MIN_RMS=0.015` подтверждён свипом 6 порогов × 5 SNR), **WER-счётка готова и покрыта 13 тестами** (26.09, `c7256c1`). Осталось: наполнить корпус доверенными расшифровками и прогнать на устройстве |
 | 4. Безопасность и память | **Выполнен** — Basic Auth (401 без пароля), локальная память MCP (`ensureMcpConfig`, фикс «0 MCP»), протокольная диагностика, e2e чистой установки пройден |
-| 5. День 2: тесты + расследования | **P0 закрыт (25.10.2026):** `AppInstallBridgeTest.kt` — 10 тестов, JSON-формы вынесены в `AppInstallWire`/`MediaWire`; JS-часть уже была покрыта `ynison-bridge.test.mjs` и `SessionControlEnumContractTest`. **P2-мелочи закрыты (25.10):** `/v1/media/apps` читает `query`/`limit` из query-строки через валидатор, мёртвый `MEDIA_ACTIONS` удалён. **P1 не начат:** effective-конфиг MCP не найден, `TIMEOUT` не подтверждён; seed/mirror-цикл `ensurePhone()` не воспроизведён |
+| 5. День 2: тесты + расследования | **P0 закрыт (25.10.2026):** `AppInstallBridgeTest.kt` — 10 тестов, JSON-формы вынесены в `AppInstallWire`/`MediaWire`; JS-часть уже была покрыта `ynison-bridge.test.mjs` и `SessionControlEnumContractTest`. **P2-мелочи закрыты (25.10):** `/v1/media/apps` читает `query`/`limit` из query-строки через валидатор, мёртвый `MEDIA_ACTIONS` удалён. **P1 не закрыт:** effective-конфиг MCP найден (25.10 — пишет `ensureMcpConfig`, поле `timeout` есть в схеме 2.0.27), замеры таймаута и seed/mirror-цикл `ensurePhone()` ждут телефон |

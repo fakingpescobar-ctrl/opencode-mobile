@@ -98,6 +98,21 @@ API
   прогресс между тиками (ложного «нет ответа» не будет) и повторный abort
   остановленного хода — тот, из-за которого сессия крутилась каждые 400 мс.
 
+MCP-конфиг: найден источник, таймаут подтверждён (25.10.2026)
+- P1 перестал быть загадкой: конфиг, который читает opencode, пишет само приложение —
+  `OpencodeRuntime.ensureMcpConfig` в `<filesDir>/opencode-config/opencode/opencode.jsonc`,
+  serve стартует с `XDG_CONFIG_HOME=<filesDir>/opencode-config`. Файл, который
+  «не содержал ynison», — старый `<base>/opencode/opencode.jsonc`: он остаётся на
+  диске после разовой миграции на ext4 и больше не обновляется. Эталон в
+  `<base>/config-mirror/opencode.jsonc` — односторонняя копия приватного конфига.
+- `YNISON_MCP_TIMEOUT_MS = 180000` — не мёртвый ключ: в схеме opencode 2.0.27
+  (`McpRemoteConfig` из `@opencode/cli-linux-arm64-musl@2.0.27`) есть поле `timeout`,
+  «Timeout in ms for MCP server requests», и в документации то же поле у remote-серверов.
+- Новый тест `McpMusicConfigTest` («music получает timeout 180000 мс…») держит имя и
+  значение поля и заодно проверяет, что память и телефон остались на дефолте opencode:
+  им большой лимит только маскировал бы зависший вызов. Проверено откатом —
+  `timeout` → `timeoutMs` краснит ровно этот тест.
+
 Мост установщика: провод под тестами (25.10.2026)
 - JSON-формы Android-моста вынесены из приватных обработчиков `AppInstallBridge`
   в два чистых объекта: `installer/AppInstallWire.kt` (тело запроса, код ошибки,
