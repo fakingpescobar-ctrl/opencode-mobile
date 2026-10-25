@@ -38,7 +38,12 @@ object OpencodeRuntime {
     const val YNISON_PORT = 4200 // TCP/Streamable-порт локального MCP Яндекс.Музыки
 
     // Хосты Яндекса, чьи IP резолвит Java и передаёт в ynison.js (см. resolveIpv4):
-    // нативный musl-Bun на Android не умеет DNS, и скрипт ходит по IP + Host-заголовку.
+    // скрипт получает готовый IP и шлёт реальный hostname в Host-заголовке.
+    //
+    // Замер 26.10.2026: musl-Bun на Android DNS РЕЗОЛВИТ — dns.lookup шарда вернул
+    // 77.88.48.156. Прежнее «не умеет» было неверным, и на нём стоял баг: state-сокет
+    // получал IP фронтенда вместо адреса шарда и молчал 10 с. Эти IP — подстраховка для
+    // редиректа, а не единственный способ: адрес шарда скрипт резолвит сам.
     internal const val API_HOST = "api.music.yandex.net"
     internal const val YNISON_HOST = "ynison.music.yandex.ru"
 
@@ -404,9 +409,9 @@ object OpencodeRuntime {
                                             put("YNISON_DEBUG", "1")
                                             put("YNISON_TRACE_FILE", File(workDir ?: context.filesDir, "ynison-trace.log").absolutePath)
                                         }
-                                        // musl-Bun не умеет DNS на Android; IP резолвится
-                                        // системным стеком здесь, в Java, и уходит в скрипт
-                                        // вместе с реальным hostname (скрипт шлёт его Host-заголовком).
+                                        // Готовый IP как подстраховка: скрипт умеет резолвить
+                                        // и сам (замер 26.10.2026), но адрес редиректа приходит
+                                        // отсюда вместе с реальным hostname для Host-заголовка.
                                         hosts.apiIp?.let { put("YNISON_API_IP", it) }
                                         hosts.ynisonIp?.let { put("YNISON_WS_IP", it) }
                                         // Мост нужен, чтобы поднять Яндекс.Музыку, когда она не в сети:
@@ -419,9 +424,13 @@ object OpencodeRuntime {
             }
 
     /**
-     * Системный (Java) резолв хоста. Единственный способ дать ynison.js адрес:
-     * нативный musl-Bun на Android вообще не резолвит DNS (нет /etc/resolv.conf,
-     * мост к netd отсутствует), а Java ходит в системный резолвер.
+     * Системный (Java) резолв хоста — подстраховка для адреса редиректа.
+     *
+     * Раньше здесь стояло «нативный musl-Bun на Android вообще не резолвит DNS», и на этом
+     * утверждении стоял баг 26.10.2026: скрипт получал IP фронтенда и предъявлял шардовый
+     * Host, фронтенд не отвечал вовсе (10 с тишины, `state open timeout`). Замер: dns.lookup
+     * в том же bun на устройстве резолвит нормально, поэтому адрес шарда скрипт резолвит сам
+     * (resolveStateHost в ynison.js), а не получает снаружи.
      */
     private fun resolveIpv4(host: String): String? =
         runCatching {
@@ -1268,8 +1277,8 @@ internal data class YnisonCredentials(
 )
 
 /**
- * Системно зарезолвленные IP для ynison.js (musl-Bun не умеет DNS на Android).
- * Оба могут быть null при сбое резолва — скрипт тогда работает по доменам как раньше.
+ * Системно зарезолвленные IP для ynison.js — подстраховка, а не единственный путь.
+ * Оба могут быть null при сбое резолва — скрипт тогда работает по доменам (и резолвит сам).
  */
 internal data class YnisonHosts(
     val apiIp: String?,
