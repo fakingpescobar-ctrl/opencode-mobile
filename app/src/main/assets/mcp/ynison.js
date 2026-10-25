@@ -1821,6 +1821,13 @@ if (TCP_PORT > 0) {
       const url = new URL(req.url);
       if (!authorized(req, url)) return new Response("forbidden", { status: 403 });
       if (req.method === "POST") {
+        // Вызов музыки живёт дольше десяти секунд: handshake, тикет, state-сокет.
+        // Bun по умолчанию рвёт простаивающий запрос через 10 с, и opencode видит это
+        // как "SSE stream disconnected", то есть как отказ транспорта, а не как ответ
+        // инструмента, - и повторяет вызов. Каждый повтор открывает новую сессию
+        // Ynison, а тот на каждый заход отвечает "stay away 3600s" и продлевает бан.
+        // Замер: 1632 таких обрыва за 7 часов, у memory/mobile_tools/moltbook - ноль.
+        server.timeout(req, 0);
         try {
           const body = await req.json();
           const batch = Array.isArray(body) ? body : [body];
@@ -1839,12 +1846,24 @@ if (TCP_PORT > 0) {
         }
       }
       if (req.method === "GET") {
+        // SSE молчит по своей природе, а Bun закрывает простаивающий ответ через 10 с
+        // (это же лечение есть в memory.js). Без него opencode писал
+        // "mcp transport error server=music" каждые 13 секунд и переподключался.
+        server.timeout(req, 0);
+        let closeStream = () => {};
         const stream = new ReadableStream({
           start(controller) {
-            controller.enqueue(new TextEncoder().encode(`event: endpoint\ndata: ${url.pathname}\n\n`));
             sse.add(controller);
+            controller.enqueue(new TextEncoder().encode(`event: endpoint\ndata: ${url.pathname}\n\n`));
+            // Keepalive не даёт потоку выглядеть простаивающим и заодно снимает
+            // контроллер, если клиент уже ушёл.
+            const iv = setInterval(() => {
+              try { controller.enqueue(new TextEncoder().encode(": keepalive\n\n")); } catch (_) { closeStream(); }
+            }, 15000);
+            closeStream = () => { clearInterval(iv); sse.delete(controller); };
+            req.signal.addEventListener("abort", closeStream, { once: true });
           },
-          cancel() { sse.delete(controller); },
+          cancel() { closeStream(); },
         });
         return new Response(stream, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" } });
       }
