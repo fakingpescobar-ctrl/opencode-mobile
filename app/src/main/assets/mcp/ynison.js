@@ -500,33 +500,93 @@ function announceDevice(ws, frames, seed = null) {
 // Open a Ynison session and complete the handshake. Returns the live socket plus the
 // frames received so far. The handshake declares can_be_player:true because we must
 // be eligible for the active role during the handoff - see the header comment.
-// A ban arrives as data, not as a closed socket. Ynison answers
+// A ban arrives as data, not as a closed socket. Ynison answers in two shapes:
 //
 //   {"ynison-error-code":"400090001","ynison-go-away-for-seconds":"3600"}
+//   {"error":{"details":{"ynison-error-code":"500140000",
+//                       "ynison-go-away-for-seconds":"3600"},
+//             "http_code":503,"message":"Ynison service is temporary unavailable."}}
 //
-// which is the server asking this device id to disappear for that many seconds, because too
-// many sessions were opened under it in a short window.
+// The second one is what the live server actually sends now (seen 25.10.2026), and it used to
+// slip through: the code and the interval are nested under error.details, so the flat check
+// found nothing, the frame was kept as an ordinary state frame, and the call died later as
+// "no player_state after handshake" - a message that names the wrong thing entirely.
 //
 // Two things must not happen here. It must not look like an auth failure: the token is fine,
 // and an agent told "refused the token" will go and re-login a working token for nothing. And
 // it must not be retried: every retry is one more connection from the id that is being
 // penalised, so retrying does not just fail, it lengthens the ban. Hence the permanent flag -
 // matching on message text would only catch the wording we happen to use today.
+function errorDetail(payload) {
+  if (!payload) return null;
+  if (payload["ynison-error-code"]) return payload;
+  const nested = payload.error && payload.error.details;
+  return nested && nested["ynison-error-code"] ? nested : null;
+}
+
+// When the server says stay away, it means the whole process, not this one call: the ban is
+// counted per device id, and every tool call that opens a socket anyway is another connection
+// from the id being penalised. The deadline is in memory because the MCP server outlives the
+// call, and it is a deadline rather than a flag so an expired ban lifts by itself.
+let goAwayUntil = 0;
+
 function goAwayError(payload) {
-  if (!payload || String(payload["ynison-error-code"]) !== "400090001") return null;
-  const secs = payload["ynison-go-away-for-seconds"] || "some";
+  const detail = errorDetail(payload);
+  if (!detail) return null;
+  const code = String(detail["ynison-error-code"]);
+  const seconds = Number(detail["ynison-go-away-for-seconds"]) || 0;
+  // Anything without an explicit interval is only a ban when it carries the known code:
+  // a 503 without one is a plain server error and must stay retryable.
+  if (code !== "400090001" && !seconds) return null;
+  const secs = seconds || "some";
+  if (seconds) goAwayUntil = Math.max(goAwayUntil, Date.now() + seconds * 1000);
+  const reason = (payload.error && payload.error.message) || "";
   const e = new Error(
-    `Yandex Music dropped this device and asked it to stay away ${secs}s (ynison 400090001). ` +
-      `The phone goes offline when too many Ynison sessions are opened under one device id. ` +
-      `The token is valid - do not re-login. Wait out the interval before trying again.`,
+    code === "400090001"
+      ? `Yandex Music dropped this device and asked it to stay away ${secs}s (ynison 400090001). ` +
+        `The phone goes offline when too many Ynison sessions are opened under one device id. ` +
+        `The token is valid - do not re-login. Wait out the interval before trying again.`
+      : `Ynison asked this device to stay away ${secs}s (ynison ${code}${reason ? `: ${reason}` : ""}). ` +
+        `The token is valid - do not re-login. Wait out the interval before trying again.`,
   );
   e.permanent = true;
-  e.goAwaySeconds = Number(payload["ynison-go-away-for-seconds"]) || 0;
+  e.goAwaySeconds = seconds;
   return e;
+}
+
+/**
+ * Refuses to open a socket while a ban is running.
+ *
+ * @param {number} [now] current time in ms; a parameter so the deadline can be tested without
+ *   sleeping for an hour
+ */
+function throwIfBanned(now = Date.now()) {
+  if (goAwayUntil <= now) return;
+  const seconds = Math.ceil((goAwayUntil - now) / 1000);
+  const e = new Error(
+    `Ynison is still asking this device to stay away (${seconds}s left). ` +
+      `The token is valid - do not re-login. Retry after the interval.`,
+  );
+  e.permanent = true;
+  e.goAwaySeconds = seconds;
+  throw e;
+}
+
+/** Turns a ban frame into the thrown error, whichever shape it arrived in. */
+function throwIfGoAwayFrame(frames, ws) {
+  for (const frame of frames) {
+    const away = goAwayError(frame);
+    if (away) {
+      ws.close();
+      throw away;
+    }
+  }
 }
 
 async function openSessionOnce(seed = null) {
   if (!OAUTH) throw new Error("YNISON_TOKEN is not set");
+  // Before the redirect, not after: a ban costs nothing to honour and a socket to break.
+  throwIfBanned();
 
   const redirect = await new Promise((resolve, reject) => {
     const ws = new YnisonWs({
@@ -595,10 +655,7 @@ async function openSessionOnce(seed = null) {
   // The ban can arrive on the state socket instead of the redirect, as a frame that carries
   // the code rather than a close. Checked here, after the handshake and before any write, so
   // a banned device is not sent a command on the way to reporting that it is banned.
-  for (const frame of frames) {
-    const away = goAwayError(frame);
-    if (away) { ws.close(); throw away; }
-  }
+  throwIfGoAwayFrame(frames, ws);
 
   // The first message on the socket has to carry a state the server will accept, and the
   // account queue being empty leaves exactly one such state: the one this call is about to
@@ -620,6 +677,12 @@ async function openSessionOnce(seed = null) {
 
   await wait(HANDSHAKE_MS);
   trace(`handshake done: ${frames.length} frame(s)`);
+
+  // And again here, which is where the ban actually lands: the server answers the announce
+  // we just sent, not the connect. Without this second check the frame was stored as a plain
+  // state frame, no player_state ever appeared, and the call failed 18s later with
+  // "no player_state after handshake" - pointing the agent at the phone instead of at the ban.
+  throwIfGoAwayFrame(frames, ws);
 
   // The server has now told us what is really going on, so hand that back instead of what we
   // opened with. announceable() repairs only the repeat enum, so this cannot change what the
