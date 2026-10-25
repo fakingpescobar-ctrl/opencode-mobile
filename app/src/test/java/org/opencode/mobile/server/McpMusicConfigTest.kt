@@ -39,6 +39,20 @@ class McpMusicConfigTest {
             "  }\n" +
             "}"
 
+    /**
+     * Тот же управляемый конфиг, но с подключённым moltbook.
+     *
+     * Порядок ровно как у приложения: [planMoltbookEntry] дописывает свою запись
+     * последней в секции mcp, то есть сразу после телефона. Именно из-за этого
+     * закрывающая скобка объекта уезжает за moltbook, и проверка «весь блок целиком»
+     * перестаёт находить управляемую форму.
+     */
+    private fun configWithMoltbook(block: String): String {
+        val close = block.lastIndexOf('}')
+        val body = block.substring(0, close).trimEnd()
+        return config(body + ",\n    " + MoltbookMcp.entry() + "\n  }")
+    }
+
     @Test
     fun `без подключения и без записи music конфиг не трогаем`() {
         val plan = OpencodeRuntime.planMusicEntry(config(withoutMusic), null)
@@ -218,7 +232,52 @@ class McpMusicConfigTest {
         )
     }
 
+    /**
+     * Регрессия 25.10.2026: подключённый moltbook отменял регистрацию music.
+     *
+     * На устройстве это выглядело так: Яндекс авторизован, музыкальный сервер поднят
+     * (`ynison MCP http on 127.0.0.1:4200` в логе), а в конфиге записи music нет и
+     * в списке MCP её тоже нет. Причина была не в токене и не в порядке запуска:
+     * секция mcp заканчивалась записью moltbook, поэтому `contains(mcpBlock())` не
+     * срабатывал, ensureMemorySection возвращал false, и шаг music не выполнялся вовсе.
+     */
+    @Test
+    fun `moltbook в секции не мешает регистрации music`() {
+        val plan = OpencodeRuntime.planMusicEntry(configWithMoltbook(withoutMusic), "token")
+
+        val written = (plan as MusicConfigPlan.Write).text
+        assertTrue("ожидалась запись music", written.contains(MUSIC_KEY))
+        assertTrue("moltbook не должен потеряться", written.contains(MOLTBOOK_KEY))
+        assertTrue("память должна остаться", written.contains("\"memory\""))
+        assertTrue("телефон должен остаться", written.contains("\"mobile_tools\""))
+        assertEquals(written.count { it == '{' }, written.count { it == '}' })
+    }
+
+    @Test
+    fun `снятие music не уносит moltbook`() {
+        val plan = OpencodeRuntime.planMusicEntry(configWithMoltbook(withMusic), null)
+
+        val written = (plan as MusicConfigPlan.Write).text
+        assertFalse("music не должна остаться", written.contains(MUSIC_KEY))
+        assertTrue("moltbook не должен потеряться", written.contains(MOLTBOOK_KEY))
+        assertEquals(written.count { it == '{' }, written.count { it == '}' })
+    }
+
+    @Test
+    fun `music и moltbook вместе - конфиг не трогаем`() {
+        val plan = OpencodeRuntime.planMusicEntry(configWithMoltbook(withMusic), "token")
+
+        assertEquals(MusicConfigPlan.Keep, plan)
+    }
+
+    @Test
+    fun `конфиг с moltbook считается управляемым`() {
+        assertTrue(OpencodeRuntime.hasManagedMcpBlock(configWithMoltbook(withoutMusic)))
+        assertTrue(OpencodeRuntime.hasManagedMcpBlock(configWithMoltbook(withMusic)))
+    }
+
     private companion object {
         const val MUSIC_KEY = "\"${YnisonMcp.NAME}\""
+        const val MOLTBOOK_KEY = "\"${MoltbookMcp.NAME}\""
     }
 }

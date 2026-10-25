@@ -1036,8 +1036,13 @@ object OpencodeRuntime {
      * На устройстве это стоило четырёх дней тишины: конфиг не переписывался с 01.10,
      * эталон для ПК-агента протух, новые permission-ключи не добавлялись — при живых
      * MCP и рабочих симлинках, то есть внешне совершенно здоровый сервер.
+     *
+     * 25.10.2026 повторилось то же самое с третьей стороны: у конфига с подключённым
+     * moltbook после телефона стоит его запись, а не `}`, поэтому ни [mcpBlock], ни
+     * [mcpBlockWithMusic] в тексте не находились. Поэтому узнаём не весь объект, а две
+     * обязательные записи внутри него: у чужой секции их побайтово не будет.
      */
-    internal fun hasManagedMcpBlock(text: String): Boolean = text.contains(mcpBlock()) || text.contains(mcpBlockWithMusic())
+    internal fun hasManagedMcpBlock(text: String): Boolean = text.contains(mcpMemoryBlock()) && text.contains(mcpMobileBlock())
 
     /** Управляемая форма с музыкой. Только для записи, когда Яндекс подключён. */
     internal fun mcpBlockWithMusic(): String = mcpObject(mcpEntriesWithMusic())
@@ -1048,6 +1053,18 @@ object OpencodeRuntime {
      * самооценкой, где эталон и результат расходятся незаметно.
      */
     internal fun mcpBlockForTest(): String = mcpBlock()
+
+    /**
+     * Пара записей «память + телефон» без обрамляющего объекта.
+     *
+     * Видна снаружи объекта по той же причине, что и [mcpBlockForTest]: [planMusicEntry]
+     * объявлен расширением и правки делает на уровне записей, а не всего блока, иначе
+     * запись moltbook, стоящая после телефона, отменяла бы регистрацию music.
+     */
+    internal fun mcpEntriesForTest(): String = mcpEntries()
+
+    /** То же вместе с записью music. */
+    internal fun mcpEntriesWithMusicForTest(): String = mcpEntriesWithMusic()
 
     /** Прежняя управляемая форма: один сервер memory. Только для миграции, не для записи. */
     private fun singleServerMcpObject(): String = mcpObject(mcpMemoryBlock())
@@ -1356,9 +1373,14 @@ internal fun OpencodeRuntime.planMusicEntry(
         // ничего, даже если сам токен сменился.
         ynisonToken != null && text.contains(MUSIC_NAME_KEY) -> MusicConfigPlan.Keep
         ynisonToken == null && !text.contains(MUSIC_NAME_KEY) -> MusicConfigPlan.Keep
-        text.contains(mcpBlockWithMusic()) ->
-            MusicConfigPlan.Write(text.replace(mcpBlockWithMusic(), mcpBlockForTest()))
-        text.contains(mcpBlockForTest()) ->
-            MusicConfigPlan.Write(text.replace(mcpBlockForTest(), mcpBlockWithMusic()))
+        // Меняем не весь объект mcp, а только пару «память + телефон»: за ней в секции
+        // может стоять moltbook, и тогда закрывающей скобки объекта сразу после телефона
+        // нет. Пока здесь сравнивался целый [mcpBlock], любой конфиг с подключённым
+        // moltbook уходил в Refuse, и music не регистрировалась никогда - при живом
+        // токене, живом порте 4200 и пустом списке MCP в интерфейсе.
+        text.contains(mcpEntriesWithMusicForTest()) ->
+            MusicConfigPlan.Write(text.replace(mcpEntriesWithMusicForTest(), mcpEntriesForTest()))
+        text.contains(mcpEntriesForTest()) ->
+            MusicConfigPlan.Write(text.replace(mcpEntriesForTest(), mcpEntriesWithMusicForTest()))
         else -> MusicConfigPlan.Refuse
     }

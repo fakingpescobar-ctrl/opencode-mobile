@@ -195,8 +195,21 @@ Defaults to 5000»; в документации opencode то же поле у r
 MCP-прослойка или `ensurePhone` в `ynison.js`, и хватает ли 180 с на холодный
 старт. Проверка на устройстве:
 `adb shell run-as org.opencode.mobile.debug cat files/opencode-config/opencode/opencode.jsonc`
-— при подключённом Яндексе там должен быть `"ynison"` с `"timeout": 180000`;
-если блока нет, в логе искать `Managed mcp block has unexpected formatting`.
+— при подключённом Яндексе там должен быть `"ynison"` с `"timeout": 180000`.
+
+**Проверка выполнена 25.10.2026 — блока не было, причина найдена и исправлена.**
+Токен живой (`files/opencode.log`: `ynison MCP http on 127.0.0.1:4200`, порт слушает),
+а конфиг не переписывался с 20.10. Предупреждения
+`Managed mcp block has unexpected formatting` в logcat не было вовсе — приложение
+пишет свои `Log.*` мимо logcat, поэтому искать надо было не там. Виноват
+`hasManagedMcpBlock`: он узнавал секцию `mcp` целиком (`mcpBlock()`), а с
+подключённым moltbook после телефона стоит запись moltbook, а не `}`. Отсюда
+`ensureMemorySection` → false → `memoryReady && syncMusicEntry(...)` не выполнялся
+вовсе, и music не регистрировалась никогда. `planMusicEntry` страдал тем же
+сравнением и уходил в `Refuse`. Обе проверки переведены на уровень записей
+(`McpMusicConfigTest`, 20 тестов, проверено откатом). Замер таймаута на устройстве
+остаётся открытым: сначала установить сборку с фиксом и убедиться, что запись
+появилась.
 
 Зацепка из прошлых сессий: `RuntimeManager` уже умеет fail-closed на конфиге —
 ответ может лежать там. И отдельно: в `mem:opencode-mobile-installer-final-20260925`
@@ -248,4 +261,4 @@ SAW-грантом (после `adb install -r` accessibility на ColorOS сб�
 | 2. Сеть без прокси | **Выполнен** — встроенный `Ipv4Proxy` (CONNECT, IPv4-first); туннели к context7/grep/npm открываются автоматически. Legacy `connect_proxy.py` удалён (26.09) |
 | 3. STT turbo на CPU | **Почти готов** — int8-encoder ~2× fp32, **VAD-чанкинг внедрён (первые слова 1–2 s)**, бенч на устройстве прогнан (24.09), **VAD-пороги измерены** (26.09, `56034e9`: `MIN_RMS=0.015` подтверждён свипом 6 порогов × 5 SNR), **WER-счётка готова и покрыта 13 тестами** (26.09, `c7256c1`). Осталось: наполнить корпус доверенными расшифровками и прогнать на устройстве |
 | 4. Безопасность и память | **Выполнен** — Basic Auth (401 без пароля), локальная память MCP (`ensureMcpConfig`, фикс «0 MCP»), протокольная диагностика, e2e чистой установки пройден |
-| 5. День 2: тесты + расследования | **P0 закрыт (25.10.2026):** `AppInstallBridgeTest.kt` — 10 тестов, JSON-формы вынесены в `AppInstallWire`/`MediaWire`; JS-часть уже была покрыта `ynison-bridge.test.mjs` и `SessionControlEnumContractTest`. **P2-мелочи закрыты (25.10):** `/v1/media/apps` читает `query`/`limit` из query-строки через валидатор, мёртвый `MEDIA_ACTIONS` удалён. **P1 не закрыт:** effective-конфиг MCP найден (25.10 — пишет `ensureMcpConfig`, поле `timeout` есть в схеме 2.0.27), замеры таймаута и seed/mirror-цикл `ensurePhone()` ждут телефон |
+| 5. День 2: тесты + расследования | **P0 закрыт (25.10.2026):** `AppInstallBridgeTest.kt` — 10 тестов, JSON-формы вынесены в `AppInstallWire`/`MediaWire`; JS-часть уже была покрыта `ynison-bridge.test.mjs` и `SessionControlEnumContractTest`. **P2-мелочи закрыты (25.10):** `/v1/media/apps` читает `query`/`limit` из query-строки через валидатор, мёртвый `MEDIA_ACTIONS` удалён. **P1 не закрыт:** effective-конфиг MCP найден (25.10 — пишет `ensureMcpConfig`, поле `timeout` есть в схеме 2.0.27), блокировка регистрации music при подключённом moltbook найдена и исправлена (25.10, `hasManagedMcpBlock`/`planMusicEntry` — узнавали секцию целиком), замеры таймаута и seed/mirror-цикл `ensurePhone()` ждут телефон |
