@@ -180,6 +180,8 @@ class YnisonWs {
     this.fragments = [];
     this.fragmentOpcode = 0x1;
     this.settled = false;
+    // Read by the session cache: a socket the server closed must not be handed out again.
+    this.closed = false;
   }
 
   connect() {
@@ -356,6 +358,7 @@ class YnisonWs {
   }
 
   close() {
+    this.closed = true;
     if (this.socket && this.upgraded) {
       try {
         this.writeFrame(0x8, Buffer.alloc(0));
@@ -369,6 +372,7 @@ class YnisonWs {
   // Used by the redirect path: the promise is already settled, so the error has to travel
   // through onerror instead of rejecting.
   terminate() {
+    this.closed = true;
     this.socket?.end();
   }
 
@@ -382,6 +386,7 @@ class YnisonWs {
   }
 
   onSocketClose() {
+    this.closed = true;
     this.onclose?.();
   }
 }
@@ -580,10 +585,10 @@ function errorDetail(payload) {
   return nested && nested["ynison-error-code"] ? nested : null;
 }
 
-// When the server says stay away, it means the whole process, not this one call: the ban is
-// counted per device id, and every tool call that opens a socket anyway is another connection
-// from the id being penalised. The deadline is in memory because the MCP server outlives the
-// call, and it is a deadline rather than a flag so an expired ban lifts by itself.
+// When the server says stay away, it means the whole client, not this one call: every tool
+// call that opens a socket anyway is another dial from the token that is being throttled.
+// The deadline is in memory because the MCP server outlives the call, and it is a deadline
+// rather than a flag so an expired ban lifts by itself.
 //
 // It is also written next to the state cache, because the process is not as long-lived as the
 // ban: measured 25.10.2026, the server restarted at 21:57 and the deadline set before that was
@@ -591,26 +596,61 @@ function errorDetail(payload) {
 // must not turn "wait out the ban" into "ask for another one".
 const GO_AWAY_FILE = STATE_CACHE ? STATE_CACHE.replace(/[^\\/]*$/, "") + "ynison-goaway.json" : "";
 
-function loadGoAway(now = Date.now()) {
-  if (!GO_AWAY_FILE) return 0;
+// The server's "go away for 3600s" is not how long it actually stays angry. Measured
+// 25.10-26.10.2026: the client retried exactly at the announced deadline and got a fresh
+// 3600s each time - at 02:56, at 03:58, at 05:54. An hourly retry is therefore not a retry,
+// it is a way to keep the throttle alive, because every dial re-arms it. So the wait doubles
+// after each ban that arrives despite the previous one having run out: 1h, 2h, 4h, 8h, and
+// 12h from there on. A session that opens proves the ban is over and resets it.
+const GO_AWAY_MAX_MS = 12 * 60 * 60 * 1000;
+// One attempt can report the ban twice (the redirect frame, then the state frame). Counting
+// each would double the wait for a single connection, so a ban seen within a minute of the
+// previous one only extends the deadline.
+const GO_AWAY_RECORD_GAP_MS = 60 * 1000;
+
+function loadGoAwayState() {
+  if (!GO_AWAY_FILE) return { until: 0, attempts: 0 };
   try {
-    const until = Number(JSON.parse(readFileSync(GO_AWAY_FILE, "utf8")).until) || 0;
-    return until > now ? until : 0;
+    const saved = JSON.parse(readFileSync(GO_AWAY_FILE, "utf8"));
+    return { until: Number(saved.until) || 0, attempts: Math.max(0, Number(saved.attempts) || 0) };
   } catch {
-    return 0; // нет файла, битый файл, нет прав - бана просто нет
+    return { until: 0, attempts: 0 }; // нет файла, битый файл, нет прав - бана просто нет
   }
 }
+
+const savedGoAway = loadGoAwayState();
+
+function loadGoAway(now = Date.now()) {
+  return savedGoAway.until > now ? savedGoAway.until : 0;
+}
+
+let goAwayUntil = loadGoAway();
+let goAwayAttempts = savedGoAway.attempts;
+let goAwayRecordedAt = 0;
 
 function saveGoAway(until) {
   if (!GO_AWAY_FILE) return;
   try {
-    writeFileSync(GO_AWAY_FILE, JSON.stringify({ until }));
+    writeFileSync(GO_AWAY_FILE, JSON.stringify({ until, attempts: goAwayAttempts }));
   } catch {
     /* the ban still holds in memory; losing it costs one extra connection */
   }
 }
 
-let goAwayUntil = loadGoAway();
+/** The server's interval, doubled once per consecutive ban. */
+function goAwayBackoffMs(seconds, attempts) {
+  const base = seconds * 1000;
+  const scaled = base * Math.pow(2, Math.max(0, attempts - 1));
+  return Math.min(scaled, Math.max(base, GO_AWAY_MAX_MS));
+}
+
+/** A session that opened proves the ban is over; the next ban starts from one hour again. */
+function clearGoAway() {
+  if (!goAwayUntil && !goAwayAttempts) return;
+  goAwayUntil = 0;
+  goAwayAttempts = 0;
+  saveGoAway(0);
+}
 
 function goAwayError(payload) {
   const detail = errorDetail(payload);
@@ -621,18 +661,28 @@ function goAwayError(payload) {
   // a 503 without one is a plain server error and must stay retryable.
   if (code !== "400090001" && !seconds) return null;
   const secs = seconds || "some";
-  if (seconds) {
-    goAwayUntil = Math.max(goAwayUntil, Date.now() + seconds * 1000);
+  const now = Date.now();
+  if (seconds && now - goAwayRecordedAt > GO_AWAY_RECORD_GAP_MS) {
+    goAwayRecordedAt = now;
+    goAwayAttempts += 1;
+  }
+  const waitMs = seconds ? goAwayBackoffMs(seconds, goAwayAttempts || 1) : 0;
+  if (waitMs) {
+    goAwayUntil = Math.max(goAwayUntil, now + waitMs);
     saveGoAway(goAwayUntil);
   }
   const reason = (payload.error && payload.error.message) || "";
+  const doubled = waitMs > seconds * 1000 ? ` #${goAwayAttempts} in a row, so the wait doubles` : "";
   const e = new Error(
     code === "400090001"
-      ? `Yandex Music dropped this device and asked it to stay away ${secs}s (ynison 400090001). ` +
-        `The phone goes offline when too many Ynison sessions are opened under one device id. ` +
-        `The token is valid - do not re-login. Wait out the interval before trying again.`
-      : `Ynison asked this device to stay away ${secs}s (ynison ${code}${reason ? `: ${reason}` : ""}). ` +
-        `The token is valid - do not re-login. Wait out the interval before trying again.`,
+      ? `Yandex Music dropped this device and asked it to stay away ${secs}s (ynison 400090001${doubled}). ` +
+        `Ynison throttles the account's token when one client dials too often, and every dial ` +
+        `while it is throttled re-arms the interval. ` +
+        `The token is valid - do not re-login. ` +
+        (waitMs ? `Next attempt is held back for ${Math.round(waitMs / 60000)} min - retrying sooner only re-arms the ban.` : "")
+      : `Ynison asked this device to stay away ${secs}s (ynison ${code}${reason ? `: ${reason}` : ""}${doubled}). ` +
+        `The token is valid - do not re-login. A new device id does not help: the throttle follows the token. ` +
+        (waitMs ? `Next attempt is held back for ${Math.round(waitMs / 60000)} min - retrying sooner only re-arms the ban.` : ""),
   );
   e.permanent = true;
   e.goAwaySeconds = seconds;
@@ -727,6 +777,17 @@ async function openSessionOnce(seed = null) {
       const parsed = JSON.parse(e.data);
       trace("state frame keys:", Object.keys(parsed).join(",") || "(none)", String(e.data).slice(0, 300));
       frames.push(parsed);
+      // A reused session lives for minutes, so the array must keep a tail, not a history.
+      // The last real state is re-inserted when it falls out of that tail: the newest frames
+      // can be device noise, and readState would then report "no player_state" on a session
+      // that plainly has one.
+      if (frames.length > SESSION_MAX_FRAMES) {
+        const dropped = frames.splice(0, frames.length - SESSION_MAX_FRAMES);
+        if (!frames.some((f) => f.player_state)) {
+          const lastState = dropped.filter((f) => f.player_state).pop();
+          if (lastState) frames.unshift(lastState);
+        }
+      }
       // Remember it. The next session's handshake has to publish a valid state before it
       // has seen any, and the only state worth publishing is a real one.
       if (parsed.player_state) saveCachedState(parsed.player_state);
@@ -798,7 +859,16 @@ async function openSessionOnce(seed = null) {
 }
 
 function readState(frames) {
-  const frame = frames.find((f) => f.player_state);
+  // The LAST state frame, not the first. A session is reused for minutes, so the earliest
+  // player_state in the array is the oldest news there is - reporting it would show the
+  // track that was playing when the session opened, not the one playing now.
+  let frame = null;
+  for (let i = frames.length - 1; i >= 0; i--) {
+    if (frames[i].player_state) {
+      frame = frames[i];
+      break;
+    }
+  }
   if (!frame) return null;
   const s = frame.player_state;
   const q = s.player_queue;
@@ -887,7 +957,9 @@ async function waitForState(expect, attempts = VERIFY_ATTEMPTS) {
     }
     return null;
   } finally {
-    ws.close();
+    // The session stays open for the next call on purpose: see SESSION_TTL_MS. Only a socket
+    // the server already closed is dropped, so the next call does not reuse a dead one.
+    if (ws.closed) dropSession("closed during verify");
   }
 }
 
@@ -898,11 +970,68 @@ async function waitForState(expect, attempts = VERIFY_ATTEMPTS) {
 // the message happens to be worded.
 const PERMANENT_OPEN_ERRORS = ["is not set", "refused the token"];
 
+// One session, reused by every call that follows it.
+//
+// This is not an optimisation, it is what keeps music usable at all. Ynison throttles the
+// OAuth token, and the count of dials that earns a 3600s "stay away" is small - one
+// `music_play_query` alone (handoff, then the verify pass) was enough on 26.10.2026. A fresh
+// device id is no way out either: measured at 06:12 the same token was refused on the FIRST
+// dial of an id that had never connected before. So the number of dials is the defect, and a
+// real client dials once and stays.
+//
+// The TTL exists because an idle socket is eventually dropped by the server or the network,
+// and a stale-but-open socket is worse than a fresh one. Frames are capped for the same
+// reason: a session that lives for hours must not grow an unbounded array.
+const SESSION_TTL_MS = 10 * 60 * 1000;
+const SESSION_MAX_FRAMES = 120;
+
+let liveSession = null;
+// Set while a dial is in flight, so a second caller waits instead of dialling again.
+let openingSession = null;
+
+function sessionUsable(session, now = Date.now()) {
+  return Boolean(session) && !session.ws?.closed && now - session.openedAt < SESSION_TTL_MS;
+}
+
+function dropSession(why) {
+  const session = liveSession;
+  if (!session) return;
+  liveSession = null;
+  trace("session dropped:", why, "after", session.frames.length, "frame(s)");
+  try {
+    session.ws?.close?.();
+  } catch {
+    /* socket already gone - nothing to close politely */
+  }
+}
+
 async function openSession(seed = null) {
+  if (liveSession) {
+    if (sessionUsable(liveSession)) {
+      // A ban can also arrive on a live socket, as a frame rather than a close.
+      throwIfGoAwayFrame(liveSession.frames, liveSession.ws);
+      trace("reusing session, age", Math.round((Date.now() - liveSession.openedAt) / 1000) + "s");
+      return liveSession;
+    }
+    dropSession("expired or closed by server");
+  }
+  // Two tool calls can arrive at once (the agent may ask for status and playback in one
+  // batch), and two concurrent dials are exactly the pattern being throttled. The second
+  // caller waits for the first dial instead of starting one of its own.
+  if (!openingSession) {
+    openingSession = dialSession(seed).finally(() => { openingSession = null; });
+  }
+  return openingSession;
+}
+
+async function dialSession(seed) {
   let lastError = null;
   for (let attempt = 0; attempt < OPEN_ATTEMPTS; attempt++) {
     try {
-      return await openSessionOnce(seed);
+      const session = await openSessionOnce(seed);
+      liveSession = { ws: session.ws, frames: session.frames, openedAt: Date.now() };
+      clearGoAway();
+      return liveSession;
     } catch (e) {
       lastError = e;
       trace("open attempt", attempt, "failed:", e.message);
@@ -1045,7 +1174,9 @@ async function handoff(mutate, seed = null, launched = { already: false }) {
       if (phoneId) send(ws, { ...meta(), update_active_device: { device_id_optional: phoneId } });
       await wait(CLAIM_SETTLE_MS);
     } catch { /* socket already gone; nothing left to strand */ }
-    ws.close();
+    // The socket is NOT closed here: the verify pass that follows and every later tool call
+    // reuse it, which is the whole point of the session cache.
+    if (ws.closed) dropSession("closed during handoff");
   }
   return phoneId;
 }
@@ -1527,7 +1658,7 @@ async function opPlayQuery(query, artist) {
 async function opStatus() {
   const { ws, frames } = await openSession();
   const state = readState(frames);
-  ws.close();
+  if (ws.closed) dropSession("closed during status");
   if (!state) throw new Error("no player_state");
   const phone = findPhone(state);
   const current = state.queue?.playable_list?.[state.index];

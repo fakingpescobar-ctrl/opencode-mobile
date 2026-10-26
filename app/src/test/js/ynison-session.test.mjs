@@ -9,14 +9,18 @@
 // failure: the play call returned, the queue was written, the status call answered. The
 // session just stops existing for an hour.
 //
-// The cause is visible in waitForState: it opened a fresh session on every poll iteration.
-// The device id is stable, so one play call produced up to three connections under the same
-// id within seconds - one for the command, up to VERIFY_ATTEMPTS for verification. Yandex
-// reads that as the same device reconnecting and bans it, and the phone pays for it, since
-// the phone is the device that holds the active player role.
+// The cause is the number of connections per device id. waitForState used to open a fresh
+// session on every poll iteration, and every tool call opened and closed its own - so one
+// play call plus one status call could be four dials under the same id within seconds.
+// Yandex reads that as the same device reconnecting and bans it, and the phone pays for it,
+// since the phone is the device that holds the active player role.
+//
+// Measured 26.10.2026: two dials a few minutes apart were enough to earn "stay away 3600s"
+// on a fresh device id. So the policy is now: one socket per poll AND the socket outlives
+// the call, up to SESSION_TTL_MS (see the session cache in openSession).
 //
 // Counting sockets is the only part of this that is testable without a phone, so it is what
-// gets asserted. The reconnect-throttling policy is a separate concern with its own test.
+// gets asserted.
 //
 // Run:  node app/src/test/js/ynison-session.test.mjs
 // No dependencies, no network, no build step.
@@ -46,28 +50,31 @@ function loadBlock() {
  * `onWait(n)` is called before each poll iteration with the 1-based attempt number, so a
  * test can make a frame appear on the second read the way a real echo arrives late.
  */
-async function runWaitForState({ attempts, expect, onWait }) {
+async function runWaitForState({ attempts, expect, onWait, serverCloses = false }) {
   let opens = 0;
   let closes = 0;
+  let dropped = 0;
   const frames = [];
   const wait = async () => {
     if (onWait) onWait(frames);
   };
+  const ws = { closed: false, close: () => { closes++; ws.closed = true; } };
   const openSession = async () => {
     opens++;
-    return { ws: { close: () => { closes++; } }, frames };
+    if (serverCloses) ws.closed = true;
+    return { ws, frames };
   };
+  const dropSession = () => { dropped++; ws.closed = true; };
   const readState = (f) => (f.length ? f[f.length - 1].player_state : null);
   const trace = () => {};
 
   const factory = new Function(
-    "openSession", "wait", "readState", "trace", "VERIFY_MS", "VERIFY_ATTEMPTS",
+    "openSession", "wait", "readState", "trace", "VERIFY_MS", "VERIFY_ATTEMPTS", "dropSession",
     `${loadBlock()}\n return waitForState;`,
   );
-  const waitForState = factory(openSession, wait, readState, trace, 0, attempts);
-  // An exception from the caller's predicate is supposed to escape - waitForState closes the
-  // socket in a finally and then lets it through. The test needs to see what happened on the
-  // way out, so the error is captured rather than swallowed.
+  const waitForState = factory(openSession, wait, readState, trace, 0, attempts, dropSession);
+  // An exception from the caller's predicate is supposed to escape. The test needs to see
+  // what happened on the way out, so the error is captured rather than swallowed.
   let error = null;
   let result = null;
   try {
@@ -75,7 +82,7 @@ async function runWaitForState({ attempts, expect, onWait }) {
   } catch (e) {
     error = e;
   }
-  return { result, opens, closes, error };
+  return { result, opens, closes, dropped, error };
 }
 
 const never = () => false;
@@ -109,17 +116,17 @@ function ok(cond, what) {
 
 console.log("\nwaitForState: сколько сокетов стоит одна операция");
 
-await test("состояние не пришло - ОДИН сокет на весь опрос, а не по одному на попытку", async () => {
+await test("состояние не пришло - ОДИН сокет на весь опрос, и он остаётся жить", async () => {
   const r = await runWaitForState({ attempts: 3, expect: never });
   eq(r.opens, 1, "каждая попытка открывает своё подключение - это и вызывает бан");
-  eq(r.closes, 1, "сокет не закрыт");
+  eq(r.closes, 0, "сокет закрыт: следующий вызов снова пойдёт на поклон к Ynison");
   eq(r.result, null, "ожидался null");
 });
 
-await test("состояние пришло сразу - сокет тоже один и закрыт", async () => {
+await test("состояние пришло сразу - сокет тоже один и тоже остаётся", async () => {
   const r = await runWaitForState({ attempts: 3, expect: always, onWait: pushState });
   eq(r.opens, 1, "лишнее подключение");
-  eq(r.closes, 1, "утечка сокета");
+  eq(r.closes, 0, "сокет закрыт после успешного опроса");
   ok(r.result !== null, "состояние не прочитано");
 });
 
@@ -133,19 +140,25 @@ await test("эхо приходит поздно - второй опрос вс�
     onWait: (frames) => { seen++; if (seen === 2) pushState(frames); },
   });
   eq(r.opens, 1, "на втором опросе открыт новый сокет");
-  eq(r.closes, 1, "сокет не закрыт");
+  eq(r.closes, 0, "сокет закрыт");
   ok(r.result !== null, "позднее эхо не нашлось - семантика опроса сломана");
 });
 
-await test("исключение в проверке не оставляет сокет висеть", async () => {
+await test("исключение в проверке не роняет сессию: она ещё пригодится следующему вызову", async () => {
   const r = await runWaitForState({
     attempts: 2,
     expect: () => { throw new Error("проверка упала"); },
     onWait: pushState,
   });
   eq(r.opens, 1, "лишнее подключение");
-  eq(r.closes, 1, "сокет остался открытым при исключении");
+  eq(r.closes, 0, "сокет закрыли на исключении - следующий вызов откроет новый и приблизит бан");
   ok(r.error !== null, "исключение проглочено - вызывающий не узнает, что проверка не прошла");
+});
+
+await test("сокет закрыл сервер - кэш его отпускает, а не отдаёт мёртвым", async () => {
+  const r = await runWaitForState({ attempts: 2, expect: always, onWait: pushState, serverCloses: true });
+  eq(r.opens, 1, "лишнее подключение");
+  eq(r.dropped, 1, "мёртвый сокет остался в кэше - следующий вызов упадёт на нём");
 });
 
 console.log(`\n${failures.length ? "ПРОВАЛЕНО" : "зелёное"}: ${passed} ок, ${failures.length} сломалось\n`);
