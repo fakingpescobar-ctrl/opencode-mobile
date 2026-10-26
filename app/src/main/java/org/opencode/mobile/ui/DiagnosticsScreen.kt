@@ -525,6 +525,10 @@ fun DiagnosticsScreen(
                     refreshKey++
                 }
 
+                // Память стоит рядом с журналом: обе секции про то, что копится само
+                // и что человек иногда должен почистить руками.
+                memorySection()
+
                 ModelRoutingPicker()
 
                 sectionHeader("Валидация runtime")
@@ -739,8 +743,11 @@ private fun dbSize(): Long =
         db.length() + File(db.parentFile, "opencode.db-wal").length()
     }.getOrDefault(0L)
 
+// internal, а не private: той же строкой пользуется секция памяти (MemorySection.kt).
+// Вторая копия «серый заголовок + светлое значение» разъехалась бы с этой при
+// первой же правке отступов.
 @Composable
-private fun InfoRow(
+internal fun InfoRow(
     label: String,
     value: String,
     valueColor: Color = Color(0xFFE6E6E6),
@@ -753,7 +760,7 @@ private fun InfoRow(
 
 /** Кнопка-плашка скачивания моделей (тёмный экран диагностики, акцент зелёный). */
 @Composable
-private fun downloadButton(
+internal fun downloadButton(
     label: String,
     onClick: () -> Unit,
 ) {
