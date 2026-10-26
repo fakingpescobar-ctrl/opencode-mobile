@@ -82,7 +82,7 @@ function Normalize([string]$s) {
     return ($t -split '\s+' | Where-Object { $_ }) -join ' '
 }
 
-function Wer([string]$hyp, [string]$ref) {
+function WerCounts([string]$hyp, [string]$ref) {
     $h = @((Normalize $hyp) -split ' ' | Where-Object { $_ })
     $r = @((Normalize $ref) -split ' ' | Where-Object { $_ })
     if ($r.Count -eq 0) { return $null }
@@ -102,8 +102,13 @@ function Wer([string]$hyp, [string]$ref) {
             $d[$i, $j] = $m
         }
     }
-    $last = $d[$r.Count, $h.Count]
-    return [Math]::Round(100.0 * $last / $r.Count, 1)
+    return [pscustomobject]@{ edits = $d[$r.Count, $h.Count]; words = $r.Count }
+}
+
+function Wer([string]$hyp, [string]$ref) {
+    $c = WerCounts $hyp $ref
+    if (-not $c) { return $null }
+    return [Math]::Round(100.0 * $c.edits / $c.words, 1)
 }
 
 function GrabLog() {
@@ -142,8 +147,13 @@ foreach ($p in $picks) {
     }
     $ref = $rows[$p.id].text
     $w = if ($hyp) { Wer $hyp $ref } else { $null }
+    $cnt = if ($hyp) { WerCounts $hyp $ref } else { $null }
+    $edits = $null
+    $words = $null
+    if ($cnt) { $edits = $cnt.edits; $words = $cnt.words }
     $results += [pscustomobject]@{
         id = $p.id; sec = [math]::Round($p.sec, 1); wer = $w
+        edits = $edits; words = $words
         hyp = $hyp; ref = $ref; timing = (GrabLog).timing
     }
     $mark = if ($w -eq $null) { 'NO-LOG' } elseif ($w -eq 0) { 'exact' } else { "$w% WER" }
@@ -165,7 +175,16 @@ foreach ($r in $results) {
 if ($ok.Count -gt 0) {
     $mean = [math]::Round((($ok | Measure-Object -Property wer -Average).Average), 2)
     $exact = ($ok | Where-Object { $_.wer -eq 0 }).Count
+    # Средний WER по клипам врёт, когда в наборе есть односложные фразы: одна
+    # буква в слове из одного слова даёт 100%, и такой клип тянет среднее
+    # сильнее, чем длинная фраза с той же ошибкой. Поэтому рядом печатаем
+    # corpus WER - правки на слово по всему набору - и число коротких клипов.
+    $words = ($ok | Measure-Object -Property words -Sum).Sum
+    $edits = ($ok | Measure-Object -Property edits -Sum).Sum
+    $corpus = if ($words -gt 0) { [math]::Round(100.0 * $edits / $words, 2) } else { 'n/a' }
+    $short = ($ok | Where-Object { $_.words -le 2 }).Count
     [void]$sb.AppendLine("WER mean = $mean %   exact = $exact / $($ok.Count)   missing = $($results.Count - $ok.Count)")
+    [void]$sb.AppendLine("WER corpus = $corpus %   edits = $edits / words = $words   clips<=2 words = $short")
 } else {
     [void]$sb.AppendLine('NO RESULTS')
 }
@@ -176,4 +195,5 @@ if ($ok.Count -gt 0) {
     $mean = [math]::Round((($ok | Measure-Object -Property wer -Average).Average), 2)
     $exact = ($ok | Where-Object { $_.wer -eq 0 }).Count
     Write-Host "WER mean = $mean %   exact = $exact / $($ok.Count)"
+    Write-Host "WER corpus = $corpus %   edits = $edits / words = $words   clips<=2 words = $short"
 }
