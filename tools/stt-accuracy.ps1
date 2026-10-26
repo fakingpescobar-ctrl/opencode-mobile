@@ -3,8 +3,9 @@ param(
     [string]$Engine = 'whisper',
     [int]$Count = 12,
     [string]$Tag = 'acc1',
-    [int]$WaitSeconds = 30,
+    [int]$WaitSeconds = 150,
     [string]$UseIds = '',
+    [switch]$All,
     [string]$Dataset = 'C:\Projects\MyFLOW\data\eval_wispr',
     [string]$ReportDir = "$env:TEMP\opencode"
 )
@@ -47,7 +48,17 @@ $buckets = @(
     @{ lo = 9.0; hi = 40.0; n = [int]($Count * 0.15) }
 )
 $picks = @()
-if ($UseIds) {
+if ($All) {
+    # Весь корпус: каждый клип из эталона, у которого есть wav. Без случайного выбора —
+    # иначе «полный прогон» на деле оказывается выборкой по бакетам.
+    foreach ($f in (Get-ChildItem "$src\audio\*.wav" | Sort-Object Name)) {
+        $id = $f.BaseName
+        if ($rows.ContainsKey($id)) {
+            $picks += [pscustomobject]@{ path = $f.FullName; id = $id; sec = $rows[$id].sec }
+        }
+    }
+    Write-Host "using every clip: $($picks.Count)"
+} elseif ($UseIds) {
     foreach ($id in ($UseIds -split ',')) {
         $id = $id.Trim()
         if (-not $id) { continue }
@@ -111,8 +122,16 @@ function Wer([string]$hyp, [string]$ref) {
     return [Math]::Round(100.0 * $c.edits / $c.words, 1)
 }
 
-function GrabLog() {
-    $raw = & $adb logcat -d -t 4000 2>$null
+function DeviceClock() {
+    # Окно по строкам здесь не работает: этот телефон пишет >2000 строк лога за 25 с,
+    # поэтому `-t 4000` покрывает меньше минуты, BENCH-строка выпадает из окна и клип
+    # помечается «NO-LOG», хотя распознался. Берём время устройства и читаем по нему.
+    $line = & $adb shell 'date +"%m-%d %H:%M:%S.000"' 2>$null
+    return ("$line").Trim()
+}
+
+function GrabLog([string]$Since) {
+    $raw = if ($Since) { & $adb logcat -d -T $Since 2>$null } else { & $adb logcat -d -t 4000 2>$null }
     $res = @{}
     foreach ($l in $raw) {
         if ($l -match "BENCH\s+.*/([0-9a-f-]+)\.wav\s+=>\s*'(.*)'\s*$") { $res[$matches[1]] = $matches[2] }
@@ -133,17 +152,28 @@ $n = 0
 foreach ($p in $picks) {
     $n++
     Write-Host ("[{0}/{1}] {2}  ({3}s)" -f $n, $picks.Count, $p.id.Substring(0, 8), $p.sec)
+    $since = DeviceClock
     & $adb shell "am broadcast -n $rcv -a org.opencode.mobile.STT_BENCH -e file $remoteDir/$($p.id).wav -e model $Model -e engine $Engine" | Out-Null
-    Start-Sleep -Seconds $WaitSeconds
-    $hyp = (GrabLog).text[$p.id]
+    # Ждём не фиксированные секунды, а появление строки: холодная загрузка модели — ~20 с,
+    # сам проход 2–25 с. Опрос раз в 3 с заканчивается сразу, как только клип готов.
+    $hyp = $null
+    $deadline = (Get-Date).AddSeconds($WaitSeconds)
+    while (-not $hyp -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 3
+        $hyp = (GrabLog $since).text[$p.id]
+    }
     # Замечено: broadcast после logcat -c уходит, но ответ приходит не всегда
     # (первый клип стабильно терялся). Повторяем один раз, прежде чем считать пропажей.
     if (-not $hyp) {
         Write-Host '    retry (no log)'
         Start-Sleep -Seconds 2
+        $since = DeviceClock
         & $adb shell "am broadcast -n $rcv -a org.opencode.mobile.STT_BENCH -e file $remoteDir/$($p.id).wav -e model $Model -e engine $Engine" | Out-Null
-        Start-Sleep -Seconds $WaitSeconds
-        $hyp = (GrabLog).text[$p.id]
+        $deadline = (Get-Date).AddSeconds($WaitSeconds)
+        while (-not $hyp -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 3
+            $hyp = (GrabLog $since).text[$p.id]
+        }
     }
     $ref = $rows[$p.id].text
     $w = if ($hyp) { Wer $hyp $ref } else { $null }
@@ -154,7 +184,7 @@ foreach ($p in $picks) {
     $results += [pscustomobject]@{
         id = $p.id; sec = [math]::Round($p.sec, 1); wer = $w
         edits = $edits; words = $words
-        hyp = $hyp; ref = $ref; timing = (GrabLog).timing
+        hyp = $hyp; ref = $ref; timing = (GrabLog $since).timing
     }
     $mark = if ($w -eq $null) { 'NO-LOG' } elseif ($w -eq 0) { 'exact' } else { "$w% WER" }
     Write-Host "    -> $mark"
