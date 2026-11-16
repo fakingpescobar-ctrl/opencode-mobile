@@ -130,6 +130,18 @@ jobs:
             echo "::error::APK подозрительно мал ($size б) — ядро не попало в упаковку"
             exit 1
           fi
+          # Ассеты плагинов: размер сверяется с эталоном, иначе в APK уедет
+          # старая копия и приложение затрёт ею живой плагин — это уже случалось
+          # 15.11 21:59 (moltbook.js откатился с 334 297 до 286 096).
+          for pair in "assets/mcp/moltbook.js 334297" "assets/mcp/memory.js 86023"; do
+            set -- $pair
+            got=$(unzip -l "$APK" | awk -v p="$1" '$4 == p { print $1 }' | head -1)
+            echo "ассет $1 = ${got:-нет} (ждали $2)"
+            if [ "${got:-}" != "$2" ]; then
+              echo "::error::ассет $1 в APK не тот ($got вместо $2) — приложение затрёт живой плагин старой копией"
+              exit 1
+            fi
+          done
           sha256sum "$APK" | tee apk.sha256
 
       - name: Отпечаток подписи
