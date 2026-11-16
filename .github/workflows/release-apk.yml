@@ -68,21 +68,33 @@ jobs:
           ls -l app/src/main/jniLibs/arm64-v8a/
           echo "ядро: $(sed -n 's/^opencode\.binaryVersion=//p' gradle.properties)"
 
-      - name: Ключ подписи (тот же, что на телефоне)
+      - name: Ключ подписи
         id: key
         env:
           KS_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
         run: |
+          set -eu
+          mkdir -p "$HOME/.android"
+          # Порядок: секрет → репозиторий → ключ раннера. Ключ раннера — это
+          # провал по смыслу: он генерируется заново на каждом прогоне, поэтому
+          # каждый релиз оказывается подписан по-своему и не встаёт на прошлый.
           if [ -n "${KS_B64:-}" ]; then
-            mkdir -p "$HOME/.android"
             printf '%s' "$KS_B64" | base64 -d > "$HOME/.android/debug.keystore"
-            chmod 600 "$HOME/.android/debug.keystore"
-            keytool -list -keystore "$HOME/.android/debug.keystore" -storepass android | head -5
-            echo "source=secret" >> "$GITHUB_OUTPUT"
+            src=secret
+          elif [ -f signing/debug.keystore ]; then
+            cp signing/debug.keystore "$HOME/.android/debug.keystore"
+            src=repo
           else
-            echo "source=ci-default" >> "$GITHUB_OUTPUT"
-            echo "::warning::Ключа подписи нет в secrets — APK будет подписан ключом раннера и НЕ встанет поверх установленного приложения"
+            src=ci-default
+            echo "::warning::постоянного ключа нет ни в secrets, ни в signing/debug.keystore — подпись будет случайной"
           fi
+          chmod 600 "$HOME/.android/debug.keystore"
+          keytool -list -v -keystore "$HOME/.android/debug.keystore" -storepass android \
+            | grep -E "Alias name|SHA256:" | head -4
+          ks_fp=$(keytool -list -v -keystore "$HOME/.android/debug.keystore" -storepass android \
+            | grep "SHA256:" | head -1 | sed 's/.*SHA256: *//' | tr -d ': ' )
+          echo "source=$src" >> "$GITHUB_OUTPUT"
+          echo "fingerprint=$ks_fp" >> "$GITHUB_OUTPUT"
 
       - name: versionCode/versionName из номера запуска
         run: |
@@ -122,16 +134,28 @@ jobs:
 
       - name: Отпечаток подписи
         id: cert
+        env:
+          KS_FP: ${{ steps.key.outputs.fingerprint }}
         run: |
           set -eu
           APK=$(ls app/build/outputs/apk/debug/*.apk | head -1)
           keytool -printcert -jarfile "$APK" | grep -E "Owner:|SHA256:" | head -4 | tee cert.txt
-          fp=$(grep "SHA256:" cert.txt | head -1 | sed 's/.*SHA256: *//' | tr -d ' ' | tr -d ':')
+          fp=$(grep "SHA256:" cert.txt | head -1 | sed 's/.*SHA256: *//' | tr -d ' :')
           echo "fingerprint=$fp" >> "$GITHUB_OUTPUT"
-          if [ -n "${EXPECTED_CERT_SHA256:-}" ] && [ "$fp" != "${EXPECTED_CERT_SHA256}" ]; then
-            echo "::warning::отпечаток подписи не совпал с эталоном телефона — обновление поверх не встанет"
+          # Сверка «APK подписан именно тем ключом, который мы храним». Без неё
+          # подмена ключа (или тихий откат на ключ раннера) выглядит как успех.
+          ks=${KS_FP:-}
+          ks=$(echo "$ks" | tr -d ' :' | tr 'A-F' 'a-f')
+          fp_lc=$(echo "$fp" | tr 'A-F' 'a-f')
+          if [ -n "$ks" ] && [ "$fp_lc" != "$ks" ]; then
+            echo "::error::APK подписан не тем ключом: APK $fp_lc, ключ $ks"
+            exit 1
+          fi
+          echo "APK подписан ключом из signing/$([ -f signing/debug.keystore ] && echo repo || echo ci)"
+          if [ -n "${EXPECTED_CERT_SHA256:-}" ] && [ "$fp_lc" != "$(echo "$EXPECTED_CERT_SHA256" | tr -d ' :' | tr 'A-F' 'a-f')" ]; then
+            echo "::warning::отпечаток не совпал с эталоном установленного приложения — поверх не встанет"
             echo "installable=no" >> "$GITHUB_OUTPUT"
-          elif [ "${EXPECTED_CERT_SHA256:-}" = "" ]; then
+          elif [ -z "${EXPECTED_CERT_SHA256:-}" ]; then
             echo "installable=unknown" >> "$GITHUB_OUTPUT"
           else
             echo "installable=yes" >> "$GITHUB_OUTPUT"
