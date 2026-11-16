@@ -42,6 +42,7 @@ class OpencodeApp : Application() {
      * старый бинарь в память при старте, и подмена файла на диске на живой
      * процесс не действует.
      */
+    @Suppress("TooGenericExceptionCaught")
     private fun checkCoreUpdate() {
         Thread({
             try {
