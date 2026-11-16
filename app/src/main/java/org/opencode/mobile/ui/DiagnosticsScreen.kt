@@ -878,8 +878,7 @@ private fun fmtTime(epochMs: Long?): String {
 }
 
 /** Формат «16.11 12:06» — для событий, которые бывают не сегодняшними. */
-private fun fmtDayTime(epochMs: Long): String =
-    SimpleDateFormat("dd.MM HH:mm", Locale.getDefault()).format(Date(epochMs))
+private fun fmtDayTime(epochMs: Long): String = SimpleDateFormat("dd.MM HH:mm", Locale.getDefault()).format(Date(epochMs))
 
 /** История сбоев -> многострочный текст «время · код · сообщение (решен/активен)». */
 private fun historyText(history: List<RuntimeError>): String =
