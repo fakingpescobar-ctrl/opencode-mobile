@@ -66,6 +66,7 @@ import org.opencode.mobile.account.YandexAccountController
 import org.opencode.mobile.engine.Engine
 import org.opencode.mobile.engine.EngineStore
 import org.opencode.mobile.installer.InstalledAppController
+import org.opencode.mobile.server.CoreUpdater
 import org.opencode.mobile.server.OpencodeServerService
 import org.opencode.mobile.server.OpencodeServerService.ServerStatus
 import org.opencode.mobile.server.Retention
@@ -582,7 +583,6 @@ fun DiagnosticsScreen(
                 // останется 0.1.0 - он про продукт, а не про конкретный APK.
                 // «Какая сборка стоит» отвечает только этот ряд.
                 InfoRow("Сборка", buildStampLabel())
-                InfoRow("Бинарь opencode", opencodeBinaryLabel())
                 InfoRow("SDK / ABI", "API ${Build.VERSION.SDK_INT} / ${Build.SUPPORTED_ABIS.firstOrNull() ?: "?"}")
                 InfoRow(
                     "RAM",
@@ -594,6 +594,11 @@ fun DiagnosticsScreen(
                         "недоступно"
                     },
                 )
+
+                sectionHeader("Ядро opencode")
+                InfoRow("Работает", activeCoreLabel(context))
+                InfoRow("В APK", opencodeBinaryLabel())
+                coreCheckRow(context, scope)
 
                 sectionHeader("Лог сервера (хвост)")
                 // Без SelectionContainer: он конфликтует с verticalScroll по жестам
@@ -783,6 +788,46 @@ internal fun downloadButton(
     }
 }
 
+/**
+ * Кнопка «проверить сейчас» — единственный способ не ждать шестичасового окна.
+ *
+ * Она же живой тест механизма: когда реестр отдаст версию новее, здесь видно,
+ * что ядро скачалось, прошло сверку и сервер перезапустился. Работа идёт на
+ * IO-диспатчере: внутри сеть и до 245 МБ, в композиции это был бы фриз.
+ *
+ * Честность сообщения важна: «обновления нет» здесь означает «ничего не
+ * заменили», а причин может быть три (не новее, тарифицируемая сеть, не прошла
+ * сверка) — поэтому причина называется тегом в логе, а не выдумывается тут.
+ */
+@Composable
+private fun coreCheckRow(
+    context: Context,
+    scope: CoroutineScope,
+) {
+    var busy by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf<String?>(null) }
+
+    note?.let { InfoRow("Проверка", it) }
+    downloadButton(if (busy) "Проверяю реестр…" else "Проверить обновление ядра сейчас") {
+        if (busy) return@downloadButton
+        busy = true
+        note = null
+        scope.launch {
+            val applied =
+                withContext(Dispatchers.IO) { CoreUpdater.checkAndApply(context, force = true) }
+            busy = false
+            note =
+                if (applied) {
+                    "ядро обновлено, перезапускаю сервер"
+                } else {
+                    "ничего не заменил: версия не новее, либо сеть тарифицируется, " +
+                        "либо сверка/пробный запуск не прошли (подробности — лог, тег CoreUpdater)"
+                }
+            if (applied) OpencodeServerService.restart(context)
+        }
+    }
+}
+
 private fun statusLabel(s: ServerStatus): String =
     when (s) {
         ServerStatus.STARTING -> "Запускается"
@@ -879,7 +924,8 @@ private fun buildDiagnosticsDump(
     val appInfo = runCatching { pm.getPackageInfo(context.packageName, 0) }.getOrNull()
     sb.append("Приложение: v${appInfo?.versionName ?: "?"} (code ${appInfo?.longVersionCode ?: 0})\n")
     sb.append("Сборка: ${buildStampLabel()}\n")
-    sb.append("Бинарь opencode: ${opencodeBinaryLabel()}\n")
+    sb.append("Ядро opencode: ${activeCoreLabel(context)}\n")
+    sb.append("Ядро в APK: ${opencodeBinaryLabel()}\n")
     sb.append("SDK: API ${Build.VERSION.SDK_INT}, ABI: ${Build.SUPPORTED_ABIS.firstOrNull() ?: "?"}\n")
     val mi = ActivityManager.MemoryInfo()
     runCatching {
@@ -995,6 +1041,23 @@ private fun buildStampLabel(): String {
  * его значение стоит рядом отдельной строкой.
  */
 private fun opencodeBinaryLabel(): String = "v${BuildConfig.OPENCODE_VERSION}"
+
+/**
+ * Ядро, которое реально запускается.
+ *
+ * С 16.11 приложение умеет накатывать ядро само (`CoreUpdater`), и APK-версия
+ * перестала быть ответом на вопрос «что у меня работает». Показывать только
+ * её — значит врать ровно в том месте, куда смотрят, когда что-то сломалось.
+ *
+ * Отсюда и формат: действующее значение первым, источник в скобках. Если
+ * скачанное ядро отбраковано падением сервера, `effectiveVersion` уже вернул
+ * APK-версию — и это правда, а не «кэш».
+ */
+private fun activeCoreLabel(context: Context): String {
+    val active = CoreUpdater.effectiveVersion(context)
+    val apk = BuildConfig.OPENCODE_VERSION
+    return if (active == apk) "v$apk (из APK)" else "v$active (скачано; в APK v$apk)"
+}
 
 /**
  * Человекочитаемый лейбл движка STT (stt_engine pref → русское имя).
@@ -1210,3 +1273,4 @@ private fun TtsVoiceRows(
             }
     }
 }
+
