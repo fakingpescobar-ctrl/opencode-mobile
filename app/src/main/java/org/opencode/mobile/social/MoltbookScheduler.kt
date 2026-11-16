@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.SystemClock
 import android.util.Log
+import java.util.concurrent.Executors
 
 /**
  * Будильник для тиков. AlarmManager, а не WorkManager: WorkManager в проекте нет, а
@@ -104,15 +105,18 @@ internal object MoltbookScheduler {
         context: Context,
         enabled: Boolean,
     ) {
-        runCatching {
-            MoltbookWitness.append(
-                logFile = MoltbookWatchdog.logFile(context),
-                mirrorFile = MoltbookWatchdog.mirrorFile(context),
-                kind = MoltbookWitness.KIND_SWITCH,
-                payload = if (enabled) "alarm on" else "alarm off",
-                now = System.currentTimeMillis(),
-            )
-        }.onFailure { Log.w(TAG, "не записал переключение будильника: ${it.message}") }
+        val app = context.applicationContext
+        switchWriter.execute {
+            runCatching {
+                MoltbookWitness.append(
+                    logFile = MoltbookWatchdog.logFile(app),
+                    mirrorFile = MoltbookWatchdog.mirrorFile(app),
+                    kind = MoltbookWitness.KIND_SWITCH,
+                    payload = if (enabled) "alarm on" else "alarm off",
+                    now = System.currentTimeMillis(),
+                )
+            }.onFailure { Log.w(TAG, "не записал переключение будильника: ${it.message}") }
+        }
     }
 
     /**
@@ -370,6 +374,19 @@ internal object MoltbookScheduler {
     }
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    /**
+     * Поток для записи следа о переключении.
+     *
+     * Журнал не просто дописывается: он ещё копируется в зеркало на внешнюю
+     * память. Делать это в обработчике кнопки, на главном потоке, — значит
+     * подвешивать UI ровно в момент нажатия и на ровно той памяти, которая
+     * бывает медленной. Отдельный поток здесь дешевле любой оптимизации.
+     */
+    private val switchWriter =
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "moltbook-switch").apply { isDaemon = true }
+        }
 
     private fun tickIntent(context: Context): Intent = Intent(context, MoltbookAlarmReceiver::class.java).setAction(ACTION_TICK)
 
