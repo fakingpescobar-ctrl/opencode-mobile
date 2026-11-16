@@ -1,0 +1,70 @@
+{
+  "_comment": [
+    "Пины нативов: единственный источник правды и для tools/fetch-natives.sh, и для CI.",
+    "Каждый файл сверяется по размеру И sha256: размер совпадает у разных сборок",
+    "(musl 1.2.5-r11 и -r12 весят одинаково), различает их только хеш.",
+    "Версия ядра берётся из gradle.properties (opencode.binaryVersion) — она же попадает",
+    "в BuildConfig.OPENCODE_VERSION. Новую версию добавлять так:",
+    "  tools/fetch-natives.sh --bootstrap <версия>  → напечатает bytes/sha256 для pins"
+  ],
+  "opencode": {
+    "url": "https://registry.npmjs.org/@opencode/cli-linux-arm64-musl/-/cli-linux-arm64-musl-{version}.tgz",
+    "member": "package/bin/opencode",
+    "pins": {
+      "2.0.27": {
+        "bytes": 204999888,
+        "sha256": "8880b9ce7a6c458eee641b4a22fd1cccd3373bb0f7c4ba6ee3fd4b32ef20fc62"
+      },
+      "2.3.0": {
+        "bytes": 245505128,
+        "sha256": "f093a3ea0b1572176c5d95504e910fc25d35dfe460cce466fcb6d64c1547951c",
+        "note": "сверено на телефоне 16.11: npm cli-linux-arm64-musl-2.3.0.tgz, ELF + маркеры libstdc++.so.6/libgcc_s.so.1 (musl, не windows/v1)"
+      }
+    }
+  },
+  "bun": {
+    "version": "1.4.0",
+    "bytes": 73604864,
+    "sha256": "1d1810e9a442bbd09a07962ef4efa3105a989c71033eedec0bd1b0bdd59958a3"
+  },
+  "files": [
+    {
+      "name": "libc_musl.so",
+      "from": "alpine v3.21 musl 1.2.5-r11",
+      "url": "{alpine}/musl-1.2.5-r11.apk",
+      "kind": "tar",
+      "member": "lib/ld-musl-aarch64.so.1",
+      "bytes": 723480,
+      "sha256": "44770ff3960d040e6023ff77b809def2e4123db85e064c311f4cfa45a05959f4",
+      "alsoAs": "libldmusl.so"
+    },
+    {
+      "name": "libstdcxx.so",
+      "from": "alpine v3.21 libstdc++ 14.2.0-r4",
+      "url": "{alpine}/libstdc%2B%2B-14.2.0-r4.apk",
+      "kind": "tar",
+      "member": "usr/lib/libstdc++.so.6.0.33",
+      "bytes": 2754992,
+      "sha256": "1f1a71be4319632f743507ef7c6eaebaccad8d6f277055cf2c6b16b544f9f418"
+    },
+    {
+      "name": "libgcc_s.so",
+      "from": "alpine v3.21 libgcc 14.2.0-r4",
+      "url": "{alpine}/libgcc-14.2.0-r4.apk",
+      "kind": "tar",
+      "member": "usr/lib/libgcc_s.so.1",
+      "bytes": 133008,
+      "sha256": "69c45f16064b7b61b9a3d64c37395d13368a8fe719745d49e9508ec650fea971"
+    },
+    {
+      "name": "libsherpa-onnx-jni.so",
+      "from": "sherpa-onnx 1.13.8 static-link-onnxruntime aar",
+      "url": "{sherpa}/sherpa-onnx-static-link-onnxruntime-1.13.8.aar",
+      "kind": "zip",
+      "member": "jni/arm64-v8a/libsherpa-onnx-jni.so",
+      "bytes": 24169352,
+      "sha256": "b4a53d915c19cb6d09b1cdc9a8084be54419b647aab9097ffdfb46f30c3c4dd8",
+      "note": "libonnxruntime.so НЕ нужен: он влинкован статически в этот .so (22 МБ мёртвого веса в APK)"
+    }
+  ]
+}
