@@ -162,6 +162,11 @@ internal fun MoltbookPanel(
     state: MoltbookPanelState,
     modifier: Modifier = Modifier,
 ) {
+    // Состояние рубильника живёт здесь, а не внутри кнопки: его читает ещё и
+    // заголовок, который иначе продолжал бы обещать «раз в 2 часа» при
+    // выключенном будильнике — то есть две строки одной карточки врали бы
+    // по-разному.
+    val alarmOn = rememberAlarmEnabled()
     Column(
         modifier =
             modifier
@@ -175,9 +180,10 @@ internal fun MoltbookPanel(
                 // вопросов нельзя прокрутить отдельно — колесо уходит в панель целиком.
                 .padding(horizontal = 10.dp, vertical = 5.dp),
     ) {
-        PanelHeader(state)
+        PanelHeader(state, alarmOn.value)
         Spacer(Modifier.height(6.dp))
         Divider()
+        MoltbookAlarmSwitch(alarmOn.value) { alarmOn.value = it }
         MoltbookIntervalPicker()
 
         if (state.pending.isNotEmpty()) {
@@ -197,7 +203,10 @@ internal fun MoltbookPanel(
  * одного числа.
  */
 @Composable
-private fun PanelHeader(state: MoltbookPanelState) {
+private fun PanelHeader(
+    state: MoltbookPanelState,
+    alarmOn: Boolean,
+) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
             text = "MOLTBOOK",
@@ -211,7 +220,10 @@ private fun PanelHeader(state: MoltbookPanelState) {
         )
         Spacer(Modifier.weight(1f))
         Text(
-            text = cadenceHint(state),
+            // Свежесть снимка и ритм тика — одно и то же поле, пока будильник
+            // включён; при выключенном там обязано стоять «выключен», иначе
+            // карточка обещала бы тики, которых не будет.
+            text = if (alarmOn) cadenceHint(state) else "будильник выключен",
             color = MoltIdle,
             fontSize = TINY,
             lineHeight = TINY_LINE,
