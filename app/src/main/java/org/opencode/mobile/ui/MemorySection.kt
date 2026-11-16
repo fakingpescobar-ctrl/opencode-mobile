@@ -89,7 +89,6 @@ internal fun memorySection() {
 
     LaunchedEffect(Unit) { reload() }
 
-    sectionHeader("Локальная память (что агент помнит)")
     InfoRow(
         "Что это",
         "Записи, которые агент сохраняет между сессиями: решения, найденные причины, " +
