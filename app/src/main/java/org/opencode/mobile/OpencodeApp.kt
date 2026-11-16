@@ -46,7 +46,7 @@ class OpencodeApp : Application() {
     private fun checkCoreUpdate() {
         Thread({
             try {
-                if (CoreUpdater.checkAndApply(applicationContext)) {
+                if (CoreUpdater.checkAndApply(applicationContext).applied) {
                     OpencodeServerService.restart(applicationContext)
                 }
             } catch (e: Exception) {
