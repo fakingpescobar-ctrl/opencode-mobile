@@ -116,6 +116,7 @@ import org.opencode.mobile.ui.chat.playNotificationSound
 import org.opencode.mobile.ui.chat.pruneEmptySessions
 import org.opencode.mobile.ui.chat.readWavPcm16
 import org.opencode.mobile.ui.chat.sessionRunning
+import org.opencode.mobile.ui.chat.speechText
 import org.opencode.mobile.ui.chat.stopAndPurge
 import org.opencode.mobile.ui.chat.vibrate
 import java.io.File
@@ -992,8 +993,11 @@ fun ChatOverlay(
                             thinking = publish.thinking,
                             assistants = publish.messages
                                 .drop(lastUserIdx + 1)
-                                .filter { it.role == "assistant" && it.text.isNotEmpty() }
-                                .map { it.text },
+                                .filter { it.role == "assistant" }
+                                // Картинка вслух не читается, но её подпись — да:
+                                // иначе озвучка говорила бы «путь, путь, путь».
+                                .map { speechText(it.text) }
+                                .filter { it.isNotEmpty() },
                         ),
                     )
                 if (plan.stop) TtsNarrator.stop()

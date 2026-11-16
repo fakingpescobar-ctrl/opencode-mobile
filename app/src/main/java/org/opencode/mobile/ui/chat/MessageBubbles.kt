@@ -1,6 +1,7 @@
 package org.opencode.mobile.ui.chat
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -8,6 +9,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -21,6 +24,9 @@ import org.opencode.mobile.ui.TypewriterText
 
 /** Отдельная роль для сообщения об ошибке — иначе она уезжает в «Система». */
 private const val ERROR_ROLE_ARGB = 0xFFE05B5B
+
+/** Промежуток между кусками реплики, когда в ней есть картинки. */
+private const val PICTURE_GAP_DP = 8
 
 /**
  * Текст реплики.
@@ -44,16 +50,52 @@ private fun MessageText(
             fontSize = 14.sp,
             lineHeight = 19.sp,
         )
-    // Один и тот же composable в обоих случаях: смена ветки означала бы, что при
-    // гашении ключа поддерево печати выбрасывается из композиции, а вместе с ним
-    // и remember с накопленным прогрессом. Здесь меняется только флаг.
-    TypewriterText(
-        text = m.text,
-        animate = onTyped != null,
-        style = style,
-        key = typedKeyOf(m),
-        onTyped = { onTyped?.invoke() },
-    )
+    val segments = remember(m.text) { splitPictures(m.text) }
+    if (segments.none { it is ChatSegment.Picture }) {
+        // Один и тот же composable в обоих случаях: смена ветки означала бы, что при
+        // гашении ключа поддерево печати выбрасывается из композиции, а вместе с ним
+        // и remember с накопленным прогрессом. Здесь меняется только флаг.
+        TypewriterText(
+            text = m.text,
+            animate = onTyped != null,
+            style = style,
+            key = typedKeyOf(m),
+            onTyped = { onTyped?.invoke() },
+        )
+    } else {
+        // Реплика с картинками не печатается по буквам: картинка встаёт на своё
+        // место сразу, и порядок «подпись — картинка — подпись» держится только
+        // при показе всего куска целиком. Ключ печати всё равно гасим: иначе он
+        // навсегда остался бы на этой реплике.
+        LaunchedEffect(typedKeyOf(m)) { onTyped?.invoke() }
+        PictureSegments(segments, style)
+    }
+}
+
+/** Кусок реплики: текст или картинка на своём месте, без печати по буквам. */
+@Composable
+private fun PictureSegments(segments: List<ChatSegment>, style: TextStyle) {
+    Column(verticalArrangement = Arrangement.spacedBy(PICTURE_GAP_DP.dp)) {
+        segments.forEach { segment ->
+            when (segment) {
+                is ChatSegment.Body -> BodyText(segment.text, style)
+                is ChatSegment.Picture -> ChatPictureView(segment.picture)
+            }
+        }
+    }
+}
+
+@Composable
+private fun BodyText(text: String, style: TextStyle) {
+    SelectionContainer {
+        Text(
+            text = text,
+            color = style.color,
+            fontFamily = style.fontFamily,
+            fontSize = style.fontSize,
+            lineHeight = style.lineHeight,
+        )
+    }
 }
 
 @Composable
