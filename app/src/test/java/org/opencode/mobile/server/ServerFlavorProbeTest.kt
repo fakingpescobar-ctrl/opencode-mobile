@@ -1,8 +1,12 @@
 package org.opencode.mobile.server
 
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
+import java.util.Properties
 
 /**
  * Проверка сверки версии сервера с версией, зашитой в APK.
@@ -68,12 +72,45 @@ class ServerFlavorProbeTest {
     }
 
     /**
-     * Смысл всей проверки: версия в APK и на сервере обязаны совпадать.
-     * Расхождение видно в логе, и это единственное место, где версия
-     * сверяется автоматически.
+     * Смысл всей проверки: версия в APK — это база, от которой считается
+     * «есть ли новее». Сверяется не с числом «2.0.27» (оно меняется с каждой
+     * сменой ядра — и тест краснел на любом обновлении), а с источником правды:
+     * `gradle.properties` → `opencode.binaryVersion` → `BuildConfig`.
+     *
+     * Второе условие — что для этой версии вообще есть пин в `tools/natives.json`:
+     * иначе сборка уедет с ядром, которого нет в реестре пинов, и CI-проверка
+     * «версия из APK совпадает с пином» перестанет что-либо доказывать.
+     *
+     * На устройстве версия может быть новее APK — ядро обновляет сам CoreUpdater,
+     * и расхождение из лога ServerFlavor теперь норма, а не поломка.
      */
     @Test
     fun `версия apk задаётся сборочной конфигурацией`() {
-        assertEquals("2.0.27", org.opencode.mobile.BuildConfig.OPENCODE_VERSION)
+        val version = org.opencode.mobile.BuildConfig.OPENCODE_VERSION
+        assertTrue("версия не похожа на semver: $version", VERSION_SHAPE.matches(version))
+        assertEquals("BuildConfig расходится с gradle.properties", gradleProperty("opencode.binaryVersion"), version)
+        val pins = pins()
+        assertTrue("в tools/natives.json нет пина для $version", pins.has(version))
+    }
+
+    /** Свойство из gradle.properties: тесты запускаются из каталога модуля (app). */
+    private fun gradleProperty(name: String): String? {
+        val candidates = listOf(File("../gradle.properties"), File("gradle.properties"))
+        val file = candidates.firstOrNull { it.isFile } ?: return null
+        val props = Properties()
+        file.inputStream().use { props.load(it) }
+        return props.getProperty(name)?.trim()
+    }
+
+    private fun pins(): JSONObject {
+        val candidates = listOf(File("../tools/natives.json"), File("tools/natives.json"))
+        val file = candidates.firstOrNull { it.isFile }
+        assertTrue("не нашёл tools/natives.json — проверка пинов невозможна", file != null)
+        return JSONObject(file!!.readText()).getJSONObject("opencode").getJSONObject("pins")
+    }
+
+    private companion object {
+        /** Только цифры и точки: «2.0.27» да, «0.0.0-dev-1297» — нет (это не релиз). */
+        private val VERSION_SHAPE = Regex("""\d+\.\d+\.\d+""")
     }
 }
