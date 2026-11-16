@@ -319,7 +319,6 @@ internal object MoltbookScheduler {
             Log.i(TAG, "будильник выключен — ensureScheduled ничего не взводит")
             return
         }
-        val manager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
         val token =
             PendingIntent.getBroadcast(
                 context,
