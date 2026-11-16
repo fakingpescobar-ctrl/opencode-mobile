@@ -622,9 +622,8 @@ fun DiagnosticsScreen(
                                 }
                             when (outcome) {
                                 is ScreenshotOutcome.Saved -> {
-                                    shotNote =
-                                        "✔ работает · ${outcome.width}×${outcome.height} · ${fmtBytes(outcome.bytes)}" +
-                                            "\n${outcome.file.absolutePath}"
+                                    val size = "${outcome.width}×${outcome.height} · ${fmtBytes(outcome.bytes)}"
+                                    shotNote = "✔ работает · $size\n${outcome.file.absolutePath}"
                                     shotTone = DiagTone.OK
                                 }
 
