@@ -25,6 +25,9 @@ PINS="$ROOT/tools/natives.json"
 CACHE="${NATIVES_CACHE:-$ROOT/.natives-cache}"
 ALPINE="https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64"
 SHERPA="https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8"
+# Часть файлов лежит в НАШЕМ релизе: Alpine держит в main/ только текущую ревизию
+# пакета, и пин на dl-cdn перестаёт скачиваться (прогон CI #1 16.11: musl-1.2.5-r11
+# отдал 404). Тег релиза неизменяем, поэтому сборка остаётся воспроизводимой.
 NPM="https://registry.npmjs.org"
 
 CHECK=0
@@ -39,6 +42,7 @@ esac
 command -v curl >/dev/null || { echo "нет curl" >&2; exit 1; }
 command -v jq >/dev/null || { echo "нет jq" >&2; exit 1; }
 [ -f "$PINS" ] || { echo "нет пинов: $PINS" >&2; exit 1; }
+HOSTED="$(jq -r '.hostedRelease // ""' "$PINS")"
 
 version="$(sed -n 's/^opencode\.binaryVersion=//p' "$ROOT/gradle.properties" | head -1 | tr -d '[:space:]')"
 [ -n "$version" ] || { echo "нет opencode.binaryVersion в gradle.properties" >&2; exit 1; }
@@ -73,6 +77,7 @@ download() { # url dest
 extract() { # src kind member dest
   local src="$1" kind="$2" member="$3" dest="$4"
   case "$kind" in
+    file) cp "$src" "$dest" ;;
     tar) tar -xOf "$src" "$member" > "$dest" ;;
     zip) unzip -p "$src" "$member" > "$dest" ;;
     *) echo "неизвестный тип архива: $kind" >&2; exit 1 ;;
@@ -147,13 +152,13 @@ fi
 mapfile -t pins < <(jq -c '.files[]' "$PINS")
 for pin in "${pins[@]}"; do
   name="$(jq -r '.name' <<<"$pin")"
-  url="$(jq -r '.url' <<<"$pin" | sed "s|{alpine}|$ALPINE|g; s|{sherpa}|$SHERPA|g")"
+  url="$(jq -r '.url' <<<"$pin" | sed "s|{alpine}|$ALPINE|g; s|{sherpa}|$SHERPA|g; s|{hosted}|$HOSTED|g")"
   install_pin "$name" "$url" "$(jq -r '.kind' <<<"$pin")" "$(jq -r '.member' <<<"$pin")" \
     "$(jq -r '.bytes' <<<"$pin")" "$(jq -r '.sha256' <<<"$pin")" "$(jq -r '.alsoAs // ""' <<<"$pin")"
 done
 
-bun_url="$NPM/@oven/bun-linux-aarch64-musl/-/bun-linux-aarch64-musl-$(jq -r '.bun.version' "$PINS").tgz"
-install_pin libbun-musl.so "$bun_url" tar "package/bin/bun" \
+bun_url="$(jq -r '.bun.url' "$PINS" | sed "s|{version}|$(jq -r '.bun.version' "$PINS")|g")"
+install_pin libbun-musl.so "$bun_url" tar "$(jq -r '.bun.member' "$PINS")" \
   "$(jq -r '.bun.bytes' "$PINS")" "$(jq -r '.bun.sha256' "$PINS")"
 
 if [ "$CHECK" = "1" ]; then
