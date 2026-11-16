@@ -90,15 +90,38 @@ internal fun AccessibilityService.captureScreenTo(
 ): ScreenshotOutcome =
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
         ScreenshotOutcome.Failed("снимок экрана требует Android 11 (API 30)")
-    } else if (!canTakeScreenshot()) {
-        // Право объявлено в media_ui_accessibility.xml, но применяется при включении
-        // службы: после обновления APK телефон может держать старый набор прав, и
-        // «система не дала» без этой строки читалось бы как поломка моста.
-        ScreenshotOutcome.Failed(
-            "служба доступности без права снимать экран: выключите и включите её заново в настройках",
-        )
     } else {
         shoot(dest, timeoutMs)
+    }
+
+/**
+ * Почему система отказала в снимке — словами.
+ *
+ * Проверить право заранее нечем: `canTakeScreenshot` существует только как атрибут
+ * конфигурации службы, метода-геттера у `AccessibilityService` нет. Зато система
+ * называет причину кодом, и «нет права» — это отдельный код, а не общая ошибка:
+ * после обновления APK телефон может держать старый набор прав службы, и тогда
+ * лечится это выключением-включением службы, а не повтором запроса.
+ */
+@RequiresApi(Build.VERSION_CODES.R)
+private fun screenshotRefusal(errorCode: Int): String =
+    when (errorCode) {
+        AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT ->
+            "слишком часто: система не даёт снимать экран дважды подряд, повторите через полсекунды"
+
+        AccessibilityService.ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS ->
+            "у службы доступности нет права снимать экран: выключите и включите её заново в настройках"
+
+        AccessibilityService.ERROR_TAKE_SCREENSHOT_SECURE_WINDOW ->
+            "на экране защищённое окно (пароль, банк): система запрещает снимок"
+
+        AccessibilityService.ERROR_TAKE_SCREENSHOT_INVALID_DISPLAY ->
+            "система не знает такой дисплей"
+
+        AccessibilityService.ERROR_TAKE_SCREENSHOT_INVALID_WINDOW ->
+            "окно, которое просили снять, недоступно"
+
+        else -> "система отказала в снимке: код $errorCode"
     }
 
 @RequiresApi(Build.VERSION_CODES.R)
@@ -118,7 +141,7 @@ private fun AccessibilityService.shoot(
             }
 
             override fun onFailure(errorCode: Int) {
-                outcome.set(ScreenshotOutcome.Failed("система отказала в снимке: код $errorCode"))
+                outcome.set(ScreenshotOutcome.Failed(screenshotRefusal(errorCode)))
                 settled.countDown()
             }
         },
