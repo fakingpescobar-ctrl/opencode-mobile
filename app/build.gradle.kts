@@ -258,6 +258,24 @@ android {
                 keyPassword = keystoreProps.getProperty("keyPassword")
             }
         }
+
+        // Постоянный ключ debug-сборок лежит в репозитории: signing/debug.keystore.
+        //
+        // Без этого AGP ищет $HOME/.android/debug.keystore и, не найдя его,
+        // создаёт НОВЫЙ ключ на каждом раннере. Тогда каждый релиз подписан
+        // по-своему и не встаёт на предыдущий — проверено 16.11: отпечаток
+        // сертификата в APK (f971abb1…) не совпал с ключом из репозитория
+        // (196cdc94…), хотя ключ был на месте в $HOME/.android.
+        // Так ключ один и на PC, и на GitHub: смена подписи невозможна случайно.
+        val repoDebugKeystore = rootProject.file("signing/debug.keystore")
+        if (repoDebugKeystore.exists()) {
+            getByName("debug") {
+                storeFile = repoDebugKeystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
     }
 
     buildTypes {
@@ -466,3 +484,4 @@ detekt {
     // без @Composable), которые расходились с .editorconfig. См. config/detekt/detekt.yml.
     config.setFrom(file("config/detekt/detekt.yml"))
 }
+
