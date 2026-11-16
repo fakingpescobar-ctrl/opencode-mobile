@@ -67,6 +67,9 @@ import org.opencode.mobile.account.YandexAccountController
 import org.opencode.mobile.engine.Engine
 import org.opencode.mobile.engine.EngineStore
 import org.opencode.mobile.installer.InstalledAppController
+import org.opencode.mobile.media.MediaUiAutomation
+import org.opencode.mobile.media.ScreenshotOutcome
+import org.opencode.mobile.media.screenshotFile
 import org.opencode.mobile.server.CoreUpdater
 import org.opencode.mobile.server.OpencodeServerService
 import org.opencode.mobile.server.OpencodeServerService.ServerStatus
@@ -194,12 +197,22 @@ fun DiagnosticsScreen(
     // поэтому состояние перечитывается при каждом возврате в приложение. Без этого экран
     // после выдачи продолжит врать «не выдано» до перезапуска.
     var overlayGranted by remember { mutableStateOf(InstalledAppController.canDrawOverlays()) }
+    // Служба доступности выдаётся в настройках СИСТЕМЫ и снимается обновлением
+    // APK, поэтому её состояние перечитывается там же, где наложение: на каждый
+    // возврат в приложение. Иначе экран врал бы «выключена» сразу после
+    // включения — ровно то, из-за чего мы гоняли скриншоты руками.
+    var a11yEnabled by remember { mutableStateOf(accessibilityServiceEnabled(context)) }
+    // Результат ручной проверки снимка экрана: тот же путь, что у моста
+    // (/v1/screen/shot), поэтому «работает» здесь значит «работает и агенту».
+    var shotNote by remember { mutableStateOf("не проверялся") }
+    var shotTone by remember { mutableStateOf(DiagTone.IDLE) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer =
             LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) {
                     overlayGranted = InstalledAppController.canDrawOverlays()
+                    a11yEnabled = accessibilityServiceEnabled(context)
                 }
             }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -439,221 +452,321 @@ fun DiagnosticsScreen(
                     .verticalScroll(rememberScrollState())
                     .padding(top = 2.dp),
             ) {
-                sectionHeader("Сервер opencode")
-                serverState.stage?.let { InfoRow("Стадия runtime", stageLabel(it)) }
-                InfoRow("Workspace", if (serverState.workspaceExternal) "Внешний (MANAGE_EXTERNAL_STORAGE)" else "Внутренний")
-                serverState.lastError?.let { err ->
-                    val resolved = err.resolvedAt != null
-                    InfoRow(
-                        if (resolved) "Последняя ошибка (разрешена)" else "Активная ошибка",
-                        "${err.stage} / ${err.code}" +
-                            (if (err.recoverable) " (recoverable)" else " (терминальная)") +
-                            (if (resolved) "\nв ${fmtTime(err.resolvedAt)}" else "\nс ${fmtTime(err.at)}") +
-                            if (err.message.isNotBlank()) "\n${err.message}" else "",
-                        if (resolved) Color(0xFFBDBDBD) else Color(0xFFFF6F5A),
+                // --- Что видно сразу, без прокрутки --------------------------
+                // Шесть фактов, ради которых экран и открывают, в двух колонках.
+                // Считаются из того же состояния, что и секции ниже: расхождение
+                // «зелено сверху, красно в списке» читается как баг самого экрана,
+                // а не как проблема телефона.
+                val snapshot = snap
+                val serverTone = statusTone(serverState.status)
+                val permsOk = overlayGranted && a11yEnabled
+                val sttTone =
+                    when {
+                        snapshot == null -> DiagTone.IDLE
+                        snapshot.ggmlReady.isEmpty() -> DiagTone.WARN
+                        else -> DiagTone.OK
+                    }
+                val ttsTone =
+                    when {
+                        snapshot == null -> DiagTone.IDLE
+                        snapshot.ttsVoiceReady -> DiagTone.OK
+                        else -> DiagTone.WARN
+                    }
+                val validation = snapshot?.validation
+                val validationTone =
+                    when {
+                        validation == null -> DiagTone.IDLE
+                        validation.allOk -> DiagTone.OK
+                        else -> DiagTone.BAD
+                    }
+                DiagTiles(
+                    listOf(
+                        DiagFact("Сервер", statusLabel(serverState.status), serverTone),
+                        DiagFact(
+                            "Наложение",
+                            if (overlayGranted) "выдано" else "не выдано",
+                            if (overlayGranted) DiagTone.OK else DiagTone.BAD,
+                        ),
+                        DiagFact(
+                            "Служба доступности",
+                            if (a11yEnabled) "включена" else "выключена",
+                            if (a11yEnabled) DiagTone.OK else DiagTone.BAD,
+                        ),
+                        DiagFact("Распознавание", toneWord(sttTone, "модель готова", "нет модели"), sttTone),
+                        DiagFact("Озвучка", toneWord(ttsTone, "готова", "не скачана"), ttsTone),
+                        DiagFact("Runtime", toneWord(validationTone, "всё готово", "есть проблемы"), validationTone),
+                    ),
+                )
+
+                // Единственное место на экране, где он не рассказывает, а предлагает
+                // нажать. Раньше такие кнопки были размазаны по пяти секциям, и
+                // «что мне сейчас сделать» требовало прочитать весь экран.
+                if (!overlayGranted || !a11yEnabled) {
+                    Text(
+                        "ТРЕБУЕТ ДЕЙСТВИЯ",
+                        color = MoltAccent,
+                        fontSize = TINY,
+                        lineHeight = TINY_LINE,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.2.sp,
+                        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
                     )
-                }
-                serverState.stopReason?.let { InfoRow("Причина остановки", it.name) }
-                serverState.lastMemoryFailureAt?.let {
-                    InfoRow("Память MCP упала в", fmtTime(it))
-                }
-                serverState.lastRecoveredAt?.let {
-                    InfoRow("Восстановилась в", fmtTime(it))
-                }
-                if (serverState.errorHistory.isNotEmpty()) {
-                    InfoRow("Сбои (последние ${serverState.errorHistory.size})", historyText(serverState.errorHistory))
+                    if (!overlayGranted) {
+                        DiagActionRow(
+                            title = "Нет права «поверх окон»",
+                            detail =
+                                "Android молча режет фоновый запуск приложений: команда " +
+                                    "рапортует об успехе, а процесс не поднимается (BAL_BLOCK).",
+                            actionLabel = "Выдать разрешение",
+                        ) { openOverlaySettings(context) }
+                    }
+                    if (!a11yEnabled) {
+                        DiagActionRow(
+                            title = "Служба доступности выключена",
+                            detail =
+                                "Без неё не работают снимки экрана и UI-команды. Обновление APK " +
+                                    "снимает её каждый раз — это состояние телефона, а не поломка моста.",
+                            actionLabel = "Открыть специальные возможности",
+                        ) { openAccessibilitySettings(context) }
+                    }
                 }
 
-                sectionHeader("Фоновый запуск приложений")
-                InfoRow(
-                    "Наложение поверх окон",
-                    if (overlayGranted) {
-                        "✔ выдано — агент может запускать приложения из фона"
-                    } else {
-                        "✘ не выдано — Android блокирует фоновый запуск (BAL_BLOCK)"
-                    },
-                    if (overlayGranted) Color(0xFF7BD88F) else Color(0xFFFF6F5A),
-                )
-                if (overlayGranted) {
-                    InfoRow("Можно", "music_play, mobile_launch_app и другие команды запуска")
-                } else {
+                Spacer(Modifier.height(6.dp))
+
+                DiagSection("Сервер opencode", serverTone, serverTone != DiagTone.OK) {
+                    serverState.stage?.let { InfoRow("Стадия runtime", stageLabel(it)) }
+                    InfoRow("Workspace", if (serverState.workspaceExternal) "Внешний (MANAGE_EXTERNAL_STORAGE)" else "Внутренний")
+                    serverState.lastError?.let { err ->
+                        val resolved = err.resolvedAt != null
+                        InfoRow(
+                            if (resolved) "Последняя ошибка (разрешена)" else "Активная ошибка",
+                            "${err.stage} / ${err.code}" +
+                                (if (err.recoverable) " (recoverable)" else " (терминальная)") +
+                                (if (resolved) "\nв ${fmtTime(err.resolvedAt)}" else "\nс ${fmtTime(err.at)}") +
+                                if (err.message.isNotBlank()) "\n${err.message}" else "",
+                            if (resolved) Color(0xFFBDBDBD) else Color(0xFFFF6F5A),
+                        )
+                    }
+                    serverState.stopReason?.let { InfoRow("Причина остановки", it.name) }
+                    serverState.lastMemoryFailureAt?.let {
+                        InfoRow("Память MCP упала в", fmtTime(it))
+                    }
+                    serverState.lastRecoveredAt?.let {
+                        InfoRow("Восстановилась в", fmtTime(it))
+                    }
+                    if (serverState.errorHistory.isNotEmpty()) {
+                        InfoRow("Сбои (последние ${serverState.errorHistory.size})", historyText(serverState.errorHistory))
+                    }
+                }
+
+                // Права собраны в одной секции, потому что чинятся они одинаково —
+                // уходом в системные настройки и возвратом сюда. Раньше наложение
+                // жило в «Фоновом запуске», а службы доступности в диагностике не
+                // было вообще, хотя именно она чаще всего и выключена.
+                DiagSection("Разрешения и снимок экрана", if (permsOk) DiagTone.OK else DiagTone.BAD, !permsOk) {
                     InfoRow(
-                        "Что это чинит",
-                        "Сервер работает фоновым сервисом без видимого окна. Android запрещает ему " +
-                            "запускать activity других приложений и молча режет старт с кодом 102 — " +
-                            "команда рапортует об успехе, а процесс не поднимается. Это право снимает " +
-                            "запрет: Яндекс.Музыка запускается, даже если Android её убил.",
+                        "Наложение поверх окон",
+                        if (overlayGranted) {
+                            "✔ выдано — агент запускает приложения из фона"
+                        } else {
+                            "✘ не выдано — Android блокирует фоновый запуск (BAL_BLOCK)"
+                        },
+                        if (overlayGranted) Color(0xFF7BD88F) else Color(0xFFFF6F5A),
                     )
-                    downloadButton("Выдать разрешение") {
-                        // Три попытки по убыванию точности. Первые две важны потому, что ColorOS
-                        // игнорирует package-URI у этого action и открывает общий список
-                        // «выберите приложение» - рабочий путь, но с лишней прокруткой.
-                        // Последняя - страница приложения, где пункт есть всегда.
-                        val attempts =
-                            listOf(
-                                Intent(
-                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                    Uri.parse("package:${context.packageName}"),
-                                ),
-                                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION),
-                                Intent(
-                                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                    Uri.parse("package:${context.packageName}"),
-                                ),
-                            )
-                        // Молчаливый отказ тут недопустим: это единственный путь к починке BAL,
-                        // и если все три не сработали, пользователь должен об этом узнать.
-                        if (attempts.none { runCatching { context.startActivity(it) }.isSuccess }) {
-                            Toast
-                                .makeText(
-                                    context,
-                                    "Не удалось открыть настройки наложения. Разреши вручную: " +
-                                        "Настройки → Приложения → " +
-                                        "${context.applicationInfo.loadLabel(context.packageManager)} " +
-                                        "→ Специальный доступ → Отображение поверх других приложений",
-                                    Toast.LENGTH_LONG,
-                                ).show()
+                    if (!overlayGranted) {
+                        InfoRow(
+                            "Что это чинит",
+                            "Сервер работает фоновым сервисом без видимого окна. Android запрещает ему " +
+                                "запускать activity других приложений и молча режет старт с кодом 102 — " +
+                                "команда рапортует об успехе, а процесс не поднимается. Это право снимает " +
+                                "запрет: Яндекс.Музыка запускается, даже если Android её убил.",
+                        )
+                        downloadButton("Выдать разрешение «поверх окон»") { openOverlaySettings(context) }
+                    }
+                    InfoRow(
+                        "Служба доступности",
+                        if (a11yEnabled) {
+                            "✔ включена — снимок экрана и UI-команды доступны"
+                        } else {
+                            "✘ выключена — снимок экрана и UI-команды недоступны"
+                        },
+                        if (a11yEnabled) Color(0xFF7BD88F) else Color(0xFFFF6F5A),
+                    )
+                    if (!a11yEnabled) {
+                        InfoRow(
+                            "Почему выключается",
+                            "Обновление APK пересчитывает набор прав и снимает службу. У сборки «не из Play» " +
+                                "вдобавок спрятан пункт «Разрешить ограниченную настройку»: без него тумблер " +
+                                "просто не включается.",
+                        )
+                        downloadButton("Открыть «Специальные возможности»") { openAccessibilitySettings(context) }
+                    }
+                    InfoRow(
+                        "Рабочая папка",
+                        if (serverState.workspaceExternal) {
+                            "внешняя (MANAGE_EXTERNAL_STORAGE)"
+                        } else {
+                            "внутренняя (доступ ко всем файлам не нужен)"
+                        },
+                    )
+                    InfoRow("Снимок экрана", shotNote, shotTone.color())
+                    // Проверка идёт тем же путём, что у моста (/v1/screen/shot):
+                    // «работает» здесь значит «работает и агенту», а не «кнопка жива».
+                    downloadButton("Проверить снимок экрана сейчас") {
+                        shotNote = "снимаю…"
+                        shotTone = DiagTone.WARN
+                        scope.launch {
+                            val outcome =
+                                withContext(Dispatchers.IO) {
+                                    MediaUiAutomation.screenshot(screenshotFile("diag-check", System.currentTimeMillis()))
+                                }
+                            when (outcome) {
+                                is ScreenshotOutcome.Saved -> {
+                                    shotNote =
+                                        "✔ работает · ${outcome.width}×${outcome.height} · ${fmtBytes(outcome.bytes)}" +
+                                            "\n${outcome.file.absolutePath}"
+                                    shotTone = DiagTone.OK
+                                }
+
+                                is ScreenshotOutcome.Failed -> {
+                                    shotNote = "✘ ${outcome.reason}"
+                                    shotTone = DiagTone.BAD
+                                }
+                            }
                         }
                     }
                 }
 
-                sectionHeader("Движки распознавания и озвучки")
-                // Без нативной библиотеки кнопка микрофона не даст ничего,
-                // поэтому движок показываем раньше моделей: сначала его.
-                EngineRows(engineDl, startEngineDownload)
-
-                sectionHeader("Голосовое распознавание")
-                InfoRow("Движок", engineLabel(prefs))
-                // Модель — выбор пользователя из каталога.
-                InfoRow("Модель", currentModelLabel(prefs))
-                if (snap == null) {
-                    InfoRow("Модели", "загрузка…")
-                } else {
-                    val s = requireNotNull(snap)
-                    InfoRow("Модели заняли", fmtBytes(s.used))
-                    InfoRow("Свободно", fmtBytes(s.free))
+                DiagSection("Движки распознавания и озвучки", DiagTone.IDLE, false) {
+                    // Без нативной библиотеки кнопка микрофона не даст ничего,
+                    // поэтому движок показываем раньше моделей: сначала его.
+                    EngineRows(engineDl, startEngineDownload)
                 }
 
-                if (droppedModels.isNotEmpty()) {
-                    InfoRow("Уборка моделей", droppedModels, Color(NOTE_ARGB))
+                DiagSection("Голосовое распознавание", sttTone, sttTone != DiagTone.OK) {
+                    InfoRow("Движок", engineLabel(prefs))
+                    // Модель — выбор пользователя из каталога.
+                    InfoRow("Модель", currentModelLabel(prefs))
+                    if (snapshot == null) {
+                        InfoRow("Модели", "загрузка…")
+                    } else {
+                        InfoRow("Модели заняли", fmtBytes(snapshot.used))
+                        InfoRow("Свободно", fmtBytes(snapshot.free))
+                    }
+                    if (droppedModels.isNotEmpty()) {
+                        InfoRow("Уборка моделей", droppedModels, Color(NOTE_ARGB))
+                    }
+                    GgmlModelRows(snap, ggmlDl, { model -> startGgmlDownload(model) }, dropOtherModels)
                 }
-                GgmlModelRows(snap, ggmlDl, { model -> startGgmlDownload(model) }, dropOtherModels)
-                sectionHeader("Озвучка (Supertonic, offline)")
-                TtsVoiceRows(
-                    ready = snap?.ttsVoiceReady == true,
-                    bytesOnDisk = snap?.ttsVoiceBytes ?: 0L,
-                    state = ttsDl,
-                    onDownload = { startTtsDownload() },
-                )
+
+                DiagSection("Озвучка (Supertonic, offline)", ttsTone, ttsTone != DiagTone.OK) {
+                    TtsVoiceRows(
+                        ready = snapshot?.ttsVoiceReady == true,
+                        bytesOnDisk = snapshot?.ttsVoiceBytes ?: 0L,
+                        state = ttsDl,
+                        onDownload = { startTtsDownload() },
+                    )
+                }
 
                 // Между STT и валидацией: обе секции — про то, что человек должен один раз
                 // настроить, чтобы функция вообще работала, и обе с кнопкой. Валидация
                 // runtime читает итог, поэтому встаёт после них.
-                yandexAccountSection()
+                DiagSection("Яндекс Музыка", DiagTone.IDLE, false) {
+                    yandexAccountSection()
+                }
 
-                retentionSection(context, scope, retentionOut) {
-                    retentionOut = it
-                    refreshKey++
+                DiagSection("Журнал событий (retention)", DiagTone.IDLE, false) {
+                    retentionSection(context, scope, retentionOut) {
+                        retentionOut = it
+                        refreshKey++
+                    }
                 }
 
                 // Память стоит рядом с журналом: обе секции про то, что копится само
                 // и что человек иногда должен почистить руками.
-                memorySection()
-
-                ModelRoutingPicker()
-
-                sectionHeader("Валидация runtime")
-                if (snap == null) {
-                    InfoRow("Проверка", "загрузка…")
-                } else {
-                    val v = requireNotNull(snap).validation
-                    val ok = Color(0xFF7BD88F)
-                    val bad = Color(0xFFFF6F5A)
-                    InfoRow("Итог", if (v.allOk) "все подсистемы готовы" else "есть проблемы", if (v.allOk) ok else bad)
-                    InfoRow(
-                        "Нативный runtime",
-                        if (v.nativeRuntime) "✔ ассемблирован" else "✘ libopencode.so отсутствует",
-                        if (v.nativeRuntime) ok else bad,
-                    )
-                    InfoRow(
-                        "Basic-аутентификация",
-                        if (v.serverAuth) "✔ пароль задан" else "✘ пароль не задан",
-                        if (v.serverAuth) ok else bad,
-                    )
-                    InfoRow(
-                        "Serve (HTTP)",
-                        if (v.serverHttp) "✔ отвечает" else "✘ не отвечает",
-                        if (v.serverHttp) ok else bad,
-                    )
-                    InfoRow(
-                        "Локальная память (MCP)",
-                        if (v.memoryMcp) "✔ отвечает (/mcp 200)" else "✘ не отвечает по HTTP",
-                        if (v.memoryMcp) ok else bad,
-                    )
+                DiagSection("Локальная память (что агент помнит)", DiagTone.IDLE, false) {
+                    memorySection()
                 }
 
-                sectionHeader("Система")
-                InfoRow("Приложение", "${appInfo?.versionName ?: "?"} (code ${appInfo?.longVersionCode ?: 0})")
-                // Штамп СБОРКИ, а не версия из манифеста. versionName навсегда
-                // останется 0.1.0 - он про продукт, а не про конкретный APK.
-                // «Какая сборка стоит» отвечает только этот ряд.
-                InfoRow("Сборка", buildStampLabel())
-                InfoRow("ABI", Build.SUPPORTED_ABIS.firstOrNull() ?: "?")
+                // Маршрутизация моделей рисует свою карточку с рамкой и своим
+                // заголовком: вторая рамка вокруг неё была бы рамкой в рамке.
+                ModelRoutingPicker()
 
-                sectionHeader("Ядро opencode")
-                InfoRow("Работает", activeCoreLabel(context))
-                InfoRow("В APK", opencodeBinaryLabel())
-                coreLastCheckRow(context)
-                coreCheckRow(context, scope)
-
-                sectionHeader("Лог сервера (хвост)")
-                // Без SelectionContainer: он конфликтует с verticalScroll по жестам
-                // (долгое нажатие перехватывается), а копирование всего лога есть
-                // через «Поделиться» — там дамп собирается свежим.
-                // Хвост читаем из filesDir/opencode.log (туда serve пишет через
-                // ProcessBuilder.appendTo; ротация .1/.2/.3) — разово на открытии.
-                if (snap == null) {
-                    Text("Лог: загрузка…", color = MoltIdle, fontSize = SMALL)
-                } else {
-                    val s = requireNotNull(snap)
-                    if (s.logTail.isBlank()) {
-                        Text("Пусто — opencode.log ещё не создан (сервер не запускался).", color = MoltIdle, fontSize = SMALL)
+                DiagSection("Валидация runtime", validationTone, validationTone != DiagTone.OK) {
+                    if (validation == null) {
+                        InfoRow("Проверка", "загрузка…")
                     } else {
-                        Text(
-                            s.logTail,
-                            color = MoltValue,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 10.sp,
-                            lineHeight = 13.sp,
+                        val ok = Color(0xFF7BD88F)
+                        val bad = Color(0xFFFF6F5A)
+                        InfoRow(
+                            "Итог",
+                            if (validation.allOk) "все подсистемы готовы" else "есть проблемы",
+                            if (validation.allOk) ok else bad,
                         )
+                        InfoRow(
+                            "Нативный runtime",
+                            if (validation.nativeRuntime) "✔ ассемблирован" else "✘ libopencode.so отсутствует",
+                            if (validation.nativeRuntime) ok else bad,
+                        )
+                        InfoRow(
+                            "Basic-аутентификация",
+                            if (validation.serverAuth) "✔ пароль задан" else "✘ пароль не задан",
+                            if (validation.serverAuth) ok else bad,
+                        )
+                        InfoRow(
+                            "Serve (HTTP)",
+                            if (validation.serverHttp) "✔ отвечает" else "✘ не отвечает",
+                            if (validation.serverHttp) ok else bad,
+                        )
+                        InfoRow(
+                            "Локальная память (MCP)",
+                            if (validation.memoryMcp) "✔ отвечает (/mcp 200)" else "✘ не отвечает по HTTP",
+                            if (validation.memoryMcp) ok else bad,
+                        )
+                    }
+                }
+
+                DiagSection("Система", DiagTone.IDLE, false) {
+                    InfoRow("Приложение", "${appInfo?.versionName ?: "?"} (code ${appInfo?.longVersionCode ?: 0})")
+                    // Штамп СБОРКИ, а не версия из манифеста. versionName навсегда
+                    // останется 0.1.0 - он про продукт, а не про конкретный APK.
+                    // «Какая сборка стоит» отвечает только этот ряд.
+                    InfoRow("Сборка", buildStampLabel())
+                    InfoRow("ABI", Build.SUPPORTED_ABIS.firstOrNull() ?: "?")
+                }
+
+                DiagSection("Ядро opencode", DiagTone.IDLE, false) {
+                    InfoRow("Работает", activeCoreLabel(context))
+                    InfoRow("В APK", opencodeBinaryLabel())
+                    coreLastCheckRow(context)
+                    coreCheckRow(context, scope)
+                }
+
+                DiagSection("Лог сервера (хвост)", DiagTone.IDLE, false) {
+                    // Без SelectionContainer: он конфликтует с verticalScroll по жестам
+                    // (долгое нажатие перехватывается), а копирование всего лога есть
+                    // через «Поделиться» — там дамп собирается свежим.
+                    // Хвост читаем из filesDir/opencode.log (туда serve пишет через
+                    // ProcessBuilder.appendTo; ротация .1/.2/.3) — разово на открытии.
+                    if (snapshot == null) {
+                        Text("Лог: загрузка…", color = MoltIdle, fontSize = SMALL)
+                    } else {
+                        if (snapshot.logTail.isBlank()) {
+                            Text("Пусто — opencode.log ещё не создан (сервер не запускался).", color = MoltIdle, fontSize = SMALL)
+                        } else {
+                            Text(
+                                snapshot.logTail,
+                                color = MoltValue,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.sp,
+                                lineHeight = 13.sp,
+                            )
+                        }
                     }
                 }
             }
         }
     }
-}
-
-/**
- * Заголовок секции в стиле карточки Moltbook: оранжевый капс, 9 sp, тонкая
- * линия того же цвета под ним.
- *
- * `internal`, а не `private`: секция Яндекс.Музыки живёт в своём файле, но
- * заголовок и разделитель у всех секций должны быть одинаковыми. Своя копия
- * этого визуала в соседнем файле — ровно тот способ, которым экраны расходятся
- * между собой по мелочам.
- */
-@Composable
-internal fun sectionHeader(title: String) {
-    Text(
-        title.uppercase(),
-        color = MoltAccent,
-        fontSize = TINY,
-        fontWeight = FontWeight.Bold,
-        letterSpacing = 1.2.sp,
-        lineHeight = TINY_LINE,
-        modifier = Modifier.padding(top = 9.dp, bottom = 3.dp),
-    )
-    Spacer(Modifier.height(1.dp).fillMaxWidth().background(MoltAccent.copy(alpha = 0.15f)))
 }
 
 /**
@@ -694,7 +807,6 @@ private fun retentionSection(
         }
     }
 
-    sectionHeader("Журнал событий (retention)")
     InfoRow(
         "Что это",
         "event в opencode - append-only журнал изменений, втрое больше итога. " +
@@ -950,6 +1062,34 @@ private fun statusColor(s: ServerStatus): Color =
         ServerStatus.RUNNING -> Color(0xFF7BD88F)
         ServerStatus.ERROR -> Color(0xFFFF6F5A)
         ServerStatus.STOPPED -> Color(0xFF8A8A8A)
+    }
+
+/**
+ * Тон секции «Сервер» по статусу.
+ *
+ * `STARTING` — не проблема: сервер уже поднимается, и открывать секцию с красной
+ * точкой из-за этого значило бы приучать игнорировать красное.
+ */
+private fun statusTone(s: ServerStatus): DiagTone =
+    when (s) {
+        ServerStatus.RUNNING -> DiagTone.OK
+        ServerStatus.STARTING -> DiagTone.WARN
+        ServerStatus.ERROR, ServerStatus.STOPPED -> DiagTone.BAD
+    }
+
+/**
+ * Слово для плитки по тону: одна и та же тройка «есть / нет / не знаю» на весь
+ * экран, чтобы «нет данных» нигде не читалось как «сломано».
+ */
+private fun toneWord(
+    tone: DiagTone,
+    ok: String,
+    bad: String,
+): String =
+    when (tone) {
+        DiagTone.OK -> ok
+        DiagTone.WARN, DiagTone.BAD -> bad
+        DiagTone.IDLE -> "нет данных"
     }
 
 /** Человекочитаемое имя стадии runtime-цикла. */
@@ -1382,5 +1522,71 @@ private fun TtsVoiceRows(
             if (!ready) {
                 downloadButton("Скачать модель озвучки (~" + TtsModelDownloader.sizeLabel() + ")") { onDownload() }
             }
+    }
+}
+
+/**
+ * Открыть системную страницу «поверх других приложений».
+ *
+ * Три попытки по убыванию точности. Первые две важны потому, что ColorOS
+ * игнорирует package-URI у этого action и открывает общий список «выберите
+ * приложение» — рабочий путь, но с лишней прокруткой. Последняя — страница
+ * приложения, где пункт есть всегда.
+ *
+ * Молчаливый отказ недопустим: это единственный путь к починке BAL, и если все
+ * три не сработали, человек должен об этом узнать, а не гадать, почему кнопка
+ * «ничего не делает».
+ */
+private fun openOverlaySettings(context: Context) {
+    val attempts =
+        listOf(
+            Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:${context.packageName}"),
+            ),
+            Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION),
+            Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:${context.packageName}"),
+            ),
+        )
+    if (attempts.none { runCatching { context.startActivity(it) }.isSuccess }) {
+        Toast
+            .makeText(
+                context,
+                "Не удалось открыть настройки наложения. Разреши вручную: " +
+                    "Настройки → Приложения → " +
+                    "${context.applicationInfo.loadLabel(context.packageManager)} " +
+                    "→ Специальный доступ → Отображение поверх других приложений",
+                Toast.LENGTH_LONG,
+            ).show()
+    }
+}
+
+/**
+ * Открыть список служб доступности.
+ *
+ * Второй барьер на ColorOS — «ограниченная настройка» для сборки, поставленной не
+ * из Play: без неё тумблер службы просто не включается, и «нажмите ещё раз» не
+ * помогает. Поэтому при отказе подсказка называет весь путь, включая пункт ⋮ в
+ * карточке приложения.
+ */
+private fun openAccessibilitySettings(context: Context) {
+    val attempts =
+        listOf(
+            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS),
+            Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:${context.packageName}"),
+            ),
+        )
+    if (attempts.none { runCatching { context.startActivity(it) }.isSuccess }) {
+        Toast
+            .makeText(
+                context,
+                "Не удалось открыть настройки. Путь: Настройки → Специальные возможности → " +
+                    "${context.applicationInfo.loadLabel(context.packageManager)}",
+                Toast.LENGTH_LONG,
+            ).show()
     }
 }
