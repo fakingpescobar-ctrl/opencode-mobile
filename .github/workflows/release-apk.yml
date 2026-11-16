@@ -157,7 +157,9 @@ jobs:
           # читает ту схему, которой реально подписан APK, и заодно проверяет её.
           AS=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
           "$AS" verify --print-certs "$APK" | tee cert.txt
-          fp=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' cert.txt | head -1 | tr -d ' :')
+          # Формат зависит от версии build-tools: «Signer #1 certificate SHA-256
+          # digest:» или «V2 Signer: certificate SHA-256 digest:». Берём любую.
+          fp=$(grep -a 'SHA-256 digest:' cert.txt | head -1 | sed 's/.*SHA-256 digest: *//' | tr -d ' :')
           [ -n "$fp" ] || { echo "::error::apksigner не назвал отпечаток сертификата"; exit 1; }
           echo "fingerprint=$fp" >> "$GITHUB_OUTPUT"
           # Сверка «APK подписан именно тем ключом, который мы храним». Без неё
