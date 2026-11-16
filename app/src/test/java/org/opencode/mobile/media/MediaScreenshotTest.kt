@@ -5,6 +5,18 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+/** Какой длины имя файла принимает приложение: `shot-` + подсказка + `.png`. */
+private const val NAME_LIMIT = 40
+
+/** Метка времени, с которой сверяются ожидаемые имена: 2023-11-14T22:13:20Z. */
+private const val NOW_MS = 1_700_000_000_000L
+
+/** Очевидно длиннее [NAME_LIMIT], чтобы обрезка была настоящей, а не совпадением. */
+private const val LONG_SUGGESTION = NAME_LIMIT * 3
+
+/** Больше этого имя снимка быть не может: префикс, подсказка, расширение. */
+private const val MAX_NAME_CHARS = "shot-.png".length + NAME_LIMIT
+
 /**
  * Имя файла снимка.
  *
@@ -16,8 +28,8 @@ import org.junit.Test
 class MediaScreenshotTest {
     @Test
     fun `без имени — метка времени`() {
-        assertEquals("shot-1700000000000.png", screenshotName(null, 1_700_000_000_000L))
-        assertEquals("shot-1700000000000.png", screenshotName("   ", 1_700_000_000_000L))
+        assertEquals("shot-$NOW_MS.png", screenshotName(null, NOW_MS))
+        assertEquals("shot-$NOW_MS.png", screenshotName("   ", NOW_MS))
     }
 
     @Test
@@ -52,8 +64,8 @@ class MediaScreenshotTest {
 
     @Test
     fun `слишком длинное имя обрезается`() {
-        val name = screenshotName("x".repeat(300), 1L)
-        assertTrue(name.length <= 5 + 40 + 4)
+        val name = screenshotName("x".repeat(LONG_SUGGESTION), 1L)
+        assertTrue(name.length <= MAX_NAME_CHARS)
     }
 
     @Test
