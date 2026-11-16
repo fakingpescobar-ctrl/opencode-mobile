@@ -323,7 +323,6 @@ internal object MoltbookWatchdog {
             Log.i(TAG, "будильник тика выключен — сторож не взвожу")
             return
         }
-        val manager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
         val token =
             PendingIntent.getBroadcast(
                 context,
