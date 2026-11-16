@@ -150,7 +150,7 @@ object CoreUpdater {
 
         val dir = ensureCoreDir(context) ?: return false
         val incoming = File(dir, "$FILE_NAME.incoming").apply { delete() }
-        if (!fetchVerified(context, meta, incoming)) {
+        if (!fetchVerified(meta, incoming)) {
             incoming.delete()
             return false
         }
@@ -163,7 +163,8 @@ object CoreUpdater {
     }
 
     /** Самая дорогая часть: скачать, сверить подпись пакета, проверить запуск. */
-    private fun fetchVerified(context: Context, meta: Latest, incoming: File): Boolean {
+    @Suppress("TooGenericExceptionCaught")
+    private fun fetchVerified(meta: Latest, incoming: File): Boolean {
         Log.i(TAG, "качаю ядро ${meta.version} из ${meta.tarball}")
         val shaOk = try {
             downloadMember(meta.tarball, incoming, meta.integrity)
