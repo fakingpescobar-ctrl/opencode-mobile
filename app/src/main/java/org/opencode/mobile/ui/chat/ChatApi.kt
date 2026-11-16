@@ -398,18 +398,20 @@ internal suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             }
             val take = if (out.size > MAX_SHOWN) out.subList(out.size - MAX_SHOWN, out.size) else out
             val last = out.lastOrNull()
-            // «Думает» = последнее сырое сообщение открывает новый ответ. У завершённого
-            // assistant проверяем даже скрытый tool-only шаг: после Stop opencode может
-            // завершить его без step-finish, но с info.time.completed.
-            // Провал — тоже конец хода, даже если opencode не проставил ни того,
-            // ни другого: иначе «генерируется…» горит до общего таймаута.
+            // «Ход идёт» решает СЫРАЯ лента (см. ChatTurnAlive): старое правило
+            // считало ход закрытым по step-finish, а сервер ставит finish
+            // "tool-calls" на каждом промежуточном шаге — из-за этого индикатор
+            // пропадал на десятки секунд, пока модель готовила следующий шаг
+            // (замер 16.11: 10:20:44 → 10:21:04). Разбор ниже остаётся
+            // запасным: он единственный, когда сырой JSON не разобрался.
             val thinking =
-                when (latestRole) {
-                    null -> false
-                    "user" -> true
-                    "assistant" -> !latestFinish && !latestCompleted && !latestFailed
-                    else -> false
-                }
+                turnAlive(msgRaw)
+                    ?: when (latestRole) {
+                        null -> false
+                        "user" -> true
+                        "assistant" -> !latestFinish && !latestCompleted && !latestFailed
+                        else -> false
+                    }
 
             // Live-чип показываем только пока модель ещё работает (thinking). Когда она
             // закончила (дала финальный ответ) — lastTool не показываем как «текущее».
