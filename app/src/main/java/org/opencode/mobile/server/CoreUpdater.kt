@@ -50,6 +50,10 @@ import java.util.zip.GZIPInputStream
  * Ядро в APK остаётся резервом: пока скачанного нет (или проверка не прошла),
  * [resolveCore] возвращает путь в nativeLibraryDir.
  */
+// Функций в объекте больше стандартного порога detekt (11): транспортировка
+// tar-члена и сборка пути — разные обязанности, и склеивать их в одну длинную
+// функцию хуже, чем иметь 16 коротких. Исключение точечное, как у OpencodeRuntime.
+@Suppress("TooManyFunctions")
 object CoreUpdater {
     private const val TAG = "CoreUpdater"
 
@@ -79,6 +83,24 @@ object CoreUpdater {
     private const val TAR_BLOCK = 512
     private const val BUF = 128 * 1024
 
+    // Раскладка заголовка tar (ustar), байты от начала блока. Числа — из формата,
+    // не «на глаз»: имя 100, размер 12 (восьмеричное ASCII), тип 1, префикс 155.
+    private const val TAR_NAME_OFFSET = 0
+    private const val TAR_NAME_LEN = 100
+    private const val TAR_SIZE_OFFSET = 124
+    private const val TAR_SIZE_LEN = 12
+    private const val TAR_TYPE_OFFSET = 156
+    private const val TAR_PREFIX_OFFSET = 345
+    private const val TAR_PREFIX_LEN = 155
+    private const val TAR_RADIX = 8
+
+    /** Сколько символов хеша/вывода показывать в логе. */
+    private const val PREVIEW_CHARS = 20
+    private const val PREVIEW_OUTPUT = 200
+
+    /** Сколько ждать поток-читатель после того, как процесс уже завершился. */
+    private const val READER_JOIN_MS = 2_000L
+
     /** Куда скачивается ядро. Только внутренняя память: /sdcard смонтирован noexec. */
     fun coreFile(context: Context): File = File(File(context.filesDir, DIR), FILE_NAME)
 
@@ -94,8 +116,8 @@ object CoreUpdater {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val downloaded = prefs.getString(KEY_VERSION, null) ?: return apkVersion
         val file = coreFile(context)
-        if (!file.isFile || file.length() != prefs.getLong(KEY_BYTES, 0L)) return apkVersion
-        return if (isNewer(downloaded, apkVersion)) downloaded else apkVersion
+        val onDisk = file.isFile && file.length() == prefs.getLong(KEY_BYTES, 0L)
+        return if (onDisk && isNewer(downloaded, apkVersion)) downloaded else apkVersion
     }
 
     /**
@@ -115,20 +137,48 @@ object CoreUpdater {
      * @param force игнорировать шестичасовой интервал.
      * @return true, если ядро заменено — вызывающий должен перезапустить serve.
      */
-    @Suppress("ReturnCount", "TooGenericExceptionCaught", "LongMethod")
+    @Suppress("ReturnCount")
     fun checkAndApply(context: Context, force: Boolean = false): Boolean {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
         if (!force && now - prefs.getLong(KEY_CHECKED_AT, 0L) < CHECK_EVERY_MS) return false
         prefs.edit().putLong(KEY_CHECKED_AT, now).apply()
 
-        val meta = try {
-            readLatest()
-        } catch (e: Exception) {
-            Log.w(TAG, "реестр не ответил: ${e.message}")
+        val meta = readLatestOrNull() ?: return false
+        val current = effectiveVersion(context)
+        if (!worthInstalling(context, meta, current)) return false
+
+        val dir = ensureCoreDir(context) ?: return false
+        val incoming = File(dir, "$FILE_NAME.incoming").apply { delete() }
+        if (!fetchVerified(context, meta, incoming)) {
+            incoming.delete()
             return false
         }
-        val current = effectiveVersion(context)
+        if (!smokeTest(context, incoming, meta.version)) {
+            Log.w(TAG, "ядро ${meta.version} не запускается — оставляю $current")
+            incoming.delete()
+            return false
+        }
+        return install(context, incoming, dir, meta, current)
+    }
+
+    /** Самая дорогая часть: скачать, сверить подпись пакета, проверить запуск. */
+    private fun fetchVerified(context: Context, meta: Latest, incoming: File): Boolean {
+        Log.i(TAG, "качаю ядро ${meta.version} из ${meta.tarball}")
+        val shaOk = try {
+            downloadMember(meta.tarball, incoming, meta.integrity)
+        } catch (e: Exception) {
+            Log.w(TAG, "скачивание не удалось: ${e.message}")
+            false
+        }
+        if (shaOk) return true
+        Log.w(TAG, "ядро ${meta.version} не скачалось или не сошлось по sha512")
+        return false
+    }
+
+    /** Три причины не качать вообще — до сети и до диска. */
+    @Suppress("ReturnCount")
+    private fun worthInstalling(context: Context, meta: Latest, current: String): Boolean {
         if (!isNewer(meta.version, current)) return false
         if (!sameMajor(meta.version, current)) {
             Log.i(TAG, "в реестре ${meta.version}, у нас $current: мажор другой, сам не накатываю")
@@ -138,32 +188,19 @@ object CoreUpdater {
             Log.i(TAG, "ядро ${meta.version} есть, но сеть тарифицируется — обновлю позже")
             return false
         }
+        return true
+    }
 
+    private fun ensureCoreDir(context: Context): File? {
         val dir = File(context.filesDir, DIR)
-        if (!dir.isDirectory && !dir.mkdirs()) {
-            Log.w(TAG, "нет каталога ${dir.absolutePath}")
-            return false
-        }
-        val incoming = File(dir, "$FILE_NAME.incoming")
-        incoming.delete()
+        val ready = dir.isDirectory || dir.mkdirs()
+        if (!ready) Log.w(TAG, "нет каталога ${dir.absolutePath}")
+        return if (ready) dir else null
+    }
 
-        Log.i(TAG, "качаю ядро ${meta.version} из ${meta.tarball}")
-        val shaOk = try {
-            downloadMember(meta.tarball, incoming, meta.integrity)
-        } catch (e: Exception) {
-            Log.w(TAG, "скачивание не удалось: ${e.message}")
-            false
-        }
-        if (!shaOk) {
-            incoming.delete()
-            return false
-        }
-        if (!smokeTest(context, incoming, meta.version)) {
-            Log.w(TAG, "ядро ${meta.version} не запускается — оставляю $current")
-            incoming.delete()
-            return false
-        }
-
+    /** Атомарная замена: прошлое ядро отодвигается и возвращается при неудаче. */
+    @Suppress("ReturnCount")
+    private fun install(context: Context, incoming: File, dir: File, meta: Latest, previous: String): Boolean {
         val target = File(dir, FILE_NAME)
         val backup = File(dir, "$FILE_NAME.previous")
         backup.delete()
@@ -179,12 +216,20 @@ object CoreUpdater {
             return false
         }
         backup.delete()
-        prefs.edit()
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString(KEY_VERSION, meta.version)
             .putLong(KEY_BYTES, target.length())
             .apply()
-        Log.i(TAG, "ядро обновлено: $current → ${meta.version} (${target.length()} б)")
+        Log.i(TAG, "ядро обновлено: $previous → ${meta.version} (${target.length()} б)")
         return true
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun readLatestOrNull(): Latest? = try {
+        readLatest()
+    } catch (e: Exception) {
+        Log.w(TAG, "реестр не ответил: ${e.message}")
+        null
     }
 
     private class Latest(
@@ -249,7 +294,7 @@ object CoreUpdater {
             }
             val actual = "sha512-" + Base64.getEncoder().encodeToString(digest.digest())
             if (actual != integrity) {
-                Log.w(TAG, "integrity не сошлась: ${actual.take(20)}… вместо ${integrity.take(20)}…")
+                Log.w(TAG, "integrity не сошлась: ${actual.take(PREVIEW_CHARS)}… вместо ${integrity.take(PREVIEW_CHARS)}…")
                 return false
             }
             return true
@@ -266,22 +311,27 @@ object CoreUpdater {
             if (!readFully(stream, header)) return false
             if (header.all { it.toInt() == 0 }) return false // конец архива
 
-            val name = cString(header, 0, 100)
-            val prefix = cString(header, 345, 155)
+            val name = cString(header, TAR_NAME_OFFSET, TAR_NAME_LEN)
+            val prefix = cString(header, TAR_PREFIX_OFFSET, TAR_PREFIX_LEN)
             val full = if (prefix.isEmpty()) name else "$prefix/$name"
-            val sizeField = cString(header, 124, 12).trim { it == ' ' || it == '\u0000' }
-            val size = if (sizeField.isEmpty()) 0L else sizeField.toLongOrNull(8) ?: 0L
-            val type = header[156].toInt().toChar()
+            val sizeField = cString(header, TAR_SIZE_OFFSET, TAR_SIZE_LEN)
+                .trim { it == ' ' || it == '\u0000' }
+            val size = if (sizeField.isEmpty()) 0L else sizeField.toLongOrNull(TAR_RADIX) ?: 0L
+            val type = header[TAR_TYPE_OFFSET].toInt().toChar()
 
-            if ((type == '0' || type == '\u0000') &&
-                (full == TAR_MEMBER || full == "./$TAR_MEMBER")
-            ) {
+            if (isWantedMember(type, full)) {
                 target.outputStream().use { out -> copyN(stream, out, size) }
                 return true
             }
             skipN(stream, size)
             skipN(stream, (TAR_BLOCK - (size % TAR_BLOCK)) % TAR_BLOCK)
         }
+    }
+
+    /** Обычный файл (а не каталог/ссылка/заголовок pax) с нужным именем. */
+    private fun isWantedMember(type: Char, fullPath: String): Boolean {
+        val regular = type == '0' || type == '\u0000'
+        return regular && (fullPath == TAR_MEMBER || fullPath == "./$TAR_MEMBER")
     }
 
     private fun cString(buf: ByteArray, offset: Int, length: Int): String {
@@ -369,14 +419,14 @@ object CoreUpdater {
 
         if (!proc.waitFor(SMOKE_TIMEOUT_S, TimeUnit.SECONDS)) {
             proc.destroyForcibly()
-            reader.join(2_000)
-            Log.w(TAG, "пробный запуск завис: ${collected.toString("UTF-8").take(200)}")
+            reader.join(READER_JOIN_MS)
+            Log.w(TAG, "пробный запуск завис: ${collected.toString("UTF-8").take(PREVIEW_OUTPUT)}")
             return false
         }
-        reader.join(2_000)
+        reader.join(READER_JOIN_MS)
         val output = collected.toString("UTF-8").trim()
         if (proc.exitValue() != 0 || !output.contains("opencode v$version")) {
-            Log.w(TAG, "пробный запуск ответил не тем: exit=${proc.exitValue()} «${output.take(200)}»")
+            Log.w(TAG, "пробный запуск ответил не тем: exit=${proc.exitValue()} «${output.take(PREVIEW_OUTPUT)}»")
             return false
         }
         return true
@@ -384,12 +434,15 @@ object CoreUpdater {
 
     /** Тарифицируемая сеть: 245 МБ без спроса — нельзя. */
     private fun isMetered(context: Context): Boolean {
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
-        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
-        val flat = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
-        return !flat
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val caps = cm?.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return !isUnmetered(caps)
     }
+
+    /** Wi-Fi и Ethernet считаем бесплатными, всё остальное (LTE, VPN поверх LTE) — нет. */
+    private fun isUnmetered(caps: NetworkCapabilities): Boolean =
+        caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
 
     /**
      * Сравнение версий по числам, а не по строкам: лексикографически `2.10.0`
