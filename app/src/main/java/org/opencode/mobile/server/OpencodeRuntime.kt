@@ -1448,4 +1448,3 @@ internal fun OpencodeRuntime.planMusicEntry(
             MusicConfigPlan.Write(text.replace(mcpEntriesForTest(), mcpEntriesWithMusicForTest()))
         else -> MusicConfigPlan.Refuse
     }
-
