@@ -139,8 +139,14 @@ jobs:
         run: |
           set -eu
           APK=$(ls app/build/outputs/apk/debug/*.apk | head -1)
-          keytool -printcert -jarfile "$APK" | grep -E "Owner:|SHA256:" | head -4 | tee cert.txt
-          fp=$(grep "SHA256:" cert.txt | head -1 | sed 's/.*SHA256: *//' | tr -d ' :')
+          # keytool -printcert -jarfile читает только v1 (JAR) подпись, а AGP
+          # подписывает v2/v3 — на выходе пусто, и проверка «подписан не тем
+          # ключом» падала с пустым отпечатком (прогон #3, 16.11). apksigner
+          # читает ту схему, которой реально подписан APK, и заодно проверяет её.
+          AS=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
+          "$AS" verify --print-certs "$APK" | tee cert.txt
+          fp=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' cert.txt | head -1 | tr -d ' :')
+          [ -n "$fp" ] || { echo "::error::apksigner не назвал отпечаток сертификата"; exit 1; }
           echo "fingerprint=$fp" >> "$GITHUB_OUTPUT"
           # Сверка «APK подписан именно тем ключом, который мы храним». Без неё
           # подмена ключа (или тихий откат на ключ раннера) выглядит как успех.
