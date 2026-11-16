@@ -22,13 +22,20 @@ internal const val PICTURE_OPEN = "[[pic:"
 private val PICTURE_RE = Regex("""\[\[pic:([^\]|\n]+)(?:\|([^\]\n]*))?]]""")
 
 /** Одна картинка: абсолютный путь к файлу и, если есть, подпись под ней. */
-internal data class ChatPicture(val path: String, val caption: String? = null)
+internal data class ChatPicture(
+    val path: String,
+    val caption: String? = null,
+)
 
 /** Кусок реплики: обычный текст или картинка на своём месте. */
 internal sealed interface ChatSegment {
-    data class Body(val text: String) : ChatSegment
+    data class Body(
+        val text: String,
+    ) : ChatSegment
 
-    data class Picture(val picture: ChatPicture) : ChatSegment
+    data class Picture(
+        val picture: ChatPicture,
+    ) : ChatSegment
 }
 
 /** Что показать в ленте по этому тексту. */
@@ -38,7 +45,12 @@ internal fun splitPictures(text: String): List<ChatSegment> {
     for (match in PICTURE_RE.findAll(text)) {
         val path = match.groupValues[1].trim()
         if (!looksLikePicturePath(path)) continue
-        val caption = match.groupValues.getOrNull(2)?.trim()?.takeIf { it.isNotEmpty() }
+        val caption =
+            match
+                .groupValues
+                .getOrNull(2)
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
         addBody(out, text.substring(from, match.range.first))
         out.add(ChatSegment.Picture(ChatPicture(path, caption)))
         from = match.range.last + 1
@@ -54,15 +66,16 @@ internal fun hasPictures(text: String): Boolean = splitPictures(text).any { it i
  * Текст для озвучки: картинка сама по себе не читается, но её подпись — да.
  * Пустая подпись не добавляет ничего, а не произносит путь вслух.
  */
-internal fun speechText(text: String): String =
-    splitPictures(text)
-        .mapNotNull { segment ->
+internal fun speechText(text: String): String {
+    val spoken =
+        splitPictures(text).mapNotNull { segment ->
             when (segment) {
                 is ChatSegment.Body -> segment.text.takeIf { it.isNotBlank() }
                 is ChatSegment.Picture -> segment.picture.caption
             }
         }
-        .joinToString("\n")
+    return spoken.joinToString("\n")
+}
 
 /**
  * Годится ли путь в разметку. Здесь только синтаксис: абсолютность и отсутствие
@@ -74,7 +87,10 @@ internal fun looksLikePicturePath(path: String): Boolean {
     return ".." !in path.split('/')
 }
 
-private fun addBody(out: MutableList<ChatSegment>, raw: String) {
+private fun addBody(
+    out: MutableList<ChatSegment>,
+    raw: String,
+) {
     val body = raw.trim('\n', '\r')
     if (body.isBlank()) return
     out.add(ChatSegment.Body(body))

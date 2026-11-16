@@ -74,7 +74,10 @@ private fun MessageText(
 
 /** Кусок реплики: текст или картинка на своём месте, без печати по буквам. */
 @Composable
-private fun PictureSegments(segments: List<ChatSegment>, style: TextStyle) {
+private fun PictureSegments(
+    segments: List<ChatSegment>,
+    style: TextStyle,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(PICTURE_GAP_DP.dp)) {
         segments.forEach { segment ->
             when (segment) {
@@ -86,7 +89,10 @@ private fun PictureSegments(segments: List<ChatSegment>, style: TextStyle) {
 }
 
 @Composable
-private fun BodyText(text: String, style: TextStyle) {
+private fun BodyText(
+    text: String,
+    style: TextStyle,
+) {
     SelectionContainer {
         Text(
             text = text,

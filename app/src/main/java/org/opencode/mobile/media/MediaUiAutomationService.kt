@@ -12,6 +12,7 @@ import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import java.io.File
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -539,5 +540,20 @@ object MediaUiAutomation {
 
     internal fun detach(instance: MediaUiAutomationService) {
         service.compareAndSet(instance, null)
+    }
+
+    /**
+     * Снимок экрана в [dest].
+     *
+     * Отказ «службы нет» — не то же самое, что «система не дала снять»: первый чинится
+     * включением службы, второй — правами или версией Android. Поэтому исход несёт
+     * причину, а не булево.
+     */
+    fun screenshot(
+        dest: File,
+        timeoutMs: Long = SCREENSHOT_TIMEOUT_MS,
+    ): ScreenshotOutcome {
+        val running = service.get() ?: return ScreenshotOutcome.Failed(REASON_NOT_ENABLED)
+        return running.captureScreenTo(dest, timeoutMs)
     }
 }

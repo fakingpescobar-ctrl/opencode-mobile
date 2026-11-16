@@ -42,7 +42,10 @@ private val MUTED = Color(MUTED_ARGB)
  * детали на телефоне иначе не разглядеть.
  */
 @Composable
-internal fun ChatPictureView(picture: ChatPicture, modifier: Modifier = Modifier) {
+internal fun ChatPictureView(
+    picture: ChatPicture,
+    modifier: Modifier = Modifier,
+) {
     val file = remember(picture.path) { ChatPicturePolicy.resolve(picture.path) }
     if (file == null) {
         ChatPictureMissing(picture.path)
@@ -52,7 +55,11 @@ internal fun ChatPictureView(picture: ChatPicture, modifier: Modifier = Modifier
 }
 
 @Composable
-private fun ChatPictureBody(file: File, picture: ChatPicture, modifier: Modifier = Modifier) {
+private fun ChatPictureBody(
+    file: File,
+    picture: ChatPicture,
+    modifier: Modifier = Modifier,
+) {
     val bitmap by
         produceState<Bitmap?>(
             initialValue = ChatPictureCache.peek(file),
@@ -97,7 +104,10 @@ private fun ChatPictureMissing(path: String) {
 }
 
 @Composable
-private fun PictureDialog(bitmap: Bitmap, onDismiss: () -> Unit) {
+private fun PictureDialog(
+    bitmap: Bitmap,
+    onDismiss: () -> Unit,
+) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Image(
             bitmap = bitmap.asImageBitmap(),

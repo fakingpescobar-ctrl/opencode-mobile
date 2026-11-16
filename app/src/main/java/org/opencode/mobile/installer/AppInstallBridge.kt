@@ -16,7 +16,10 @@ import org.opencode.mobile.media.CatalogTrack
 import org.opencode.mobile.media.MediaAppSnapshot
 import org.opencode.mobile.media.MediaControlController
 import org.opencode.mobile.media.MediaControlRequestValidator
+import org.opencode.mobile.media.MediaUiAutomation
 import org.opencode.mobile.media.MediaWire
+import org.opencode.mobile.media.ScreenshotOutcome
+import org.opencode.mobile.media.screenshotFile
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
@@ -189,6 +192,10 @@ object AppInstallBridge {
             Route("GET", "/v1/apps", ::listApps),
             Route("GET", "/v1/apps/status", ::status),
             Route("POST", "/v1/apps/launch", ::launchApp),
+            // Снимок экрана: обычный screencap оболочке агента запрещён (untrusted_app),
+            // поэтому кадр берёт служба доступности. Имя файла — параметр name,
+            // без него метка времени; файл всегда ложится в Download.
+            Route("GET", "/v1/screen/shot", ::screenShot),
             Route("POST", "/v1/apps/install", ::install),
             // Из /v1/media/* живёт только like: лайк у Яндекс Музыки идёт кастомной
             // командой сессии, и REST/OAuth его не заменяют. Остальные десять маршрутов
@@ -250,6 +257,35 @@ object AppInstallBridge {
         val spec = AppControlRequestValidator.launch(body.getString("package"))
         val app = InstalledAppController.launchApp(spec)
         writeJson(output, 200, AppInstallWire.launchResponse(app))
+    }
+
+    /**
+     * Снимок экрана для агента: файл в Download и честный исход.
+     *
+     * 409, а не 500: «служба доступности выключена» — состояние телефона, которое
+     * чинится включением службы, а не сбой моста. Агент читает reason и говорит
+     * человеку, что именно включить.
+     */
+    private fun screenShot(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val dest = screenshotFile(parameter(request.query, "name"), System.currentTimeMillis())
+        when (val outcome = MediaUiAutomation.screenshot(dest)) {
+            is ScreenshotOutcome.Saved ->
+                writeJson(
+                    output,
+                    200,
+                    JSONObject()
+                        .put("ok", true)
+                        .put("path", outcome.file.path)
+                        .put("width", outcome.width)
+                        .put("height", outcome.height)
+                        .put("bytes", outcome.bytes),
+                )
+
+            is ScreenshotOutcome.Failed -> writeJson(output, 409, error(outcome.reason))
+        }
     }
 
     private fun status(

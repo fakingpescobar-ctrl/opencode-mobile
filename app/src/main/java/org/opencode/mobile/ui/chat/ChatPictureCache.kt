@@ -24,7 +24,10 @@ internal object ChatPictureCache {
 
     private val lru =
         object : LruCache<String, Bitmap>(CACHE_BYTES) {
-            override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+            override fun sizeOf(
+                key: String,
+                value: Bitmap,
+            ): Int = value.byteCount
         }
 
     fun keyOf(file: File): String = "${file.path}|${file.length()}|${file.lastModified()}"
