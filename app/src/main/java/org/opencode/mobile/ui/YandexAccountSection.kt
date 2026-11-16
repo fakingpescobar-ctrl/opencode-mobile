@@ -123,7 +123,6 @@ fun yandexAccountSection() {
     LaunchedEffect(state.prompt) { state.countdown() }
     LaunchedEffect(state.prompt) { state.pollUntilDone() }
 
-    sectionHeader("Яндекс Музыка")
     when (val shown = state.ui) {
         YandexConnectUi.Loading -> accountPlate("Проверяем…", "Читаем сохранённый вход")
         YandexConnectUi.Disconnected -> {
