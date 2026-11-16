@@ -484,10 +484,9 @@ object CoreUpdater {
     }
 
     /** Wi-Fi и Ethernet считаем бесплатными, всё остальное (LTE, VPN поверх LTE) — нет. */
-    private fun isUnmetered(caps: NetworkCapabilities): Boolean {
-        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+    private fun isUnmetered(caps: NetworkCapabilities): Boolean =
+        caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
             caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
-    }
 
     /**
      * Сравнение версий по числам, а не по строкам: лексикографически `2.10.0`
