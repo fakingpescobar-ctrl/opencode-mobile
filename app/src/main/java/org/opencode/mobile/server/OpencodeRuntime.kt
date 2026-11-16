@@ -127,7 +127,12 @@ object OpencodeRuntime {
         }
         val nativeDir = nativeLibraryDir(context)
         val loader = File(nativeDir, LOADER_NAME).absolutePath
-        val bin = File(nativeDir, BIN_NAME).absolutePath
+        // Лоадер всегда из APK, ядро — то, что реально действует. Обычно это
+        // APK-копия, но [CoreUpdater] может накатить более свежее ядро из
+        // официального npm-пакета в filesDir, и тогда запускать надо именно его:
+        // подмена файла без смены этого пути означала бы «скачали, проверили и
+        // не используем». isAssembled() выше проверяет APK-копию как резерв.
+        val bin = CoreUpdater.resolveCore(context).absolutePath
 
         val muslDir: String = try {
             ensureMuslLibs(context).absolutePath
@@ -1443,3 +1448,4 @@ internal fun OpencodeRuntime.planMusicEntry(
             MusicConfigPlan.Write(text.replace(mcpEntriesForTest(), mcpEntriesWithMusicForTest()))
         else -> MusicConfigPlan.Refuse
     }
+
