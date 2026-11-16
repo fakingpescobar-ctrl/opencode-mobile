@@ -787,7 +787,7 @@ internal fun InfoRow(
             color = MoltIdle,
             fontSize = TINY,
             lineHeight = TINY_LINE,
-            maxLines = 2,
+            maxLines = 3,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(LABEL_COLUMN_WEIGHT),
         )
