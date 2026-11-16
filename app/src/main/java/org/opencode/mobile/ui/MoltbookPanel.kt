@@ -393,22 +393,34 @@ private fun PendingRow(question: MoltbookQuestion) {
                 lineHeight = SMALL_LINE,
             )
         }
-        // Без maxLines намеренно: список прокручивается, и обрезанный на двух
-        // строках комментарий - это не «кратко», а «не прочитано». Целиком
-        // пусть даже в тридцать строк: читать должен юзер, а не агент.
-        if (!translated || question.body.isNotBlank()) {
+        // Оригинал показываем только когда перевода нет. Переведённый текст —
+        // единственный, который нужен читателю: английская копия под ним не
+        // «контекст», а второй абзац на чужом языке, и она отнимает место у
+        // следующего вопроса. Без перевода показывать нечего — тогда оригинал
+        // остаётся, иначе вопрос выглядел бы пустым.
+        if (showOriginal(question.bodyRu, question.body)) {
             Text(
                 text = question.body,
-                // При переводе оригинал уходит в мельче: он больше не главный
-                // текст, а приложение к прочитанному.
-                color = if (translated) MoltIdle else Color(0xFFBDBDBD),
-                fontSize = if (translated) TINY else SMALL,
-                lineHeight = if (translated) TINY_LINE else SMALL_LINE,
-                modifier = Modifier.padding(top = if (translated) 2.dp else 0.dp),
+                color = Color(0xFFBDBDBD),
+                fontSize = SMALL,
+                lineHeight = SMALL_LINE,
             )
         }
     }
 }
+
+/**
+ * Показывать ли оригинал текста.
+ *
+ * Правило вынесено из композиции в чистую функцию, чтобы его можно было
+ * проверить без Android: «есть перевод → оригинал не нужен» — это решение, а
+ * не оформление, и вернуться к двум языкам подряд можно случайно при любой
+ * правке PendingRow.
+ */
+internal fun showOriginal(
+    bodyRu: String,
+    body: String,
+): Boolean = bodyRu.isBlank() && body.isNotBlank()
 
 /**
  * Список вопросов не выше этого.
