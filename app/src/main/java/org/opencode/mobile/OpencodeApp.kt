@@ -48,10 +48,10 @@ class OpencodeApp : Application() {
                 if (CoreUpdater.checkAndApply(applicationContext)) {
                     OpencodeServerService.restart(applicationContext)
                 }
-            } catch (t: Throwable) {
+            } catch (e: Exception) {
                 // Ядро — не то, ради чего стоит падать приложению: в APK есть своя
                 // копия, и без обновления всё работает.
-                android.util.Log.w("OpencodeApp", "core update failed: ${t.message}")
+                android.util.Log.w("OpencodeApp", "core update failed: ${e.message}")
             }
         }, "core-updater").start()
     }
