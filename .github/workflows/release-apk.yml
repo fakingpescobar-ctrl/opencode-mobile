@@ -1,0 +1,184 @@
+name: Release APK
+
+# Зачем этот workflow
+# ------------------
+# Раньше единственная «полная» сборка жила на машине разработчика (build-release.ps1):
+# jniLibs (301 МБ) в git не лежат, а ubuntu-джоба CI собирала APK БЕЗ ядра
+# opencode — такая сборка ставится, стартует и не умеет запускать сервер.
+# Здесь нативы подтягиваются по пинам (tools/natives.json) прямо из публичных
+# источников (npm / Alpine / sherpa-onnx), сверяются по размеру и sha256 и
+# попадают в APK. Значит GitHub собирает настоящий APK, а не пустышку.
+
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: "Что в сборке (пойдёт в заметки релиза)"
+        required: false
+        default: ""
+  push:
+    tags: [ "apk-*" ]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-apk
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    name: Собрать APK с ядром
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # Отпечаток ключа, которым подписан APK на телефоне. Пустое значение =
+      # эталон неизвестен, и тогда релиз помечается «не для установки поверх».
+      EXPECTED_CERT_SHA256: ""
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: JDK 17 (AGP 8.x)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            .natives-cache
+          key: "apk-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties', 'tools/natives.json', 'gradle.properties') }}"
+          restore-keys: |
+            apk-${{ runner.os }}-
+
+      - name: SDK platform 36 / build-tools
+        run: |
+          yes | sdkmanager "platforms;android-36" > /dev/null 2>&1 || true
+          yes | sdkmanager "build-tools;36.0.0" > /dev/null 2>&1 || true
+
+      - name: Ядро и нативы по пинам
+        run: |
+          chmod +x tools/fetch-natives.sh
+          tools/fetch-natives.sh
+          ls -l app/src/main/jniLibs/arm64-v8a/
+          echo "ядро: $(sed -n 's/^opencode\.binaryVersion=//p' gradle.properties)"
+
+      - name: Ключ подписи (тот же, что на телефоне)
+        id: key
+        env:
+          KS_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "${KS_B64:-}" ]; then
+            mkdir -p "$HOME/.android"
+            printf '%s' "$KS_B64" | base64 -d > "$HOME/.android/debug.keystore"
+            chmod 600 "$HOME/.android/debug.keystore"
+            keytool -list -keystore "$HOME/.android/debug.keystore" -storepass android | head -5
+            echo "source=secret" >> "$GITHUB_OUTPUT"
+          else
+            echo "source=ci-default" >> "$GITHUB_OUTPUT"
+            echo "::warning::Ключа подписи нет в secrets — APK будет подписан ключом раннера и НЕ встанет поверх установленного приложения"
+          fi
+
+      - name: versionCode/versionName из номера запуска
+        run: |
+          # 4 — текущий versionCode на телефоне; отсчёт от него, чтобы обновление
+          # не оказалось «понижением версии» (Android такое не ставит).
+          code=$(( 4 + ${GITHUB_RUN_NUMBER} ))
+          sed -i -E "s/^([[:space:]]*)versionCode = [0-9]+/\1versionCode = ${code}/" app/build.gradle.kts
+          sed -i -E "s/^([[:space:]]*)versionName = \"[^\"]*\"/\1versionName = \"0.1.0-b${GITHUB_RUN_NUMBER}\"/" app/build.gradle.kts
+          grep -nE "versionCode|versionName" app/build.gradle.kts | head -5
+          echo "APK_VERSION_CODE=${code}" >> "$GITHUB_ENV"
+
+      - name: Сборка APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug -PskipNativeBuild=true --no-daemon --console=plain
+
+      - name: Проверка APK — ядро внутри
+        run: |
+          set -eu
+          APK=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          echo "APK=$APK"
+          ls -l "$APK"
+          size=$(stat -c %s "$APK")
+          for lib in libopencode.so libbun-musl.so libc_musl.so libldmusl.so libstdcxx.so; do
+            if ! unzip -l "$APK" | grep -q "lib/arm64-v8a/$lib"; then
+              echo "::error::в APK нет lib/arm64-v8a/$lib — это сборка без ядра, публиковать нельзя"
+              exit 1
+            fi
+            echo "ok lib/arm64-v8a/$lib"
+          done
+          # Пустышка весит ~30 МБ, настоящая сборка — за 250 МБ.
+          if [ "$size" -lt 220000000 ]; then
+            echo "::error::APK подозрительно мал ($size б) — ядро не попало в упаковку"
+            exit 1
+          fi
+          sha256sum "$APK" | tee apk.sha256
+
+      - name: Отпечаток подписи
+        id: cert
+        run: |
+          set -eu
+          APK=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          keytool -printcert -jarfile "$APK" | grep -E "Owner:|SHA256:" | head -4 | tee cert.txt
+          fp=$(grep "SHA256:" cert.txt | head -1 | sed 's/.*SHA256: *//' | tr -d ' ' | tr -d ':')
+          echo "fingerprint=$fp" >> "$GITHUB_OUTPUT"
+          if [ -n "${EXPECTED_CERT_SHA256:-}" ] && [ "$fp" != "${EXPECTED_CERT_SHA256}" ]; then
+            echo "::warning::отпечаток подписи не совпал с эталоном телефона — обновление поверх не встанет"
+            echo "installable=no" >> "$GITHUB_OUTPUT"
+          elif [ "${EXPECTED_CERT_SHA256:-}" = "" ]; then
+            echo "installable=unknown" >> "$GITHUB_OUTPUT"
+          else
+            echo "installable=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Переименовать APK
+        run: |
+          APK=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          name="opencode-mobile-${APK_VERSION_CODE}-$(echo "${GITHUB_SHA}" | cut -c1-7).apk"
+          cp "$APK" "dist-$name"
+          echo "APK_NAME=$name" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ env.APK_VERSION_CODE }}
+          path: dist-*.apk
+          retention-days: 30
+
+      - name: Релиз
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEY_SOURCE: ${{ steps.key.outputs.source }}
+          CERT_FP: ${{ steps.cert.outputs.fingerprint }}
+          INSTALLABLE: ${{ steps.cert.outputs.installable }}
+          NOTE: ${{ github.event.inputs.note }}
+        run: |
+          set -eu
+          tag="apk-${APK_VERSION_CODE}"
+          core=$(sed -n 's/^opencode\.binaryVersion=//p' gradle.properties)
+          {
+            echo "Собрано GitHub Actions, запуск #${GITHUB_RUN_NUMBER}, коммит ${GITHUB_SHA}."
+            echo
+            echo "- versionCode: ${APK_VERSION_CODE}"
+            echo "- ядро opencode: ${core}"
+            echo "- ключ подписи: ${KEY_SOURCE}"
+            echo "- отпечаток подписи: ${CERT_FP}"
+            echo "- sha256 APK: $(cut -d' ' -f1 apk.sha256)"
+            echo
+            case "$INSTALLABLE" in
+              yes) echo "Установка поверх текущей версии: данные сохраняются." ;;
+              no)  echo "**ВНИМАНИЕ: подпись не совпала с эталоном — установить поверх не получится.**" ;;
+              *)   echo "**Подпись сверена только с ключом раннера.** Перед установкой сверь отпечаток с телефоном; если не совпал — установка поверх невозможна (нужно удалить приложение, а это сотрёт данные)." ;;
+            esac
+            if [ -n "${NOTE:-}" ]; then echo; echo "${NOTE}"; fi
+          } > notes.md
+          gh release create "$tag" "dist-${APK_NAME}" \
+            --title "APK ${APK_VERSION_CODE} (ядро ${core})" \
+            --notes-file notes.md
+          echo "релиз: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${tag}"
