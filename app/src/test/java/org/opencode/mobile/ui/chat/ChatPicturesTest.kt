@@ -18,7 +18,10 @@ class ChatPicturesTest {
 
     private fun body(text: String) = ChatSegment.Body(text)
 
-    private fun pic(path: String, caption: String? = null) = ChatSegment.Picture(ChatPicture(path, caption))
+    private fun pic(
+        path: String,
+        caption: String? = null,
+    ) = ChatSegment.Picture(ChatPicture(path, caption))
 
     @Test
     fun `обычный текст — один кусок`() {
