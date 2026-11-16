@@ -69,14 +69,12 @@ private fun newestMessage(rawMessages: String?): JSONObject? {
     var best: JSONObject? = null
     var bestAt = -1L
     for (i in 0 until arr.length()) {
-        val msg = arr.optJSONObject(i) ?: continue
-        if (typeOf(msg) == TYPE_SYSTEM) continue
-        val at = timeOf(msg)?.optLong("created") ?: 0L
-        // `>=` при равном времени оставляет более поздний по порядку: у v1 без
-        // `created` так выигрывает первое сообщение выдачи, то есть новейшее.
-        if (at >= bestAt) {
+        val msg = arr.optJSONObject(i)
+        // system — не реплика: в начале ленты v2 там лежит «список инструментов
+        // изменился», и по нему нельзя решать ничего.
+        if (msg != null && typeOf(msg) != TYPE_SYSTEM && createdOf(msg) >= bestAt) {
             best = msg
-            bestAt = at
+            bestAt = createdOf(msg)
         }
     }
     return best
@@ -106,6 +104,12 @@ private fun typeOf(msg: JSONObject): String {
 /** Время сообщения: `time` в v2, `info.time` в v1-конверте. */
 private fun timeOf(msg: JSONObject): JSONObject? =
     msg.optJSONObject("time") ?: msg.optJSONObject("info")?.optJSONObject("time")
+
+/**
+ * `time.created` сообщения. Ноль означает «времени нет»: у v1-конверта его
+ * может не быть вовсе, и тогда порядок выдачи остаётся единственным ориентиром.
+ */
+private fun createdOf(msg: JSONObject): Long = timeOf(msg)?.optLong("created") ?: 0L
 
 /** `finish` шага: в v1-конверте он не приходит, и это законно — значит «не знаем». */
 private fun finishOf(msg: JSONObject): String = msg.optString("finish")
