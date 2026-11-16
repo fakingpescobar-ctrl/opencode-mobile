@@ -598,6 +598,7 @@ fun DiagnosticsScreen(
                 sectionHeader("Ядро opencode")
                 InfoRow("Работает", activeCoreLabel(context))
                 InfoRow("В APK", opencodeBinaryLabel())
+                coreLastCheckRow(context)
                 coreCheckRow(context, scope)
 
                 sectionHeader("Лог сервера (хвост)")
@@ -789,6 +790,20 @@ internal fun downloadButton(
 }
 
 /**
+ * Что сказала последняя проверка — и когда именно.
+ *
+ * Строка нужна не для истории, а чтобы отличать «проверили, обновлять нечего»
+ * от «не проверяли ни разу»: без неё пустой раздел читается как «всё хорошо».
+ * Время поэтому с датой: проверка бывает и вчерашней, и «12:06» без числа
+ * выдавало бы прошлое за настоящее.
+ */
+@Composable
+private fun coreLastCheckRow(context: Context) {
+    val last = CoreUpdater.lastCheck(context) ?: return
+    InfoRow("Последняя проверка", "${fmtDayTime(last.at)} · ${last.text()}")
+}
+
+/**
  * Кнопка «проверить сейчас» — единственный способ не ждать шестичасового окна.
  *
  * Она же живой тест механизма: когда реестр отдаст версию новее, здесь видно,
@@ -813,17 +828,13 @@ private fun coreCheckRow(
         busy = true
         note = null
         scope.launch {
-            val applied =
+            val result =
                 withContext(Dispatchers.IO) { CoreUpdater.checkAndApply(context, force = true) }
             busy = false
-            note =
-                if (applied) {
-                    "ядро обновлено, перезапускаю сервер"
-                } else {
-                    "ничего не заменил: версия не новее, либо сеть тарифицируется, " +
-                        "либо сверка/пробный запуск не прошли (подробности — лог, тег CoreUpdater)"
-                }
-            if (applied) OpencodeServerService.restart(context)
+            // Причина приходит значением, а не угадывается здесь: экран обязан
+            // повторять решение проверки, а не пересказывать его тремя «либо».
+            note = result.text()
+            if (result.applied) OpencodeServerService.restart(context)
         }
     }
 }
@@ -865,6 +876,10 @@ private fun fmtTime(epochMs: Long?): String {
     val fmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
     return epochMs?.let { fmt.format(Date(it)) } ?: "—"
 }
+
+/** Формат «16.11 12:06» — для событий, которые бывают не сегодняшними. */
+private fun fmtDayTime(epochMs: Long): String =
+    SimpleDateFormat("dd.MM HH:mm", Locale.getDefault()).format(Date(epochMs))
 
 /** История сбоев -> многострочный текст «время · код · сообщение (решен/активен)». */
 private fun historyText(history: List<RuntimeError>): String =
