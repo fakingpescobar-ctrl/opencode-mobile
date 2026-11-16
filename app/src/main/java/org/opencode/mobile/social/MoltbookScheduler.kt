@@ -50,6 +50,72 @@ internal object MoltbookScheduler {
     fun userIntervalMinutes(context: Context): Int = parseUserInterval(prefs(context).getInt(KEY_USER_INTERVAL_MIN, 0))
 
     /**
+     * Включён ли будильник вообще.
+     *
+     * Это НЕ «периодичность 0»: ноль значит «паузу выбирает агент», то есть тик
+     * работает. Выключенный будильник — отдельное состояние, и оно обязано быть
+     * отдельным полем. Иначе «авто» и «никогда» пришлось бы кодировать одним
+     * значением, и юзер, выбравший авто, однажды получил бы тишину без
+     * объяснения.
+     */
+    fun isEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_ENABLED, true)
+
+    /**
+     * Включить или выключить будильник — одним действием.
+     *
+     * Выключение снимает ОБА будильника: и тик, и сторож. Сторож существует,
+     * чтобы кричать «тик умер»; если тик выключен намеренно, его тревога — не
+     * наблюдение, а шум, из-за которого выключатель выглядит сломанным. Поэтому
+     * `cancel` обоих и запись в журнал-свидетель: тишина обязана иметь след,
+     * иначе «выключил» и «сломалось» неотличимы — ни для нас, ни для проверки
+     * с ПК.
+     *
+     * Включение взводит и тик, и сторожа. Сторож — сразу, а не «после первого
+     * тика»: если первый тик после включения не придёт вовсе, заметить это
+     * будет некому ровно до следующего, то есть никогда.
+     */
+    fun setEnabled(
+        context: Context,
+        enabled: Boolean,
+    ) {
+        val previous = isEnabled(context)
+        prefs(context).edit().putBoolean(KEY_ENABLED, enabled).apply()
+        if (previous == enabled) {
+            Log.i(TAG, "будильник уже ${if (enabled) "включён" else "выключен"} — ничего не меняю")
+            return
+        }
+        if (enabled) {
+            schedule(context)
+            MoltbookWatchdog.ensureArmed(context)
+        } else {
+            cancel(context)
+            MoltbookWatchdog.cancel(context)
+        }
+        recordSwitch(context, enabled)
+        Log.i(TAG, "будильник ${if (enabled) "включён" else "выключен"} юзером")
+    }
+
+    /**
+     * След в журнале-свидетеле: после выключения тишина — это решение, а не
+     * смерть тика. Без записи внешняя проверка увидела бы просто «записи
+     * кончились» и завела бы ту самую тревогу, которую юзер только что снял.
+     */
+    private fun recordSwitch(
+        context: Context,
+        enabled: Boolean,
+    ) {
+        runCatching {
+            MoltbookWitness.append(
+                logFile = MoltbookWatchdog.logFile(context),
+                mirrorFile = MoltbookWatchdog.mirrorFile(context),
+                kind = MoltbookWitness.KIND_SWITCH,
+                payload = if (enabled) "alarm on" else "alarm off",
+                now = System.currentTimeMillis(),
+            )
+        }.onFailure { Log.w(TAG, "не записал переключение будильника: ${it.message}") }
+    }
+
+    /**
      * Задать периодичность и СРАЗУ перевзвести будильник на ней.
      *
      * Перевзведение здесь, а не «в следующий тик» — обязательное. Будильник живёт по
@@ -102,6 +168,10 @@ internal object MoltbookScheduler {
         context: Context,
         delayMs: Long = effectiveIntervalMs(context),
     ) {
+        if (!isEnabled(context)) {
+            Log.i(TAG, "будильник выключен — не взвожу (просили через ${delayMs / 60000} мин)")
+            return
+        }
         val manager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
         val periodMs = effectiveIntervalMs(context)
         manager.setInexactRepeating(
@@ -242,6 +312,13 @@ internal object MoltbookScheduler {
      * цена за то, что пауза не сбрасывается ложным «будильник мёртв» на живом.
      */
     fun ensureScheduled(context: Context) {
+        if (!isEnabled(context)) {
+            // Главный путь возврата после «выключил»: старт serve зовёт
+            // ensureScheduled при каждом подъёме. Без этой проверки будильник
+            // оживал бы сам после ближайшего рестарта.
+            Log.i(TAG, "будильник выключен — ensureScheduled ничего не взводит")
+            return
+        }
         val manager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
         val token =
             PendingIntent.getBroadcast(
@@ -316,4 +393,11 @@ internal object MoltbookScheduler {
 
     /** Рядом с метками взведения, а не в отдельном файле: это состояние того же будильника. */
     private const val KEY_USER_INTERVAL_MIN = "user_interval_min"
+
+    /**
+     * Выключатель юзера. По умолчанию `true`: поле появилось позже самой
+     * автономии, и у всех, кто уже пользуется будильником, он обязан остаться
+     * включённым после обновления, а не «пока не настроят заново».
+     */
+    private const val KEY_ENABLED = "enabled"
 }
