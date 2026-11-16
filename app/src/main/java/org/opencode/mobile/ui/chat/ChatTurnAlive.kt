@@ -102,8 +102,7 @@ private fun typeOf(msg: JSONObject): String {
 }
 
 /** Время сообщения: `time` в v2, `info.time` в v1-конверте. */
-private fun timeOf(msg: JSONObject): JSONObject? =
-    msg.optJSONObject("time") ?: msg.optJSONObject("info")?.optJSONObject("time")
+private fun timeOf(msg: JSONObject): JSONObject? = msg.optJSONObject("time") ?: msg.optJSONObject("info")?.optJSONObject("time")
 
 /**
  * `time.created` сообщения. Ноль означает «времени нет»: у v1-конверта его
