@@ -47,6 +47,10 @@ import java.util.zip.GZIPInputStream
  *     сервера, а откатиться уже нечем;
  *  7. только теперь файл переезжает на `filesDir/core/libopencode.so`, версия
  *     пишется в prefs, вызывающий перезапускает serve.
+ *  8. если `serve` на новом ядре не поднялся дважды подряд, файл удаляется,
+ *     версия запоминается как отбракованная, а запуск возвращается к ядру из
+ *     APK ([noteServerDown]). Без этого шага цикл самообновления мог бы сам
+ *     себя выключить: агент живёт внутри `serve`, и чинить изнутри нечем.
  *
  * Ядро в APK остаётся резервом: пока скачанного нет (или проверка не прошла),
  * [resolveCore] возвращает путь в nativeLibraryDir.
@@ -65,6 +69,22 @@ object CoreUpdater {
     private const val KEY_VERSION = "core_version"
     private const val KEY_BYTES = "core_bytes"
     private const val KEY_CHECKED_AT = "checked_at"
+
+    /** Подряд падений `serve` на скачанном ядре до приговора «это ядро не годится». */
+    private const val KEY_TRIES = "core_tries"
+
+    /** Версия, на которой `serve` не поднялся: её больше не накатываем. */
+    private const val KEY_BLOCKED = "core_blocked"
+
+    /** Когда был откат: время нужно, чтобы отличие «ядро плохое» от «сеть упала» не терялось. */
+    private const val KEY_ROLLED_AT = "core_rolled_back_at"
+
+    /**
+     * Два падения подряд — приговор. Одного мало: первый старт после установки
+     * бывает неудачным по чужим причинам (нет сети, занят порт, память не
+     * успела), и откатывать по нему значило бы никогда не обновиться.
+     */
+    private const val MAX_TRIES = 2
 
     private const val HOUR_MS = 3_600_000L
     private const val CHECK_EVERY_MS = 6 * HOUR_MS
@@ -117,8 +137,20 @@ object CoreUpdater {
         val downloaded = prefs.getString(KEY_VERSION, null) ?: return apkVersion
         val file = coreFile(context)
         val onDisk = file.isFile && file.length() == prefs.getLong(KEY_BYTES, 0L)
-        return if (onDisk && isNewer(downloaded, apkVersion)) downloaded else apkVersion
+        val blocked = prefs.getString(KEY_BLOCKED, null)
+        return if (onDisk && isUsable(downloaded, apkVersion, blocked)) downloaded else apkVersion
     }
+
+    /**
+     * Годится ли скачанное ядро к запуску: новее того, что в APK, и не
+     * отбраковано падением. Вынесено из [effectiveVersion], чтобы это правило
+     * можно было проверить тестом, а не только на телефоне.
+     */
+    internal fun isUsable(
+        downloaded: String,
+        apkVersion: String,
+        blocked: String?,
+    ): Boolean = downloaded != blocked && isNewer(downloaded, apkVersion)
 
     /**
      * Путь к ядру для запуска: скачанное, если оно новее, иначе — из APK.
@@ -129,6 +161,55 @@ object CoreUpdater {
         if (effectiveVersion(context) == BuildConfig.OPENCODE_VERSION) return apkCore
         val downloaded = coreFile(context)
         return if (downloaded.isFile && downloaded.length() > 0L) downloaded else apkCore
+    }
+
+    /**
+     * Сервер ответил по HTTP на скачанном ядре — снимаем счётчик неудач.
+     *
+     * Это единственное доказательство, что ядро рабочее: пробный запуск
+     * `--version` при установке говорит лишь о том, что ELF стартует, а не что
+     * из него поднимается `serve`. Поэтому «здоров» подтверждает не установка,
+     * а работа.
+     */
+    fun noteServerUp(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (prefs.getInt(KEY_TRIES, 0) == 0) return
+        prefs.edit().putInt(KEY_TRIES, 0).apply()
+        Log.i(TAG, "ядро ${effectiveVersion(context)} подняло сервер — счётчик падений сброшен")
+    }
+
+    /**
+     * `serve` не поднялся на скачанном ядре.
+     *
+     * Одно падение — только счёт. [MAX_TRIES]-е подряд — откат: файл удаляется,
+     * версия запоминается как отбракованная, `resolveCore` начинает отдавать
+     * ядро из APK. Без этого шага плохая версия ядра оставляла приложение без
+     * сервера навсегда: чинить нечем, потому что агент живёт внутри `serve`.
+     *
+     * Ядро из APK сюда не попадает намеренно: его падение — не повод что-то
+     * откатывать, откатываться некуда, и счётчик тогда врал бы.
+     */
+    @Suppress("ReturnCount")
+    fun noteServerDown(context: Context) {
+        val apkVersion = BuildConfig.OPENCODE_VERSION
+        val active = effectiveVersion(context)
+        if (active == apkVersion) return
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val tries = prefs.getInt(KEY_TRIES, 0) + 1
+        if (tries < MAX_TRIES) {
+            prefs.edit().putInt(KEY_TRIES, tries).apply()
+            Log.w(TAG, "ядро $active не подняло сервер ($tries из $MAX_TRIES)")
+            return
+        }
+        Log.w(TAG, "ядро $active не поднимается $tries раза подряд — откатываюсь на $apkVersion")
+        coreFile(context).delete()
+        prefs.edit()
+            .putString(KEY_BLOCKED, active)
+            .putLong(KEY_ROLLED_AT, System.currentTimeMillis())
+            .putInt(KEY_TRIES, 0)
+            .remove(KEY_VERSION)
+            .remove(KEY_BYTES)
+            .apply()
     }
 
     /**
@@ -191,6 +272,11 @@ object CoreUpdater {
         current: String,
     ): Boolean {
         if (!isNewer(meta.version, current)) return false
+        val blocked = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_BLOCKED, null)
+        if (meta.version == blocked) {
+            Log.i(TAG, "ядро ${meta.version} уже отбраковано падением сервера — не ставлю")
+            return false
+        }
         if (!sameMajor(meta.version, current)) {
             Log.i(TAG, "в реестре ${meta.version}, у нас $current: мажор другой, сам не накатываю")
             return false
@@ -237,6 +323,7 @@ object CoreUpdater {
         val editor = prefs.edit()
         editor.putString(KEY_VERSION, meta.version)
         editor.putLong(KEY_BYTES, target.length())
+        editor.putInt(KEY_TRIES, 0)
         editor.apply()
         Log.i(TAG, "ядро обновлено: $previous → ${meta.version} (${target.length()} б)")
         return true
