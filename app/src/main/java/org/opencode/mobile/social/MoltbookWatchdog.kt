@@ -248,6 +248,13 @@ internal object MoltbookWatchdog {
         context: Context,
         delayMs: Long = CHECK_INTERVAL_MS,
     ) {
+        if (!MoltbookScheduler.isEnabled(context)) {
+            // Сторож — не самостоятельная сущность, а наблюдатель за тиком.
+            // Выключенный тик нечего сторожить: его тревога была бы шумом о
+            // решении юзера, а не о поломке.
+            Log.i(TAG, "будильник тика выключен — сторож не взвожу")
+            return
+        }
         val manager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
         manager.setInexactRepeating(
             AlarmManager.ELAPSED_REALTIME,
@@ -312,6 +319,10 @@ internal object MoltbookWatchdog {
      * @see MoltbookScheduler.ensureScheduled — тот же приём для будильника тика.
      */
     fun ensureArmed(context: Context) {
+        if (!MoltbookScheduler.isEnabled(context)) {
+            Log.i(TAG, "будильник тика выключен — сторож не взвожу")
+            return
+        }
         val manager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
         val token =
             PendingIntent.getBroadcast(
