@@ -3,6 +3,8 @@ package org.opencode.mobile
 import android.app.Application
 import android.content.Context
 import org.opencode.mobile.installer.AppInstallBridge
+import org.opencode.mobile.server.CoreUpdater
+import org.opencode.mobile.server.OpencodeServerService
 import org.opencode.mobile.server.Workspace
 import java.io.File
 
@@ -25,6 +27,33 @@ class OpencodeApp : Application() {
         super.onCreate()
         ServerConfig.init(applicationContext)
         AppInstallBridge.start(applicationContext)
+        checkCoreUpdate()
+    }
+
+    /**
+     * Проверка свежего ядра opencode в официальном npm-пакете.
+     *
+     * В отдельном потоке, а не в onCreate: это сеть и до 245 МБ записи, а
+     * Application.onCreate обязан вернуться быстро, иначе система убьёт процесс
+     * по ANR раньше, чем он покажет хоть что-то. Вызывается на каждый старт
+     * процесса, но сам [CoreUpdater] держит окно в 6 часов.
+     *
+     * Перезапуск сервиса только после реальной замены файла: serve загрузил
+     * старый бинарь в память при старте, и подмена файла на диске на живой
+     * процесс не действует.
+     */
+    private fun checkCoreUpdate() {
+        Thread({
+            try {
+                if (CoreUpdater.checkAndApply(applicationContext)) {
+                    OpencodeServerService.restart(applicationContext)
+                }
+            } catch (t: Throwable) {
+                // Ядро — не то, ради чего стоит падать приложению: в APK есть своя
+                // копия, и без обновления всё работает.
+                android.util.Log.w("OpencodeApp", "core update failed: ${t.message}")
+            }
+        }, "core-updater").start()
     }
 
     /** Точка входа для сервиса и UI: сконфигурированный layout каталогов. */
@@ -183,3 +212,4 @@ class OpencodeApp : Application() {
         }
     }
 }
+
