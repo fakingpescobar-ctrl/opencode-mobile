@@ -5,15 +5,22 @@
     "(musl 1.2.5-r11 и -r12 весят одинаково), различает их только хеш.",
     "Версия ядра берётся из gradle.properties (opencode.binaryVersion) — она же попадает",
     "в BuildConfig.OPENCODE_VERSION. Новую версию добавлять так:",
-    "  tools/fetch-natives.sh --bootstrap <версия>  → напечатает bytes/sha256 для pins"
+    "  tools/fetch-natives.sh --bootstrap <версия>  → напечатает bytes/sha256 для pins",
+    "ПОЧЕМУ часть файлов лежит в НАШЕМ релизе, а не у первоисточника: Alpine держит",
+    "в main/ только текущую ревизию пакета. musl-1.2.5-r11.apk исчез из",
+    "dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/ (404), и прогон CI #1 упал",
+    "на шаге нативов. Тег релиза неизменяем, поэтому пин остаётся воспроизводимым.",
+    "Крупные (ядро opencode, bun) берутся из npm: их версии адресуются точно."
   ],
+  "hostedRelease": "natives-aarch64-20261116",
   "opencode": {
     "url": "https://registry.npmjs.org/@opencode/cli-linux-arm64-musl/-/cli-linux-arm64-musl-{version}.tgz",
     "member": "package/bin/opencode",
     "pins": {
       "2.0.27": {
         "bytes": 204999888,
-        "sha256": "8880b9ce7a6c458eee641b4a22fd1cccd3373bb0f7c4ba6ee3fd4b32ef20fc62"
+        "sha256": "8880b9ce7a6c458eee641b4a22fd1cccd3373bb0f7c4ba6ee3fd4b32ef20fc62",
+        "note": "стояло в APK до 16.11; файл из установленного APK совпал с этим пином"
       },
       "2.3.0": {
         "bytes": 245505128,
@@ -25,46 +32,56 @@
   "bun": {
     "version": "1.4.0",
     "bytes": 73604864,
-    "sha256": "1d1810e9a442bbd09a07962ef4efa3105a989c71033eedec0bd1b0bdd59958a3"
+    "sha256": "1d1810e9a442bbd09a07962ef4efa3105a989c71033eedec0bd1b0bdd59958a3",
+    "url": "https://registry.npmjs.org/@oven/bun-linux-aarch64-musl/-/bun-linux-aarch64-musl-{version}.tgz",
+    "member": "package/bin/bun"
   },
   "files": [
     {
       "name": "libc_musl.so",
-      "from": "alpine v3.21 musl 1.2.5-r11",
-      "url": "{alpine}/musl-1.2.5-r11.apk",
-      "kind": "tar",
-      "member": "lib/ld-musl-aarch64.so.1",
+      "from": "alpine v3.21 musl 1.2.5-r11 (hosted: первоисточник удалил файл)",
+      "url": "https://github.com/fakingpescobar-ctrl/opencode-mobile/releases/download/{hosted}/libc_musl.so",
+      "kind": "file",
+      "member": "",
       "bytes": 723480,
-      "sha256": "44770ff3960d040e6023ff77b809def2e4123db85e064c311f4cfa45a05959f4",
-      "alsoAs": "libldmusl.so"
+      "sha256": "44770ff3960d040e6023ff77b809def2e4123db85e064c311f4cfa45a05959f4"
+    },
+    {
+      "name": "libldmusl.so",
+      "from": "тот же musl под вторым именем, побайтово идентичен (загрузчик и libc — один файл)",
+      "url": "https://github.com/fakingpescobar-ctrl/opencode-mobile/releases/download/{hosted}/libldmusl.so",
+      "kind": "file",
+      "member": "",
+      "bytes": 723480,
+      "sha256": "44770ff3960d040e6023ff77b809def2e4123db85e064c311f4cfa45a05959f4"
     },
     {
       "name": "libstdcxx.so",
-      "from": "alpine v3.21 libstdc++ 14.2.0-r4",
-      "url": "{alpine}/libstdc%2B%2B-14.2.0-r4.apk",
-      "kind": "tar",
-      "member": "usr/lib/libstdc++.so.6.0.33",
+      "from": "alpine v3.21 libstdc++ 14.2.0-r4 (hosted)",
+      "url": "https://github.com/fakingpescobar-ctrl/opencode-mobile/releases/download/{hosted}/libstdcxx.so",
+      "kind": "file",
+      "member": "",
       "bytes": 2754992,
       "sha256": "1f1a71be4319632f743507ef7c6eaebaccad8d6f277055cf2c6b16b544f9f418"
     },
     {
       "name": "libgcc_s.so",
-      "from": "alpine v3.21 libgcc 14.2.0-r4",
-      "url": "{alpine}/libgcc-14.2.0-r4.apk",
-      "kind": "tar",
-      "member": "usr/lib/libgcc_s.so.1",
+      "from": "alpine v3.21 libgcc 14.2.0-r4 (hosted)",
+      "url": "https://github.com/fakingpescobar-ctrl/opencode-mobile/releases/download/{hosted}/libgcc_s.so",
+      "kind": "file",
+      "member": "",
       "bytes": 133008,
       "sha256": "69c45f16064b7b61b9a3d64c37395d13368a8fe719745d49e9508ec650fea971"
     },
     {
       "name": "libsherpa-onnx-jni.so",
-      "from": "sherpa-onnx 1.13.8 static-link-onnxruntime aar",
-      "url": "{sherpa}/sherpa-onnx-static-link-onnxruntime-1.13.8.aar",
-      "kind": "zip",
-      "member": "jni/arm64-v8a/libsherpa-onnx-jni.so",
+      "from": "sherpa-onnx 1.13.8 static-link-onnxruntime aar (hosted, файл из APK совпал с пином)",
+      "url": "https://github.com/fakingpescobar-ctrl/opencode-mobile/releases/download/{hosted}/libsherpa-onnx-jni.so",
+      "kind": "file",
+      "member": "",
       "bytes": 24169352,
       "sha256": "b4a53d915c19cb6d09b1cdc9a8084be54419b647aab9097ffdfb46f30c3c4dd8",
-      "note": "libonnxruntime.so НЕ нужен: он влинкован статически в этот .so (22 МБ мёртвого веса в APK)"
+      "note": "libonnxruntime.so НЕ нужен: влинкован статически в этот .so (22 МБ мёртвого веса в APK)"
     }
   ]
 }
