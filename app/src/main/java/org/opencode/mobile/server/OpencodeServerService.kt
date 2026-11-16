@@ -191,6 +191,15 @@ class OpencodeServerService : Service() {
         // После onDestroy сервис считаем мёртвым: колбэки из in-flight корутины
         // не должны публиковать state и «воскрешать» нотификацию поверх STOP.
         if (!serviceActive) return
+        // Единственное место, где известно, что сервер РЕАЛЬНО ответил по HTTP.
+        // Пробный запуск `--version` при установке этого не доказывает, поэтому
+        // «ядро рабочее» подтверждается здесь, а приговор падению выносится тоже
+        // здесь: см. CoreUpdater.noteServerUp / noteServerDown.
+        when (rt.stage) {
+            RuntimeStage.HEALTHY -> CoreUpdater.noteServerUp(this)
+            RuntimeStage.CRASHED, RuntimeStage.FAILED_PERMANENTLY -> CoreUpdater.noteServerDown(this)
+            else -> Unit
+        }
         _state.value =
             ServerState(
                 status = rt.stage.toServerStatus(),
@@ -339,3 +348,4 @@ object ContextCompatSafe {
         }
     }
 }
+
