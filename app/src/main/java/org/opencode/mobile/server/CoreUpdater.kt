@@ -234,20 +234,22 @@ object CoreUpdater {
         }
         backup.delete()
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        prefs.edit().putString(KEY_VERSION, meta.version).putLong(KEY_BYTES, target.length()).apply()
+        val editor = prefs.edit()
+        editor.putString(KEY_VERSION, meta.version)
+        editor.putLong(KEY_BYTES, target.length())
+        editor.apply()
         Log.i(TAG, "ядро обновлено: $previous → ${meta.version} (${target.length()} б)")
         return true
     }
 
     @Suppress("TooGenericExceptionCaught")
-    private fun readLatestOrNull(): Latest? {
-        return try {
+    private fun readLatestOrNull(): Latest? =
+        try {
             readLatest()
         } catch (e: Exception) {
             Log.w(TAG, "реестр не ответил: ${e.message}")
             null
         }
-    }
 
     private fun readLatest(): Latest {
         val conn = (URL(REGISTRY_LATEST).openConnection() as HttpURLConnection).apply {
@@ -509,11 +511,7 @@ object CoreUpdater {
     internal fun sameMajor(
         candidate: String,
         current: String,
-    ): Boolean {
-        val a = candidate.substringBefore('.').toIntOrNull()
-        val b = current.substringBefore('.').toIntOrNull()
-        return a == b
-    }
+    ): Boolean = candidate.substringBefore('.').toIntOrNull() == current.substringBefore('.').toIntOrNull()
 
     private class Latest(
         val version: String,
