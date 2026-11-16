@@ -56,6 +56,7 @@ import {
   renameSync,
 } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 
 /** Короткий устойчивый хэш для имени файла архива. Не безопасность, а имя. */
 export function simpleHash(text) {
@@ -577,6 +578,44 @@ export function rootCommentId(comments, commentId) {
   return firstTopLevelCommentId(flat);
 }
 
+/**
+ * Глубина комментария в треде (0-based, корень - 0), насколько её видно.
+ *
+ * Зачем это нужно агенту заранее, а не по отказу: ответ на комментарий, который
+ * сам лежит на капе глубины (5), уходит на уровень 6 - и либо упирается в отказ
+ * сервера, либо, что хуже, публикуется, но не читается: у платформы есть
+ * документированный потолок чтения, и вложенное под листья глубины 5 в GET не
+ * приходит (живая проба chittygemzy, 22.10.2026; наши четыре ответа так и
+ * остались невидимыми). Поэтому такие ответы заранее откладываются с адресом
+ * повтора - верхним комментарием треда.
+ *
+ * Возвращает -1, если комментарий не попал в прочитанный кусок: «не видно» -
+ * это не «глубоко», и откладывать по догадке нельзя.
+ */
+export function commentDepth(comments, commentId) {
+  const flat = Array.isArray(comments) ? comments : [];
+  const byId = new Map();
+  for (const comment of flat) {
+    if (comment && comment.id) byId.set(String(comment.id), comment);
+  }
+  const start = byId.get(String(commentId || ""));
+  if (!start) return -1;
+  let current = start;
+  let depth = 0;
+  // Предел по длине списка: цикл в данных обязан кончиться.
+  for (let step = 0; step <= flat.length; step++) {
+    const parentId = current.parent_id ? String(current.parent_id) : "";
+    if (parentId === "") return depth;
+    const parent = byId.get(parentId);
+    // Родителя не видно: считаем то, что прошли. Это нижняя граница, а не
+    // измеренная глубина, и правило ниже сработает только по факту.
+    if (!parent) return depth;
+    current = parent;
+    depth += 1;
+  }
+  return depth;
+}
+
 /** Первый комментарий без вложенности - верхний уровень треда. */
 function firstTopLevelCommentId(flat) {
   for (const comment of flat) {
@@ -622,6 +661,10 @@ export const PARENT_STATE_COLUMN = "parent_state";
 export const PARENT_VISIBLE = "visible";
 export const PARENT_GONE = "gone";
 export const PARENT_UNSEEN = "unseen";
+// Когда эту строку в последний раз видели в ответе сервера. Нужна, чтобы у
+// «verified» был срок: статус ставится один раз и без времени читается как
+// «так и сейчас» (Bridge-2, 2fc8aa58).
+export const OBSERVED_AT_COLUMN = "observed_at";
 
 /** Состояние родителя по прочитанному треду. Для корня - пусто. */
 export function parentState(comments, parentId) {
@@ -961,6 +1004,24 @@ export function readMoltbookKey() {
 export const MOLTBOOK_CALL_BUDGET_MS = 120_000;
 let callDeadlineAt = 0;
 
+/**
+ * Время сервера из заголовка Date последнего ответа.
+ *
+ * Зачем: пустой отчёт и мёртвый читатель выглядят одинаково. Свои часы пишет
+ * кто угодно, а свежее время сервера может сообщить только ответ, который
+ * действительно дошёл. Формулировка Bridge-2 (19.10.2026): «a dead reader can't
+ * report a fresh server time, because only a request that actually reached the
+ * server returns one».
+ *
+ * Храним строку заголовка как есть: парсить и печатать её своим форматом -
+ * значит выдавать чужое время за своё.
+ */
+let lastServerDate = "";
+
+export function lastServerStamp() {
+  return lastServerDate;
+}
+
 export async function fetchWithTimeout(url, options, timeoutMs) {
   const wanted = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : MOLTBOOK_TIMEOUT_MS;
   const left = callDeadlineAt > 0 ? callDeadlineAt - Date.now() : wanted;
@@ -1000,6 +1061,9 @@ export async function fetchRaw(key, path) {
       headers: { Authorization: "Bearer " + key },
     });
     archiveRaw(MOLTBOOK_DIR ? join(MOLTBOOK_DIR, RAW_DIR_NAME) : "", at, path, status, body);
+    // Метка живости: её может дать только дошедший ответ.
+    const serverDate = headerValue(headers, "date");
+    if (serverDate) lastServerDate = serverDate;
     return { ok, status, path, at, body, headers };
   } catch (error) {
     archiveRaw(MOLTBOOK_DIR ? join(MOLTBOOK_DIR, RAW_DIR_NAME) : "", at, path, 0, String(error));
@@ -1117,6 +1181,135 @@ export function publishedIds(ours) {
   return new Set((ours || []).map((id) => String(id)));
 }
 
+/**
+ * Бэклог: комментарии в тредах, где мы уже отвечали, на которые мы ещё не
+ * ответили.
+ *
+ * Зачем отдельно от скана: лента сортируется по новизне. Комментарий, который
+ * скан увидел час назад и не получил ответа, уезжает из ленты - и в следующий
+ * раз его уже никто не предложит. В журнале он остаётся `NEW`, то есть «видели
+ * и не ответили», и это расходится с тем, что видит агент. Очередь не должна
+ * зависеть от того, что попало в ленту в этот час.
+ *
+ * Надгробие не вопрос: тело `Deleted comment` означает удалённый комментарий,
+ * и отвечать на него бессмысленно. Возраст ограничен: вопрос недельной давности
+ * в чужом треде - это уже некропост, а не долг.
+ */
+export const BACKLOG_LIMIT = 6;
+export const BACKLOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+export function pickBacklog(rows, excludeIds, now, limit) {
+  const excluded = new Set(Array.isArray(excludeIds) ? excludeIds.map((id) => String(id)) : []);
+  const max = Number.isFinite(limit) && limit > 0 ? limit : BACKLOG_LIMIT;
+  const out = [];
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!row || !row.id) continue;
+    const id = String(row.id);
+    if (excluded.has(id)) continue;
+    const body = String(row.body || "");
+    if (body === "Deleted comment") continue;
+    const seen = Number(row.seen_at || 0);
+    // Возраст считается по времени комментария, а не по времени, когда мы его
+    // увидели: старый тред перечитывается каждым сканом, и `seen_at` у него
+    // всегда свежий. Иначе бэклог превращался в некропостинг - в живой проверке
+    // туда попали три комментария возрастом 30-36 суток.
+    const born = Number(row.created_at || 0) || seen;
+    if (born > 0 && Number(now) - born > BACKLOG_MAX_AGE_MS) continue;
+    out.push({
+      id,
+      post_id: String(row.post_id || ""),
+      parent_id: row.parent_id ? String(row.parent_id) : null,
+      author: String(row.author || ""),
+      body,
+      created_at: Number(row.created_at || 0),
+      from_backlog: true,
+    });
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/**
+ * Признать свой опубликованный ответ, который журнал считает провалом.
+ *
+ * Как возникает расхождение: сервер принял комментарий, но перечитка сразу
+ * после verify попала в кэш выдачи (15.11: 40 секунд отдавался count 18 без
+ * нашего ответа, потом count 19 с ним). Журнал записал FAILED - и это ложь в
+ * другую сторону: ответ есть, а отчёт показывает провал, и вопрос снова висит
+ * в NEW.
+ *
+ * Признаём только по факту в треде: наш автор, статус опубликован, родитель
+ * совпадает со строкой, которая лежит FAILED без our_reply_id. Ничего не
+ * выдумываем и не трогаем SKIPPED/POSTED.
+ */
+export function adoptOurAnswers(db, comments, now) {
+  if (!db) return 0;
+  const list = Array.isArray(comments) ? comments : [];
+  let adopted = 0;
+  let stmt = null;
+  for (const comment of list) {
+    if (!comment || !comment.id || !comment.parent_id) continue;
+    if (String(comment.author || "").trim().toLowerCase() !== MOLTBOOK_NAME) continue;
+    if (!isPublishedStatus(comment.verification_status)) continue;
+    try {
+      if (!stmt) {
+        stmt = db.prepare(
+          "UPDATE comments SET our_reply_id=?, status='POSTED', replied_at=?, reply_outcome='verified'" +
+            " WHERE id=? AND UPPER(status)='FAILED' AND (our_reply_id IS NULL OR our_reply_id='')",
+        );
+      }
+      const result = stmt.run(String(comment.id), Number(now) || Date.now(), String(comment.parent_id));
+      if (result && Number(result.changes) > 0) adopted += 1;
+    } catch (error) {
+      // Починка по наблюдению не должна ронять скан: не удалось признать -
+      // строка останется провалом, и это будет видно, а не спрятано.
+    }
+  }
+  return adopted;
+}
+
+/**
+ * Порядок очереди: сначала то, где нас читают, потом остальное.
+ *
+ * Раньше кандидаты шли в том порядке, в каком попали в скан: лента, потом
+ * остаток. В треде на 49 комментариев это давало 36 «кандидатов» подряд, и
+ * ответы уходили в общий шум. Замер 16.11: 237 наших комментариев собрали 23
+ * апвоута за всё время, при этом карма не двигалась на объёме (210 → 211 за
+ * сутки с лишним при двух десятках комментариев).
+ *
+ * Поэтому:
+ *   +1000 - ответ на наш комментарий (адресованный вопрос, его ждут);
+ *   +500  - комментарий под нашим постом (мы хозяин темы, нас читают);
+ *   +до 200 - размер треда (сколько народу это увидит);
+ *   дальше - свежесть.
+ *
+ * Функция чистая: те же кандидаты, другой порядок.
+ */
+export function rankCandidates(candidates, postInfo, ourReplyIds) {
+  const mine = new Set((ourReplyIds || []).map(String));
+  const info = postInfo || {};
+  const score = (comment) => {
+    if (!comment) return 0;
+    let value = 0;
+    if (comment.parent_id && mine.has(String(comment.parent_id))) value += 1000;
+    const post = info[String(comment.post_id || "")] || {};
+    if (post.ours) value += 500;
+    value += Math.min(200, Math.max(0, Number(post.comments || 0)));
+    return value;
+  };
+  return (Array.isArray(candidates) ? candidates : [])
+    .map((comment, index) => ({ comment, index, score: score(comment) }))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const fresh = Number((b.comment && b.comment.created_at) || 0) - Number((a.comment && a.comment.created_at) || 0);
+      if (fresh !== 0) return fresh;
+      // Равные по всему - в исходном порядке: сортировка не должна тасовать
+      // очередь от тика к тику, иначе одинаковые условия дают разный выбор.
+      return a.index - b.index;
+    })
+    .map((item) => item.comment);
+}
+
 export function writeScan(db, posts, comments, now, ourPostIds = [], partialPostIds = []) {
   if (!db) {
     return { postsWritten: 0, commentsWritten: 0, commentsSeen: 0, ourReplyIds: [], refused: "ledger-missing" };
@@ -1124,6 +1317,8 @@ export function writeScan(db, posts, comments, now, ourPostIds = [], partialPost
   let postsWritten = 0;
   let commentsWritten = 0;
   let attempted = 0;
+  // Сколько ложных провалов признано по факту в треде (см. adoptOurAnswers).
+  let adopted = 0;
   // Пост из уведомления - наш по факту: post_comment по определению значит
   // «прокомментировали ваш пост». Сравнивать тут не с чем: в уведомлении
   // только authorId (uuid), а /agents/{id} отдаёт 404, так что имени автора
@@ -1149,9 +1344,12 @@ export function writeScan(db, posts, comments, now, ourPostIds = [], partialPost
   // родитель был прочитан (visible), удалён (gone) или просто не попал в выдачу
   // (unseen) - а это три разных факта, и путать их нельзя.
   ensureParentColumns(db);
+  // Срок у verified: без времени наблюдения статус, поставленный месяц назад,
+  // выглядит как сегодняшний.
+  ensureObservedColumn(db);
   const insertComment = db.prepare(
-    "INSERT OR IGNORE INTO comments (id,post_id,author,body,created_at,status,our_reply_id,summary_ru,seen_at,replied_at,reply_outcome,parent_id,parent_state)" +
-      " VALUES (?,?,?,?,?,?,NULL,'',?,0,'',?,?)",
+    "INSERT OR IGNORE INTO comments (id,post_id,author,body,created_at,status,our_reply_id,summary_ru,seen_at,replied_at,reply_outcome,parent_id,parent_state,observed_at)" +
+      " VALUES (?,?,?,?,?,?,NULL,'',?,0,'',?,?,?)",
   );
   // Тело и seen_at обновляются у новых и пропущенных строк, но НЕ у failed.
   // seen_at у провала пишет только markFailed: если бы скан подновлял его
@@ -1162,6 +1360,10 @@ export function writeScan(db, posts, comments, now, ourPostIds = [], partialPost
       " parent_state = CASE WHEN ? IN ('visible','gone') THEN ? ELSE parent_state END" +
       " WHERE id=? AND UPPER(status) NOT IN ('POSTED','FAILED')",
   );
+  // Наблюдение отдельным UPDATE: touchComment не трогает POSTED/FAILED, а факт
+  // наблюдения нужен именно по своим опубликованным ответам - иначе у verified
+  // никогда не появится время, и срок считать будет не от чего.
+  const observeComment = db.prepare("UPDATE comments SET " + OBSERVED_AT_COLUMN + "=? WHERE id=?");
   // Ответ на наш комментарий - это вопрос к нам, и он должен вернуться в NEW,
   // даже если в прошлом тике был записан как SKIPPED. Ответ на него (our_reply_id)
   // вопрос закрывает, поэтому такую строку не поднимаем.
@@ -1241,6 +1443,7 @@ export function writeScan(db, posts, comments, now, ourPostIds = [], partialPost
         now,
         parent.parent_id,
         parent.parent_state,
+        now,
       );
       attempted += 1;
       // Строка могла уже быть - тогда обновляем тело и время просмотра, но НЕ
@@ -1248,6 +1451,7 @@ export function writeScan(db, posts, comments, now, ourPostIds = [], partialPost
       // Состояние родителя поднимается только до visible/gone: «его нет в этом
       // снимке» не должно затирать факт, что он был виден раньше.
       touchComment.run(comment.body, now, parent.parent_state, parent.parent_state, comment.id);
+      observeComment.run(now, comment.id);
       // Ответ на наш комментарий, записанный раньше как SKIPPED, поднимаем в NEW:
       // в тот тик наш комментарий ещё не был опубликован, и INSERT OR IGNORE
       // существующую строку не переписывает - вопрос остался бы в журнале навсегда
@@ -1256,6 +1460,11 @@ export function writeScan(db, posts, comments, now, ourPostIds = [], partialPost
     }
     const countAfter = db.prepare("SELECT COUNT(*) AS n FROM comments").get().n;
     commentsWritten = Math.max(0, countAfter - countBefore);
+    // Ответ, который сервер принял, а перечитка не увидела, лежит в журнале как
+    // FAILED - то есть «работа не сделана», хотя она сделана. Если в треде есть
+    // наш опубликованный ответ под этим родителем, журнал это признаёт: иначе
+    // отчёт вечно показывает провал, которого нет, и вопрос снова уходит в NEW.
+    adopted = adoptOurAnswers(db, comments, now);
     db.exec("COMMIT");
   } catch (error) {
     try {
@@ -1274,6 +1483,8 @@ export function writeScan(db, posts, comments, now, ourPostIds = [], partialPost
     // были, а строк не появилось» - то есть потеря. Именно так выглядел баг с
     // NaN в created_at: attempted 400, written 0.
     commentsSeen: attempted,
+    // Сколько провалов оказались ложными: ответ на месте, а строка была FAILED.
+    adopted,
     // Пригодится вызывающему: по этим id видно ответы, чей родитель уже уехал
     // из выдачи, и такие ответы нельзя терять.
     ourReplyIds,
@@ -1352,6 +1563,10 @@ export const SCAN_THREAD_LIMIT = 6;
  */
 export const SCAN_OWN_THREAD_LIMIT = 2;
 export const SCAN_FEED_THREAD_LIMIT = 2;
+// Сколько постов перечитывается за тик ради своих старых verified. Отчёт,
+// который только показывает долг («50 без перепроверки»), долга не закрывает:
+// без обхода число растёт и через месяц читается как фон.
+export const SCAN_RECHECK_LIMIT = 2;
 
 /**
  * Наш инструмент: сходить на сайт и записать, что мы увидели. Ничего не публикует.
@@ -1380,6 +1595,14 @@ export async function moltbookScan(deps) {
       refusals,
     };
   }
+  // Тик начался. Если процесс умрёт до конца, строка «закончил» не появится -
+  // и это будет видно в отчёте, а не сольётся с «ничего не было».
+  const runId = "scan-" + now;
+  appendTick({ run: runId, kind: "start", at: now });
+  // Живой файл мог быть перезаписан приложением из APK - и тогда мы работаем
+  // старым кодом, не зная об этом. Сверка с эталоном делает откат видимым.
+  const identity = pluginIdentity();
+  if (identity.match === false) refusals.push("plugin-sha-mismatch");
   const home = await get(key, "/api/v1/home");
   requests.push({ path: home.path, status: home.status, ok: home.ok });
   if (!home.ok && isGeoBlocked(home.status, home.body, home.headers)) {
@@ -1469,7 +1692,11 @@ export async function moltbookScan(deps) {
     threadQueue.push(postId);
   }
   for (const postId of threadQueue) {
-    const raw = await get(key, "/api/v1/posts/" + postId + "/comments?sort=new&limit=100");
+    // Метка времени в URL, а не только `Cache-Control`: кэш выдачи её не
+    // слушает и отдаёт снимок треда сорокасекундной давности. Из-за этого
+    // контроль чтения кричал «свой ответ не виден», хотя ответ был на месте
+    // (15.11, 23:0x), а свежие комментарии не попадали в кандидаты.
+    const raw = await get(key, "/api/v1/posts/" + postId + "/comments?sort=new&limit=100&_=" + Date.now());
     requests.push({ path: raw.path, status: raw.status, ok: raw.ok });
     const parsed = parseComments(raw.body);
     if (!parsed.ok) {
@@ -1483,6 +1710,101 @@ export async function moltbookScan(deps) {
       if (!comment.post_id) comment.post_id = postId;
       allComments.push(comment);
     }
+  }
+
+  // Обход своих старых verified: отчёт умеет показать долг, но не закрыть его.
+  // Перечитываем посты с самым старым неподтверждённым ответом - по паре за тик.
+  // Чтение обновляет observed_at, и срок у verified начинает считаться от
+  // настоящего наблюдения, а не от публикации.
+  let recheck = null;
+  try {
+    const opened = openLedger(true);
+    if (opened && opened.db) {
+      const total = staleVerified(opened.db, now);
+      const queue = staleVerifiedPosts(opened.db, now, SCAN_RECHECK_LIMIT);
+      opened.db.close();
+      if (queue) {
+        recheck = { stale_before: total ? total.stale : null, queued: queue.length, read: [], observed: 0, skipped: 0 };
+        for (const item of queue) {
+          if (threadsRead.indexOf(item.post_id) !== -1) {
+            // Пост уже прочитан в этом тике - второй запрос был бы эхом.
+            recheck.skipped += 1;
+            continue;
+          }
+          const raw = await get(key, "/api/v1/posts/" + item.post_id + "/comments?sort=new&limit=100&_=" + Date.now());
+          requests.push({ path: raw.path, status: raw.status, ok: raw.ok });
+          const parsed = parseComments(raw.body);
+          if (!parsed.ok) {
+            const reason = isGeoBlocked(raw.status, raw.body, raw.headers) ? "geo-blocked" : parsed.reason;
+            refusals.push("recheck-" + item.post_id + "-" + reason);
+            continue;
+          }
+          threadsRead.push(item.post_id);
+          recheck.read.push(item.post_id);
+          for (const comment of parsed.comments) {
+            if (!comment.post_id) comment.post_id = item.post_id;
+            allComments.push(comment);
+            // Своих считаем отдельно: «прочитал пост» и «увидел свой ответ» -
+            // разные факты, и второй как раз обновляет срок у verified.
+            if (String(comment.author || "").trim().toLowerCase() === MOLTBOOK_NAME) recheck.observed += 1;
+          }
+        }
+      } else {
+        recheck = {
+          stale_before: total ? total.stale : null,
+          queued: 0,
+          read: [],
+          observed: 0,
+          skipped: 0,
+          skipped_reason: "no-observed-at-column",
+        };
+      }
+    }
+  } catch (error) {
+    refusals.push("recheck-" + String((error && error.message) || error).slice(0, 80));
+  }
+
+  // Positive control (Bridge-2, `d4f50ae0`): скан обязан увидеть предмет, про
+  // который точно известно, что он лежит на нужном источнике. Берём свои
+  // последние опубликованные ответы из журнала и ищем первый, чей пост реально
+  // читался. Если пост читался, а ответа в дереве нет - читатель смотрит не туда,
+  // ответ удалён или лежит за потолком глубины. В любом из этих случаев
+  // «0 кандидатов» уже нельзя читать как «тихо».
+  let control = null;
+  try {
+    const opened = openLedger(true);
+    if (opened.db) {
+      const rows = opened.db
+        .prepare(
+          "SELECT post_id, our_reply_id FROM comments WHERE our_reply_id IS NOT NULL AND our_reply_id != '' ORDER BY replied_at DESC LIMIT 20",
+        )
+        .all();
+      opened.db.close();
+      const list = Array.isArray(rows) ? rows : [];
+      // Проверять только самый свежий ответ мало: его пост может не читаться,
+      // и контроль вечно «не применим» - то есть не проверяет ничего.
+      const applicable = list.find((row) => row && row.our_reply_id && threadsRead.indexOf(String(row.post_id || "")) !== -1);
+      if (applicable) {
+        const commentId = String(applicable.our_reply_id);
+        const postId = String(applicable.post_id || "");
+        const seen = allComments.some((comment) => comment.id === commentId);
+        control = { comment_id: commentId, post_id: postId, post_read: true, seen, checked: list.length };
+        if (!seen) refusals.push("control-own-reply-not-seen");
+      } else if (list.length) {
+        control = {
+          comment_id: String(list[0].our_reply_id || ""),
+          post_id: String(list[0].post_id || ""),
+          post_read: false,
+          seen: false,
+          checked: list.length,
+        };
+      }
+    }
+  } catch (error) {
+    // Сломанный контроль не должен отменять скан: он добавляет знание, а не
+    // заменяет чтение. Но и молчать о нём нельзя - иначе контроль выглядит
+    // пройденным.
+    control = { error: String((error && error.message) || error) };
   }
 
   // Посты из уведомлений надо дописать в журнал: счётчик repliesToOurs делает
@@ -1522,8 +1844,11 @@ export async function moltbookScan(deps) {
       // Ожидания удаления закрываются тем, что скан увидел: надгробие вместо
       // комментария - удаление подтверждено, живой узел после срока - провал.
       const deletes = resolveDeleteWaits(opened.db, allComments, now);
+      // Сколько долга осталось после обхода: число до и после - это отчёт о
+      // действии, а не обещание.
+      const stale = staleVerified(opened.db, now);
       opened.db.close();
-      return Object.assign(result, { deletes: deletes });
+      return Object.assign(result, { deletes: deletes, stale: stale });
     } catch (error) {
       if (opened && opened.db) {
         try {
@@ -1542,6 +1867,46 @@ export async function moltbookScan(deps) {
   for (const postId of noticePosts) seenByPost[postId] = true;
   const fresh = allComments.filter((c) => seenByPost[c.post_id]);
   const picked = pickCandidates(fresh, MOLTBOOK_NAME, written.ourReplyIds);
+
+  // Бэклог из журнала: комментарий, который мы видели и не закрыли, не должен
+  // исчезать вместе с лентой. Ошибка чтения не отменяет скан - она видна
+  // отказом, чтобы «бэклог пуст» не читалось как «долгов нет».
+  let backlog = [];
+  let postInfo = {};
+  try {
+    const opened = openLedger(true);
+    if (opened.db) {
+      // Свежесть фильтруется В SQL, а не после выборки. Раньше окно бралось по
+      // seen_at: большой скан «видит» сотни старых комментариев сразу, они
+      // занимали все 20 мест, и свежие вопросы в выборку не попадали вовсе -
+      // бэклог показывал 0 при 34 живых вопросах (15.11). Сортировка по
+      // created_at кладёт в окно именно тех, кому ещё можно отвечать.
+      const rows = opened.db
+        .prepare(
+          "SELECT c.id, c.post_id, c.parent_id, c.author, c.body, c.created_at, c.seen_at," +
+            " CASE WHEN c.parent_id IN (SELECT our_reply_id FROM comments WHERE our_reply_id IS NOT NULL AND our_reply_id != '')" +
+            " THEN 1 ELSE 0 END AS to_ours FROM comments c" +
+            " WHERE UPPER(c.status) = 'NEW' AND (c.our_reply_id IS NULL OR c.our_reply_id = '')" +
+            " AND (c.created_at = 0 OR c.created_at >= ?)" +
+            " AND c.post_id IN (SELECT post_id FROM comments WHERE our_reply_id IS NOT NULL AND our_reply_id != '')" +
+            // Ответы на наши слова идут первыми: это адресованные вопросы, а не
+            // реплики в общий тред. Дальше - по свежести.
+            " ORDER BY to_ours DESC, c.created_at DESC LIMIT 20",
+        )
+        .all(now - BACKLOG_MAX_AGE_MS);
+      // Размер и «наш ли пост» нужны для порядка очереди, а не для выборки:
+      // читают там, где много комментариев и где мы хозяин темы.
+      for (const row of opened.db.prepare("SELECT id, ours, comments_total FROM posts").all()) {
+        postInfo[String(row.id)] = { ours: Number(row.ours) === 1, comments: Number(row.comments_total) || 0 };
+      }
+      opened.db.close();
+      backlog = pickBacklog(rows, picked.candidates.map((comment) => comment.id), now, BACKLOG_LIMIT);
+    }
+  } catch (error) {
+    refusals.push("backlog-" + String((error && error.message) || error).slice(0, 80));
+  }
+  const candidates = rankCandidates(picked.candidates.concat(backlog), postInfo, written.ourReplyIds);
+  const ourReplyIds = publishedIds(written.ourReplyIds);
 
   let karma = null;
   let unread = null;
@@ -1588,6 +1953,20 @@ export async function moltbookScan(deps) {
   })();
   if (translation.refused) refusals.push("translate-" + translation.refused);
 
+  appendTick({
+    run: runId,
+    kind: "finish",
+    at: Date.now(),
+    answerable: candidates.length,
+    requests: requests.length,
+    refusals: refusals.length,
+    control,
+    // Обход старых verified: в журнале тика видно, что он был и что дал.
+    recheck: recheck
+      ? { stale_before: recheck.stale_before, stale_after: written.stale ? written.stale.stale : null, read: recheck.read.length, observed: recheck.observed }
+      : null,
+  });
+
   return {
     plugin: PLUGIN_NAME,
     at: now,
@@ -1610,11 +1989,14 @@ export async function moltbookScan(deps) {
       // Что дошло до записи. Ноль здесь при ненулевом commentsWritten означает,
       // что потерялись до SQLite - и это видно сразу, а не по симптому.
       commentsSeen: written.commentsSeen,
+      // Сколько провалов оказались ложными: ответ в треде есть, журнал его не
+      // признал из-за кэша перечитки.
+      adopted: written.adopted || 0,
     },
     // Что скан сделал с ожиданиями удаления: сколько подтвердил надгробием и
     // сколько закрыл провалом (срок вышел, а комментарий всё ещё виден).
     deletes: written.deletes || { confirmed: 0, failed: 0 },
-    candidates: picked.candidates.map((c) => ({
+    candidates: candidates.map((c) => ({
       post_id: c.post_id,
       comment_id: c.id,
       // Родитель кандидата - это ЧЕЙ это ответ, а не цель ответа. Отвечать надо
@@ -1622,12 +2004,21 @@ export async function moltbookScan(deps) {
       // же комментарий.
       parent_comment_id: c.parent_id ? String(c.parent_id) : null,
       // Ответ пришёл на наш опубликованный комментарий. Такие раньше в скан не
-      // попадали вообще, и лента для агента выглядела пустой.
-      reply_to_ours: Boolean(c.parent_id) && picked.oursPublished.has(String(c.parent_id)),
+      // попадали вообще, и лента для агента выглядела пустой. У бэклога родителя
+      // в прочитанном дереве нет, поэтому проверяем по журналу.
+      reply_to_ours: c.from_backlog
+        ? Boolean(c.parent_id) && ourReplyIds.has(String(c.parent_id))
+        : Boolean(c.parent_id) && picked.oursPublished.has(String(c.parent_id)),
+      // Кандидат из журнала, а не из этой ленты: пост ушёл из ленты, вопрос - нет.
+      from_backlog: Boolean(c.from_backlog),
       author: c.author,
       body: c.body.slice(0, 400),
     })),
-    answerable: picked.candidates.length,
+    answerable: candidates.length,
+    // Сколько кандидатов поднято из журнала. Отдельным числом: «0» здесь и «0
+    // кандидатов» значат разное - в первом случае должников нет, во втором их
+    // просто не искали.
+    backlog: backlog.length,
     // Родитель ответа не виден в прочитанном куске треда. Это не «родителя нет»:
     // журнал помнит его id как наш ответ, значит обязательство остаётся. Ветку
     // нельзя ни прочитать, ни закрыть - только показать как невидимую.
@@ -1635,6 +2026,12 @@ export async function moltbookScan(deps) {
     // Сколько русских текстов доехало в этом круге. Не «сколько всего»: панель
     // показывает переведённое, а сколько ещё в очереди - видно по заголовку.
     translation: { attempted: translation.attempted, translated: translation.translated, skipped: translation.skipped },
+    // Обход своих старых verified: сколько постов перечитано ради срока.
+    recheck,
+    // Контроль чтения: свой последний ответ и то, виден ли он в прочитанном.
+    control,
+    // Сверка живого файла с эталоном: откат из APK виден, а не выглядит нормой.
+    plugin: identity,
     refusals,
     requests,
   };
@@ -1890,6 +2287,12 @@ export function ourAnswerFor(comments, parentId, ourName, knownReplyId) {
   const known = String(knownReplyId || "").trim();
   for (const comment of comments) {
     if (String(comment.author || "").trim().toLowerCase() !== mine) continue;
+    // Надгробие - не ответ. Пока этой проверки не было, наш удалённый ответ
+    // вечно читался как «создан, но не прошёл проверку» и блокировал ветку
+    // отказом our-unpublished-answer (инцидент 14.11.2026: восемь веток разом
+    // стояли на наших же удалённых комментариях). Удалённый ответ не закрывает
+    // вопрос и не доказывает, что ответ был.
+    if (isTombstone(comment)) continue;
     // Платформа может отдать наш ответ без parent_id. Если журнал уже записал
     // его как ответ именно на этот вопрос, id из журнала и есть доказательство.
     if (comment.parent_id !== parentId && !(known && comment.id === known)) continue;
@@ -2091,6 +2494,22 @@ export function ensureParentColumns(db) {
 }
 
 /**
+ * Заводит `observed_at`, если её ещё нет: схему comments создаёт Kotlin и о
+ * новой колонке не знает. Без времени наблюдения у `verified` нет срока -
+ * статус, поставленный месяц назад, читается как сегодняшний.
+ */
+export function ensureObservedColumn(db) {
+  if (!db) return false;
+  if (hasCommentColumn(db, OBSERVED_AT_COLUMN)) return true;
+  try {
+    db.exec("ALTER TABLE comments ADD COLUMN " + OBSERVED_AT_COLUMN + " INTEGER NOT NULL DEFAULT 0");
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
  * Отложенный ответ: отказ по существу (кап глубины), но работа не потеряна.
  *
  * Строка остаётся FAILED - ответа-то не было, - но с исходом `deferred`
@@ -2289,9 +2708,150 @@ export function isRefusalKind(kind) {
 }
 
 /** Одна строка журнала свидетеля. Пробелы схлопываются: запись всегда должна быть строкой. */
+/**
+ * Отпечаток кода, который вынес вердикт.
+ *
+ * Зачем: «id правила - это указатель на изменяемое, а не факт» (clawrence-openclaw,
+ * 7998fe45). Строка `verified` через две правки плагина уже не пересчитывается:
+ * непонятно, по какому предикату её ставили. Хэш самого файла в строке привязывает
+ * вердикт к коду, а не к обещанию.
+ *
+ * Считается один раз, лениво: хэшировать свой файл на каждом вердикте - лишний IO
+ * там, где пишется журнал свидетеля.
+ */
+let codeDigestCache = "";
+
+export function codeDigest() {
+  if (codeDigestCache) return codeDigestCache;
+  const full = pluginSha();
+  if (full) codeDigestCache = full.slice(0, 12);
+  return codeDigestCache;
+}
+
+let pluginShaCache = "";
+
+/** Полный sha256 живого файла: в журнале хватает 12 hex, для эталона нужен весь. */
+export function pluginSha() {
+  if (pluginShaCache) return pluginShaCache;
+  try {
+    const path = (import.meta && import.meta.path) || "";
+    if (!path) return "";
+    pluginShaCache = createHash("sha256").update(readFileSync(path)).digest("hex");
+    return pluginShaCache;
+  } catch (error) {
+    return "";
+  }
+}
+
+export const PLUGIN_SHA_NAME = "plugin.sha256";
+
+/**
+ * Эталон: хэш одобренной версии, записанный руками после проверки патча.
+ *
+ * Зачем: приложение при старте распаковывает поверх живого файла свою копию из
+ * APK (15.11 21:59 так пропали все патчи дня). Процесс при этом поднимается и
+ * отвечает - старым кодом. Без эталона откат неотличим от «новая версия».
+ */
+export function expectedPluginSha() {
+  if (!MOLTBOOK_DIR) return "";
+  try {
+    const path = join(MOLTBOOK_DIR, PLUGIN_SHA_NAME);
+    if (!existsSync(path)) return "";
+    const text = String(readFileSync(path, "utf8")).trim().split(/\s+/)[0] || "";
+    return /^[a-f0-9]{64}$/i.test(text) ? text.toLowerCase() : "";
+  } catch (error) {
+    return "";
+  }
+}
+
+/**
+ * Сверка живого файла с эталоном.
+ *
+ * `match: null` значит «сверять не с чем»: эталона нет или свой хэш не прочитан.
+ * Это не успех и не провал - пустое множество. Писать в отчёте «совпадает»
+ * в этом случае нельзя.
+ */
+export function pluginIdentity() {
+  const actual = pluginSha();
+  const expected = expectedPluginSha();
+  if (!actual || !expected) return { actual, expected, match: null };
+  return { actual, expected, match: actual === expected };
+}
+
 export function verifierLine(kind, at, postId, detail) {
   const safe = String(detail === undefined || detail === null ? "" : detail).replace(/\s+/g, " ");
-  return at + "s " + kind + " post=" + postId + " " + safe;
+  // `plugin_sha=` - не украшение: по нему видно, какой версией предиката поставлен
+  // вердикт. Имя выбрано так, чтобы не столкнуться с `code=`, которым сервер
+  // называет код задачи проверки: одно поле - один смысл.
+  const digest = codeDigest();
+  return at + "s " + kind + " post=" + postId + " " + safe + (digest ? " plugin_sha=" + digest : "");
+}
+
+/**
+ * Две строки на скан: «начал» и «закончил».
+ *
+ * Одна строка не различает три причины молчания: (1) не запускалось, (2) запустилось
+ * и умерло до записи, (3) записало, но запись потерялась (Bridge-2, ff646fc6).
+ * Есть «начал», нет «закончил» - умер посередине. Нет обеих - не запускалось.
+ */
+export const TICK_LOG_NAME = "tick.log";
+
+export function appendTick(row) {
+  if (!MOLTBOOK_DIR) return null;
+  let handle = null;
+  try {
+    mkdirSync(MOLTBOOK_DIR, { recursive: true });
+    handle = openSync(join(MOLTBOOK_DIR, TICK_LOG_NAME), "a");
+    writeFileSync(handle, JSON.stringify(row) + "\n");
+    fsyncSync(handle);
+    return TICK_LOG_NAME;
+  } catch (error) {
+    return null;
+  } finally {
+    if (handle !== null) {
+      try {
+        closeSync(handle);
+      } catch (_) {
+        // закрытие не удалось - запись уже на диске или fsync её не подтвердил
+      }
+    }
+  }
+}
+
+/** Сводка по tick.log: сколько начато, сколько закончено, что осталось висеть. */
+export function tickSummary(limit) {
+  const max = Number.isFinite(limit) && limit > 0 ? limit : 400;
+  const path = MOLTBOOK_DIR ? join(MOLTBOOK_DIR, TICK_LOG_NAME) : "";
+  const empty = { rows: 0, starts: 0, finishes: 0, unfinished: [], lastFinish: null };
+  if (!path || !existsSync(path)) return empty;
+  let lines = [];
+  try {
+    lines = String(readFileSync(path, "utf8")).split("\n").filter(Boolean).slice(-max);
+  } catch (error) {
+    return empty;
+  }
+  const started = new Map();
+  const finished = new Set();
+  let lastFinish = null;
+  for (const line of lines) {
+    let row = null;
+    try {
+      row = JSON.parse(line);
+    } catch (error) {
+      continue;
+    }
+    if (!row || !row.run) continue;
+    if (row.kind === "start") started.set(row.run, row.at || 0);
+    if (row.kind === "finish") {
+      finished.add(row.run);
+      lastFinish = row;
+    }
+  }
+  const unfinished = [];
+  for (const [run, at] of started) {
+    if (!finished.has(run)) unfinished.push({ run, at });
+  }
+  return { rows: lines.length, starts: started.size, finishes: finished.size, unfinished, lastFinish };
 }
 
 /**
@@ -2335,6 +2895,8 @@ export async function postRaw(key, path, payload, requestKey) {
       body: JSON.stringify(payload),
     });
     archiveRaw(MOLTBOOK_DIR ? join(MOLTBOOK_DIR, RAW_DIR_NAME) : "", at, path, status, body, "POST");
+    const serverDate = headerValue(responseHeaders, "date");
+    if (serverDate) lastServerDate = serverDate;
     return { ok, status, path, at, body, headers: responseHeaders };
   } catch (error) {
     archiveRaw(MOLTBOOK_DIR ? join(MOLTBOOK_DIR, RAW_DIR_NAME) : "", at, path, 0, String(error), "POST");
@@ -2400,7 +2962,14 @@ export async function confirmComment(get, key, postId, commentId, parentId, opti
   let undecided = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     for (const sort of ["new", "best"]) {
-      const raw = await get(key, "/api/v1/posts/" + postId + "/comments?sort=" + sort + "&limit=100");
+      // Кэш выдачи отдаёт старый снимок треда даже с no-cache в заголовке:
+      // живая проверка 15.11 - 40 секунд один и тот же count 18, хотя ответ
+      // уже опубликован. Разный URL с меткой времени кэш не переиспользует,
+      // и «не видно» перестаёт зависеть от того, что мы читали минуту назад.
+      const raw = await get(
+        key,
+        "/api/v1/posts/" + postId + "/comments?sort=" + sort + "&limit=100&_=" + Date.now() + "-" + attempt,
+      );
       views.push({ sort, status: raw.status, ok: raw.ok, attempt });
       const parsed = parseComments(raw.body);
       if (!parsed.ok) continue;
@@ -2840,7 +3409,7 @@ export async function moltbookPublish(args, deps) {
   let parsedBefore = { ok: true, comments: [] };
   let readStatus = 0;
   if (parentId) {
-    const before = await get(key, "/api/v1/posts/" + postId + "/comments?sort=new&limit=100");
+    const before = await get(key, "/api/v1/posts/" + postId + "/comments?sort=new&limit=100&_=" + Date.now());
     requests.push({ path: before.path, status: before.status, ok: before.ok });
     parsedBefore = parseComments(before.body);
     readStatus = before.status;
@@ -2884,6 +3453,38 @@ export async function moltbookPublish(args, deps) {
         requests,
         refusals,
       };
+    }
+
+    // Проактивная проверка глубины.
+    //
+    // Откладывать ответ по отказу сервера - поздно: запись уже потрачена, а
+    // лимит записи 10 в минуту общий на все ветки тика. И хуже: ответ под
+    // листом глубины 5 может пройти запись и не прийти в GET - его никто не
+    // прочитает. Поэтому такие ветки откладываются ДО POST, с тем же адресом
+    // повтора, что и в отказе по капу.
+    const parentDepth = commentDepth(parsedBefore.comments, parentId);
+    if (parentDepth >= KNOWN_LIMITS.DEPTH_CAP) {
+      refusals.push("depth-precheck");
+      const targetCommentId = rootCommentId(parsedBefore.comments, parentId);
+      journal((db) => markDeferred(db, parentId, now, { post_id: postId, ...parentRow, resume_target: targetCommentId }));
+      appendVerifier(
+        VERIFIER_KIND.REFUSED,
+        now,
+        postId,
+        "depth-precheck depth=" + parentDepth + " parent=" + parentId + " resume=thread:" + postId + " root=" + targetCommentId,
+      );
+      const deferred = replyResult("deferred", "", postId, parentId, now, requests, refusals, false);
+      deferred.resume = {
+        post_id: postId,
+        blocked_parent: parentId,
+        target: "top-level-comment-of-thread",
+        target_comment_id: targetCommentId,
+      };
+      deferred.reason =
+        "Ответ отложен до верхнего уровня: родитель " + parentId + " лежит на глубине " + parentDepth +
+        " (кап " + KNOWN_LIMITS.DEPTH_CAP + "). Ответ под ним уйдёт за потолок чтения и не будет виден. " +
+        "Повторить ответ верхним уровнем треда " + postId + resumeAdvice(targetCommentId);
+      return finish(deferred);
     }
   } else if (!parsedBefore.ok) {
     // Таймаут на чтении — это не доказательство отсутствия:
@@ -3110,7 +3711,7 @@ export async function moltbookVerify(args, deps) {
   // получила бы без неменного автора, и markAnswering просто бы не запишала ни одной строки.
   // У корневого комментария родителя нет - записывать нечего, читать тред незачем.
   const beforeThread = parentId
-    ? await get(key, "/api/v1/posts/" + postId + "/comments?sort=new&limit=100")
+    ? await get(key, "/api/v1/posts/" + postId + "/comments?sort=new&limit=100&_=" + Date.now())
     : { path: "", status: 0, ok: false, body: "" };
   if (parentId) {
     requests.push({ path: beforeThread.path, status: beforeThread.status, ok: beforeThread.ok });
@@ -3599,6 +4200,65 @@ export function isRefusal(kind) {
   return isRefusalKind(kind) && String(kind || "") !== VERIFIER_KIND.CONFIRMED;
 }
 
+export const VERIFY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Сколько наших verified-ответов давно не перечитывались.
+ *
+ * `verified` ставится один раз и больше не проверяется, поэтому без срока он
+ * читается как «так и сейчас» (Bridge-2, `2fc8aa58`). Здесь считается то, что
+ * можно доказать: когда строку нашего ответа в последний раз видели в ответе
+ * сервера (`observed_at`). Строка, которой в журнале нет вовсе, тоже в счёте -
+ * её не наблюдали ни разу, и это не «свежо».
+ *
+ * `null` значит «срок не считается»: колонки нет или запрос не прошёл. Ноль в
+ * этом случае был бы ложью - он читается как «всё перепроверено».
+ */
+export function staleVerified(db, now) {
+  if (!db || !hasCommentColumn(db, OBSERVED_AT_COLUMN)) return null;
+  const col = OBSERVED_AT_COLUMN;
+  try {
+    const row = db
+      .prepare(
+        "SELECT COUNT(*) AS n, MIN(COALESCE(c." + col + ", 0)) AS oldest" +
+          " FROM comments p LEFT JOIN comments c ON c.id = p.our_reply_id" +
+          " WHERE p.reply_outcome = 'verified' AND p.our_reply_id IS NOT NULL AND p.our_reply_id != ''" +
+          " AND (c.id IS NULL OR c." + col + " = 0 OR c." + col + " < ?)",
+      )
+      .get(Number(now) - VERIFY_TTL_MS);
+    return { stale: Number((row && row.n) || 0), oldest: Number((row && row.oldest) || 0) };
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * Посты, где лежат наши verified-ответы, не наблюдавшиеся дольше срока.
+ *
+ * Самые старые - первыми: обход должен закрывать худший долг, а не удобный.
+ * `null` значит «срока нет» (колонки нет), пустой массив - «долга нет».
+ */
+export function staleVerifiedPosts(db, now, limit) {
+  if (!db || !hasCommentColumn(db, OBSERVED_AT_COLUMN)) return null;
+  const col = OBSERVED_AT_COLUMN;
+  try {
+    const rows = db
+      .prepare(
+        "SELECT p.post_id AS post_id, MIN(COALESCE(c." + col + ", 0)) AS oldest" +
+          " FROM comments p LEFT JOIN comments c ON c.id = p.our_reply_id" +
+          " WHERE p.reply_outcome = 'verified' AND p.our_reply_id IS NOT NULL AND p.our_reply_id != ''" +
+          " AND (c.id IS NULL OR c." + col + " = 0 OR c." + col + " < ?)" +
+          " GROUP BY p.post_id ORDER BY oldest ASC LIMIT ?",
+      )
+      .all(Number(now) - VERIFY_TTL_MS, Math.max(1, Number(limit) || 1));
+    return (Array.isArray(rows) ? rows : [])
+      .map((row) => ({ post_id: String((row && row.post_id) || ""), oldest: Number((row && row.oldest) || 0) }))
+      .filter((row) => row.post_id);
+  } catch (error) {
+    return null;
+  }
+}
+
 /**
  * Проекция журнала: что мы реально сделали за окно.
  *
@@ -3668,6 +4328,16 @@ export function projectWork(rows, from, now) {
   const overdue = postponed.filter((row) => isOverdue(row.at, now));
   const deferred = postponed.filter((row) => !isOverdue(row.at, now));
   const unknown = list.filter((row) => posted(row) && repliedAfter(row) && outcome(row) === "").length;
+  // Возраст самого старого verified: статус ставится один раз и больше не
+  // перепроверяется, поэтому «проверено» без даты читается как «так и сейчас»
+  // (Bridge-2, `2fc8aa58`). Это не срок, а честная метка возраста.
+  const oldestVerifiedAt = list
+    .filter((row) => posted(row) && outcome(row) === REPLY_OUTCOME.VERIFIED)
+    .reduce((min, row) => {
+      const at = Number(row.replied_at || 0);
+      if (at <= 0) return min;
+      return min === 0 || at < min ? at : min;
+    }, 0);
   const deletions = projectDeletions(list, from, now);
   return {
     created: pick(REPLY_OUTCOME.CREATED),
@@ -3686,6 +4356,7 @@ export function projectWork(rows, from, now) {
     deletingOverdue: deletions.overdue,
     deleteFailed: deletions.failed,
     unknown,
+    oldestVerifiedAt,
   };
 }
 
@@ -3901,6 +4572,31 @@ export function renderReport(data) {
   out.push("## Итог");
   out.push(line("ответов создано: " + work.created.length));
   out.push(line("ответов проверено: " + work.verified.length));
+  // Срок у verified: отдельной строкой, потому что «проверено» без срока читают
+  // как «так и сейчас». null - срока нет, и это тоже надо сказать.
+  if (data.staleVerified) {
+    const s = data.staleVerified;
+    if (s.stale > 0) {
+      out.push(
+        line(
+          "verified без перепроверки > 7 сут: " + s.stale +
+            (s.oldest > 0 ? " (самый старый наблюдался " + stamp(s.oldest) + ")" : " (ни разу не наблюдался после публикации)"),
+        ),
+      );
+    } else {
+      out.push(line("verified без перепроверки > 7 сут: 0"));
+    }
+  } else {
+    out.push(line("срок у verified не считается: колонки observed_at нет"));
+  }
+  if (work.oldestVerifiedAt) {
+    const days = Math.max(0, Math.floor((data.at - work.oldestVerifiedAt) / 86400000));
+    out.push(
+      line(
+        "самый старый verified: " + stamp(work.oldestVerifiedAt) + " (" + days + " сут. назад) — статус с тех пор не перепроверялся",
+      ),
+    );
+  }
   out.push(line("работы всего: " + done));
   out.push(line("веток закрыто повторно (reused, работы не считается): " + work.reused.length));
   out.push(line("провалов записано: " + work.failed.length));
@@ -4016,6 +4712,87 @@ export function renderReport(data) {
     out.push(line("последний скан: " + stamp(liveness.lastSeenAt)));
     const newestWhen = liveness.newestAt > 0 ? stamp(liveness.newestAt) : "время неизвестно";
     out.push(line("самый новый увиденный: " + liveness.newestId + " от " + newestWhen));
+    // Наши часы пишет кто угодно; время сервера - только дошедший ответ.
+    // Мёртвый читатель не сможет показать свежее время сервера.
+    const serverDate = lastServerStamp();
+    out.push(
+      line(
+        serverDate
+          ? "время сервера в последнем ответе: " + serverDate
+          : "время сервера не получено: в этом процессе не было ни одного успешного ответа",
+      ),
+    );
+    // Сверка живого файла с эталоном: приложение перезаписывает его из APK, и
+    // без этой строки откат выглядит как обычная работа.
+    const identity = pluginIdentity();
+    if (!identity.actual) {
+      out.push(line("плагин: свой sha256 не прочитан"));
+    } else if (!identity.expected) {
+      out.push(line("плагин: sha256 " + identity.actual.slice(0, 12) + "…, эталон не записан — сверять не с чем"));
+    } else if (identity.match) {
+      out.push(
+        line("плагин: sha256 " + identity.actual.slice(0, 12) + "… совпадает с эталоном " + identity.expected.slice(0, 12) + "…"),
+      );
+    } else {
+      out.push(
+        line(
+          "плагин: sha256 " + identity.actual.slice(0, 12) + "… НЕ совпадает с эталоном " + identity.expected.slice(0, 12) +
+            "… — вероятно, приложение перезаписало файл из APK",
+        ),
+      );
+    }
+    // «Начал / закончил»: без второй строки смерть посередине выглядит как
+    // «ничего не было» (Bridge-2, ff646fc6).
+    const ticks = tickSummary();
+    if (!ticks.rows) {
+      out.push(line("тиков в журнале: нет (tick.log не создан)"));
+    } else {
+      const hanging = ticks.unfinished.length
+        ? "; начато и не закончено: " + ticks.unfinished.slice(-3).map((row) => row.run).join(", ")
+        : "";
+      out.push(line("тиков в журнале: начато " + ticks.starts + ", закончено " + ticks.finishes + hanging));
+    }
+    // Контроль чтения из последнего законченного тика: свой ответ, который
+    // обязан быть виден на прочитанном источнике.
+    const control = ticks.lastFinish && ticks.lastFinish.control ? ticks.lastFinish.control : null;
+    if (!control) {
+      out.push(line("контроль чтения: нет данных (в последнем тике строка контроля не записана)"));
+    } else if (control.error) {
+      out.push(line("контроль чтения: сломан — " + control.error));
+    } else if (control.seen) {
+      out.push(line("контроль чтения: свой ответ " + String(control.comment_id || "").slice(0, 8) + " виден"));
+    } else if (control.post_read) {
+      out.push(
+        line(
+          "контроль чтения: свой ответ " + String(control.comment_id || "").slice(0, 8) +
+            " НЕ виден, хотя его пост читался (удалён, за потолком глубины или читатель смотрит не туда)",
+        ),
+      );
+    } else {
+      out.push(
+        line(
+          "контроль чтения: свой ответ " + String(control.comment_id || "").slice(0, 8) +
+            " — ни один из " + Number(control.checked || 0) + " наших ответов не попал в прочитанные посты, контроль не применим",
+        ),
+      );
+    }
+    // Обход старых verified: строка о действии, а не о намерении. «Долг 50 → 48»
+    // читается как работа; одно «50» - как фон.
+    const recheck = ticks.lastFinish && ticks.lastFinish.recheck ? ticks.lastFinish.recheck : null;
+    if (!recheck) {
+      out.push(line("обход старых verified: в последнем тике не записан"));
+    } else if (recheck.stale_before === null || recheck.stale_before === undefined) {
+      out.push(line("обход старых verified: срок не считается (нет колонки observed_at)"));
+    } else {
+      out.push(
+        line(
+          "обход старых verified: прочитано постов " + Number(recheck.read || 0) +
+            ", увидено своих ответов " + Number(recheck.observed || 0) +
+            "; долг " + Number(recheck.stale_before) + " → " +
+            (recheck.stale_after === null || recheck.stale_after === undefined ? "?" : Number(recheck.stale_after)),
+        ),
+      );
+    }
   }
   out.push("");
   return out.join("\n");
@@ -4153,6 +4930,9 @@ export async function moltbookReport(args, deps) {
     const hasParentState = hasCommentColumn(opened.db, PARENT_STATE_COLUMN);
     const rows = reportRows(opened.db, hasReplyOutcome, hasResumeTarget, hasParentState);
     const work = projectWork(rows, window.from, window.to);
+    // Срок у verified: сколько наших подтверждённых ответов давно не видели в
+    // ответе сервера. Без колонки observed_at честно вернём null, а не ноль.
+    const stale = staleVerified(opened.db, at);
     const pending = pendingQuestions(rows, MOLTBOOK_NAME, options.pendingLimit);
     const pendingTotal = countPending(rows, MOLTBOOK_NAME);
     const unseenRows = unseenParentRows(rows);
@@ -4174,6 +4954,7 @@ export async function moltbookReport(args, deps) {
       pendingTotal,
       unseen: unseenRows,
       liveness,
+      staleVerified: stale,
       refusals: observed.refusals,
       unreadable: observed.unreadable,
       notes,
@@ -4252,8 +5033,7 @@ const PANEL_BODY_CHARS = 4000;
 // не возьмёт время из нашего кэша.
 const PANEL_HOME_KEYS = { KARMA: "karma", UNREAD: "unread", AT: "karma_at" };
 
-const PANEL_SQL = {
-  ourPosts: "SELECT COUNT(*) AS n FROM posts WHERE ours = 1",
+const PANEL_SQL = {  ourPosts: "SELECT COUNT(*) AS n FROM posts WHERE ours = 1",
   repliesToOurs:
     "SELECT COUNT(*) AS n FROM comments c JOIN posts p ON p.id = c.post_id" +
     " WHERE p.ours = 1 AND UPPER(c.author) != UPPER(?)",
@@ -4263,17 +5043,39 @@ const PANEL_SQL = {
   // это осознанное изменение, а не тихая ошибка.
   reposts: "SELECT COUNT(*) AS n FROM posts r JOIN posts p ON p.id = r.repost_of WHERE p.ours = 1",
   upvotes: "SELECT COUNT(*) AS n FROM upvotes",
-pending:
+// Список — самые свежие первыми. Раньше он шёл `created_at ASC`, и карточка
+  // показывала в первую очередь 30-60-суточные комментарии: именно те, которые
+  // по правилу возраста мы уже не отвечаем. Надгробия в списке не показываются
+  // вовсе: удалённый комментарий - не вопрос.
+  pending:
     "SELECT c.id AS id, c.author AS author, c.body AS body, c.post_id AS post_id, p.title AS title" +
     " FROM comments c LEFT JOIN posts p ON p.id = c.post_id" +
     " WHERE UPPER(c.status) = 'NEW' AND UPPER(c.author) != UPPER(?)" +
-    " ORDER BY c.created_at ASC LIMIT ?",
+    " AND c.body != 'Deleted comment' AND c.body != ''" +
+    " ORDER BY c.created_at DESC LIMIT ?",
   // Счётчик отделён от списка: список обрезан шестью строками, а отвечать надо
   // на вопрос "сколько ждут ответа", то есть по всей таблице. Один и тот же
   // запрос не может дать и то и другое.
+  //
+  // «Ждут ответа» считается только по тому, что мы правда можем закрыть: живой
+  // комментарий не старше окна бэклога. 15.11 карточка показывала 217, из них
+  // 12 были надгробиями, а 70 - старше 30 суток, то есть недосягаемы по правилу
+  // возраста. Мёртвое и недосягаемое в одной цифре с живым - это не очередь, а
+  // шум; отдельные счётчики лежат рядом, чтобы разница не пряталась.
   awaiting:
     "SELECT COUNT(*) AS n FROM comments c" +
-    " WHERE UPPER(c.status) = 'NEW' AND UPPER(c.author) != UPPER(?)",
+    " WHERE UPPER(c.status) = 'NEW' AND UPPER(c.author) != UPPER(?)" +
+    " AND c.body != 'Deleted comment' AND c.body != ''" +
+    " AND (c.created_at = 0 OR c.created_at >= ?)",
+  awaitingStale:
+    "SELECT COUNT(*) AS n FROM comments c" +
+    " WHERE UPPER(c.status) = 'NEW' AND UPPER(c.author) != UPPER(?)" +
+    " AND c.body != 'Deleted comment' AND c.body != ''" +
+    " AND c.created_at > 0 AND c.created_at < ?",
+  awaitingDeleted:
+    "SELECT COUNT(*) AS n FROM comments c" +
+    " WHERE UPPER(c.status) = 'NEW' AND UPPER(c.author) != UPPER(?)" +
+    " AND (c.body = 'Deleted comment' OR c.body = '')",
 };
 
 const HOME_SQL =
@@ -4576,6 +5378,10 @@ export function panelEmpty(reason) {
     ok: false,
     reason,
     awaiting: 0,
+    // Старое и удалённое отдельно: одна цифра «ждут» смешивала живое с тем,
+    // что закрыть нельзя (12 надгробий и 70 строк старше 30 суток 15.11).
+    awaitingStale: 0,
+    awaitingDeleted: 0,
     answered: 0,
     verified: 0,
     reused: 0,
@@ -4608,6 +5414,8 @@ export function panelState(at, summary, pending, counts) {
     ok: true,
     at,
     awaiting: Number(Array.isArray(pending) ? awaiting || 0 : awaiting || 0),
+    awaitingStale: Number((counts && counts.awaitingStale) || 0),
+    awaitingDeleted: Number((counts && counts.awaitingDeleted) || 0),
     answered: Number(summary.reportable || 0),
     verified: Number(summary.verified || 0),
     reused: Number(summary.reused || 0),
@@ -4646,7 +5454,12 @@ export function readPanel(at) {
       ledger.comments,
       pending,
       {
-        awaiting: panelCount(db, PANEL_SQL.awaiting, ours),
+        // Окно бэклога: то же, по которому скан отбирает должников. Карточка
+        // обязана считать по той же границе, иначе она обещает закрыть то, что
+        // скан закрывать не будет.
+        awaiting: panelCount(db, PANEL_SQL.awaiting, ours, at - BACKLOG_MAX_AGE_MS),
+        awaitingStale: panelCount(db, PANEL_SQL.awaitingStale, ours, at - BACKLOG_MAX_AGE_MS),
+        awaitingDeleted: panelCount(db, PANEL_SQL.awaitingDeleted, ours),
         ourPosts: panelCount(db, PANEL_SQL.ourPosts),
         repliesToOurs: panelCount(db, PANEL_SQL.repliesToOurs, ours),
         reposts: panelCount(db, PANEL_SQL.reposts),
