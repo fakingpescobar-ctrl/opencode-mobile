@@ -6,6 +6,7 @@ import android.net.NetworkCapabilities
 import android.util.Log
 import org.json.JSONObject
 import org.opencode.mobile.BuildConfig
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
@@ -52,14 +53,13 @@ import java.util.zip.GZIPInputStream
  */
 // Функций в объекте больше стандартного порога detekt (11): транспортировка
 // tar-члена и сборка пути — разные обязанности, и склеивать их в одну длинную
-// функцию хуже, чем иметь 16 коротких. Исключение точечное, как у OpencodeRuntime.
+// функцию хуже, чем иметь 23 коротких. Исключение точечное, как у OpencodeRuntime.
 @Suppress("TooManyFunctions")
 object CoreUpdater {
     private const val TAG = "CoreUpdater"
 
     /** Официальный источник. `%2F` — слэш в имени scoped-пакета. */
-    private const val REGISTRY_LATEST =
-        "https://registry.npmjs.org/@opencode%2Fcli-linux-arm64-musl/latest"
+    private const val REGISTRY_LATEST = "https://registry.npmjs.org/@opencode%2Fcli-linux-arm64-musl/latest"
 
     private const val PREFS = "core_updater"
     private const val KEY_VERSION = "core_version"
@@ -138,7 +138,10 @@ object CoreUpdater {
      * @return true, если ядро заменено — вызывающий должен перезапустить serve.
      */
     @Suppress("ReturnCount")
-    fun checkAndApply(context: Context, force: Boolean = false): Boolean {
+    fun checkAndApply(
+        context: Context,
+        force: Boolean = false,
+    ): Boolean {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
         if (!force && now - prefs.getLong(KEY_CHECKED_AT, 0L) < CHECK_EVERY_MS) return false
@@ -164,7 +167,10 @@ object CoreUpdater {
 
     /** Самая дорогая часть: скачать, сверить подпись пакета, проверить запуск. */
     @Suppress("TooGenericExceptionCaught")
-    private fun fetchVerified(meta: Latest, incoming: File): Boolean {
+    private fun fetchVerified(
+        meta: Latest,
+        incoming: File,
+    ): Boolean {
         Log.i(TAG, "качаю ядро ${meta.version} из ${meta.tarball}")
         val shaOk = try {
             downloadMember(meta.tarball, incoming, meta.integrity)
@@ -179,7 +185,11 @@ object CoreUpdater {
 
     /** Три причины не качать вообще — до сети и до диска. */
     @Suppress("ReturnCount")
-    private fun worthInstalling(context: Context, meta: Latest, current: String): Boolean {
+    private fun worthInstalling(
+        context: Context,
+        meta: Latest,
+        current: String,
+    ): Boolean {
         if (!isNewer(meta.version, current)) return false
         if (!sameMajor(meta.version, current)) {
             Log.i(TAG, "в реестре ${meta.version}, у нас $current: мажор другой, сам не накатываю")
@@ -201,7 +211,13 @@ object CoreUpdater {
 
     /** Атомарная замена: прошлое ядро отодвигается и возвращается при неудаче. */
     @Suppress("ReturnCount")
-    private fun install(context: Context, incoming: File, dir: File, meta: Latest, previous: String): Boolean {
+    private fun install(
+        context: Context,
+        incoming: File,
+        dir: File,
+        meta: Latest,
+        previous: String,
+    ): Boolean {
         val target = File(dir, FILE_NAME)
         val backup = File(dir, "$FILE_NAME.previous")
         backup.delete()
@@ -217,29 +233,22 @@ object CoreUpdater {
             return false
         }
         backup.delete()
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putString(KEY_VERSION, meta.version)
-            .putLong(KEY_BYTES, target.length())
-            .apply()
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putString(KEY_VERSION, meta.version).putLong(KEY_BYTES, target.length()).apply()
         Log.i(TAG, "ядро обновлено: $previous → ${meta.version} (${target.length()} б)")
         return true
     }
 
     @Suppress("TooGenericExceptionCaught")
-    private fun readLatestOrNull(): Latest? = try {
-        readLatest()
-    } catch (e: Exception) {
-        Log.w(TAG, "реестр не ответил: ${e.message}")
-        null
+    private fun readLatestOrNull(): Latest? {
+        return try {
+            readLatest()
+        } catch (e: Exception) {
+            Log.w(TAG, "реестр не ответил: ${e.message}")
+            null
+        }
     }
 
-    private class Latest(
-        val version: String,
-        val tarball: String,
-        val integrity: String,
-    )
-
-    @Suppress("TooGenericExceptionCaught")
     private fun readLatest(): Latest {
         val conn = (URL(REGISTRY_LATEST).openConnection() as HttpURLConnection).apply {
             connectTimeout = CONNECT_MS
@@ -272,7 +281,11 @@ object CoreUpdater {
      * половине файла и сверка была бы бессмысленной.
      */
     @Suppress("ReturnCount")
-    private fun downloadMember(tarball: String, target: File, integrity: String): Boolean {
+    private fun downloadMember(
+        tarball: String,
+        target: File,
+        integrity: String,
+    ): Boolean {
         val conn = (URL(tarball).openConnection() as HttpURLConnection).apply {
             connectTimeout = CONNECT_MS
             readTimeout = READ_MS
@@ -295,7 +308,8 @@ object CoreUpdater {
             }
             val actual = "sha512-" + Base64.getEncoder().encodeToString(digest.digest())
             if (actual != integrity) {
-                Log.w(TAG, "integrity не сошлась: ${actual.take(PREVIEW_CHARS)}… вместо ${integrity.take(PREVIEW_CHARS)}…")
+                val shown = actual.take(PREVIEW_CHARS)
+                Log.w(TAG, "integrity не сошлась: $shown… вместо ${integrity.take(PREVIEW_CHARS)}…")
                 return false
             }
             return true
@@ -306,7 +320,10 @@ object CoreUpdater {
 
     /** tar (ustar) поверх уже распакованного потока: нужен ровно один член. */
     @Suppress("ReturnCount")
-    private fun extractMember(stream: InputStream, target: File): Boolean {
+    private fun extractMember(
+        stream: InputStream,
+        target: File,
+    ): Boolean {
         val header = ByteArray(TAR_BLOCK)
         while (true) {
             if (!readFully(stream, header)) return false
@@ -315,8 +332,7 @@ object CoreUpdater {
             val name = cString(header, TAR_NAME_OFFSET, TAR_NAME_LEN)
             val prefix = cString(header, TAR_PREFIX_OFFSET, TAR_PREFIX_LEN)
             val full = if (prefix.isEmpty()) name else "$prefix/$name"
-            val sizeField = cString(header, TAR_SIZE_OFFSET, TAR_SIZE_LEN)
-                .trim { it == ' ' || it == '\u0000' }
+            val sizeField = cString(header, TAR_SIZE_OFFSET, TAR_SIZE_LEN).trim { it == ' ' || it == '\u0000' }
             val size = if (sizeField.isEmpty()) 0L else sizeField.toLongOrNull(TAR_RADIX) ?: 0L
             val type = header[TAR_TYPE_OFFSET].toInt().toChar()
 
@@ -330,19 +346,29 @@ object CoreUpdater {
     }
 
     /** Обычный файл (а не каталог/ссылка/заголовок pax) с нужным именем. */
-    private fun isWantedMember(type: Char, fullPath: String): Boolean {
+    private fun isWantedMember(
+        type: Char,
+        fullPath: String,
+    ): Boolean {
         val regular = type == '0' || type == '\u0000'
         return regular && (fullPath == TAR_MEMBER || fullPath == "./$TAR_MEMBER")
     }
 
-    private fun cString(buf: ByteArray, offset: Int, length: Int): String {
+    private fun cString(
+        buf: ByteArray,
+        offset: Int,
+        length: Int,
+    ): String {
         var end = offset
         val limit = minOf(offset + length, buf.size)
         while (end < limit && buf[end].toInt() != 0) end++
         return String(buf, offset, end - offset, Charsets.UTF_8).trim()
     }
 
-    private fun readFully(stream: InputStream, buf: ByteArray): Boolean {
+    private fun readFully(
+        stream: InputStream,
+        buf: ByteArray,
+    ): Boolean {
         var read = 0
         while (read < buf.size) {
             val n = stream.read(buf, read, buf.size - read)
@@ -352,7 +378,11 @@ object CoreUpdater {
         return true
     }
 
-    private fun copyN(stream: InputStream, out: OutputStream, count: Long) {
+    private fun copyN(
+        stream: InputStream,
+        out: OutputStream,
+        count: Long,
+    ) {
         var left = count
         val buf = ByteArray(BUF)
         while (left > 0) {
@@ -363,7 +393,10 @@ object CoreUpdater {
         }
     }
 
-    private fun skipN(stream: InputStream, count: Long) {
+    private fun skipN(
+        stream: InputStream,
+        count: Long,
+    ) {
         var left = count
         val buf = ByteArray(BUF)
         while (left > 0) {
@@ -376,7 +409,8 @@ object CoreUpdater {
     private fun drain(stream: InputStream) {
         val buf = ByteArray(BUF)
         while (stream.read(buf) >= 0) {
-            // дочитываем, чтобы sha512 покрывал весь тарбол
+            // тело пустое намеренно: дочитываем поток, чтобы sha512 покрывал
+            // весь тарбол, а не только байты до найденного члена
         }
     }
 
@@ -386,7 +420,11 @@ object CoreUpdater {
      * что и сервер поднимется.
      */
     @Suppress("TooGenericExceptionCaught", "ReturnCount")
-    private fun smokeTest(context: Context, candidate: File, version: String): Boolean {
+    private fun smokeTest(
+        context: Context,
+        candidate: File,
+        version: String,
+    ): Boolean {
         val nativeDir = context.applicationInfo.nativeLibraryDir
         val loader = File(nativeDir, LOADER_NAME)
         if (!loader.isFile) {
@@ -413,10 +451,12 @@ object CoreUpdater {
         // Вывод читаем В ОТДЕЛЬНОМ потоке, а не readText() в этом: readText ждёт
         // EOF, а зависший кандидат EOF не даст — таймаут ниже просто не успел бы
         // сработать, и приложение повисло бы на «проверке» навсегда.
-        val collected = java.io.ByteArrayOutputStream()
+        val collected = ByteArrayOutputStream()
         val reader = Thread({
             runCatching { proc.inputStream.copyTo(collected) }
-        }, "core-smoke-reader").apply { isDaemon = true; start() }
+        }, "core-smoke-reader")
+        reader.isDaemon = true
+        reader.start()
 
         if (!proc.waitFor(SMOKE_TIMEOUT_S, TimeUnit.SECONDS)) {
             proc.destroyForcibly()
@@ -427,7 +467,8 @@ object CoreUpdater {
         reader.join(READER_JOIN_MS)
         val output = collected.toString("UTF-8").trim()
         if (proc.exitValue() != 0 || !output.contains("opencode v$version")) {
-            Log.w(TAG, "пробный запуск ответил не тем: exit=${proc.exitValue()} «${output.take(PREVIEW_OUTPUT)}»")
+            val shown = output.take(PREVIEW_OUTPUT)
+            Log.w(TAG, "пробный запуск ответил не тем: exit=${proc.exitValue()} «$shown»")
             return false
         }
         return true
@@ -441,15 +482,19 @@ object CoreUpdater {
     }
 
     /** Wi-Fi и Ethernet считаем бесплатными, всё остальное (LTE, VPN поверх LTE) — нет. */
-    private fun isUnmetered(caps: NetworkCapabilities): Boolean =
-        caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+    private fun isUnmetered(caps: NetworkCapabilities): Boolean {
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
             caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+    }
 
     /**
      * Сравнение версий по числам, а не по строкам: лексикографически `2.10.0`
      * меньше `2.9.0`, и обновление бы не поехало.
      */
-    internal fun isNewer(candidate: String, current: String): Boolean {
+    internal fun isNewer(
+        candidate: String,
+        current: String,
+    ): Boolean {
         val a = candidate.split('.')
         val b = current.split('.')
         for (i in 0 until maxOf(a.size, b.size)) {
@@ -461,6 +506,18 @@ object CoreUpdater {
     }
 
     /** 2.x накатываем на 2.x, 3.x — нет: у сервера может смениться API. */
-    internal fun sameMajor(candidate: String, current: String): Boolean =
-        candidate.substringBefore('.').toIntOrNull() == current.substringBefore('.').toIntOrNull()
+    internal fun sameMajor(
+        candidate: String,
+        current: String,
+    ): Boolean {
+        val a = candidate.substringBefore('.').toIntOrNull()
+        val b = current.substringBefore('.').toIntOrNull()
+        return a == b
+    }
+
+    private class Latest(
+        val version: String,
+        val tarball: String,
+        val integrity: String,
+    )
 }
