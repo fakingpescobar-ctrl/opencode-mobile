@@ -45,6 +45,13 @@ class MoltbookWatchdogReceiver : BroadcastReceiver() {
         intent: Intent,
     ) {
         val app = context.applicationContext
+        if (!MoltbookScheduler.isEnabled(app)) {
+            // Сторож не проверяет и не перевзводится: тишина здесь — решение
+            // юзера, а не повод для тревоги. Перевзвод в `finally` ниже тоже
+            // закрыт guard'ом в MoltbookWatchdog.schedule.
+            Log.i(TAG, "будильник тика выключен — сторож молчит")
+            return
+        }
         executor.execute {
             try {
                 runCheck(app)
