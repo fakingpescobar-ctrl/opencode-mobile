@@ -46,4 +46,29 @@ class CoreUpdaterVersionTest {
         assertFalse(CoreUpdater.sameMajor("3.0.0", "2.3.0"))
         assertTrue(CoreUpdater.sameMajor("2.4.1", "2.3.0"))
     }
+
+    /** Скачанное новее APK и не отбраковано — запускается именно оно. */
+    @Test
+    fun `новее и не отбраковано — скачанное действует`() {
+        assertTrue(CoreUpdater.isUsable("2.4.0", "2.3.0", null))
+    }
+
+    /** Отбракованное падением сервера ядро не действует, даже если оно новее. */
+    @Test
+    fun `отбракованное ядро не запускается`() {
+        assertFalse(CoreUpdater.isUsable("2.4.0", "2.3.0", "2.4.0"))
+    }
+
+    /** Отбракована другая версия — на эту запрет не распространяется. */
+    @Test
+    fun `запрет привязан к версии, а не к факту отката`() {
+        assertTrue(CoreUpdater.isUsable("2.5.0", "2.3.0", "2.4.0"))
+    }
+
+    /** Равное или старое скачанное не должно перебивать ядро из APK. */
+    @Test
+    fun `равное и старое не действуют`() {
+        assertFalse(CoreUpdater.isUsable("2.3.0", "2.3.0", null))
+        assertFalse(CoreUpdater.isUsable("2.2.9", "2.3.0", null))
+    }
 }
