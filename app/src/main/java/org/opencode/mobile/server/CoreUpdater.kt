@@ -80,6 +80,16 @@ object CoreUpdater {
     private const val KEY_ROLLED_AT = "core_rolled_back_at"
 
     /**
+     * Итог последней проверки реестра. Хранится не для красоты: без него экран
+     * мог показать только «сейчас ничего не происходит», а вопрос был «почему».
+     * Время обязательно: «не новее» без отметки читается как «так и есть
+     * сейчас», хотя проверка могла быть вчера.
+     */
+    private const val KEY_LAST_AT = "last_check_at"
+    private const val KEY_LAST_OUTCOME = "last_check_outcome"
+    private const val KEY_LAST_LATEST = "last_check_latest"
+
+    /**
      * Два падения подряд — приговор. Одного мало: первый старт после установки
      * бывает неудачным по чужим причинам (нет сети, занят порт, память не
      * успела), и откатывать по нему значило бы никогда не обновиться.
@@ -219,31 +229,142 @@ object CoreUpdater {
      * @return true, если ядро заменено — вызывающий должен перезапустить serve.
      */
     @Suppress("ReturnCount")
+    /**
+     * Почему проверка закончилась так, а не иначе.
+     *
+     * Раньше наружу отдавался Boolean, и экран вынужденно угадывал причину
+     * одной фразой на три исхода: «версия не новее, либо сеть тарифицируется,
+     * либо сверка не прошла». По такой фразе нельзя ни починить, ни успокоиться,
+     * а в логе самый частый исход («в реестре ровно наша версия») не оставлял
+     * вообще ничего — то есть проверить догадку было нечем. Теперь причина —
+     * значение: у каждого исхода своя строка и в UI, и в логе.
+     */
+    enum class Outcome {
+        APPLIED,
+        NOT_NEWER,
+        BLOCKED,
+        MAJOR,
+        METERED,
+        NOT_DUE,
+        REGISTRY,
+        DOWNLOAD,
+        SMOKE,
+        NO_DIR,
+        INSTALL,
+    }
+
+    /** Итог проверки: что решили, с чем сравнивали и когда смотрели. */
+    data class Result(
+        val outcome: Outcome,
+        val at: Long,
+        val latest: String?,
+        val current: String,
+        val apk: String,
+    ) {
+        val applied: Boolean get() = outcome == Outcome.APPLIED
+
+        /** Одна строка для экрана: причина и версии, без союза «либо». */
+        fun text(): String =
+            when (outcome) {
+                Outcome.APPLIED -> "ядро $latest скачано, сверено и поставлено"
+                Outcome.NOT_NEWER -> "в реестре $latest, работает $current — обновлять нечего"
+                Outcome.BLOCKED -> "в реестре $latest — эта версия уже отбракована падением сервера"
+                Outcome.MAJOR -> "в реестре $latest, работает $current — мажор другой, сам не накатываю"
+                Outcome.METERED -> "в реестре $latest, но сеть тарифицируется — обновлю по Wi-Fi"
+                Outcome.NOT_DUE -> "окно 6 часов не истекло — проверю сам позже"
+                Outcome.REGISTRY -> "реестр npm не ответил — сеть или блокировка"
+                Outcome.DOWNLOAD -> "ядро $latest не скачалось или не сошлось по sha512"
+                Outcome.SMOKE -> "ядро $latest не запускается — оставил $current"
+                Outcome.NO_DIR -> "нет каталога для ядра во внутренней памяти"
+                Outcome.INSTALL -> "не удалось поставить файл на место — оставил $current"
+            }
+    }
+
+    /**
+     * Итог последней проверки — как факт с временем, а не как память экрана.
+     * null означает «ещё ни разу не проверяли», и это отличается от «проверили
+     * и всё хорошо»: первое — незнание, второе — ответ.
+     */
+    @Suppress("ReturnCount")
+    fun lastCheck(context: Context): Result? {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val at = prefs.getLong(KEY_LAST_AT, 0L)
+        if (at <= 0L) return null
+        val name = prefs.getString(KEY_LAST_OUTCOME, null) ?: return null
+        val outcome = Outcome.values().firstOrNull { it.name == name } ?: return null
+        return Result(
+            outcome = outcome,
+            at = at,
+            latest = prefs.getString(KEY_LAST_LATEST, null),
+            current = effectiveVersion(context),
+            apk = BuildConfig.OPENCODE_VERSION,
+        )
+    }
+
+    /** Запоминает итог и пишет в лог одну строку — чтобы UI и лог говорили одно. */
+    private fun report(
+        context: Context,
+        result: Result,
+    ): Result {
+        Log.i(
+            TAG,
+            "проверка: ${result.outcome.name} — в реестре ${result.latest ?: "?"}, " +
+                "работает ${result.current}, в APK ${result.apk}",
+        )
+        val editor = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+        editor.putLong(KEY_LAST_AT, result.at)
+        editor.putString(KEY_LAST_OUTCOME, result.outcome.name)
+        val latest = result.latest
+        if (latest != null) editor.putString(KEY_LAST_LATEST, latest) else editor.remove(KEY_LAST_LATEST)
+        editor.apply()
+        return result
+    }
+
+    /**
+     * Спрашивает реестр и, если есть версия новее, ставит её.
+     *
+     * Возвращает не Boolean, а [Result]: «ничего не сделал» — это минимум шесть
+     * разных ответов (не новее, отбраковано, другой мажор, тарифицируемая сеть,
+     * реестр молчит, не прошла сверка). Склеивать их в `false` значит терять
+     * ровно то, что нужно человеку, который нажал кнопку.
+     */
+    @Suppress("ReturnCount")
     fun checkAndApply(
         context: Context,
         force: Boolean = false,
-    ): Boolean {
+    ): Result {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
-        if (!force && now - prefs.getLong(KEY_CHECKED_AT, 0L) < CHECK_EVERY_MS) return false
+        val current = effectiveVersion(context)
+        val apk = BuildConfig.OPENCODE_VERSION
+        if (!force && now - prefs.getLong(KEY_CHECKED_AT, 0L) < CHECK_EVERY_MS) {
+            // «Тихо» — это тоже исход, и у него есть причина: окно не истекло.
+            return Result(Outcome.NOT_DUE, now, null, current, apk)
+        }
         prefs.edit().putLong(KEY_CHECKED_AT, now).apply()
 
-        val meta = readLatestOrNull() ?: return false
-        val current = effectiveVersion(context)
-        if (!worthInstalling(context, meta, current)) return false
+        val meta = readLatestOrNull()
+            ?: return report(context, Result(Outcome.REGISTRY, now, null, current, apk))
+        val refusal = refusal(meta.version, current, prefs.getString(KEY_BLOCKED, null), isMetered(context))
+        if (refusal != null) {
+            return report(context, Result(refusal, now, meta.version, current, apk))
+        }
 
-        val dir = ensureCoreDir(context) ?: return false
+        val dir = ensureCoreDir(context)
+            ?: return report(context, Result(Outcome.NO_DIR, now, meta.version, current, apk))
         val incoming = File(dir, "$FILE_NAME.incoming").apply { delete() }
         if (!fetchVerified(meta, incoming)) {
             incoming.delete()
-            return false
+            return report(context, Result(Outcome.DOWNLOAD, now, meta.version, current, apk))
         }
         if (!smokeTest(context, incoming, meta.version)) {
-            Log.w(TAG, "ядро ${meta.version} не запускается — оставляю $current")
             incoming.delete()
-            return false
+            return report(context, Result(Outcome.SMOKE, now, meta.version, current, apk))
         }
-        return install(context, incoming, dir, meta, current)
+        if (!install(context, incoming, dir, meta, current)) {
+            return report(context, Result(Outcome.INSTALL, now, meta.version, current, apk))
+        }
+        return report(context, Result(Outcome.APPLIED, now, meta.version, meta.version, apk))
     }
 
     /** Самая дорогая часть: скачать, сверить подпись пакета, проверить запуск. */
@@ -264,28 +385,25 @@ object CoreUpdater {
         return false
     }
 
-    /** Три причины не качать вообще — до сети и до диска. */
+    /**
+     * Причина не качать вообще — до сети и до диска. `null` означает «причин
+     * нет, качаем».
+     *
+     * Вынесено в чистую функцию ради тестов: раньше это была ветка с четырьмя
+     * `return false`, и проверялась она только руками на телефоне.
+     */
     @Suppress("ReturnCount")
-    private fun worthInstalling(
-        context: Context,
-        meta: Latest,
+    internal fun refusal(
+        latest: String,
         current: String,
-    ): Boolean {
-        if (!isNewer(meta.version, current)) return false
-        val blocked = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_BLOCKED, null)
-        if (meta.version == blocked) {
-            Log.i(TAG, "ядро ${meta.version} уже отбраковано падением сервера — не ставлю")
-            return false
-        }
-        if (!sameMajor(meta.version, current)) {
-            Log.i(TAG, "в реестре ${meta.version}, у нас $current: мажор другой, сам не накатываю")
-            return false
-        }
-        if (isMetered(context)) {
-            Log.i(TAG, "ядро ${meta.version} есть, но сеть тарифицируется — обновлю позже")
-            return false
-        }
-        return true
+        blocked: String?,
+        metered: Boolean,
+    ): Outcome? {
+        if (!isNewer(latest, current)) return Outcome.NOT_NEWER
+        if (latest == blocked) return Outcome.BLOCKED
+        if (!sameMajor(latest, current)) return Outcome.MAJOR
+        if (metered) return Outcome.METERED
+        return null
     }
 
     private fun ensureCoreDir(context: Context): File? {
