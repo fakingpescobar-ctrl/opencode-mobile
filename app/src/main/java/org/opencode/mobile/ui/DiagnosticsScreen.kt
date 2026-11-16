@@ -49,6 +49,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -334,29 +335,49 @@ fun DiagnosticsScreen(
             }
     }
 
+    // Binder IPC (PackageManager/ActivityManager) — НЕ на каждом рекомпозе
+    // (serverState тикает при работе сервера): статику собираем один раз на
+    // открытие экрана. Вынесено до Surface, потому что те же цифры нужны
+    // сводке в шапке.
+    val pm = context.packageManager
+    val appInfo =
+        remember {
+            runCatching { pm.getPackageInfo(context.packageName, 0) }.getOrNull()
+        }
+    val memInfo =
+        remember {
+            ActivityManager.MemoryInfo().also {
+                val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                runCatching { am.getMemoryInfo(it) }
+            }
+        }
+
     Surface(
         modifier = modifier.fillMaxSize(),
-        color = Color(0xFF0D0D0D),
+        color = MoltCard,
     ) {
-        Column(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp)) {
-            // Шапка: заголовок + «поделиться дампом» + закрыть.
+        Column(Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 8.dp)) {
+            // Шапка: заголовок + «поделиться дампом» + закрыть. Капс и акцент —
+            // те же, что у карточки Moltbook: два экрана приложения не должны
+            // выглядеть как два разных приложения.
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    "Диагностика",
-                    color = Color.White,
-                    fontSize = 16.sp,
+                    "ДИАГНОСТИКА",
+                    color = MoltAccent,
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.5.sp,
                     modifier = Modifier.weight(1f),
                 )
                 Icon(
                     imageVector = Icons.Filled.Share,
                     contentDescription = "Поделиться диагностикой",
-                    tint = Color(0xFFBDBDBD),
+                    tint = MoltIdle,
                     modifier =
                         Modifier
                             .size(22.dp)
                             .clip(CircleShape)
-                            .background(Color(0xFF1E1E1E))
+                            .background(MoltChipOff)
                             .padding(3.dp)
                             .clickable {
                                 // Сбор дампа — не на main: prefs.getString и Binder IPC
@@ -375,12 +396,12 @@ fun DiagnosticsScreen(
                 Icon(
                     imageVector = Icons.Filled.Refresh,
                     contentDescription = "Проверить сейчас",
-                    tint = Color(0xFFBDBDBD),
+                    tint = MoltIdle,
                     modifier =
                         Modifier
                             .size(22.dp)
                             .clip(CircleShape)
-                            .background(Color(0xFF1E1E1E))
+                            .background(MoltChipOff)
                             .padding(3.dp)
                             .clickable { refreshKey++ },
                 )
@@ -388,29 +409,38 @@ fun DiagnosticsScreen(
                 Icon(
                     imageVector = Icons.Filled.Close,
                     contentDescription = "Закрыть диагностику",
-                    tint = Color(0xFFBDBDBD),
+                    tint = MoltIdle,
                     modifier =
                         Modifier
                             .size(22.dp)
                             .clip(CircleShape)
-                            .background(Color(0xFF1E1E1E))
+                            .background(MoltChipOff)
                             .padding(3.dp)
                             .clickable { onClose() },
                 )
             }
+
+            Spacer(Modifier.height(4.dp))
+            // Главная цифра экрана — как «ждут ответа» в карточке Moltbook:
+            // статус сервера крупно, остальные четыре факта одной строкой.
+            // Раньше они занимали четыре отдельные строки в секции «Сервер».
+            ServerSummary(
+                status = serverState.status,
+                port = serverState.port,
+                restarts = serverState.restartCount,
+                ramFree = memInfo.availMem,
+                sdk = Build.VERSION.SDK_INT,
+            )
 
             Column(
                 Modifier
                     .weight(1f)
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
-                    .padding(top = 6.dp),
+                    .padding(top = 2.dp),
             ) {
                 sectionHeader("Сервер opencode")
-                InfoRow("Статус", statusLabel(serverState.status), statusColor(serverState.status))
                 serverState.stage?.let { InfoRow("Стадия runtime", stageLabel(it)) }
-                InfoRow("Порт", serverState.port.toString())
-                InfoRow("Рестарты цикла", serverState.restartCount.toString())
                 InfoRow("Workspace", if (serverState.workspaceExternal) "Внешний (MANAGE_EXTERNAL_STORAGE)" else "Внутренний")
                 serverState.lastError?.let { err ->
                     val resolved = err.resolvedAt != null
@@ -563,37 +593,12 @@ fun DiagnosticsScreen(
                 }
 
                 sectionHeader("Система")
-                // Binder IPC (PackageManager/ActivityManager) — НЕ на каждом рекомпозе
-                // (serverState тикает при работе сервера): статику собираем один раз
-                // на открытие экрана.
-                val pm = context.packageManager
-                val appInfo =
-                    remember {
-                        runCatching { pm.getPackageInfo(context.packageName, 0) }.getOrNull()
-                    }
-                val memInfo =
-                    remember {
-                        ActivityManager.MemoryInfo().also {
-                            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-                            runCatching { am.getMemoryInfo(it) }
-                        }
-                    }
                 InfoRow("Приложение", "${appInfo?.versionName ?: "?"} (code ${appInfo?.longVersionCode ?: 0})")
                 // Штамп СБОРКИ, а не версия из манифеста. versionName навсегда
                 // останется 0.1.0 - он про продукт, а не про конкретный APK.
                 // «Какая сборка стоит» отвечает только этот ряд.
                 InfoRow("Сборка", buildStampLabel())
-                InfoRow("SDK / ABI", "API ${Build.VERSION.SDK_INT} / ${Build.SUPPORTED_ABIS.firstOrNull() ?: "?"}")
-                InfoRow(
-                    "RAM",
-                    if (memInfo.totalMem >
-                        0L
-                    ) {
-                        "свободно ${fmtBytes(memInfo.availMem)} / всего ${fmtBytes(memInfo.totalMem)}"
-                    } else {
-                        "недоступно"
-                    },
-                )
+                InfoRow("ABI", Build.SUPPORTED_ABIS.firstOrNull() ?: "?")
 
                 sectionHeader("Ядро opencode")
                 InfoRow("Работает", activeCoreLabel(context))
@@ -608,15 +613,15 @@ fun DiagnosticsScreen(
                 // Хвост читаем из filesDir/opencode.log (туда serve пишет через
                 // ProcessBuilder.appendTo; ротация .1/.2/.3) — разово на открытии.
                 if (snap == null) {
-                    Text("Лог: загрузка…", color = Color(0xFF8A8A8A), fontSize = 12.sp)
+                    Text("Лог: загрузка…", color = MoltIdle, fontSize = SMALL)
                 } else {
                     val s = requireNotNull(snap)
                     if (s.logTail.isBlank()) {
-                        Text("Пусто — opencode.log ещё не создан (сервер не запускался).", color = Color(0xFF8A8A8A), fontSize = 12.sp)
+                        Text("Пусто — opencode.log ещё не создан (сервер не запускался).", color = MoltIdle, fontSize = SMALL)
                     } else {
                         Text(
                             s.logTail,
-                            color = Color(0xFFC8C8C8),
+                            color = MoltValue,
                             fontFamily = FontFamily.Monospace,
                             fontSize = 10.sp,
                             lineHeight = 13.sp,
@@ -629,22 +634,26 @@ fun DiagnosticsScreen(
 }
 
 /**
- * Заголовок секции с разделителем.
+ * Заголовок секции в стиле карточки Moltbook: оранжевый капс, 9 sp, тонкая
+ * линия того же цвета под ним.
  *
- * `internal`, а не `private`: секция Яндекс.Музыки живёт в своём файле, но заголовок и
- * разделитель у всех секций должны быть одинаковыми. Своя копия этого визуала в соседнем
- * файле — ровно тот способ, которым экраны расходятся между собой по мелочам.
+ * `internal`, а не `private`: секция Яндекс.Музыки живёт в своём файле, но
+ * заголовок и разделитель у всех секций должны быть одинаковыми. Своя копия
+ * этого визуала в соседнем файле — ровно тот способ, которым экраны расходятся
+ * между собой по мелочам.
  */
 @Composable
 internal fun sectionHeader(title: String) {
     Text(
-        title,
-        color = Color(0xFFBDBDBD),
-        fontSize = 12.sp,
-        fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(top = 10.dp, bottom = 4.dp),
+        title.uppercase(),
+        color = MoltAccent,
+        fontSize = TINY,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 1.2.sp,
+        lineHeight = TINY_LINE,
+        modifier = Modifier.padding(top = 9.dp, bottom = 3.dp),
     )
-    Spacer(Modifier.height(1.dp).fillMaxWidth().background(Color(0xFF222222)))
+    Spacer(Modifier.height(1.dp).fillMaxWidth().background(MoltAccent.copy(alpha = 0.15f)))
 }
 
 /**
@@ -710,7 +719,7 @@ private fun retentionSection(
     downloadButton("Расчёт (ничего не удаляет)") {
         run(apply = false, bytes = Retention.DRYRUN_BYTES)
     }
-    downloadButton("Обрезать (необратимо)") { confirmApply = true }
+    downloadButton("Обрезать (необратимо)", warn = true) { confirmApply = true }
 
     if (confirmApply) {
         AlertDialog(
@@ -749,42 +758,84 @@ private fun dbSize(): Long =
         db.length() + File(db.parentFile, "opencode.db-wal").length()
     }.getOrDefault(0L)
 
-// internal, а не private: той же строкой пользуется секция памяти (MemorySection.kt).
-// Вторая копия «серый заголовок + светлое значение» разъехалась бы с этой при
-// первой же правке отступов.
+/**
+ * Одна компактная строка «подпись → значение».
+ *
+ * Раньше подпись и значение стояли друг под другом: 12 sp серой строкой и
+ * 13 sp светлой, по два ряда на каждый факт. На экране в сотню фактов это
+ * давало простыню, в которой нельзя было найти нужное, — а диагностика
+ * открывается именно чтобы найти. Теперь это одна строка в две колонки:
+ * подпись 9 sp слева, значение 11 sp справа, вертикальный отступ 2 dp.
+ * Высота списка падает почти вдвое без потери ни одного факта.
+ *
+ * Две колонки, а не «подпись сверху»: длинные значения (пути, ошибки) и так
+ * переносятся внутри своей колонки, а короткие («0», «4096») больше не
+ * занимают отдельную строку.
+ */
 @Composable
 internal fun InfoRow(
     label: String,
     value: String,
-    valueColor: Color = Color(0xFFE6E6E6),
+    valueColor: Color = MoltValue,
 ) {
-    Column(Modifier.fillMaxWidth().padding(top = 5.dp)) {
-        Text(label, color = Color(0xFF8A8A8A), fontSize = 12.sp)
-        Text(value, color = valueColor, fontSize = 13.sp, lineHeight = 17.sp)
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text(
+            label,
+            color = MoltIdle,
+            fontSize = TINY,
+            lineHeight = TINY_LINE,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(LABEL_COLUMN_WEIGHT),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            value,
+            color = valueColor,
+            fontSize = SMALL,
+            lineHeight = SMALL_LINE,
+            modifier = Modifier.weight(1f - LABEL_COLUMN_WEIGHT),
+        )
     }
 }
 
-/** Кнопка-плашка скачивания моделей (тёмный экран диагностики, акцент зелёный). */
+/**
+ * Доля ширины подписи. 0,44 — «Наложение поверх окон» и «Basic-аутентификация»
+ * влезают в две строки 9 sp, при этом значению остаётся больше половины
+ * ширины: пути и тексты ошибок переносятся реже, чем при равных колонках.
+ */
+private const val LABEL_COLUMN_WEIGHT = 0.44f
+
+/**
+ * Кнопка-плашка в стиле чипов карточки Moltbook: тёмная, с оранжевой
+ * подписью. `warn` — для необратимых действий (обрезка журнала): красная
+ * подпись отличает «посчитай» от «удали навсегда», не добавляя вторую кнопку.
+ */
 @Composable
 internal fun downloadButton(
     label: String,
+    warn: Boolean = false,
     onClick: () -> Unit,
 ) {
     Surface(
-        color = Color(0xFF1E1E1E),
-        shape = RoundedCornerShape(8.dp),
+        color = MoltChipOff,
+        shape = RoundedCornerShape(6.dp),
         modifier =
             Modifier
                 .fillMaxWidth()
-                .padding(top = 6.dp)
+                .padding(top = 5.dp)
                 .clickable(onClick = onClick),
     ) {
         Text(
             label,
-            color = Color(0xFF7BD88F),
-            fontSize = 13.sp,
+            color = if (warn) Color(0xFFFF6B6B) else MoltAccent,
+            fontSize = BODY,
+            lineHeight = BODY_LINE,
             fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
         )
     }
 }
@@ -837,6 +888,52 @@ private fun coreCheckRow(
             if (result.applied) OpencodeServerService.restart(context)
         }
     }
+}
+
+/**
+ * Сводка экрана: статус крупно и четыре факта одной строкой.
+ *
+ * Это тот же приём, что «ждут ответа» в карточке Moltbook: одно число, ради
+ * которого экран открывают, и вокруг него — плотная строка остального. Порт,
+ * рестарты, свободная RAM и API раньше были четырьмя отдельными рядами в
+ * секции «Сервер»; факты те же, высоты — вчетверо меньше.
+ */
+@Composable
+private fun ServerSummary(
+    status: ServerStatus,
+    port: Int,
+    restarts: Int,
+    ramFree: Long,
+    sdk: Int,
+) {
+    Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = statusLabel(status),
+            color = statusColor(status),
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Black,
+            lineHeight = 22.sp,
+            maxLines = 1,
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = "порт $port · рестарты $restarts",
+            color = MoltIdle,
+            fontSize = TINY,
+            lineHeight = TINY_LINE,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f).padding(bottom = 3.dp),
+        )
+    }
+    Text(
+        text = "свободно ${fmtBytes(ramFree)} · API $sdk",
+        color = MoltIdle,
+        fontSize = TINY,
+        lineHeight = TINY_LINE,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
 }
 
 private fun statusLabel(s: ServerStatus): String =
