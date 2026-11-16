@@ -30,7 +30,9 @@ import androidx.compose.ui.window.DialogProperties
 import java.io.File
 
 /** Цвет «картинки нет» — тот же приглушённый, что у служебных строк ленты. */
-private val MUTED = Color(0xFF9A9A9A)
+private const val MUTED_ARGB = 0xFF9A9A9A
+
+private val MUTED = Color(MUTED_ARGB)
 
 /**
  * Картинка реплики: файл на диске, нарисованный во всю ширину и до 420 dp высотой.

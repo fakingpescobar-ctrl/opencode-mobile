@@ -27,18 +27,17 @@ internal object ChatPicturePolicy {
     /** Канонические корни считаются один раз: resolve зовётся на каждой пересборке ленты. */
     private val ROOT_PATHS = ROOTS.mapNotNull { canonicalOrNull(it)?.path }
 
-    fun resolve(path: String): File? {
-        if (!looksLikePicturePath(path)) return null
-        val file = canonicalOrNull(path) ?: return null
-        return file.takeIf { allowed(it) }
-    }
+    fun resolve(path: String): File? =
+        path
+            .takeIf { looksLikePicturePath(it) }
+            ?.let { canonicalOrNull(it) }
+            ?.takeIf { allowed(it) }
 
-    private fun allowed(file: File): Boolean {
-        if (!file.isFile) return false
-        if (file.extension.lowercase() !in EXTENSIONS) return false
-        if (file.length() <= 0L || file.length() > MAX_BYTES) return false
-        return ROOT_PATHS.any { file.path.startsWith("$it/") }
-    }
+    private fun allowed(file: File): Boolean =
+        file.isFile &&
+            file.extension.lowercase() in EXTENSIONS &&
+            file.length() in 1..MAX_BYTES &&
+            ROOT_PATHS.any { file.path.startsWith("$it/") }
 
     private fun canonicalOrNull(path: String): File? =
         try {
