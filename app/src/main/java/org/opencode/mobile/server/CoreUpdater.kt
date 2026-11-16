@@ -203,13 +203,13 @@ object CoreUpdater {
         }
         Log.w(TAG, "ядро $active не поднимается $tries раза подряд — откатываюсь на $apkVersion")
         coreFile(context).delete()
-        prefs.edit()
-            .putString(KEY_BLOCKED, active)
-            .putLong(KEY_ROLLED_AT, System.currentTimeMillis())
-            .putInt(KEY_TRIES, 0)
-            .remove(KEY_VERSION)
-            .remove(KEY_BYTES)
-            .apply()
+        val editor = prefs.edit()
+        editor.putString(KEY_BLOCKED, active)
+        editor.putLong(KEY_ROLLED_AT, System.currentTimeMillis())
+        editor.putInt(KEY_TRIES, 0)
+        editor.remove(KEY_VERSION)
+        editor.remove(KEY_BYTES)
+        editor.apply()
     }
 
     /**
