@@ -40,6 +40,13 @@ class MoltbookAlarmReceiver : BroadcastReceiver() {
         intent: Intent,
     ) {
         val app = context.applicationContext
+        if (!MoltbookScheduler.isEnabled(app)) {
+            // Запоздавшая доставка уже снятого будильника. Тик не запускаем и,
+            // главное, не перевзводим: иначе выключатель держался бы ровно до
+            // первого срабатывания.
+            Log.i(TAG, "будильник выключен — тик пропускаю")
+            return
+        }
         executor.execute {
             try {
                 runTick(app)
