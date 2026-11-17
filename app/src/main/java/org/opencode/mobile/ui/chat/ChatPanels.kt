@@ -33,10 +33,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import org.opencode.mobile.social.MoltbookPanelState
 import org.opencode.mobile.ui.GaugeSettings
 import org.opencode.mobile.ui.McpInfo
-import org.opencode.mobile.ui.MoltbookPanel
 
 // Панели шапки чата: каждая открывается своим флагом и живёт сама по себе.
 // Вынесены из ChatOverlay как есть — это деревья UI, которые ничего не решают
@@ -59,16 +57,6 @@ internal fun McpPanel(servers: List<McpInfo>) {
                 .fillMaxWidth()
                 .padding(top = 8.dp, bottom = 2.dp)
                 .testTag(TAG_PANEL_MCP),
-    )
-}
-
-// Сводка Moltbook: сколько комментов ждут ответа, сколько репостов на наши
-// посты, кому именно мы не ответили. Тот же тёмный кард, что и MCP.
-@Composable
-internal fun MoltbookCard(state: MoltbookPanelState) {
-    MoltbookPanel(
-        state = state,
-        modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 2.dp),
     )
 }
 

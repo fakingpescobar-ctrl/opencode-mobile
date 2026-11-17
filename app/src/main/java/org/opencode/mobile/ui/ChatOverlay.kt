@@ -61,7 +61,6 @@ import org.opencode.mobile.server.ApiShape
 import org.opencode.mobile.server.AskCard
 import org.opencode.mobile.server.LocalOpenCodeClient
 import org.opencode.mobile.server.PendingAsk
-import org.opencode.mobile.social.MoltbookScanClient
 import org.opencode.mobile.stt.WhisperTranscribeService
 import org.opencode.mobile.tts.TtsNarrator
 import org.opencode.mobile.ui.chat.AndroidElevenKeyStore
@@ -86,12 +85,10 @@ import org.opencode.mobile.ui.chat.FontPanel
 import org.opencode.mobile.ui.chat.GaugePanel
 import org.opencode.mobile.ui.chat.McpPanel
 import org.opencode.mobile.ui.chat.ModelColorPanel
-import org.opencode.mobile.ui.chat.MoltbookCard
 import org.opencode.mobile.ui.chat.NarrationInput
 import org.opencode.mobile.ui.chat.PANEL_COLOR
 import org.opencode.mobile.ui.chat.PANEL_FONT
 import org.opencode.mobile.ui.chat.PANEL_MCP
-import org.opencode.mobile.ui.chat.PANEL_MOLTBOOK
 import org.opencode.mobile.ui.chat.PANEL_SETTINGS
 import org.opencode.mobile.ui.chat.PANEL_STT
 import org.opencode.mobile.ui.chat.ServerSendTransport
@@ -122,18 +119,6 @@ import org.opencode.mobile.ui.chat.stopAndPurge
 import org.opencode.mobile.ui.chat.vibrate
 import java.io.File
 import java.util.Locale
-
-// Как часто открытая панель Moltbook перечитывает ledger. Быстрее 10 секунд —
-// это долбить базу впустую, медленнее минуты — панель успевает соврать.
-private const val MOLTBOOK_PANEL_REFRESH_MS = 10_000L
-
-// Как часто панель просит плагин перечитать ленту. Раз в пять минут, а не на
-// каждом чтении: скан ходит в молтбук за лентой, уведомлениями и тредами — это
-// около девяти запросов, и десять секунд между ними это 54 запроса в минуту,
-// за которые платформа вправе порезать. Пять минут — компромисс между «числа
-// на карточке свежие» и «мы не долбим чужой сервис». Скан сам по себе умеет
-// ждать до минуты, поэтому задержка сверху не копится.
-private const val MOLTBOOK_SCAN_EVERY_MS = 5 * 60_000L
 
 // Миллисекунд в минуте для паузы между обходами сессий.
 private const val MS_PER_MINUTE = 60_000L
@@ -414,49 +399,10 @@ fun ChatOverlay(
     }
 
     val showMcpList = activePanel == PANEL_MCP
-    val showMoltbookPanel = activePanel == PANEL_MOLTBOOK
     val showColorPicker = activePanel == PANEL_COLOR
     val showFontPicker = activePanel == PANEL_FONT
     val showSettings = activePanel == PANEL_SETTINGS
     val showSttSettings = activePanel == PANEL_STT
-
-    // Панель Moltbook: файл снимка, который переписывает плагин после каждого
-    // своего вызова. Ни сети, ни ledger - читается файл, поэтому таймер здесь
-    // один и на все случаи: раз открыли панель, так и перечитываем её, пока
-    // открыта. Раньше был ещё отдельный ключ на «попытку сети при открытии»,
-    // и он исчез вместе с сетью.
-    var moltbookRefresh by remember { mutableIntStateOf(0) }
-    LaunchedEffect(showMoltbookPanel) {
-        if (!showMoltbookPanel) return@LaunchedEffect
-        moltbookRefresh++
-        while (true) {
-            delay(MOLTBOOK_PANEL_REFRESH_MS)
-            moltbookRefresh++
-        }
-    }
-
-    // Скан отдельно от чтения, и отдельным медленным кругом. Чтение файла дешёвое,
-    // поэтому оно часто; скан ходит в ленту и стоит девяти запросов, поэтому его
-    // пять минут. Один круг на оба означал бы либо протухшую карточку, либо
-    // платформу, которая режет нас за 54 запроса в минуту.
-    //
-    // Первый скан - сразу, а не через пять минут: карточка, открытая на пустом
-    // снимке, минуту показывала бы «нет данных» при живом плагине.
-    // Скан идёт только пока панель открыта, и это замысел, а не недосмотр:
-    // карточки нет - смотреть некуда, а девять запросов к молтбуку каждые пять
-    // минут впустую копятся тем дольше, чем реже открывают панель.
-    //
-    // Эффект на `showMoltbookPanel`, поэтому закрытие панели обрывает скан на
-    // середине, а не ждёт его конца: `requestScan` рвёт соединение по отмене.
-    LaunchedEffect(showMoltbookPanel) {
-        if (!showMoltbookPanel) return@LaunchedEffect
-        moltbookRefresh++
-        while (true) {
-            MoltbookScanClient.requestScan(context)
-            delay(MOLTBOOK_SCAN_EVERY_MS)
-        }
-    }
-    val moltbookStats = rememberMoltbookState(moltbookRefresh)
 
     fun send() {
         val text = ui.draft.trim()
@@ -1067,7 +1013,6 @@ fun ChatOverlay(
                         rejected = ui.snapshot?.notice != null,
                         mcpConnected = ui.snapshot?.mcpConnected ?: 0,
                         mcpTotal = ui.snapshot?.mcpTotal ?: 0,
-                        moltbookAwaiting = moltbookStats.awaiting,
                         activePanel = activePanel,
                         modelColor = modelColor,
                         creatingSession = creatingSession,
@@ -1087,9 +1032,6 @@ fun ChatOverlay(
             )
             if (showMcpList) {
                 McpPanel(ui.snapshot?.mcpServers ?: emptyList())
-            }
-            if (showMoltbookPanel) {
-                MoltbookCard(moltbookStats)
             }
             if (showColorPicker) {
                 ModelColorPanel(appearance, modelColor)

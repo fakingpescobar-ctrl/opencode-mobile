@@ -2,7 +2,6 @@ package org.opencode.mobile.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,7 +14,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -46,17 +44,15 @@ import org.opencode.mobile.social.karmaLabel
 import org.opencode.mobile.social.pendingHeadline
 
 /**
- * Иконка «М» и панель Moltbook в шапке чата.
+ * Панель Moltbook — теперь в меню диагностики, а не в шапке чата.
  *
- * Отдельный файл, а не ещё 200 строк в [ChatOverlay]: он уже на 4000+ строк, и
- * наползающая шапка — ровно та причина, по которой его потом невозможно читать.
+ * Отдельный файл, а не ещё 200 строк в [DiagnosticsScreen]: тот и без того на
+ * 1700+ строк. Иконка «М» и карточка убраны из шапки: на 363 dp не хватало
+ * места, и счётчик неотвеченных соседствовал с MCP-чипом в ущерб обоим.
  *
- * Источник цифр сменился целиком. Раньше панель сама открывала ledger и сама
- * ходила на сайт за кармой, а время визита брала из тикера. Теперь тикера нет,
- * и вместо него два файла, которые пишут те, кто действительно работает:
- * снимок `panel.json` от плагина и журнал будильника. Поэтому у панели ровно
- * одна обязанность — честно показать, что она знает, и не выдавать «не знаю»
- * за ноль.
+ * Источник цифр: снимок `panel.json` от плагина и журнал будильника. У панели
+ * ровно одна обязанность — честно показать, что она знает, и не выдавать
+ * «не знаю» за ноль.
  */
 internal val MoltAccent = Color(0xFFFFB020)
 internal val MoltIdle = Color(0xFF8A8A8A)
@@ -84,10 +80,10 @@ internal val BODY_LINE = 14.sp
 /**
  * Снимок панели: файл, потом тик таймера.
  *
- * Опрос раз в [org.opencode.mobile.ui.ChatOverlay] MOLTBOOK_PANEL_REFRESH_MS,
- * а чтение файла дешевле сети на порядок — панель открывают посмотреть, а не
- * ждать. Плагин переписывает снимок после каждого своего вызова, так что между
- * тиками карточка спокойно показывает «данные от HH:mm», а не врёт свежестью.
+ * Опрос задаёт владелец экрана (секция Moltbook в диагностике): чтение файла
+ * дешевле сети на порядок — панель открывают посмотреть, а не ждать. Плагин
+ * переписывает снимок после каждого своего вызова, так что между тиками
+ * карточка спокойно показывает «данные от HH:mm», а не врёт свежестью.
  */
 @Composable
 internal fun rememberMoltbookState(refreshKey: Int): MoltbookPanelState {
@@ -100,53 +96,6 @@ internal fun rememberMoltbookState(refreshKey: Int): MoltbookPanelState {
         if (fresh != null) state = fresh
     }
     return state
-}
-
-/** Кнопка «М» в шапке: буква + счётчик неотвеченных. */
-@Composable
-internal fun MoltbookIndicator(
-    awaiting: Int,
-    modifier: Modifier = Modifier,
-    active: Boolean = false,
-    onClick: () -> Unit = {},
-) {
-    val tint = if (awaiting > 0) MoltAccent else MoltIdle
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier =
-            modifier
-                .padding(start = 4.dp)
-                .clip(CircleShape)
-                .background(if (active) Color(0xFF3A3A3A) else Color.Transparent)
-                .clickable { onClick() }
-                .padding(horizontal = 4.dp, vertical = 2.dp),
-    ) {
-        Text(
-            text = "М",
-            color = tint,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Black,
-            letterSpacing = 1.sp,
-            lineHeight = 16.sp,
-        )
-        if (awaiting > 0) {
-            Spacer(Modifier.width(3.dp))
-            Box(
-                Modifier
-                    .clip(CircleShape)
-                    .background(MoltAccent)
-                    .padding(horizontal = 4.dp, vertical = 1.dp),
-            ) {
-                Text(
-                    text = awaiting.toString(),
-                    color = Color(0xFF14110C),
-                    fontSize = 9.sp,
-                    lineHeight = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
-        }
-    }
 }
 
 /**

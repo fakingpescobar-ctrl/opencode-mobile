@@ -25,12 +25,9 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
-import org.opencode.mobile.ui.MoltbookIndicator
-
 // Панели шапки. Строкой, а не enum: открыта всегда максимум одна, и живёт она в
 // одной переменной activePanel.
 internal const val PANEL_MCP = "mcp"
-internal const val PANEL_MOLTBOOK = "moltbook"
 internal const val PANEL_COLOR = "color"
 internal const val PANEL_FONT = "font"
 internal const val PANEL_SETTINGS = "settings"
@@ -50,7 +47,6 @@ internal data class ChatHeaderState(
     val rejected: Boolean,
     val mcpConnected: Int,
     val mcpTotal: Int,
-    val moltbookAwaiting: Int,
     val activePanel: String?,
     val modelColor: Color,
     val creatingSession: Boolean,
@@ -95,7 +91,8 @@ internal fun ChatHeader(
     GaugeRows(state)
 }
 
-// Индикаторы подключённого: MCP-серверы и Moltbook.
+// Индикатор подключённого: MCP-серверы. Карточка Moltbook уехала в диагностику —
+// в шапке на 363 dp не было места ни ей, ни её счётчику без обмена ширины.
 @Composable
 private fun Indicators(
     state: ChatHeaderState,
@@ -108,14 +105,6 @@ private fun Indicators(
         total = state.mcpTotal,
         onClick = { actions.onTogglePanel(PANEL_MCP) },
         modifier = Modifier.padding(start = 4.dp),
-    )
-    // «М» — Moltbook: автономный агент. Буква с бейджем неотвеченных вместо
-    // иконки намеренно: это не сервис, а сам агент, и цифра на нём — не
-    // «сколько серверов сломано», а «кого мы ещё не ответили».
-    MoltbookIndicator(
-        awaiting = state.moltbookAwaiting,
-        active = state.activePanel == PANEL_MOLTBOOK,
-        onClick = { actions.onTogglePanel(PANEL_MOLTBOOK) },
     )
 }
 

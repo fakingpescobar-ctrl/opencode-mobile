@@ -736,6 +736,13 @@ fun DiagnosticsScreen(
                     yandexAccountSection()
                 }
 
+                // Moltbook переехал сюда из шапки чата: на 363 dp карточка и
+                // MCP-чип теснили друг друга. Рядом с Яндексом не случайно —
+                // обе секции про вход, который человек настраивает один раз.
+                DiagSection("Moltbook", DiagTone.IDLE) {
+                    moltbookSection()
+                }
+
                 DiagSection("Журнал событий (retention)", DiagTone.IDLE) {
                     retentionSection(context, scope, retentionOut) {
                         retentionOut = it
