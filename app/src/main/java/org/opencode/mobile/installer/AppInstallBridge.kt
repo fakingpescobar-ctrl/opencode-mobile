@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import org.opencode.mobile.DiagnosticsCommand
 import org.opencode.mobile.account.LikedPage
 import org.opencode.mobile.account.PlaylistEdit
 import org.opencode.mobile.account.PlaylistPage
@@ -196,6 +197,11 @@ object AppInstallBridge {
             // поэтому кадр берёт служба доступности. Имя файла — параметр name,
             // без него метка времени; файл всегда ложится в Download.
             Route("GET", "/v1/screen/shot", ::screenShot),
+            // Экран диагностики: команда «открой»/«закрой» из моста. Раньше его
+            // мог открыть только палец по иконке «i»: у оболочки агента нет
+            // INJECT_EVENTS, а у службы доступности — жестов. Мост живёт в том
+            // же процессе, что и оверлей, поэтому пишет общее состояние напрямую.
+            Route("POST", "/v1/ui/diagnostics", ::uiDiagnostics),
             Route("POST", "/v1/apps/install", ::install),
             // Из /v1/media/* живёт только like: лайк у Яндекс Музыки идёт кастомной
             // командой сессии, и REST/OAuth его не заменяют. Остальные десять маршрутов
@@ -286,6 +292,30 @@ object AppInstallBridge {
 
             is ScreenshotOutcome.Failed -> writeJson(output, 409, error(outcome.reason))
         }
+    }
+
+    /**
+     * Показать или скрыть экран диагностики.
+     *
+     * Тело необязательно: пустое тело = `{"open": true}`, то есть «открой».
+     * Ответ несёт состояние ПОСЛЕ вызова: `"open": false` — это «закрыл», а не
+     * «не смог»; отказ выглядел бы как 4xx/5xx.
+     */
+    private fun uiDiagnostics(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val body = jsonObject(request)
+        val open = body.optionalBoolean("open") ?: true
+        val now = DiagnosticsCommand.setOpen(open)
+        writeJson(
+            output,
+            200,
+            JSONObject()
+                .put("ok", true)
+                .put("screen", "diagnostics")
+                .put("open", now),
+        )
     }
 
     private fun status(
@@ -770,6 +800,9 @@ object AppInstallBridge {
 
     private fun JSONObject.optionalString(name: String): String? =
         if (has(name) && !isNull(name)) getString(name).takeIf { it.isNotBlank() } else null
+
+    private fun JSONObject.optionalBoolean(name: String): Boolean? =
+        if (has(name) && !isNull(name)) getBoolean(name) else null
 
     private fun LaunchableAppSnapshot.toJson(): JSONObject =
         JSONObject()

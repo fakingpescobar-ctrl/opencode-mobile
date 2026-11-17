@@ -55,6 +55,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import org.opencode.mobile.DiagnosticsCommand
 import org.opencode.mobile.server.ApiPaths
 import org.opencode.mobile.server.ApiShape
 import org.opencode.mobile.server.AskCard
@@ -293,7 +294,11 @@ fun ChatOverlay(
     // с GGML_VULKAN=ON под Adreno и выбирается пользователем.
     // Полноэкранная диагностика: состояние сервера, STT-модели, лог serve.
     // Оверлей рисуется ПОСЛЕДНИМ в корневом Surface — поверх чата и панелей.
-    var showDiagnostics by remember { mutableStateOf(false) }
+    //
+    // Состояние живёт в [DiagnosticsCommand], а не здесь: тот же экран открывает
+    // мост приложения по `POST /v1/ui/diagnostics`, и два независимых `remember`
+    // разошлись бы — агент «открыл», а оверлей об этом не знает.
+    val showDiagnostics by DiagnosticsCommand.visible.collectAsState()
 
     // Озвучка ответов (§12.3/§12.5). Выключатель — здесь же, в панели STT.
     // Настройки и правило «включённость = engine != Off» живут в TtsSettings.
@@ -1075,7 +1080,7 @@ fun ChatOverlay(
                 actions =
                     ChatHeaderActions(
                         onTogglePanel = ::toggleHeaderPanel,
-                        onDiagnostics = { showDiagnostics = !showDiagnostics },
+                        onDiagnostics = { DiagnosticsCommand.toggle() },
                         onNewSession = { newSession() },
                         onClearAll = { confirmClearAll = true },
                     ),
@@ -1164,7 +1169,7 @@ fun ChatOverlay(
         // кладёт его ПОВЕРХ Column чата даже без явного выравнивания.
         if (showDiagnostics) {
             DiagnosticsScreen(
-                onClose = { showDiagnostics = false },
+                onClose = { DiagnosticsCommand.setOpen(false) },
                 modifier = Modifier.fillMaxSize(),
             )
         }
