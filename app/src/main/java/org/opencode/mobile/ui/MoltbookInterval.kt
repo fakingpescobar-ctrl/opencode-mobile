@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -32,12 +33,13 @@ import org.opencode.mobile.social.MoltbookScheduler
 /**
  * Выбор периодичности будильника Moltbook.
  *
- * Живёт отдельно от карточки [MoltbookPanel]: это настройка поведения, а не
- * отчёт о состоянии, и в карточке ей самое место — три чипа под сеткой чисел.
+ * Живёт отдельно от сводки: это настройка поведения, а не отчёт о состоянии.
+ * С 17.11 все пять вариантов встают в один ряд, а не в два: на 323 dp секции
+ * чип 58 dp читается, и лишний ряд высоты больше не нужен. Акцент выбранного
+ * чипа — общий зелёный действий, а не оранжевый, который остался заголовкам.
  *
  * Ряды собираем вручную из [Row], а не через FlowRow: FlowRow в этой версии
- * Compose помечен ExperimentalLayoutApi, и карточка в шапке — не то место, где
- * стоит тащить opt-in предупреждение ради пяти кнопок.
+ * Compose помечен ExperimentalLayoutApi, и тащить opt-in ради пяти кнопок нечем.
  *
  * Значение перечитывается из prefs ПОСЛЕ [MoltbookScheduler.setUserIntervalMinutes],
  * а не берётся из нажатого чипа: prefs — единственный источник правды, там же
@@ -48,9 +50,9 @@ import org.opencode.mobile.social.MoltbookScheduler
 internal fun MoltbookIntervalPicker() {
     val context = LocalContext.current
     var chosen by remember { mutableIntStateOf(MoltbookScheduler.userIntervalMinutes(context)) }
-    Column(Modifier.padding(top = 6.dp)) {
+    Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
         Text(
-            text = "ПЕРИОД БУДИЛЬНИКА · 0 = авто, паузу выбирает агент",
+            text = "ПЕРИОД · 0 = авто, паузу выбирает агент",
             color = MoltIdle,
             fontSize = TINY,
             letterSpacing = 0.5.sp,
@@ -58,7 +60,7 @@ internal fun MoltbookIntervalPicker() {
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(3.dp))
         Column(verticalArrangement = Arrangement.spacedBy(INTERVAL_CHIP_GAP)) {
             MoltbookScheduler.INTERVAL_CHOICES_MINUTES.chunked(INTERVAL_CHIPS_PER_ROW).forEach { row ->
                 Row(horizontalArrangement = Arrangement.spacedBy(INTERVAL_CHIP_GAP)) {
@@ -88,12 +90,13 @@ private fun MoltbookIntervalChip(
 ) {
     // Цвет обводки — отдельно, иначе цепочка модификаторов разъезжается на две строки
     // и ktlint требует переносить точку в конец предыдущей, ломая порядок рисования.
-    val borderColor = if (selected) MoltAccent.copy(alpha = 0.7f) else Color.Transparent
+    val accent = DiagTone.OK.color()
+    val borderColor = if (selected) accent.copy(alpha = 0.5f) else Color.Transparent
     Box(
         modifier =
             modifier
                 .clip(RoundedCornerShape(6.dp))
-                .background(if (selected) MoltAccent.copy(alpha = 0.14f) else MoltChipOff)
+                .background(if (selected) accent.copy(alpha = 0.12f) else MoltChipOff)
                 .border(1.dp, borderColor, RoundedCornerShape(6.dp))
                 .clickable { onClick() }
                 .padding(vertical = 5.dp),
@@ -101,9 +104,9 @@ private fun MoltbookIntervalChip(
     ) {
         Text(
             text = intervalLabel(minutes),
-            color = if (selected) MoltAccent else MoltIdle,
-            fontSize = BODY,
-            lineHeight = BODY_LINE,
+            color = if (selected) accent else MoltIdle,
+            fontSize = SMALL,
+            lineHeight = SMALL_LINE,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -126,11 +129,11 @@ internal fun intervalLabel(minutes: Int): String =
 /** Час в часе: подпись ведёт тайм пояситой не минутами. */
 private const val MINUTES_PER_HOUR = 60
 
-/** Чипов в ряду: 5 вариантов / 3 = два ряда, третий чип третьего ряда не бывает. */
-internal const val INTERVAL_CHIPS_PER_ROW: Int = 3
+/** Чипов в ряду: все пять вариантов одновременно, без второго ряда. */
+internal const val INTERVAL_CHIPS_PER_ROW: Int = 5
 
-/** Ширина одного чипа: (319 - 2 × 6) / 3 = 102 dp — текст «30 мин» влезает с запасом. */
-private val INTERVAL_CHIP_WIDTH = 102.dp
+/** Ширина одного чипа: 5 × 58 + 4 × 4 = 306 dp при ~323 доступных в секции. */
+private val INTERVAL_CHIP_WIDTH = 58.dp
 
-/** Зазор между чипами: ряд из трёх даёт 3 × 102 + 2 × 6 = 318 dp при 319 доступных. */
-private val INTERVAL_CHIP_GAP = 6.dp
+/** Зазор между чипами. */
+private val INTERVAL_CHIP_GAP = 4.dp

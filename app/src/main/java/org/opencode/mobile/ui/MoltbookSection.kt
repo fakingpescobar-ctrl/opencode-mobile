@@ -7,15 +7,18 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -26,12 +29,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CoroutineScope
@@ -54,20 +59,19 @@ import org.opencode.mobile.social.suggestedAgentName
  * 363 dp она теснила MCP-чип и саму переписку, теперь живёт здесь рядом с
  * «Яндекс Музыкой» и памятью: всё, что человек настраивает один раз.
  *
+ * Вид переписан 17.11: внутри секции больше нет вложенной карточки со вторым
+ * заголовком MOLTBOOK. Статус, поля, действия и счётчики — это плотные строки
+ * одного контейнера, те же 9/10/11 sp и тот же зелёный акцент действий, что и
+ * у остальной диагностики. Оранжевым остаётся только заголовок самой секции.
+ *
  * Два пути авторизации, оба явные. «Зарегистрировать» дёргает сайт и кладёт
  * новый `api_key` в `moltkey` — но только после второго подтверждения, если
  * ключ уже есть: молча перезаписать рабочий ключ `opencodekz` было бы плохо.
- * «Вставить токен» сохраняет существующий ключ. Claim (пост в X) человек делает
+ * «Сохранить токен» сохраняет существующий ключ. Claim (пост в X) человек делает
  * вне приложения: мы открываем ссылку и копируем код, а статус честно держим
  * `pending_claim`, пока сайт не скажет `claimed`.
  */
 
-private const val ACCENT = 0xFF7BD88F
-private const val LABEL = 0xFF8A8A8A
-private const val VALUE = 0xFFE6E6E6
-private const val ERROR = 0xFFFF6F5A
-private const val MUTED = 0xFFBDBDBD
-private const val PLATE = 0xFF1E1E1E
 private const val PANEL_REFRESH_MS = 10_000L
 private const val SCAN_EVERY_MS = 5 * 60_000L
 private const val STATUS_POLL_MS = 60_000L
@@ -96,16 +100,44 @@ internal fun moltbookSection() {
     val refresh = rememberMoltbookRefresh(context)
 
     val (headline, detail, ok) = state.texts(key)
-    statusPlate(headline, detail, ok)
     val claim = state.claim
+    statusLine(headline, detail, ok)
     if (claim != null) {
         claimBlock(claim, context, scope, state)
     } else {
-        registrationBlock(state, scope, context)
         Spacer(Modifier.height(4.dp))
-        tokenBlock(state, scope, context)
+        fieldBlock("Имя агента", state.name, { state.name = it }, "oc_...")
+        Spacer(Modifier.height(3.dp))
+        fieldBlock("api_key", state.token, { state.token = it }, "moltbook_…")
+        Row(
+            Modifier.fillMaxWidth().padding(top = 5.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            // Два действия в одном ряду: на 323 dp пара чипов читается лучше,
+            // чем две полосущие плашки друг под другом.
+            when {
+                state.key == null ->
+                    actionChip("Зарегистрировать", Modifier.weight(1f)) {
+                        scope.launch { state.register(context) }
+                    }
+
+                !state.confirmReplace ->
+                    actionChip("Новый агент", Modifier.weight(1f), muted = true) {
+                        state.confirmReplace = true
+                    }
+
+                else ->
+                    actionChip("Точно заменить?", Modifier.weight(1f), muted = true) {
+                        state.confirmReplace = false
+                        scope.launch { state.register(context) }
+                    }
+            }
+            actionChip("Сохранить токен", Modifier.weight(1f)) {
+                scope.launch { state.saveToken(context) }
+            }
+        }
     }
-    Spacer(Modifier.height(8.dp))
+    Spacer(Modifier.height(6.dp))
     MoltbookPanel(rememberMoltbookState(refresh))
 }
 
@@ -132,39 +164,105 @@ private fun rememberMoltbookRefresh(context: Context): Int {
     return refresh
 }
 
-/** Регистрация всегда явная: есть ключ — сначала подтверждение, потом вызов. */
+/** Статус одной строкой: точка тона, короткий заголовок, бейдж и пояснение под ним. */
 @Composable
-private fun registrationBlock(
-    state: MoltbookSectionState,
-    scope: CoroutineScope,
-    context: Context,
+private fun statusLine(
+    headline: String,
+    detail: String,
+    ok: Boolean?,
 ) {
-    Text("Новый агент", color = Color(LABEL), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-    fieldBlock("Имя агента", state.name, { state.name = it }, "oc_...")
-    if (state.key == null) {
-        actionButton("Зарегистрировать и сохранить ключ") { scope.launch { state.register(context) } }
-    } else if (!state.confirmReplace) {
-        actionButton("Создать другого агента (заменит ключ)", muted = true) {
-            state.confirmReplace = true
+    val color =
+        when (ok) {
+            true -> DiagTone.OK.color()
+            false -> DiagTone.BAD.color()
+            null -> MoltValue
         }
-    } else {
-        actionButton("Точно заменить ключ? Старый перестанет работать", muted = true) {
-            state.confirmReplace = false
-            scope.launch { state.register(context) }
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Box(Modifier.size(6.dp).clip(CircleShape).background(color))
+        Spacer(Modifier.width(6.dp))
+        Text(
+            headline,
+            color = color,
+            fontSize = SMALL,
+            lineHeight = SMALL_LINE,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (ok == true) {
+            Spacer(Modifier.width(4.dp))
+            Text("ок", color = color, fontSize = TINY, lineHeight = TINY_LINE, maxLines = 1)
         }
+    }
+    Text(
+        detail,
+        color = MoltIdle,
+        fontSize = TINY,
+        lineHeight = TINY_LINE,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.padding(start = 12.dp, top = 1.dp),
+    )
+}
+
+/** Компактное поле: подпись, тёмная подложка без отдельной карточки, 10 sp. */
+@Composable
+private fun fieldBlock(
+    label: String,
+    value: String,
+    onChange: (String) -> Unit,
+    placeholder: String,
+) {
+    Text(label, color = MoltIdle, fontSize = TINY, lineHeight = TINY_LINE)
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 2.dp)
+            .background(MoltChipOff, RoundedCornerShape(6.dp))
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+    ) {
+        BasicTextField(
+            value = value,
+            onValueChange = onChange,
+            textStyle = TextStyle(color = MoltValue, fontSize = SMALL, lineHeight = SMALL_LINE),
+            modifier = Modifier.fillMaxWidth(),
+            decorationBox = { inner ->
+                if (value.isEmpty()) {
+                    Text(placeholder, color = MoltIdle, fontSize = SMALL, lineHeight = SMALL_LINE)
+                }
+                inner()
+            },
+        )
     }
 }
 
-/** Готовый `api_key` — пути без сайта, работает даже при geo-block. */
+/** Действие-чип. [muted] — destructive-вариант: он не светится зелёным. */
 @Composable
-private fun tokenBlock(
-    state: MoltbookSectionState,
-    scope: CoroutineScope,
-    context: Context,
+private fun actionChip(
+    label: String,
+    modifier: Modifier = Modifier,
+    muted: Boolean = false,
+    onClick: () -> Unit,
 ) {
-    Text("Готовый токен", color = Color(LABEL), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-    fieldBlock("api_key", state.token, { state.token = it }, "moltbook_…")
-    actionButton("Сохранить токен") { scope.launch { state.saveToken(context) } }
+    Box(
+        modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(MoltChipOff)
+            .clickable(onClick = onClick)
+            .padding(vertical = 6.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            color = if (muted) MoltIdle else DiagTone.OK.color(),
+            fontSize = SMALL,
+            lineHeight = SMALL_LINE,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
 }
 
 /** Что делать с только что выданным ключом: подтвердить его человеком. */
@@ -175,125 +273,50 @@ private fun claimBlock(
     scope: CoroutineScope,
     state: MoltbookSectionState,
 ) {
-    statusPlate(
-        "Ключ создан — ${reg.status}",
-        "Подтвердите агента: откройте ссылку и опубликуйте код в X",
-        ok = false,
+    statusLine("Ключ создан — ${reg.status}", "Откройте ссылку и опубликуйте код в X", false)
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "КОД ПОДТВЕРЖДЕНИЯ",
+        color = MoltIdle,
+        fontSize = TINY,
+        lineHeight = TINY_LINE,
+        fontWeight = FontWeight.Bold,
     )
-    Surface(
-        color = Color(PLATE),
-        shape = RoundedCornerShape(8.dp),
-        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+    Text(
+        reg.verificationCode.ifBlank { "—" },
+        color = DiagTone.OK.color(),
+        fontSize = BODY,
+        lineHeight = BODY_LINE,
+        fontWeight = FontWeight.Bold,
+        fontFamily = FontFamily.Monospace,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.padding(top = 1.dp),
+    )
+    Row(
+        Modifier.fillMaxWidth().padding(top = 5.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-            Text("Код подтверждения", color = Color(LABEL), fontSize = 12.sp)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                reg.verificationCode.ifBlank { "—" },
-                color = Color(ACCENT),
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace,
-            )
+        actionChip("Проверить статус", Modifier.weight(1f)) {
+            scope.launch { state.refreshStatus() }
+        }
+        actionChip("Скопировать код", Modifier.weight(1f)) {
+            copyToClipboard(context, reg.verificationCode)
         }
     }
-    actionButton("Проверить статус") { scope.launch { state.refreshStatus() } }
-    actionButton("Скопировать код") { copyToClipboard(context, reg.verificationCode) }
     val safe = safeClaimUrl(reg.claimUrl)
     if (safe != null) {
-        actionButton("Открыть claim-ссылку") { openClaim(context, safe) }
-        actionButton("Скопировать ссылку") { copyToClipboard(context, reg.claimUrl) }
-    } else if (reg.claimUrl.isNotBlank()) {
-        statusPlate(
-            "Ссылка не открыта",
-            "Сервер вернул адрес вне moltbook.com — используйте код вручную",
-            ok = false,
-        )
-    }
-}
-
-/** Плашка состояния в стиле «Яндекс Музыки»: заголовок крупно, пояснение мелко. */
-@Composable
-private fun statusPlate(
-    headline: String,
-    detail: String,
-    ok: Boolean? = null,
-) {
-    Surface(
-        color = Color(PLATE),
-        shape = RoundedCornerShape(8.dp),
-        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-    ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-            Text(
-                headline,
-                color =
-                    when (ok) {
-                        true -> Color(ACCENT)
-                        false -> Color(ERROR)
-                        null -> Color(VALUE)
-                    },
-                fontSize = 15.sp,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.height(3.dp))
-            Text(detail, color = Color(LABEL), fontSize = 12.sp, lineHeight = 16.sp)
+        Row(
+            Modifier.fillMaxWidth().padding(top = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            actionChip("Открыть claim", Modifier.weight(1f)) { openClaim(context, safe) }
+            actionChip("Копировать ссылку", Modifier.weight(1f)) {
+                copyToClipboard(context, reg.claimUrl)
+            }
         }
-    }
-}
-
-/** Тёмная плашка-кнопка, как у скачивания моделей. [muted] — destructive-действия. */
-@Composable
-private fun actionButton(
-    label: String,
-    muted: Boolean = false,
-    onClick: () -> Unit,
-) {
-    Surface(
-        color = Color(PLATE),
-        shape = RoundedCornerShape(8.dp),
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .padding(top = 6.dp)
-                .clickable(onClick = onClick),
-    ) {
-        Text(
-            label,
-            color = if (muted) Color(MUTED) else Color(ACCENT),
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-        )
-    }
-}
-
-/** Поле ввода в стиле ответа на вопрос агента: Box + BasicTextField с плейсхолдером. */
-@Composable
-private fun fieldBlock(
-    label: String,
-    value: String,
-    onChange: (String) -> Unit,
-    placeholder: String,
-) {
-    Text(label, color = Color(LABEL), fontSize = 12.sp)
-    Spacer(Modifier.height(3.dp))
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .background(Color(PLATE), RoundedCornerShape(8.dp))
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-    ) {
-        BasicTextField(
-            value = value,
-            onValueChange = onChange,
-            textStyle = TextStyle(color = Color(VALUE), fontSize = 13.sp),
-            modifier = Modifier.fillMaxWidth(),
-            decorationBox = { inner ->
-                if (value.isEmpty()) Text(placeholder, color = Color(LABEL), fontSize = 13.sp)
-                inner()
-            },
-        )
+    } else if (reg.claimUrl.isNotBlank()) {
+        statusLine("Ссылка не открыта", "Адрес вне moltbook.com — используйте код вручную", false)
     }
 }
 
@@ -348,6 +371,7 @@ private class MoltbookSectionState {
             when {
                 busy -> "Связь с Moltbook…"
                 error != null -> "Ошибка: $error"
+                confirmReplace -> "Старый ключ перестанет работать — повторите, чтобы заменить"
                 message.isNotBlank() -> message
                 else -> "Ключ и статус агента"
             }

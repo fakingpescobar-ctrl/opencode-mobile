@@ -1,7 +1,6 @@
 package org.opencode.mobile.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,7 +13,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -24,7 +22,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -44,11 +41,12 @@ import org.opencode.mobile.social.karmaLabel
 import org.opencode.mobile.social.pendingHeadline
 
 /**
- * Панель Moltbook — теперь в меню диагностики, а не в шапке чата.
+ * Сводка Moltbook внутри секции диагностики.
  *
- * Отдельный файл, а не ещё 200 строк в [DiagnosticsScreen]: тот и без того на
- * 1700+ строк. Иконка «М» и карточка убраны из шапки: на 363 dp не хватало
- * места, и счётчик неотвеченных соседствовал с MCP-чипом в ущерб обоим.
+ * Раньше это была отдельная оранжевая карточка с собственным заголовком MOLTBOOK,
+ * вложенная в карточку DiagSection, — «карточка в карточке» с двумя одинаковыми
+ * шапками. С 17.11 фон, обводка и второй заголовок убраны: это обычные плотные
+ * строки одной секции, те же цвета и размеры, что у её статуса и полей.
  *
  * Источник цифр: снимок `panel.json` от плагина и журнал будильника. У панели
  * ровно одна обязанность — честно показать, что она знает, и не выдавать
@@ -62,13 +60,10 @@ internal val MoltValue = Color(0xFFE8E8E8)
 private val MoltWarn = Color(0xFFFF6B6B)
 
 /**
- * Панель целиком нарисована с ЗАДАННЫМ lineHeight — без него Compose берёт
- * межстрочный интервал от шрифта и раздувает строку почти вдвое.
- *
- * Замер на реальном устройстве (OPPO CPH2747, 3.5 px/dp) показал 219 dp карточки
- * на 85 dp текста: 61% высоты уходило в воздух между строками сетки. Уплотнение
- * до 10-11 sp / lineHeight 13-15 sp съело эту пустоту, и в неё же влезла
- * настройка периодичности — без неё карточка всё равно была бы короче.
+ * Единые размеры диагностики. Замер на реальном устройстве (OPPO CPH2747,
+ * 3.5 px/dp) показал, что 11 sp текста с явным lineHeight дают плотную строку,
+ * а шрифт без lineHeight раздувает её почти вдвое. Крупные числа здесь не нужны:
+ * главная цифра «ждут ответа» теперь того же порядка, что и остальные показатели.
  */
 internal val TINY = 9.sp
 internal val TINY_LINE = 11.sp
@@ -83,7 +78,7 @@ internal val BODY_LINE = 14.sp
  * Опрос задаёт владелец экрана (секция Moltbook в диагностике): чтение файла
  * дешевле сети на порядок — панель открывают посмотреть, а не ждать. Плагин
  * переписывает снимок после каждого своего вызова, так что между тиками
- * карточка спокойно показывает «данные от HH:mm», а не врёт свежестью.
+ * панель спокойно показывает «данные от HH:mm», а не врёт свежестью.
  */
 @Composable
 internal fun rememberMoltbookState(refreshKey: Int): MoltbookPanelState {
@@ -99,12 +94,11 @@ internal fun rememberMoltbookState(refreshKey: Int): MoltbookPanelState {
 }
 
 /**
- * Карточка Moltbook: сводка по журналу, кому именно мы не ответили, настройка
- * периодичности и причина, по которой агента не разбудили.
+ * Сводка: очередь, сетка показателей, будильник, период и список неотвеченных.
  *
  * [state.reason] заполняется только отказом — «сервер не ответил», «снимка нет»,
  * «все сессии заняты». Успешное буждение в неё не попадает намеренно: время
- * последней работы и так видно по снимку.
+ * последней работы и так видно по подписи снимка.
  */
 @Composable
 internal fun MoltbookPanel(
@@ -113,66 +107,67 @@ internal fun MoltbookPanel(
 ) {
     // Состояние рубильника живёт здесь, а не внутри кнопки: его читает ещё и
     // заголовок, который иначе продолжал бы обещать «раз в 2 часа» при
-    // выключенном будильнике — то есть две строки одной карточки врали бы
+    // выключенном будильнике — то есть две строки одной секции врали бы
     // по-разному.
     val alarmOn = rememberAlarmEnabled()
     Column(
-        modifier =
-            modifier
-                .fillMaxWidth()
-                .padding(top = 4.dp, bottom = 2.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(MoltCard)
-                .border(1.dp, MoltAccent.copy(alpha = 0.25f), RoundedCornerShape(10.dp))
-                .testTag(TAG_PANEL_MOLTBOOK)
-                // Внешний Column намеренно НЕ скроллится: иначе вложенный список
-                // вопросов нельзя прокрутить отдельно — колесо уходит в панель целиком.
-                .padding(horizontal = 10.dp, vertical = 5.dp),
+        modifier
+            .fillMaxWidth()
+            .testTag(TAG_PANEL_MOLTBOOK)
+            .padding(top = 2.dp),
     ) {
         PanelHeader(state, alarmOn.value)
-        Spacer(Modifier.height(6.dp))
         Divider()
         MoltbookAlarmSwitch(alarmOn.value) { alarmOn.value = it }
         MoltbookIntervalPicker()
-
         if (state.pending.isNotEmpty()) {
-            Spacer(Modifier.height(6.dp))
             Divider()
             PendingList(state.pending, state.awaiting)
         }
-
         if (state.reason.isNotBlank()) RefusalNote(state.reason)
     }
 }
 
 /**
- * Заголовок карточки: имя, свежесть снимка и главная цифра очереди.
+ * Очередь одной строкой, без крупного числа и без второго заголовка.
  *
- * Цифра крупная, но не во всю высоту: раньше она съедала треть экрана ради
- * одного числа.
+ * Снимка нет — цифры нет: прочерк и серый цвет, а не ноль «все ответили».
  */
 @Composable
 private fun PanelHeader(
     state: MoltbookPanelState,
     alarmOn: Boolean,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    val count = if (state.ok) state.awaiting.toString() else UNKNOWN
+    val color =
+        when {
+            !state.ok -> MoltIdle
+            state.awaiting > 0 -> MoltAccent
+            else -> DiagTone.OK.color()
+        }
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
         Text(
-            text = "MOLTBOOK",
-            color = MoltAccent,
-            fontSize = SMALL,
+            "ОЧЕРЕДЬ",
+            color = MoltIdle,
+            fontSize = TINY,
+            lineHeight = TINY_LINE,
             fontWeight = FontWeight.Bold,
-            letterSpacing = 1.5.sp,
-            lineHeight = SMALL_LINE,
+            letterSpacing = 1.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
         )
-        Spacer(Modifier.weight(1f))
         Text(
-            // Свежесть снимка и ритм тика — одно и то же поле, пока будильник
-            // включён; при выключенном там обязано стоять «выключен», иначе
-            // карточка обещала бы тики, которых не будет.
-            text = if (alarmOn) cadenceHint(state) else "будильник выключен",
+            count,
+            color = color,
+            fontSize = BODY,
+            lineHeight = BODY_LINE,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            "ждут ответа",
             color = MoltIdle,
             fontSize = TINY,
             lineHeight = TINY_LINE,
@@ -180,17 +175,22 @@ private fun PanelHeader(
             overflow = TextOverflow.Ellipsis,
         )
     }
-
+    Text(
+        // Свежесть снимка и ритм тика — одно и то же поле, пока будильник
+        // включён; при выключенном там обязано стоять «выключен», иначе
+        // секция обещала бы тики, которых не будет.
+        text = if (alarmOn) cadenceHint(state) else "будильник выключен",
+        color = MoltIdle,
+        fontSize = TINY,
+        lineHeight = TINY_LINE,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.padding(top = 1.dp),
+    )
     Spacer(Modifier.height(3.dp))
-
-    AwaitingCount(state)
-
-    Spacer(Modifier.height(5.dp))
-
     // 4×2, а не 3×3: восемь показателей заполняют сетку без пустой ячейки, а
     // лишний ряд — это ровно 25 dp высоты, ради которых карточка и была вдвое
-    // выше нужного. Раскладка колонок при ширине 319 dp внутри карточки:
-    // 4 × 76 + 3 × 5 = 319, подпись в 76 dp («ответов на них» ≈ 58 dp) влезает.
+    // выше нужного. Подпись в 76 dp («ответов на них» ≈ 58 dp) влезает.
     StatGrid(
         listOf(
             state.answered.toString() to "отвечено",
@@ -205,47 +205,7 @@ private fun PanelHeader(
     )
 }
 
-/**
- * Крупная цифра «ждут ответа» — то, ради чего карточка и открывается.
- *
- * Вынесена отдельно не ради длины, а ради одного правила: снимка нет — цифры
- * нет. Ноль в этом месте означал бы «все ответили», хотя плагин ничего не
- * прочитал (см. MoltbookPanelState.stale), поэтому при отказе здесь прочерк и
- * цвет «мы не знаем», а не спокойный зелёный.
- */
-@Composable
-private fun AwaitingCount(state: MoltbookPanelState) {
-    val text = if (state.ok) state.awaiting.toString() else UNKNOWN
-    val color =
-        when {
-            !state.ok -> MoltIdle
-            state.awaiting > 0 -> MoltAccent
-            else -> Color(0xFF39FF88)
-        }
-
-    Row(verticalAlignment = Alignment.Bottom) {
-        Text(
-            text = text,
-            color = color,
-            fontSize = 22.sp,
-            fontWeight = FontWeight.Black,
-            lineHeight = 24.sp,
-            maxLines = 1,
-        )
-        Spacer(Modifier.width(6.dp))
-        Text(
-            text = "ждут ответа",
-            color = MoltIdle,
-            fontSize = SMALL,
-            lineHeight = SMALL_LINE,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(bottom = 2.dp),
-        )
-    }
-}
-
-/** Список вопросов: ограничен по высоте и прокручивается, панель не тонет в тексте. */
+/** Список вопросов: ограничен по высоте и прокручивается, секция не тонет в тексте. */
 @Composable
 private fun PendingList(
     pending: List<MoltbookQuestion>,
@@ -264,17 +224,12 @@ private fun PendingList(
         lineHeight = TINY_LINE,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.padding(top = 4.dp, bottom = 3.dp),
+        modifier = Modifier.padding(top = 3.dp, bottom = 2.dp),
     )
-    // Список длинный и скроллится сам: карточка живёт в неподвижной шапке
-    // чата, поэтому без своей прокрутки семьдесят вопросов просто уедут за
-    // нижний край экрана. Внутренний скролл вместо общего - сознательный
-    // размен: жест в этом месте не прокручивает переписку.
-    //
-    // Именно LazyColumn, а не Column с verticalScroll: в снимке бывает до двухсот
+    // LazyColumn, а не Column с verticalScroll: в снимке бывает до двухсот
     // неотвеченных, и обычный Column компонует все строки целиком при каждом
-    // кадре прокрутки - то есть прокрутка дёргалась бы ровно так, как её не должно
-    // быть видно. LazyColumn держит в памяти только видимое.
+    // кадре прокрутки — прокрутка дёргалась бы именно так, как её не должно
+    // быть видно. Высота уменьшена с 280 dp: в диагностике секция и так длинная.
     LazyColumn(
         Modifier.heightIn(max = PENDING_LIST_MAX_HEIGHT),
     ) {
@@ -300,7 +255,7 @@ private fun RefusalNote(reason: String) {
         lineHeight = TINY_LINE,
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.padding(top = 5.dp),
+        modifier = Modifier.padding(top = 4.dp),
     )
 }
 
@@ -317,7 +272,7 @@ private fun PendingRow(question: MoltbookQuestion) {
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.width(88.dp),
+                modifier = Modifier.width(78.dp),
             )
             Text(
                 // Заголовок ветки - навигация, а не чтение: он указывает, ОТКУДА
@@ -345,12 +300,11 @@ private fun PendingRow(question: MoltbookQuestion) {
         // Оригинал показываем только когда перевода нет. Переведённый текст —
         // единственный, который нужен читателю: английская копия под ним не
         // «контекст», а второй абзац на чужом языке, и она отнимает место у
-        // следующего вопроса. Без перевода показывать нечего — тогда оригинал
-        // остаётся, иначе вопрос выглядел бы пустым.
+        // следующего вопроса.
         if (showOriginal(question.bodyRu, question.body)) {
             Text(
                 text = question.body,
-                color = Color(0xFFBDBDBD),
+                color = MoltIdle,
                 fontSize = SMALL,
                 lineHeight = SMALL_LINE,
             )
@@ -358,14 +312,8 @@ private fun PendingRow(question: MoltbookQuestion) {
     }
 }
 
-/**
- * Список вопросов не выше этого.
- *
- * 280 dp — примерно половина экрана: видно сразу десяток с половиной вопросов,
- * остальное крутится внутри списка. Раньше было 112 dp, и шесть строк выглядели
- * как конец данных, хотя всего их семьдесят с лишним.
- */
-private val PENDING_LIST_MAX_HEIGHT = 280.dp
+/** Список вопросов не выше этого: ~6 строк вместо десяти с половиной раньше. */
+private val PENDING_LIST_MAX_HEIGHT = 180.dp
 
 const val TAG_PANEL_MOLTBOOK = "panel_moltbook"
 
@@ -374,7 +322,7 @@ private const val STAT_COLUMNS = 4
 
 @Composable
 private fun StatGrid(cells: List<Pair<String, String>>) {
-    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         cells.chunked(STAT_COLUMNS).forEach { row ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 row.forEach { (value, label) ->
@@ -382,9 +330,9 @@ private fun StatGrid(cells: List<Pair<String, String>>) {
                         Text(
                             text = value,
                             color = if (value == UNKNOWN) MoltIdle else MoltValue,
-                            fontSize = 12.sp,
+                            fontSize = SMALL,
+                            lineHeight = SMALL_LINE,
                             fontWeight = FontWeight.Bold,
-                            lineHeight = BODY_LINE,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -406,5 +354,5 @@ private fun StatGrid(cells: List<Pair<String, String>>) {
 
 @Composable
 private fun Divider() {
-    Box(Modifier.fillMaxWidth().height(1.dp).background(MoltAccent.copy(alpha = 0.15f)))
+    Box(Modifier.fillMaxWidth().height(1.dp).background(MoltIdle.copy(alpha = 0.12f)))
 }

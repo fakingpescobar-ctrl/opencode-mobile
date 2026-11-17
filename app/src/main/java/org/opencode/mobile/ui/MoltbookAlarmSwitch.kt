@@ -28,13 +28,16 @@ import androidx.compose.ui.unit.sp
 import org.opencode.mobile.social.MoltbookScheduler
 
 /**
- * Выключатель будильника Moltbook в карточке — кнопка, а не ещё один период.
+ * Выключатель будильника Moltbook — компактный чип в общей строке секции.
  *
  * Период и включённость — разные вопросы, и раньше в UI был только первый.
  * «Авто» (0) значит «паузу выбирает агент», то есть тик работает; выключить
  * автономию целиком было нечем, кроме «Остановить» в настройках Android,
  * которая гасит вместе с будильником и сам сервер. Юзеру нужен был ровно один
  * рубильник, и он здесь.
+ *
+ * С 17.11 оранжевая кнопка заменена на общий зелёный акцент действий: внутри
+ * секции диагностики жёлтый чип выглядел инородно и физически крупнее соседних.
  *
  * Состояние читается из тех же prefs, что и планировщик, а не хранится в
  * композиции как истина: экран обязан показывать то, что реально применяется,
@@ -52,8 +55,8 @@ internal fun MoltbookAlarmSwitch(
     onChange: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
-    Column(Modifier.fillMaxWidth().padding(top = 6.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+    Column(Modifier.fillMaxWidth().padding(top = 3.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.weight(1f)) {
                 Text(
                     text = "БУДИЛЬНИК ТИКА",
@@ -69,14 +72,14 @@ internal fun MoltbookAlarmSwitch(
                     // только факт: «выключен» без «тиков нет» читается как
                     // «кнопка нажата», а не как «агент больше не проснётся».
                     text = alarmStateText(enabled),
-                    color = if (enabled) MoltValue else MoltIdle,
+                    color = if (enabled) DiagTone.OK.color() else MoltIdle,
                     fontSize = SMALL,
                     lineHeight = SMALL_LINE,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(6.dp))
             BoxedAlarmButton(enabled) {
                 MoltbookScheduler.setEnabled(context, !enabled)
                 // Перечитываем prefs, а не инвертируем нажатое: единственный
@@ -86,40 +89,41 @@ internal fun MoltbookAlarmSwitch(
         }
         if (!enabled) {
             Text(
-                text = "тики не приходят; выбранный период ниже сохранится",
+                text = "тики не придут; период сохранится",
                 color = MoltIdle,
                 fontSize = TINY,
                 lineHeight = TINY_LINE,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 3.dp),
+                modifier = Modifier.padding(top = 1.dp),
             )
         }
     }
 }
 
-/** Кнопка рубильника: подпись — действие, а не состояние, чтобы не читалась как статус. */
+/** Подпись кнопки — действие, которое произойдёт: «выключить», «включить». */
 @Composable
 private fun BoxedAlarmButton(
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
+    val accent = DiagTone.OK.color()
     Box(
         modifier =
             Modifier
                 .clip(RoundedCornerShape(6.dp))
-                .background(if (enabled) MoltChipOff else MoltAccent.copy(alpha = 0.18f))
-                .border(1.dp, MoltAccent.copy(alpha = if (enabled) 0.35f else 0.75f), RoundedCornerShape(6.dp))
+                .background(if (enabled) accent.copy(alpha = 0.12f) else MoltChipOff)
+                .border(1.dp, accent.copy(alpha = if (enabled) 0.35f else 0.18f), RoundedCornerShape(6.dp))
                 .clickable { onClick() }
-                .padding(horizontal = 12.dp, vertical = 6.dp)
+                .padding(horizontal = 10.dp, vertical = 5.dp)
                 .testTag(TAG_MOLTBOOK_ALARM_SWITCH),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = alarmActionText(enabled),
-            color = if (enabled) MoltValue else MoltAccent,
-            fontSize = BODY,
-            lineHeight = BODY_LINE,
+            color = if (enabled) accent else MoltIdle,
+            fontSize = SMALL,
+            lineHeight = SMALL_LINE,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
         )
@@ -133,7 +137,6 @@ private fun BoxedAlarmButton(
  */
 internal fun alarmStateText(enabled: Boolean): String = if (enabled) "включён · тики идут" else "выключен · тиков нет"
 
-/** Подпись кнопки — действие, которое произойдёт: «выключить», «включить». */
 internal fun alarmActionText(enabled: Boolean): String = if (enabled) "выключить" else "включить"
 
 const val TAG_MOLTBOOK_ALARM_SWITCH = "moltbook_alarm_switch"
