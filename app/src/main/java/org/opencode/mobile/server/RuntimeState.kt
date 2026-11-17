@@ -70,6 +70,9 @@ enum class RuntimeErrorCode {
     /** Музыка (ynison.js) умерла ПОСЛЕ успешного старта (serve жив, чат без неё). */
     YNISON_DIED,
 
+    /** Плагин Moltbook (MCP) умер ПОСЛЕ успешного старта (serve жив, агент без молтбука). */
+    MOLTBOOK_DIED,
+
     /** Процесс serve не стартовал (startServe == null). */
     SERVER_START_FAILED,
 

@@ -14,6 +14,9 @@ enum class LocalMcpTarget(
 ) {
     YNISON(processName = "ynison", feature = "музыка"),
     MEMORY(processName = "память", feature = "память"),
+    // Плагин Moltbook — инструменты агента. Умерший плагин лишает агента
+    // молтбука, но не роняет serve; восстанавливается тем же механизмом.
+    MOLTBOOK(processName = "moltbook", feature = "Молтбук"),
 }
 
 /**
@@ -37,6 +40,7 @@ data class LocalMcpProc(
 data class LocalMcpState(
     val ynison: LocalMcpProc,
     val memory: LocalMcpProc,
+    val moltbook: LocalMcpProc,
     val recoveries: Int,
     val maxRecoveries: Int,
     val alreadyReported: Boolean,
@@ -45,6 +49,7 @@ data class LocalMcpState(
         when (target) {
             LocalMcpTarget.YNISON -> ynison
             LocalMcpTarget.MEMORY -> memory
+            LocalMcpTarget.MOLTBOOK -> moltbook
         }
 }
 
@@ -92,8 +97,9 @@ sealed class LocalMcpAction {
  * ветку отказа.
  */
 object LocalMcpPolicy {
-    /** Порядок значим: при смерти обоих первым поднимается ynison. */
-    private val TARGETS = listOf(LocalMcpTarget.YNISON, LocalMcpTarget.MEMORY)
+    /** Порядок значим: при смерти нескольких первым поднимается ynison, последним — moltbook. */
+    private val TARGETS =
+        listOf(LocalMcpTarget.YNISON, LocalMcpTarget.MEMORY, LocalMcpTarget.MOLTBOOK)
 
     fun decide(state: LocalMcpState): LocalMcpAction {
         val dead = TARGETS.filter { state.proc(it).dead }
@@ -123,10 +129,12 @@ object LocalMcpPolicy {
         target: LocalMcpTarget,
         ynisonCode: Int?,
         memoryCode: Int?,
+        moltbookCode: Int?,
     ): Int? =
         when (target) {
             LocalMcpTarget.YNISON -> ynisonCode
             LocalMcpTarget.MEMORY -> memoryCode
+            LocalMcpTarget.MOLTBOOK -> moltbookCode
         }
 
     /** Что именно недоступно - по фактически мёртвым, а не «и то и другое». */

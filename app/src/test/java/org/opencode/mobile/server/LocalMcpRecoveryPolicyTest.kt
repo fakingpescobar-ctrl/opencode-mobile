@@ -14,10 +14,11 @@ class LocalMcpRecoveryPolicyTest {
     private val dead = LocalMcpProc(started = true, alive = false, recoverable = true)
     private val hopeless = LocalMcpProc(started = true, alive = false, recoverable = false)
 
-    /** Обе службы живы, попыток не потрачено. */
+    /** Все три службы живы, попыток не потрачено. */
     private val healthy = LocalMcpState(
         ynison = alive,
         memory = alive,
+        moltbook = alive,
         recoveries = 0,
         maxRecoveries = 3,
         alreadyReported = false,
@@ -25,6 +26,7 @@ class LocalMcpRecoveryPolicyTest {
 
     private val ynisonDead = healthy.copy(ynison = dead)
     private val memoryDead = healthy.copy(memory = dead)
+    private val moltbookDead = healthy.copy(moltbook = dead)
 
     @Test
     fun `всё живо - ничего не делаем`() {
@@ -101,6 +103,22 @@ class LocalMcpRecoveryPolicyTest {
     }
 
     @Test
+    fun `мёртвый молтбук восстанавливается как молтбук`() {
+        // Живой тест 17.11: kill moltbook.js → 20с тишины → порт 4201 закрыт.
+        // Раньше молтбук не был участником политики и оставался мёртвым навсегда.
+        val action = LocalMcpPolicy.decide(moltbookDead) as LocalMcpAction.Retry
+        assertEquals(LocalMcpTarget.MOLTBOOK, action.target)
+        assertEquals(1, action.attempt)
+    }
+
+    @Test
+    fun `исчерпание молтбука не обвиняет память`() {
+        val action = LocalMcpPolicy.decide(moltbookDead.copy(recoveries = 3))
+            as LocalMcpAction.GiveUp
+        assertEquals(listOf(LocalMcpTarget.MOLTBOOK), action.targets)
+    }
+
+    @Test
     fun `при смерти обоих сначала поднимаем ynison`() {
         val action = LocalMcpPolicy.decide(ynisonDead.copy(memory = dead))
             as LocalMcpAction.Retry
@@ -152,6 +170,7 @@ class LocalMcpRecoveryPolicyTest {
                 LocalMcpTarget.MEMORY,
                 ynisonCode = 0,
                 memoryCode = 137,
+                moltbookCode = 0,
             ),
         )
         assertEquals(
@@ -160,6 +179,7 @@ class LocalMcpRecoveryPolicyTest {
                 LocalMcpTarget.YNISON,
                 ynisonCode = 139,
                 memoryCode = 137,
+                moltbookCode = 0,
             ),
         )
     }
@@ -181,6 +201,10 @@ class LocalMcpRecoveryPolicyTest {
             LocalMcpPolicy.unavailableText(
                 listOf(LocalMcpTarget.YNISON, LocalMcpTarget.MEMORY),
             ),
+        )
+        assertEquals(
+            "Молтбук",
+            LocalMcpPolicy.unavailableText(listOf(LocalMcpTarget.MOLTBOOK)),
         )
     }
 }

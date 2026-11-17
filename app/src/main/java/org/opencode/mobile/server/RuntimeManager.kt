@@ -463,17 +463,27 @@ class RuntimeManager(
                                 !memoryStarted || (memory.isAlive && tcpOk(OpencodeRuntime.MEMORY_PORT))
                             val ynAlive =
                                 !ynisonStarted || (ynison.isAlive && tcpOk(OpencodeRuntime.YNISON_PORT))
-                            val allAlive = memAlive && ynAlive
+                            // Плагин Moltbook жив, только если процесс жив И держит порт.
+                            // Отдельная проверка порта (а не только isAlive): процесс мог
+                            // зависнуть с открытым fd и не отвечать — для агента это то же
+                            // самое, что мёртвый, а две копии на одном порту не поднимутся.
+                            val moltAlive =
+                                !moltbookStarted || (moltbook.isAlive && tcpOk(MoltbookMcp.PORT))
+                            val allAlive = memAlive && ynAlive && moltAlive
                             when (currentState.stage) {
                                 RuntimeStage.HEALTHY ->
                                     if (!allAlive) {
                                         val (code, message) =
-                                            if (!memAlive) {
-                                                RuntimeErrorCode.MEMORY_DIED to
-                                                    "Память (MCP-сервер) умерла - отключаем на лету"
-                                            } else {
-                                                RuntimeErrorCode.YNISON_DIED to
-                                                    "Музыка (MCP-сервер) умерла - чат работает без неё"
+                                            when {
+                                                !memAlive ->
+                                                    RuntimeErrorCode.MEMORY_DIED to
+                                                        "Память (MCP-сервер) умерла - отключаем на лету"
+                                                !ynAlive ->
+                                                    RuntimeErrorCode.YNISON_DIED to
+                                                        "Музыка (MCP-сервер) умерла - чат работает без неё"
+                                                else ->
+                                                    RuntimeErrorCode.MOLTBOOK_DIED to
+                                                        "Плагин Молтбук (MCP) умер - агент без инструментов молтбука"
                                             }
                                         emitFailure(
                                             stage = RuntimeStage.HEALTHY,
@@ -522,6 +532,13 @@ class RuntimeManager(
                                             // nullable там нет. Восстановима всегда.
                                             recoverable = true,
                                         ),
+                                        moltbook = LocalMcpProc(
+                                            started = moltbookStarted,
+                                            alive = moltbook.isAlive,
+                                            // Токен moltbook - всегда UUID (создан до старта),
+                                            // nullable там нет. Восстановим тем же токеном.
+                                            recoverable = true,
+                                        ),
                                         recoveries = localMcpRecoveries,
                                         maxRecoveries = MAX_LOCAL_MCP_RECOVERIES,
                                         alreadyReported = localMcpGaveUpReported,
@@ -538,12 +555,13 @@ class RuntimeManager(
                                     // приложения, и лечится это по-разному.
                                     val ynCode = ynison.lastExitCode ?: ynison.currentExitCode()
                                     val memCode = memory.lastExitCode ?: memory.currentExitCode()
+                                    val moltCode = moltbook.lastExitCode ?: moltbook.currentExitCode()
                                     localMcpRecoveries = action.attempt
                                     val who = action.target.processName
                                     android.util.Log.i(
                                         "OpencodeServer",
                                         "$who: неожиданная смерть (exit=" +
-                                            "${LocalMcpPolicy.exitCodeOf(action.target, ynCode, memCode)}), " +
+                                            "${LocalMcpPolicy.exitCodeOf(action.target, ynCode, memCode, moltCode)}), " +
                                             "поднимаем заново (попытка ${action.attempt})",
                                     )
                                     // Результат старта НЕ присваиваем ynisonStarted/memoryStarted.
@@ -586,6 +604,17 @@ class RuntimeManager(
                                                 logFile,
                                                 workspace,
                                                 memoryToken,
+                                            )
+
+                                        // Тот же moltbookToken, что при первом старте: запись
+                                        // MCP в конфиге разворачивает {env:MCP_MOLTBOOK_TOKEN}
+                                        // из окружения serve, и новый токен разошёлся бы с ним.
+                                        LocalMcpTarget.MOLTBOOK ->
+                                            startMoltbookAndVerify(
+                                                context = context,
+                                                logFile = logFile,
+                                                workspace = workspace,
+                                                token = moltbookToken,
                                             )
                                     }
                                     if (recovered) {
@@ -634,10 +663,11 @@ class RuntimeManager(
                                         localMcpGaveUpReported = true
                                         val ynCode = ynison.lastExitCode ?: ynison.currentExitCode()
                                         val memCode = memory.lastExitCode ?: memory.currentExitCode()
+                                        val moltCode = moltbook.lastExitCode ?: moltbook.currentExitCode()
                                         val who = action.targets.joinToString(" + ") { it.processName }
                                         val codes = action.targets.joinToString(", ") {
                                             "${it.processName} exit=" +
-                                                LocalMcpPolicy.exitCodeOf(it, ynCode, memCode)
+                                                LocalMcpPolicy.exitCodeOf(it, ynCode, memCode, moltCode)
                                         }
                                         val lost = LocalMcpPolicy.unavailableText(action.targets)
                                         android.util.Log.e(
