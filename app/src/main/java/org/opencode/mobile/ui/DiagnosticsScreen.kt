@@ -174,6 +174,16 @@ private data class StorageSnapshot(
      */
     val ttsVoiceReady: Boolean,
     val ttsVoiceBytes: Long,
+    /**
+     * Готовность СКАЧИВАЕМЫХ движков (те, что лежат в APK, не считаются):
+     * сколько установлено из скольких.
+     *
+     * Считается в IO-ветке по той же причине, что и остальное: `isReady()`
+     * сверяет размеры шести файлов движка, и хотя хеши там не считаются,
+     * главному потоку это не работа.
+     */
+    val enginesReady: Int,
+    val enginesTotal: Int,
     val logTail: String,
     /** Единый отчёт готовности runtime-слоя (RuntimeValidation). */
     val validation: RuntimeValidation.Report,
@@ -341,6 +351,8 @@ fun DiagnosticsScreen(
                     ggmlReady = ggmlReady,
                     ttsVoiceReady = TtsModelDownloader.isReady(context),
                     ttsVoiceBytes = TtsModelDownloader.bytesOnDisk(context),
+                    enginesReady = Engine.entries.count { !it.bundled && EngineStore.isReady(context, it) },
+                    enginesTotal = Engine.entries.count { !it.bundled },
                     logTail = readLogTail(File(context.filesDir, "opencode.log")),
                     validation = RuntimeValidation.run(context),
                 )
@@ -472,6 +484,19 @@ fun DiagnosticsScreen(
                     when {
                         snapshot == null -> DiagTone.IDLE
                         snapshot.ttsVoiceReady -> DiagTone.OK
+                        else -> DiagTone.WARN
+                    }
+                // Движки: «ок» только когда установлено всё, что качается
+                // отдельно. Ни одного — серое «не настроено» (движок — опция,
+                // а не поломка); часть — «внимание»: половина работает,
+                // половина нет. До 17.11 тон был прибит к IDLE, поэтому у
+                // человека с установленными движками горел серый кружок и не
+                // было «ок», хотя все строки внутри были зелёными.
+                val enginesTone =
+                    when {
+                        snapshot == null -> DiagTone.IDLE
+                        snapshot.enginesReady == snapshot.enginesTotal -> DiagTone.OK
+                        snapshot.enginesReady == 0 -> DiagTone.IDLE
                         else -> DiagTone.WARN
                     }
                 val validation = snapshot?.validation
@@ -645,7 +670,7 @@ fun DiagnosticsScreen(
                     }
                 }
 
-                DiagSection("Движки распознавания и озвучки", DiagTone.IDLE) {
+                DiagSection("Движки распознавания и озвучки", enginesTone) {
                     // Без нативной библиотеки кнопка микрофона не даст ничего,
                     // поэтому движок показываем раньше моделей: сначала его.
                     EngineRows(engineDl, startEngineDownload)
