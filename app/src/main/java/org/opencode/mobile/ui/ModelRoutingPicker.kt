@@ -1,5 +1,6 @@
 package org.opencode.mobile.ui
 
+import android.content.Context
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -23,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -68,6 +70,10 @@ private enum class RoutingRole(
  *
  * Выключение не стирает уже записанный блок: оно лишь перестаёт им управлять,
  * чтобы правка конфига вручную не пропадала из-под пользователя.
+ *
+ * Состояние и действия лежат в [RoutingSectionState] и [RoutingSectionActions],
+ * а разметка — в [RoutingSection]: detekt считает длину и сложность функции, и
+ * держать в одной все ветки разметки и весь опрос сервера он не разрешает.
  */
 @Composable
 internal fun ModelRoutingPicker(
@@ -76,71 +82,80 @@ internal fun ModelRoutingPicker(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var enabled by remember { mutableStateOf(ModelRoutingPrefs.isEnabled(context)) }
-    var routing by remember { mutableStateOf(ModelRoutingPrefs.current(context)) }
-    var role by remember { mutableStateOf(RoutingRole.HEAVY) }
-    var status by remember { mutableStateOf("") }
-    // true = конфиг на диске новый, но сервер ещё читает старый. Сервер
-    // подхватит новое только после рестарта, а рестарт нельзя делать без
-    // спроса: он рвёт стриминг текущей сессии. Поэтому это явное действие.
-    var pending by remember { mutableStateOf(false) }
-    // Флаг идущего рестарта: кнопка «применить» остаётся на экране всё время
-    // опроса сервера, и без этого флага два нажатия подряд поднимали бы второй
-    // рестарт поверх первого.
-    var applying by remember { mutableStateOf(false) }
+    val state =
+        remember {
+            RoutingSectionState(
+                enabled = ModelRoutingPrefs.isEnabled(context),
+                routing = ModelRoutingPrefs.current(context),
+            )
+        }
+    val actions = remember(state) { RoutingSectionActions(context, scope, state, onSaved) }
+    RoutingSync(context, state)
+    RoutingSection(modifier, state, actions)
+}
+
+/**
+ * Состояние секции: одно место, где живут все переключатели.
+ *
+ * Вынесено из композабла не ради красоты: у `remember { mutableStateOf(...) }`
+ * на каждый флаг detekt видел одну длинную функцию и считал её ветки вместе с
+ * ветками разметки.
+ *
+ * `pending` — конфиг на диске новый, но сервер ещё читает старый: подхватит он
+ * его только после рестарта, а рестарт нельзя делать без спроса, он рвёт
+ * стриминг текущей сессии. `applying` — рестарт уже идёт, чтобы два нажатия
+ * подряд не поднимали второй поверх первого.
+ */
+private class RoutingSectionState(
+    enabled: Boolean,
+    routing: ModelRouting,
+) {
+    var enabled by mutableStateOf(enabled)
+    var routing by mutableStateOf(routing)
+    var role by mutableStateOf(RoutingRole.HEAVY)
+    var status by mutableStateOf("")
+    var pending by mutableStateOf(false)
+    var applying by mutableStateOf(false)
+
     // Список моделей: сначала встроенный каталог, потом — живой, с сервера.
     // Провайдер меняет состав моделей без нашего ведома (модель переименовали,
     // часть убрали, часть добавили), поэтому источник по умолчанию — сервер, а
     // встроенный список остаётся рабочим вариантом на случай, когда сервер не
     // поднят или не ответил.
-    var catalog by remember { mutableStateOf(ModelCatalog.all) }
-    var fromServer by remember { mutableStateOf(false) }
+    var catalog by mutableStateOf(ModelCatalog.all)
+    var fromServer by mutableStateOf(false)
+}
 
-    // Живой список спрашиваем отдельно от сверки выбора: ответ сервера
-    // приходит асинхронно и не должен трогать расписание.
-    LaunchedEffect("models") {
-        val live =
-            withContext(Dispatchers.IO) {
-                ModelList.fetch(OpencodeServerService.state.value.port)
-            }
-        if (live.isEmpty()) return@LaunchedEffect
-        catalog = live
-        fromServer = true
-    }
-
-    // Рассинхрон может появиться не только из нажатий: перезапуск приложения,
-    // правка конфига руками, убитый процесс. Поэтому при открытии секции
-    // спрашиваем сервер, а не полагаемся на остаточное состояние remember.
-    // Ответ приходит асинхронно, поэтому сверяем его со снимком выбора: пока
-    // пользователь не нажал ещё одну строку, снимок совпадает и результат
-    // применяется. Разошлись — ответ прошлого состояния, выкидываем его,
-    // иначе он снимет кнопку «применить» у только что записанного выбора.
-    LaunchedEffect(Unit) {
-        val snapshot = routing
-        val state = currentChoiceState(context, snapshot)
-        if (routing != snapshot) return@LaunchedEffect
-        pending = state.pending
-        if (state.message.isNotEmpty()) status = state.message
-    }
-
+/**
+ * Действия секции: запись выбора и рестарт с проверкой.
+ *
+ * Запись уходит в IO (чтение конфига + tmp/rename + читающая проверка), рестарт
+ * ходит в сеть и дёргает сервисы, поэтому оба — из корутин, а не из обработчика
+ * нажатия.
+ */
+private class RoutingSectionActions(
+    private val context: Context,
+    private val scope: CoroutineScope,
+    private val state: RoutingSectionState,
+    private val onSaved: (Boolean) -> Unit,
+) {
     fun commit(
         next: ModelRouting,
         on: Boolean,
     ) {
         // Правка модели посреди опроса рестарта ломает сверку: завершившийся
-        // applyNow пришёл бы со старым routing и объявил «применено» для модели,
-        // которую сервер ещё не обслуживает. Поэтому на время рестарта секция
-        // не принимает выбор — строки просто не жмутся.
-        if (applying) return
-        routing = next
-        enabled = on
+        // applyNow пришёл бы со старым routing и объявил «применено» для
+        // модели, которую сервер ещё не обслуживает.
+        if (state.applying) return
+        state.routing = next
+        state.enabled = on
         scope.launch {
             val result =
                 runCatching { commitRoutingChoice(context, on, next, onSaved) }
                     .getOrElse { ChoiceResult(pending = false, message = FAILED_TEXT) }
-            if (routing != next) return@launch
-            status = result.message
-            pending = result.pending
+            if (state.routing != next) return@launch
+            state.status = result.message
+            state.pending = result.pending
         }
     }
 
@@ -153,79 +168,142 @@ internal fun ModelRoutingPicker(
      * неудаче должна остаться — иначе пользователь решает, что всё применено.
      */
     fun applyNow() {
-        if (applying) return
-        applying = true
-        status = RESTARTING
+        if (state.applying) return
+        state.applying = true
+        state.status = RESTARTING
         // Снимок, а не текущее значение: applyNow обязан сверяться с тем
         // выбором, ради которого рестарт и поднимался.
-        val target = routing
+        val target = state.routing
         scope.launch {
             // finally, а не присваивание после: исключение рестарта (например,
             // запрет startForegroundService на фоне) иначе навсегда оставило бы
             // кнопку в состоянии «перезапускаю» с отключённым нажатием.
             try {
-                // Рестарт и опрос — с сетью и сервисами, а uncaught-исключение
-                // из корутины в rememberCoroutineScope валит приложение. Отказ
-                // показываем текстом и снимаем блокировку, чтобы секция
-                // осталась в рабочем состоянии.
-                val result =
-                    runCatching { restartAndVerify(context, target) }
-                        .getOrElse { ChoiceResult(pending = true, message = FAILED_TEXT) }
-                if (routing == target) {
-                    status = result.message
-                    pending = result.pending
+                val result = restartQuietly(context, target)
+                if (state.routing == target) {
+                    state.status = result.message
+                    state.pending = result.pending
                 }
             } finally {
-                applying = false
+                state.applying = false
             }
         }
     }
+}
 
+/**
+ * Сверка с сервером при открытии секции: живой список моделей и настоящее
+ * состояние выбора.
+ *
+ * Рассинхрон появляется не только от нажатий: перезапуск приложения, правка
+ * конфига руками, убитый процесс. Поэтому спрашиваем сервер, а не полагаемся
+ * на остаточное состояние `remember`. Ответ приходит асинхронно, поэтому
+ * сверяем его со снимком выбора: пока пользователь не нажал ещё одну строку,
+ * снимок совпадает и результат применяется; разошлись — это ответ прошлого
+ * состояния, и он снял бы кнопку «применить» у только что записанного выбора.
+ */
+@Composable
+private fun RoutingSync(
+    context: Context,
+    state: RoutingSectionState,
+) {
+    LaunchedEffect("models") {
+        val live = liveCatalog() ?: return@LaunchedEffect
+        state.catalog = live
+        state.fromServer = true
+    }
+    LaunchedEffect(Unit) {
+        val snapshot = state.routing
+        val check = currentChoiceState(context, snapshot)
+        if (state.routing != snapshot) return@LaunchedEffect
+        state.pending = check.pending
+        if (check.message.isNotEmpty()) state.status = check.message
+    }
+}
+
+/** Разметка секции: ровно та же карточка и те же строки, что у соседей. */
+@Composable
+private fun RoutingSection(
+    modifier: Modifier,
+    state: RoutingSectionState,
+    actions: RoutingSectionActions,
+) {
+    val current = modelOf(state.routing, state.role)
+    val shown = remember(state.catalog, current) { ModelCatalog.withCurrent(state.catalog, current) }
     Column(modifier) {
         DiagSection(
             title = "Модели агента",
-            tone = if (pending) DiagTone.WARN else DiagTone.IDLE,
+            tone = if (state.pending) DiagTone.WARN else DiagTone.IDLE,
             initiallyExpanded = false,
         ) {
-            InfoRow(
-                "Маршрутизация",
-                if (enabled) "включена" else "выключена",
-                if (enabled) MoltValue else MoltIdle,
-            )
-            val toggle = if (enabled) "Выключить маршрутизацию" else "Включить маршрутизацию"
-            downloadButton(toggle) { commit(routing, !enabled) }
-
-            Caption("РОЛЬ · нажми строку, чтобы выбрать модель для неё")
-            RoutingRole.entries.forEach { each ->
-                RoleRow(
-                    role = each,
-                    model = ModelCatalog.labelOf(modelOf(routing, each)),
-                    editing = each == role,
-                    enabled = !applying,
-                ) { role = each }
-            }
-            Caption(role.hint)
-
+            RoutingToggle(state.enabled) { actions.commit(state.routing, !state.enabled) }
+            RoutingRoleRows(state.routing, state.role, !state.applying) { state.role = it }
             Spacer(Modifier.height(4.dp))
-            val current = modelOf(routing, role)
-            val shown = remember(catalog, current) { ModelCatalog.withCurrent(catalog, current) }
-            Caption(if (fromServer) "МОДЕЛИ · с сервера" else "МОДЕЛИ · встроенный список")
-            shown.forEach { model ->
-                ModelRow(
-                    model = model,
-                    selected = model.id == current,
-                    enabled = !applying,
-                ) { commit(setModel(routing, role, model.id), true) }
+            RoutingModelRows(shown, current, state.fromServer, !state.applying) {
+                actions.commit(setModel(state.routing, state.role, it), true)
             }
-
             RoutingFooter(
                 note = ModelCatalog.noteFor(current, shown),
-                status = status,
-                pending = pending,
-                applying = applying,
-                onApply = ::applyNow,
+                status = state.status,
+                pending = state.pending,
+                applying = state.applying,
+                onApply = actions::applyNow,
             )
         }
+    }
+}
+
+/** Строка «маршрутизация включена/выключена» и кнопка-переключатель. */
+@Composable
+private fun RoutingToggle(
+    enabled: Boolean,
+    onToggle: () -> Unit,
+) {
+    InfoRow(
+        "Маршрутизация",
+        if (enabled) "включена" else "выключена",
+        if (enabled) MoltValue else MoltIdle,
+    )
+    val label = if (enabled) "Выключить маршрутизацию" else "Включить маршрутизацию"
+    downloadButton(label) { onToggle() }
+}
+
+/** Три строки ролей и подсказка к выбранной: какие агенты в неё входят. */
+@Composable
+private fun RoutingRoleRows(
+    routing: ModelRouting,
+    role: RoutingRole,
+    enabled: Boolean,
+    onRole: (RoutingRole) -> Unit,
+) {
+    Caption("РОЛЬ · нажми строку, чтобы выбрать модель для неё")
+    RoutingRole.entries.forEach { each ->
+        RoleRow(
+            role = each,
+            model = ModelCatalog.labelOf(modelOf(routing, each)),
+            editing = each == role,
+            enabled = enabled,
+        ) { onRole(each) }
+    }
+    Caption(role.hint)
+}
+
+/** Список моделей для выбранной роли: маркер ● у той, что уже назначена. */
+@Composable
+private fun RoutingModelRows(
+    shown: List<CatalogModel>,
+    current: String,
+    fromServer: Boolean,
+    enabled: Boolean,
+    onModel: (String) -> Unit,
+) {
+    Caption(if (fromServer) "МОДЕЛИ · с сервера" else "МОДЕЛИ · встроенный список")
+    shown.forEach { model ->
+        ModelRow(
+            model = model,
+            selected = model.id == current,
+            enabled = enabled,
+        ) { onModel(model.id) }
     }
 }
 
@@ -278,8 +356,8 @@ private fun RoleRow(
  * Строка модели: маркер выбора и подпись.
  *
  * Маркер текстом (`●`/`○`), а не галочка-иконка: глиф есть в любом системном
- * шрифте, а `material-icons` ради одного символа в эту сборку не тянется —
- * тем же приёмом нарисованы треугольники секций.
+ * шрифте, а `material-icons` ради одного символа в эту сборку не тянется — тем
+ * же приёмом нарисованы треугольники секций.
  */
 @Composable
 private fun ModelRow(
@@ -373,6 +451,31 @@ private fun Caption(
         modifier = Modifier.padding(top = top.dp),
     )
 }
+
+/**
+ * Живой список моделей — или `null`, когда сервер не ответил.
+ *
+ * `null`, а не пустой список: у «не спросили» одно значение — остаться на
+ * встроенном каталоге, — и оно не должно сливаться с «спросили, ответ пустой».
+ */
+private suspend fun liveCatalog(): List<CatalogModel>? =
+    withContext(Dispatchers.IO) {
+        ModelList.fetch(OpencodeServerService.state.value.port).ifEmpty { null }
+    }
+
+/**
+ * Рестарт агента, который не валит приложение.
+ *
+ * `restartAndVerify` ходит в сеть и дёргает сервисы, а uncaught-исключение из
+ * корутины `rememberCoroutineScope` — это падение всего экрана. Отказ должен
+ * стать текстом в секции, где его прочитают, а не закрыть приложение.
+ */
+private suspend fun restartQuietly(
+    context: Context,
+    target: ModelRouting,
+): ChoiceResult =
+    runCatching { restartAndVerify(context, target) }
+        .getOrElse { ChoiceResult(pending = true, message = FAILED_TEXT) }
 
 private fun modelOf(
     routing: ModelRouting,
