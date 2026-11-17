@@ -221,6 +221,9 @@ fun DiagnosticsScreen(
     // (/v1/screen/shot), поэтому «работает» здесь значит «работает и агенту».
     var shotNote by remember { mutableStateOf("не проверялся") }
     var shotTone by remember { mutableStateOf(DiagTone.IDLE) }
+    // Снимок не «просто кнопка»: кадр может поймать чужое. Подтверждение не
+    // блокирует тик — оно только стоит между нажатием и реальным снимком.
+    var shotConfirm by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer =
@@ -662,6 +665,9 @@ fun DiagnosticsScreen(
                                 "просто не включается.",
                         )
                         downloadButton("Открыть «Специальные возможности»") { openAccessibilitySettings(context) }
+                        downloadButton("Карточка приложения (⋮ → ограниченная настройка)") {
+                            openAppDetails(context)
+                        }
                     }
                     InfoRow(
                         "Рабочая папка",
@@ -674,27 +680,52 @@ fun DiagnosticsScreen(
                     InfoRow("Снимок экрана", shotNote, shotTone.color())
                     // Проверка идёт тем же путём, что у моста (/v1/screen/shot):
                     // «работает» здесь значит «работает и агенту», а не «кнопка жива».
-                    downloadButton("Проверить снимок экрана сейчас") {
-                        shotNote = "снимаю…"
-                        shotTone = DiagTone.WARN
-                        scope.launch {
-                            val outcome =
-                                withContext(Dispatchers.IO) {
-                                    MediaUiAutomation.screenshot(screenshotFile("diag-check", System.currentTimeMillis()))
-                                }
-                            when (outcome) {
-                                is ScreenshotOutcome.Saved -> {
-                                    val size = "${outcome.width}×${outcome.height} · ${fmtBytes(outcome.bytes)}"
-                                    shotNote = "✔ работает · $size\n${outcome.file.absolutePath}"
-                                    shotTone = DiagTone.OK
-                                }
+                    downloadButton("Проверить снимок экрана сейчас") { shotConfirm = true }
 
-                                is ScreenshotOutcome.Failed -> {
-                                    shotNote = "✘ ${outcome.reason}"
-                                    shotTone = DiagTone.BAD
-                                }
-                            }
-                        }
+                    if (shotConfirm) {
+                        AlertDialog(
+                            onDismissRequest = { shotConfirm = false },
+                            title = { Text("Снять экран?") },
+                            text = {
+                                Text(
+                                    "Кадр может поймать чужое: сообщения, письма, банковские " +
+                                        "приложения. Он сохранится в рабочую папку и попадёт " +
+                                        "в диагностику. Снимать только если это безопасно.",
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(
+                                    onClick = {
+                                        shotConfirm = false
+                                        shotNote = "снимаю…"
+                                        shotTone = DiagTone.WARN
+                                        scope.launch {
+                                            val outcome =
+                                                withContext(Dispatchers.IO) {
+                                                    MediaUiAutomation.screenshot(
+                                                        screenshotFile("diag-check", System.currentTimeMillis()),
+                                                    )
+                                                }
+                                            when (outcome) {
+                                                is ScreenshotOutcome.Saved -> {
+                                                    val size =
+                                                        "${outcome.width}×${outcome.height} · " +
+                                                            fmtBytes(outcome.bytes)
+                                                    shotNote = "✔ работает · $size\n${outcome.file.absolutePath}"
+                                                    shotTone = DiagTone.OK
+                                                }
+
+                                                is ScreenshotOutcome.Failed -> {
+                                                    shotNote = "✘ ${outcome.reason}"
+                                                    shotTone = DiagTone.BAD
+                                                }
+                                            }
+                                        }
+                                    },
+                                ) { Text("Снять") }
+                            },
+                            dismissButton = { TextButton(onClick = { shotConfirm = false }) { Text("Отмена") } },
+                        )
                     }
                 }
 
@@ -1722,6 +1753,32 @@ private fun openAccessibilitySettings(context: Context) {
                 context,
                 "Не удалось открыть настройки. Путь: Настройки → Специальные возможности → " +
                     "${context.applicationInfo.loadLabel(context.packageManager)}",
+                Toast.LENGTH_LONG,
+            ).show()
+    }
+}
+
+/**
+ * Карточка приложения — второй барьер после обновления APK.
+ *
+ * На сборке, поставленной не из Play, пункт «Разрешить ограниченную настройку»
+ * спрятан в меню ⋮ именно здесь. Без него тумблер службы доступности просто не
+ * включается, и «попробуйте ещё раз» не помогает. Прямая кнопка убирает ручной
+ * поиск по настройкам; при отказе показываем полный путь, а не молчим.
+ */
+private fun openAppDetails(context: Context) {
+    val intent =
+        Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:${context.packageName}"),
+        )
+    if (runCatching { context.startActivity(intent) }.isFailure) {
+        Toast
+            .makeText(
+                context,
+                "Не удалось открыть карточку. Путь: Настройки → Приложения → " +
+                    "${context.applicationInfo.loadLabel(context.packageManager)} → ⋮ → " +
+                    "Разрешить ограниченную настройку",
                 Toast.LENGTH_LONG,
             ).show()
     }
