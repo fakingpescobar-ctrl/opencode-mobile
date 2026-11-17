@@ -109,33 +109,7 @@ internal fun moltbookSection() {
         fieldBlock("Имя агента", state.name, { state.name = it }, "oc_...")
         Spacer(Modifier.height(3.dp))
         fieldBlock("api_key", state.token, { state.token = it }, "moltbook_…")
-        Row(
-            Modifier.fillMaxWidth().padding(top = 5.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            // Два действия в одном ряду: на 323 dp пара чипов читается лучше,
-            // чем две полосущие плашки друг под другом.
-            when {
-                state.key == null ->
-                    actionChip("Зарегистрировать", Modifier.weight(1f)) {
-                        scope.launch { state.register(context) }
-                    }
-
-                !state.confirmReplace ->
-                    actionChip("Новый агент", Modifier.weight(1f), muted = true) {
-                        state.confirmReplace = true
-                    }
-
-                else ->
-                    actionChip("Точно заменить?", Modifier.weight(1f), muted = true) {
-                        state.confirmReplace = false
-                        scope.launch { state.register(context) }
-                    }
-            }
-            actionChip("Сохранить токен", Modifier.weight(1f)) {
-                scope.launch { state.saveToken(context) }
-            }
-        }
+        authActions(state, scope, context)
     }
     Spacer(Modifier.height(6.dp))
     MoltbookPanel(rememberMoltbookState(refresh))
@@ -262,6 +236,40 @@ private fun actionChip(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+    }
+}
+
+/** Два действия в одном ряду: на 323 dp пара чипов лучше двух плашек подряд. */
+@Composable
+private fun authActions(
+    state: MoltbookSectionState,
+    scope: CoroutineScope,
+    context: Context,
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(top = 5.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        when {
+            state.key == null ->
+                actionChip("Зарегистрировать", Modifier.weight(1f)) {
+                    scope.launch { state.register(context) }
+                }
+
+            !state.confirmReplace ->
+                actionChip("Новый агент", Modifier.weight(1f), muted = true) {
+                    state.confirmReplace = true
+                }
+
+            else ->
+                actionChip("Точно заменить?", Modifier.weight(1f), muted = true) {
+                    state.confirmReplace = false
+                    scope.launch { state.register(context) }
+                }
+        }
+        actionChip("Сохранить токен", Modifier.weight(1f)) {
+            scope.launch { state.saveToken(context) }
+        }
     }
 }
 

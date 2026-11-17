@@ -188,9 +188,12 @@ private fun PanelHeader(
         modifier = Modifier.padding(top = 1.dp),
     )
     Spacer(Modifier.height(3.dp))
-    // 4×2, а не 3×3: восемь показателей заполняют сетку без пустой ячейки, а
-    // лишний ряд — это ровно 25 dp высоты, ради которых карточка и была вдвое
-    // выше нужного. Подпись в 76 dp («ответов на них» ≈ 58 dp) влезает.
+    QueueStats(state)
+}
+
+/** Сетка 4×2: восемь показателей без пустой ячейки и без лишнего ряда. */
+@Composable
+private fun QueueStats(state: MoltbookPanelState) {
     StatGrid(
         listOf(
             state.answered.toString() to "отвечено",
