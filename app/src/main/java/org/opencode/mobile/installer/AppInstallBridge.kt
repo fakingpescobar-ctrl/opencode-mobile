@@ -801,8 +801,7 @@ object AppInstallBridge {
     private fun JSONObject.optionalString(name: String): String? =
         if (has(name) && !isNull(name)) getString(name).takeIf { it.isNotBlank() } else null
 
-    private fun JSONObject.optionalBoolean(name: String): Boolean? =
-        if (has(name) && !isNull(name)) getBoolean(name) else null
+    private fun JSONObject.optionalBoolean(name: String): Boolean? = if (has(name) && !isNull(name)) getBoolean(name) else null
 
     private fun LaunchableAppSnapshot.toJson(): JSONObject =
         JSONObject()
