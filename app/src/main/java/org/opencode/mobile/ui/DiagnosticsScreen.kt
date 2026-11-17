@@ -184,6 +184,12 @@ private data class StorageSnapshot(
      */
     val enginesReady: Int,
     val enginesTotal: Int,
+    /**
+     * Файл ядра, который реально будет запущен (скачанный или из APK), на месте.
+     * Считается в IO-ветке: это файловая проверка, а не то, что стоит на главном
+     * потоке. «Работает» доказывает сервер, но файл всё равно должен быть.
+     */
+    val coreReady: Boolean,
     val logTail: String,
     /** Единый отчёт готовности runtime-слоя (RuntimeValidation). */
     val validation: RuntimeValidation.Report,
@@ -353,6 +359,10 @@ fun DiagnosticsScreen(
                     ttsVoiceBytes = TtsModelDownloader.bytesOnDisk(context),
                     enginesReady = Engine.entries.count { !it.bundled && EngineStore.isReady(context, it) },
                     enginesTotal = Engine.entries.count { !it.bundled },
+                    coreReady =
+                        CoreUpdater.resolveCore(context).let { file ->
+                            file.isFile && file.length() > 0L
+                        },
                     logTail = readLogTail(File(context.filesDir, "opencode.log")),
                     validation = RuntimeValidation.run(context),
                 )
@@ -498,6 +508,24 @@ fun DiagnosticsScreen(
                         snapshot.enginesReady == snapshot.enginesTotal -> DiagTone.OK
                         snapshot.enginesReady == 0 -> DiagTone.IDLE
                         else -> DiagTone.WARN
+                    }
+                // «Система» — информационная секция: здоровья там проверять нечего.
+                // Её «ок» означает только «все данные собраны» (пакет прочитан,
+                // ABI известен), а не «система исправна». Если appInfo прочитать
+                // не удалось — честное «внимание», а не зелёный бейдж.
+                val systemTone =
+                    when {
+                        snapshot == null || appInfo == null -> DiagTone.IDLE
+                        else -> DiagTone.OK
+                    }
+                // Ядро: файл на месте + сервер реально отвечает. Одна только
+                // надпись «в комплекте» доказательством работы не была бы.
+                val coreTone =
+                    when {
+                        snapshot == null -> DiagTone.IDLE
+                        !snapshot.coreReady -> DiagTone.BAD
+                        serverState.status != ServerStatus.RUNNING -> DiagTone.WARN
+                        else -> DiagTone.OK
                     }
                 val validation = snapshot?.validation
                 val validationTone =
@@ -798,7 +826,7 @@ fun DiagnosticsScreen(
                     }
                 }
 
-                DiagSection("Система", DiagTone.IDLE) {
+                DiagSection("Система", systemTone) {
                     InfoRow("Приложение", "${appInfo?.versionName ?: "?"} (code ${appInfo?.longVersionCode ?: 0})")
                     // Штамп СБОРКИ, а не версия из манифеста. versionName навсегда
                     // останется 0.1.0 - он про продукт, а не про конкретный APK.
@@ -807,7 +835,7 @@ fun DiagnosticsScreen(
                     InfoRow("ABI", Build.SUPPORTED_ABIS.firstOrNull() ?: "?")
                 }
 
-                DiagSection("Ядро opencode", DiagTone.IDLE) {
+                DiagSection("Ядро opencode", coreTone) {
                     InfoRow("Работает", activeCoreLabel(context))
                     InfoRow("В APK", opencodeBinaryLabel())
                     coreLastCheckRow(context)
