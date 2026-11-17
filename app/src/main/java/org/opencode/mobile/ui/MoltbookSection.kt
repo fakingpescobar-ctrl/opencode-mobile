@@ -95,7 +95,8 @@ internal fun moltbookSection() {
     }
     val refresh = rememberMoltbookRefresh(context)
 
-    statusPlate(sectionHeadline(state, key), sectionDetail(state), sectionOk(state))
+    val (headline, detail, ok) = sectionTexts(state, key)
+    statusPlate(headline, detail, ok)
     val claim = state.claim
     if (claim != null) {
         claimBlock(claim, context, scope, state)
@@ -108,28 +109,30 @@ internal fun moltbookSection() {
     MoltbookPanel(rememberMoltbookState(refresh))
 }
 
-private fun sectionHeadline(state: MoltbookSectionState, key: String?): String =
-    when {
-        state.busy -> "Работаю…"
-        state.error != null -> "Не получилось"
-        key == null -> "Агент не зарегистрирован"
-        else -> "Ключ: ${maskedMoltbookKey(key)}"
-    }
-
-private fun sectionDetail(state: MoltbookSectionState): String =
-    when {
-        state.busy -> "Связь с Moltbook…"
-        state.error != null -> "Ошибка: ${state.error}"
-        state.message.isNotBlank() -> state.message
-        else -> "Ключ и статус агента"
-    }
-
-private fun sectionOk(state: MoltbookSectionState): Boolean? =
-    when {
-        state.error != null -> false
-        state.status == "claimed" -> true
-        else -> null
-    }
+/** Заголовок, пояснение и цвет плашки считаются вместе, чтобы не раздувать функцию. */
+private fun sectionTexts(state: MoltbookSectionState, key: String?): Triple<String, String, Boolean?> {
+    val headline =
+        when {
+            state.busy -> "Работаю…"
+            state.error != null -> "Не получилось"
+            key == null -> "Агент не зарегистрирован"
+            else -> "Ключ: ${maskedMoltbookKey(key)}"
+        }
+    val detail =
+        when {
+            state.busy -> "Связь с Moltbook…"
+            state.error != null -> "Ошибка: ${state.error}"
+            state.message.isNotBlank() -> state.message
+            else -> "Ключ и статус агента"
+        }
+    val ok =
+        when {
+            state.error != null -> false
+            state.status == "claimed" -> true
+            else -> null
+        }
+    return Triple(headline, detail, ok)
+}
 
 /**
  * Чтение снимка и скан уехали сюда из шапки. Пока секция раскрыта, снимок
