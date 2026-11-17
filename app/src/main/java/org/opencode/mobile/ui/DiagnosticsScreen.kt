@@ -1368,14 +1368,6 @@ private fun activeCoreLabel(context: Context): String {
 }
 
 /**
- * Человекочитаемый лейбл движка STT (stt_engine pref → русское имя).
- *
- * Значение `ncnn` в pref осталось у пользователей с прошлых сборок: движок
- * выпилен, и [org.opencode.mobile.ui.ChatOverlay] при чтении подставляет вместо
- * него `whisper`. Здесь то же правило — иначе диагностика врала бы, называя
- * whisper.cpp «системным Android».
- */
-/**
  * Распознаёт системный Android, а не модель из каталога приложения.
  *
  * Одно правило на весь экран: плитка, строка валидации и лейбл движка обязаны
@@ -1389,6 +1381,13 @@ private fun sttEngineIsSystem(prefs: android.content.SharedPreferences): Boolean
     return engine != "whisper" && engine != "ncnn"
 }
 
+/**
+ * Человекочитаемый лейбл движка STT (stt_engine pref → русское имя).
+ *
+ * Считается тем же правилом [sttEngineIsSystem], что и плитка с валидацией:
+ * одно поле — один смысл, иначе подпись говорила бы «системный», а вердикт
+ * считался бы по файлам whisper.
+ */
 private fun engineLabel(prefs: android.content.SharedPreferences): String =
     if (sttEngineIsSystem(prefs)) "Системный Android" else "Whisper (локально)"
 
