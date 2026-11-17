@@ -234,7 +234,6 @@ private fun RoutingSection(
         DiagSection(
             title = "Модели агента",
             tone = if (state.pending) DiagTone.WARN else DiagTone.IDLE,
-            initiallyExpanded = false,
         ) {
             RoutingToggle(state.enabled) { actions.commit(state.routing, !state.enabled) }
             RoutingRoleRows(state.routing, state.role, !state.applying) { state.role = it }
