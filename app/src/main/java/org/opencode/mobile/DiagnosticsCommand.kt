@@ -36,4 +36,46 @@ object DiagnosticsCommand {
 
     /** Переключить — это действие иконки «i» в шапке чата. */
     fun toggle(): Boolean = setOpen(!state.value)
+
+    private val focusState = MutableStateFlow<FocusRequest?>(null)
+    private var focusSeq = 0L
+
+    /**
+     * Просьба показать секцию: какую искать, раскрывать ли её и номер попытки.
+     *
+     * `seq` нужен, чтобы повторная просьба про ту же секцию считалась новым
+     * действием: `LaunchedEffect` в секции ключуется номером, а не текстом —
+     * иначе второй вызов после ручной прокрутки не сработал бы, ключ не
+     * изменился бы.
+     */
+    data class FocusRequest(
+        val section: String,
+        val expand: Boolean,
+        val seq: Long,
+    )
+
+    /**
+     * Последняя просьба показать секцию; `null` — просить ещё не просили.
+     *
+     * Секция сверяет её со своим заголовком сама: список секций живёт в
+     * композабле, и перечислять их здесь значило бы держать вторую копию
+     * заголовков, которая однажды разойдётся с первой.
+     */
+    val focusRequest: StateFlow<FocusRequest?> = focusState.asStateFlow()
+
+    /**
+     * Попросить показать секцию, в заголовке которой есть [section].
+     *
+     * Возвращённая просьба — не доказательство, что секция нашлась: экран
+     * собирается в другом потоке, и заголовок сверяется уже там. Доказательство
+     * того, что секция видна, — кадр экрана.
+     */
+    fun focusSection(
+        section: String,
+        expand: Boolean,
+    ): FocusRequest {
+        val request = FocusRequest(section.trim(), expand, ++focusSeq)
+        focusState.value = request
+        return request
+    }
 }

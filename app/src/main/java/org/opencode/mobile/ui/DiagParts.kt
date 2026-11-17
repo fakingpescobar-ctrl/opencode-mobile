@@ -15,15 +15,20 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -32,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.opencode.mobile.DiagnosticsCommand
 
 /**
  * Детали экрана «Диагностика», вынесенные из самого экрана.
@@ -180,10 +186,30 @@ internal fun DiagSection(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     var expanded by remember { mutableStateOf(initiallyExpanded) }
+    val focus by DiagnosticsCommand.focusRequest.collectAsState()
+    val intoView = remember { BringIntoViewRequester() }
+    // Просьба моста «покажи секцию»: раскрыть и подтянуть в кадр. Сверяем
+    // заголовок здесь, а не в команде: список секций — это композабл, и второй
+    // список заголовков в состоянии однажды разошёлся бы с первым.
+    LaunchedEffect(focus?.seq) {
+        val request = focus ?: return@LaunchedEffect
+        if (!title.coversSection(request.section)) return@LaunchedEffect
+        if (request.expand) expanded = true
+        // Ждём кадр: у раскрытой секции высота другая, и до перестройки
+        // bringIntoView считал бы границы старой, свёрнутой карточки.
+        // Возврат не нужен, но и пустой лямбдой его не оставить: detekt ругает
+        // пустые блоки, а комментарий внутри блока пустоту не отменяет.
+        withFrameNanos { it }
+        intoView.bringIntoView()
+    }
     Surface(
         color = MoltCard,
         shape = RoundedCornerShape(10.dp),
-        modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .bringIntoViewRequester(intoView)
+                .padding(bottom = 6.dp),
     ) {
         Column {
             DiagSectionHeader(title, tone, expanded) { expanded = !expanded }
@@ -192,6 +218,18 @@ internal fun DiagSection(
             }
         }
     }
+}
+
+/**
+ * Похож ли заголовок секции на просьбу моста.
+ *
+ * Сравнение без регистра и по вхождению: агенту проще сказать «модели», чем
+ * угадывать точный заголовок «Модели агента», а `contains` терпит и хвост в
+ * скобках у секций вроде «Озвучка (Supertonic, offline)».
+ */
+private fun String.coversSection(query: String): Boolean {
+    val needle = query.trim().lowercase()
+    return needle.isNotEmpty() && lowercase().contains(needle)
 }
 
 /**

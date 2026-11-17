@@ -202,6 +202,10 @@ object AppInstallBridge {
             // INJECT_EVENTS, а у службы доступности — жестов. Мост живёт в том
             // же процессе, что и оверлей, поэтому пишет общее состояние напрямую.
             Route("POST", "/v1/ui/diagnostics", ::uiDiagnostics),
+            // Показать конкретную секцию: раскрыть и подтянуть в кадр. Нужно
+            // агенту, чтобы проверять вид своими глазами, а не просить человека
+            // прокрутить и нажать: прокрутка и тап ему недоступны.
+            Route("POST", "/v1/ui/diagnostics/focus", ::uiDiagnosticsFocus),
             Route("POST", "/v1/apps/install", ::install),
             // Из /v1/media/* живёт только like: лайк у Яндекс Музыки идёт кастомной
             // командой сессии, и REST/OAuth его не заменяют. Остальные десять маршрутов
@@ -315,6 +319,41 @@ object AppInstallBridge {
                 .put("ok", true)
                 .put("screen", "diagnostics")
                 .put("open", now),
+        )
+    }
+
+    /**
+     * Показать секцию диагностики: раскрыть её и подтянуть в кадр.
+     *
+     * Ответ — «просьба принята», а не «секция найдена»: заголовки живут в
+     * композабле, и сверка идёт там. Доказательство того, что секция видна, —
+     * кадр экрана; поэтому в ответе есть seq: по нему видно, что это новая
+     * просьба, а не эхо прошлой.
+     *
+     * `expand=false` — только прокрутить, не раскрывая: у свёрнутой секции
+     * высота меньше, и она гарантированно влезает в кадр целиком.
+     */
+    private fun uiDiagnosticsFocus(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val body = jsonObject(request)
+        val section = body.optionalString("section").orEmpty()
+        if (section.isEmpty()) {
+            writeJson(output, 400, JSONObject().put("ok", false).put("error", "section required"))
+            return
+        }
+        val expand = body.optionalBoolean("expand") ?: true
+        val accepted = DiagnosticsCommand.focusSection(section, expand)
+        writeJson(
+            output,
+            200,
+            JSONObject()
+                .put("ok", true)
+                .put("accepted", true)
+                .put("section", accepted.section)
+                .put("expand", accepted.expand)
+                .put("seq", accepted.seq),
         )
     }
 
