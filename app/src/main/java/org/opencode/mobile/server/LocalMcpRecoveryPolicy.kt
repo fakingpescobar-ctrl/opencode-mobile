@@ -14,6 +14,7 @@ enum class LocalMcpTarget(
 ) {
     YNISON(processName = "ynison", feature = "музыка"),
     MEMORY(processName = "память", feature = "память"),
+
     // Плагин Moltbook — инструменты агента. Умерший плагин лишает агента
     // молтбука, но не роняет serve; восстанавливается тем же механизмом.
     MOLTBOOK(processName = "moltbook", feature = "Молтбук"),
