@@ -1,17 +1,13 @@
 package org.opencode.mobile.ui
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -22,8 +18,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -44,18 +38,23 @@ private enum class RoutingRole(
     val chip: String,
     val hint: String,
 ) {
-    HEAVY("ТЯЖЁЛЫЕ", "build, plan — сложные многошаговые задачи"),
-    LIGHT("ЛЁГКИЕ", "explore, general — поиск и вспомогательные шаги"),
-    SMALL("СЛУЖЕБНЫЕ", "title, summary, compaction — короткие генерации"),
+    HEAVY("Тяжёлые", "build, plan — сложные многошаговые задачи"),
+    LIGHT("Лёгкие", "explore, general — поиск и вспомогательные шаги"),
+    SMALL("Служебные", "title, summary, compaction — короткие генерации"),
 }
 
 /**
- * Карточка маршрутизации моделей по ролям. Графически — ровно карточка
- * Moltbook: та же подложка, та же обводка, тот же заголовок с разрядкой и те же
- * плашечки-чипы вместо списка с галочками. Различие только в предмете: не
- * «что случилось с журналом», а «какая модель у каких агентов opencode».
+ * Маршрутизация моделей по ролям — секция экрана диагностики, а не отдельная
+ * карточка.
  *
- * Выбор применяется СРАЗУ по нажатию плашечки — отдельной кнопки «Сохранить»
+ * Раньше здесь была своя карточка со своей обводкой, своим заголовком и сеткой
+ * плашек в два столбца. Внутри экрана, где всё остальное — строки «подпись →
+ * значение» под сворачиваемыми секциями, она читалась как вклеенный чужой
+ * экран: другая обводка, другой заголовок, другой шаг сетки. Теперь это
+ * [DiagSection] с тем же заголовком, точкой тона, бейджем и треугольником, а
+ * выбор идёт строками: слева роль или модель, справа — что выбрано.
+ *
+ * Выбор применяется сразу по нажатию строки — отдельной кнопки «Сохранить»
  * нет намеренно: лишний шаг между решением и результатом в настройке, которую
  * открывают раз в пару месяцев, только мешает. Дальше — запись конфига (она
  * синхронная: чтение + tmp/rename + читающая проверка, поэтому уходит в IO) и
@@ -64,7 +63,7 @@ private enum class RoutingRole(
  * Рестарт агента в этом пути не нужен: конфиг opencode перечитывается только
  * при старте процесса, но сессию можно переключить на лету, а новые сессии
  * приложение создаёт уже с нужной моделью. Рестарт остаётся отдельной явной
- * плашкой на случай, если смена не прошла, и проверяется по живому серверу, а
+ * кнопкой на случай, если смена не прошла, и проверяется по живому серверу, а
  * не по факту записи.
  *
  * Выключение не стирает уже записанный блок: оно лишь перестаёт им управлять,
@@ -85,9 +84,9 @@ internal fun ModelRoutingPicker(
     // подхватит новое только после рестарта, а рестарт нельзя делать без
     // спроса: он рвёт стриминг текущей сессии. Поэтому это явное действие.
     var pending by remember { mutableStateOf(false) }
-    // Флаг идущего рестарта: плашка остаётся на экране всё время опроса
-    // сервера, и без этого флага два така подряд поднимали бы второй рестарт
-    // поверх первого.
+    // Флаг идущего рестарта: кнопка «применить» остаётся на экране всё время
+    // опроса сервера, и без этого флага два нажатия подряд поднимали бы второй
+    // рестарт поверх первого.
     var applying by remember { mutableStateOf(false) }
     // Список моделей: сначала встроенный каталог, потом — живой, с сервера.
     // Провайдер меняет состав моделей без нашего ведома (модель переименовали,
@@ -110,12 +109,12 @@ internal fun ModelRoutingPicker(
     }
 
     // Рассинхрон может появиться не только из нажатий: перезапуск приложения,
-// правка конфига руками, убитый процесс. Поэтому при открытии карточки
+    // правка конфига руками, убитый процесс. Поэтому при открытии секции
     // спрашиваем сервер, а не полагаемся на остаточное состояние remember.
     // Ответ приходит асинхронно, поэтому сверяем его со снимком выбора: пока
-    // пользователь не нажал ещё одну плашку, снимок совпадает и результат
+    // пользователь не нажал ещё одну строку, снимок совпадает и результат
     // применяется. Разошлись — ответ прошлого состояния, выкидываем его,
-    // иначе он снимет плашку «применить» у только что записанного выбора.
+    // иначе он снимет кнопку «применить» у только что записанного выбора.
     LaunchedEffect(Unit) {
         val snapshot = routing
         val state = currentChoiceState(context, snapshot)
@@ -130,8 +129,8 @@ internal fun ModelRoutingPicker(
     ) {
         // Правка модели посреди опроса рестарта ломает сверку: завершившийся
         // applyNow пришёл бы со старым routing и объявил «применено» для модели,
-        // которую сервер ещё не обслуживает. Поэтому на время рестарта карточка
-        // не принимает выбор — кнопки просто не жмутся.
+        // которую сервер ещё не обслуживает. Поэтому на время рестарта секция
+        // не принимает выбор — строки просто не жмутся.
         if (applying) return
         routing = next
         enabled = on
@@ -149,8 +148,8 @@ internal fun ModelRoutingPicker(
      * Рестарт с проверкой результата.
      *
      * Не «попросили — считаем, что сработало»: после рестарта спрашиваем живой
-     * сервер и только по его ответу снимаем плашку. Слепой рестарт оставлял бы
-     * карточку врёт (или, наоборот, прятал неудачу), а плашка «применить» на
+     * сервер и только по его ответу снимаем кнопку. Слепой рестарт оставлял бы
+     * секцию врёт (или, наоборот, прятал неудачу), а кнопка «применить» на
      * неудаче должна остаться — иначе пользователь решает, что всё применено.
      */
     fun applyNow() {
@@ -163,11 +162,11 @@ internal fun ModelRoutingPicker(
         scope.launch {
             // finally, а не присваивание после: исключение рестарта (например,
             // запрет startForegroundService на фоне) иначе навсегда оставило бы
-            // плашку в состоянии «перезапускаю» с отключённым нажатием.
+            // кнопку в состоянии «перезапускаю» с отключённым нажатием.
             try {
                 // Рестарт и опрос — с сетью и сервисами, а uncaught-исключение
                 // из корутины в rememberCoroutineScope валит приложение. Отказ
-                // показываем текстом и снимаем блокировку, чтобы карточка
+                // показываем текстом и снимаем блокировку, чтобы секция
                 // осталась в рабочем состоянии.
                 val result =
                     runCatching { restartAndVerify(context, target) }
@@ -182,81 +181,148 @@ internal fun ModelRoutingPicker(
         }
     }
 
-    Column(
-        modifier
-            .fillMaxWidth()
-            .padding(top = 4.dp, bottom = 2.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(MoltCard)
-            .border(1.dp, MoltAccent.copy(alpha = 0.25f), RoundedCornerShape(10.dp))
-            .padding(horizontal = 10.dp, vertical = 5.dp),
-    ) {
-        RoutingHeader(enabled, !applying) { commit(routing, !enabled) }
+    Column(modifier) {
+        DiagSection(
+            title = "Модели агента",
+            tone = if (pending) DiagTone.WARN else DiagTone.IDLE,
+            initiallyExpanded = false,
+        ) {
+            InfoRow(
+                "Маршрутизация",
+                if (enabled) "включена" else "выключена",
+                if (enabled) MoltValue else MoltIdle,
+            )
+            val toggle = if (enabled) "Выключить маршрутизацию" else "Включить маршрутизацию"
+            downloadButton(toggle) { commit(routing, !enabled) }
 
-        Spacer(Modifier.height(6.dp))
-        DividerLine()
-        Spacer(Modifier.height(6.dp))
+            Caption("РОЛЬ · нажми строку, чтобы выбрать модель для неё")
+            RoutingRole.entries.forEach { each ->
+                RoleRow(
+                    role = each,
+                    model = ModelCatalog.labelOf(modelOf(routing, each)),
+                    editing = each == role,
+                    enabled = !applying,
+                ) { role = each }
+            }
+            Caption(role.hint)
 
-        Caption("РОЛЬ АГЕНТА · нажатием плашки выбираем, кому какая модель")
-        RoleChips(role, !applying) { role = it }
-        Caption(role.hint, top = 3)
+            Spacer(Modifier.height(4.dp))
+            val current = modelOf(routing, role)
+            val shown = remember(catalog, current) { ModelCatalog.withCurrent(catalog, current) }
+            Caption(if (fromServer) "МОДЕЛИ · с сервера" else "МОДЕЛИ · встроенный список")
+            shown.forEach { model ->
+                ModelRow(
+                    model = model,
+                    selected = model.id == current,
+                    enabled = !applying,
+                ) { commit(setModel(routing, role, model.id), true) }
+            }
 
-        Spacer(Modifier.height(6.dp))
-        val current = modelOf(routing, role)
-        val shown = remember(catalog, current) { ModelCatalog.withCurrent(catalog, current) }
-        Caption(if (fromServer) "ДОСТУПНЫЕ МОДЕЛИ · с сервера" else "ДОСТУПНЫЕ МОДЕЛИ · встроенный список")
-        ModelChips(
-            models = shown,
-            current = current,
-            enabled = !applying,
-            onPick = { commit(setModel(routing, role, it), true) },
-        )
-
-        val note = ModelCatalog.noteFor(current, shown)
-        RoutingFooter(note, status, pending, applying, ::applyNow)
+            RoutingFooter(
+                note = ModelCatalog.noteFor(current, shown),
+                status = status,
+                pending = pending,
+                applying = applying,
+                onApply = ::applyNow,
+            )
+        }
     }
 }
 
 /**
- * Шапка карточки: название плюс тумблер «ВКЛ/ВЫКЛ».
+ * Строка роли: слева название роли, справа — модель, которая ей назначена.
  *
- * Вынесена отдельно от [ModelRoutingPicker], чтобы та не разрослась за счёт
- * разметки: её длина упирается в лимит detekt, а именно её логика (сверка
- * снимков и блокировка на время рестарта) нужна читаемой целиком.
+ * Роль, для которой сейчас выбирают, подсвечена акцентом: иначе три строки
+ * одинаковы, и непонятно, к чему относится список моделей ниже.
  */
 @Composable
-private fun RoutingHeader(
+private fun RoleRow(
+    role: RoutingRole,
+    model: String,
+    editing: Boolean,
     enabled: Boolean,
-    togglable: Boolean,
-    onToggle: () -> Unit,
+    onPick: () -> Unit,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .clickable(enabled = enabled, onClick = onPick)
+                .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
         Text(
-            text = "МОДЕЛИ АГЕНТА",
-            color = MoltAccent,
-            fontSize = SMALL,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 1.5.sp,
-            lineHeight = SMALL_LINE,
-            maxLines = 1,
+            role.chip,
+            color = if (editing) MoltAccent else MoltIdle,
+            fontSize = TINY,
+            lineHeight = TINY_LINE,
+            fontWeight = if (editing) FontWeight.Bold else FontWeight.Normal,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(ROW_LABEL_WEIGHT),
         )
-        Spacer(Modifier.weight(1f))
-        RoutingChip(
-            text = if (enabled) "ВКЛ" else "ВЫКЛ",
-            selected = enabled,
-            onClick = onToggle,
-            enabled = togglable,
+        Spacer(Modifier.width(8.dp))
+        Text(
+            model,
+            color = if (editing) MoltAccent else MoltValue,
+            fontSize = SMALL,
+            lineHeight = SMALL_LINE,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f - ROW_LABEL_WEIGHT),
         )
     }
 }
 
 /**
- * Подвал карточки: что умеет выбранная модель, что сделало последнее нажатие и
- * — когда сервер ещё не подтвердил новое расписание — плашка «ПРИМЕНИТЬ».
- * Отдельное действие, а не автоматика на каждый тап: рестарт обрывает стриминг
- * текущей сессии, и молча рвать его без спроса нельзя. Плашка не прячется, пока
- * сервер реально не подтвердит новые модели (см. [RoutingReadiness.awaitServed]).
+ * Строка модели: маркер выбора и подпись.
+ *
+ * Маркер текстом (`●`/`○`), а не галочка-иконка: глиф есть в любом системном
+ * шрифте, а `material-icons` ради одного символа в эту сборку не тянется —
+ * тем же приёмом нарисованы треугольники секций.
+ */
+@Composable
+private fun ModelRow(
+    model: CatalogModel,
+    selected: Boolean,
+    enabled: Boolean,
+    onPick: () -> Unit,
+) {
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .clickable(enabled = enabled, onClick = onPick)
+                .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text(
+            if (selected) "\u25CF" else "\u25CB",
+            color = if (selected) MoltAccent else MoltIdle,
+            fontSize = TINY,
+            lineHeight = TINY_LINE,
+        )
+        Spacer(Modifier.width(5.dp))
+        Text(
+            model.label,
+            color = if (selected) MoltAccent else MoltValue,
+            fontSize = SMALL,
+            lineHeight = SMALL_LINE,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/**
+ * Подвал секции: что умеет выбранная модель, что сделало последнее нажатие и —
+ * когда сервер ещё не подтвердил новое расписание — кнопка «применить».
+ * Отдельное действие, а не автоматика на каждое нажатие: рестарт обрывает
+ * стриминг текущей сессии, и молча рвать его без спроса нельзя. Кнопка не
+ * прячется, пока сервер реально не подтвердит новые модели (см.
+ * [RoutingReadiness.awaitServed]).
  */
 @Composable
 private fun RoutingFooter(
@@ -268,7 +334,7 @@ private fun RoutingFooter(
 ) {
     if (note.isNotEmpty()) {
         Text(
-            text = note,
+            note,
             color = MoltIdle,
             fontSize = TINY,
             lineHeight = TINY_LINE,
@@ -278,109 +344,17 @@ private fun RoutingFooter(
         )
     }
     if (pending) {
-        Spacer(Modifier.height(5.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            RoutingChip(
-                text = if (applying) "ПЕРЕЗАПУСКАЮ АГЕНТА…" else "ПРИМЕНИТЬ · ПЕРЕЗАПУСТИТЬ АГЕНТА",
-                selected = true,
-                onClick = onApply,
-                enabled = !applying,
-            )
-        }
+        val label =
+            if (applying) "Перезапускаю агента…" else "Применить · перезапустить агента"
+        downloadButton(label) { onApply() }
     }
     Text(
-        text = status.ifEmpty { APPLY_HINT },
+        status.ifEmpty { APPLY_HINT },
         color = if (status.isEmpty()) MoltIdle else MoltValue,
         fontSize = TINY,
         lineHeight = TINY_LINE,
         modifier = Modifier.padding(top = 5.dp),
     )
-}
-
-/** Три роли плашками в ряд: ширина делится поровну, поэтому карточка тянется
- *  на любой экран, а не подгоняется под 319 dp, как в шапке чата. */
-@Composable
-private fun RoleChips(
-    selected: RoutingRole,
-    enabled: Boolean,
-    onSelect: (RoutingRole) -> Unit,
-) {
-    Row(horizontalArrangement = Arrangement.spacedBy(CHIP_GAP)) {
-        RoutingRole.entries.forEach { role ->
-            RoutingChip(
-                text = role.chip,
-                selected = role == selected,
-                onClick = { onSelect(role) },
-                modifier = Modifier.weight(1f),
-                enabled = enabled,
-            )
-        }
-    }
-}
-
-/** Сетка моделей по две в ряду: подписи вида «Nemotron 3.5 Super VL» влезают
- *  в половину карточки, а id («nemotron-3.5-super-vl-free») — нет. */
-@Composable
-private fun ModelChips(
-    models: List<CatalogModel>,
-    current: String,
-    enabled: Boolean,
-    onPick: (String) -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(CHIP_GAP)) {
-        models.chunked(MODELS_PER_ROW).forEach { row ->
-            Row(horizontalArrangement = Arrangement.spacedBy(CHIP_GAP)) {
-                row.forEach { model ->
-                    RoutingChip(
-                        text = model.label,
-                        selected = model.id == current,
-                        onClick = { onPick(model.id) },
-                        modifier = Modifier.weight(1f),
-                        enabled = enabled,
-                    )
-                }
-                repeat(MODELS_PER_ROW - row.size) { Spacer(Modifier.weight(1f)) }
-            }
-        }
-    }
-}
-
-/**
- * Плашечка. Ровно чип из MoltbookIntervalChip: та же скруглённая подложка, та же
- * обводка только у выбранного, жирный акцентный текст вместо серого.
- */
-@Composable
-private fun RoutingChip(
-    text: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true,
-) {
-    // Цвет обводки — отдельно, иначе цепочка модификаторов разъезжается на две
-    // строки и ktlint требует переносить точку в конец предыдущей, ломая порядок
-    // рисования (см. MoltbookIntervalChip).
-    val borderColor = if (selected) MoltAccent.copy(alpha = 0.7f) else Color.Transparent
-    Box(
-        modifier =
-            modifier
-                .clip(RoundedCornerShape(6.dp))
-                .background(if (selected) MoltAccent.copy(alpha = 0.14f) else MoltChipOff)
-                .border(1.dp, borderColor, RoundedCornerShape(6.dp))
-                .clickable(enabled = enabled) { onClick() }
-                .padding(vertical = 5.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = text,
-            color = if (selected) MoltAccent else MoltIdle,
-            fontSize = BODY,
-            lineHeight = BODY_LINE,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
 }
 
 @Composable
@@ -389,7 +363,7 @@ private fun Caption(
     top: Int = 5,
 ) {
     Text(
-        text = text,
+        text,
         color = MoltIdle,
         fontSize = TINY,
         letterSpacing = 0.5.sp,
@@ -398,11 +372,6 @@ private fun Caption(
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier.padding(top = top.dp),
     )
-}
-
-@Composable
-private fun DividerLine() {
-    Box(Modifier.fillMaxWidth().height(1.dp).background(MoltAccent.copy(alpha = 0.15f)))
 }
 
 private fun modelOf(
@@ -426,18 +395,15 @@ private fun setModel(
         RoutingRole.SMALL -> routing.copy(small = id)
     }
 
-/** Моделей в ряду: подпись самой длинной (Nemotron 3.5 Super VL) влезает в
- *  половину карточки, в третьей колонке — обрезалась бы многоточием. */
-private const val MODELS_PER_ROW = 2
+/** Доля ширины подписи — та же, что у [InfoRow]: строки секции не должны
+ *  «плясать» относительно остальных строк экрана. */
+private const val ROW_LABEL_WEIGHT = 0.44f
 
-/** Зазор между плашками — тот же, что у чипов периодичности Moltbook. */
-private val CHIP_GAP = 6.dp
-
-/** Подпись под карточкой до первого нажатия: без неё карточка выглядит так,
+/** Подпись под секцией до первого нажатия: без неё секция выглядит так,
  *  будто выбор уже действует, хотя конфиг ещё не патчен. */
 private const val APPLY_HINT = "выбор применяется на лету; «применить» — запасной путь (перезапуск агента)"
 
-/** Статус на время рестарта: плашка «применить» уже нажата, ждём новый процесс. */
+/** Статус на время рестарта: кнопка «применить» уже нажата, ждём новый процесс. */
 private const val RESTARTING = "перезапускаю агента…"
 
 /** Отказ записи или рестарта: показываем вместо падения приложения. */
