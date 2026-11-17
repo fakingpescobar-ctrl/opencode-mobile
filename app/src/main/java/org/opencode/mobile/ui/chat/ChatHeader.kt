@@ -25,6 +25,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+
 // Панели шапки. Строкой, а не enum: открыта всегда максимум одна, и живёт она в
 // одной переменной activePanel.
 internal const val PANEL_MCP = "mcp"

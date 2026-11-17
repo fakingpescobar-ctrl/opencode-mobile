@@ -347,7 +347,7 @@ private class MoltbookSectionState {
         val detail =
             when {
                 busy -> "Связь с Moltbook…"
-                error != null -> "Ошибка: ${error}"
+                error != null -> "Ошибка: $error"
                 message.isNotBlank() -> message
                 else -> "Ключ и статус агента"
             }
@@ -379,8 +379,7 @@ private class MoltbookSectionState {
                         else -> "Статус сервера: $value"
                     }
                 error = null
-            }
-            .onFailure { cause -> error = cause.message?.takeIf { it.isNotBlank() } ?: NO_REASON }
+            }.onFailure { cause -> error = cause.message?.takeIf { it.isNotBlank() } ?: NO_REASON }
     }
 
     suspend fun register(context: Context) {
@@ -412,8 +411,7 @@ private class MoltbookSectionState {
                 claim = null
                 message = "Токен сохранён в moltkey"
                 refreshStatus()
-            }
-            .onFailure { cause -> error = cause.message?.takeIf { it.isNotBlank() } ?: NO_REASON }
+            }.onFailure { cause -> error = cause.message?.takeIf { it.isNotBlank() } ?: NO_REASON }
         busy = false
     }
 
@@ -429,7 +427,6 @@ private class MoltbookSectionState {
                 status = reg.status
                 confirmReplace = false
                 message = "Ключ сохранён. Откройте claim-ссылку и опубликуйте код в X"
-            }
-            .onFailure { cause -> error = cause.message?.takeIf { it.isNotBlank() } ?: NO_REASON }
+            }.onFailure { cause -> error = cause.message?.takeIf { it.isNotBlank() } ?: NO_REASON }
     }
 }

@@ -4,11 +4,11 @@ package org.opencode.mobile.social
 
 import android.content.Context
 import org.json.JSONObject
+import org.opencode.mobile.server.MoltbookPaths
+import org.opencode.mobile.server.keyFile
 import java.io.IOException
 import java.net.URI
 import java.util.UUID
-import org.opencode.mobile.server.MoltbookPaths
-import org.opencode.mobile.server.keyFile
 
 /**
  * Регистрация агента и хранилище ключа сайта Moltbook.
@@ -55,7 +55,10 @@ internal fun readMoltbookKey(context: Context): String? {
  * отсутствовать (первый запуск или чистая установка), и запись в никуда не
  * пройдёт тихо: `writeText` бросит IOException, который покажет секция.
  */
-internal fun saveMoltbookKey(context: Context, key: String) {
+internal fun saveMoltbookKey(
+    context: Context,
+    key: String,
+) {
     val trimmed = key.trim()
     require(trimmed.isNotEmpty()) { "Moltbook: ключ пуст" }
     if (!MoltbookPaths.ensureDir(context)) {
@@ -74,12 +77,17 @@ internal fun maskedMoltbookKey(key: String): String {
 internal fun validAgentName(name: String): Boolean = NAME_RE.matches(name)
 
 /** Имя по умолчанию: глобально уникальное и в разрешённом алфавите. */
-internal fun suggestedAgentName(): String =
-    NAME_PREFIX + UUID.randomUUID().toString().replace("-", "").take(NAME_SUFFIX)
+internal fun suggestedAgentName(): String = NAME_PREFIX +
+    UUID.randomUUID()
+        .toString()
+        .replace("-", "")
+        .take(NAME_SUFFIX)
 
 /** `optString` на JSON null возвращает строку "null" — она не значение, а отсутствие. */
-private fun textValue(json: JSONObject, name: String): String? =
-    json.optString(name).takeIf { it.isNotEmpty() && it != NULL_TEXT }
+private fun textValue(
+    json: JSONObject,
+    name: String,
+): String? = json.optString(name).takeIf { it.isNotEmpty() && it != NULL_TEXT }
 
 /**
  * Разбор ответа регистрации. Ключ может лежать и наверху, и под `agent` — в
