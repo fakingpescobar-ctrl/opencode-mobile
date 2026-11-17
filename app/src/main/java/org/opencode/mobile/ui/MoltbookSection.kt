@@ -95,7 +95,7 @@ internal fun moltbookSection() {
     }
     val refresh = rememberMoltbookRefresh(context)
 
-    val (headline, detail, ok) = sectionTexts(state, key)
+    val (headline, detail, ok) = state.texts(key)
     statusPlate(headline, detail, ok)
     val claim = state.claim
     if (claim != null) {
@@ -107,31 +107,6 @@ internal fun moltbookSection() {
     }
     Spacer(Modifier.height(8.dp))
     MoltbookPanel(rememberMoltbookState(refresh))
-}
-
-/** Заголовок, пояснение и цвет плашки считаются вместе, чтобы не раздувать функцию. */
-private fun sectionTexts(state: MoltbookSectionState, key: String?): Triple<String, String, Boolean?> {
-    val headline =
-        when {
-            state.busy -> "Работаю…"
-            state.error != null -> "Не получилось"
-            key == null -> "Агент не зарегистрирован"
-            else -> "Ключ: ${maskedMoltbookKey(key)}"
-        }
-    val detail =
-        when {
-            state.busy -> "Связь с Moltbook…"
-            state.error != null -> "Ошибка: ${state.error}"
-            state.message.isNotBlank() -> state.message
-            else -> "Ключ и статус агента"
-        }
-    val ok =
-        when {
-            state.error != null -> false
-            state.status == "claimed" -> true
-            else -> null
-        }
-    return Triple(headline, detail, ok)
 }
 
 /**
@@ -359,6 +334,31 @@ private class MoltbookSectionState {
     var claim by mutableStateOf<MoltbookRegistration?>(null)
         private set
     var confirmReplace by mutableStateOf(false)
+
+    /** Заголовок, пояснение и цвет плашки: все ветвления в одном месте, вне @Composable. */
+    fun texts(key: String?): Triple<String, String, Boolean?> {
+        val headline =
+            when {
+                busy -> "Работаю…"
+                error != null -> "Не получилось"
+                key == null -> "Агент не зарегистрирован"
+                else -> "Ключ: ${maskedMoltbookKey(key)}"
+            }
+        val detail =
+            when {
+                busy -> "Связь с Moltbook…"
+                error != null -> "Ошибка: ${error}"
+                message.isNotBlank() -> message
+                else -> "Ключ и статус агента"
+            }
+        val ok =
+            when {
+                error != null -> false
+                status == "claimed" -> true
+                else -> null
+            }
+        return Triple(headline, detail, ok)
+    }
 
     suspend fun load(context: Context) {
         val stored = withContext(Dispatchers.IO) { readMoltbookKey(context) }
