@@ -77,11 +77,13 @@ internal fun maskedMoltbookKey(key: String): String {
 internal fun validAgentName(name: String): Boolean = NAME_RE.matches(name)
 
 /** Имя по умолчанию: глобально уникальное и в разрешённом алфавите. */
-internal fun suggestedAgentName(): String = NAME_PREFIX +
-    UUID.randomUUID()
-        .toString()
-        .replace("-", "")
-        .take(NAME_SUFFIX)
+internal fun suggestedAgentName(): String =
+    NAME_PREFIX +
+        UUID
+            .randomUUID()
+            .toString()
+            .replace("-", "")
+            .take(NAME_SUFFIX)
 
 /** `optString` на JSON null возвращает строку "null" — она не значение, а отсутствие. */
 private fun textValue(
