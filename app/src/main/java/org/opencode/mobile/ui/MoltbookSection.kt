@@ -90,33 +90,12 @@ internal fun moltbookSection() {
         if (key == null) return@LaunchedEffect
         while (true) {
             delay(STATUS_POLL_MS)
-            state.refreshStatus(context)
+            state.refreshStatus()
         }
     }
     val refresh = rememberMoltbookRefresh(context)
 
-    statusPlate(
-        headline =
-            when {
-                state.busy -> "Работаю…"
-                state.error != null -> "Не получилось"
-                key == null -> "Агент не зарегистрирован"
-                else -> "Ключ: ${maskedMoltbookKey(key)}"
-            },
-        detail =
-            when {
-                state.busy -> "Связь с Moltbook…"
-                state.error != null -> "Ошибка: ${state.error}"
-                state.message.isNotBlank() -> state.message
-                else -> "Ключ и статус агента"
-            },
-        ok =
-            when {
-                state.error != null -> false
-                state.status == "claimed" -> true
-                else -> null
-            },
-    )
+    statusPlate(sectionHeadline(state, key), sectionDetail(state), sectionOk(state))
     val claim = state.claim
     if (claim != null) {
         claimBlock(claim, context, scope, state)
@@ -128,6 +107,29 @@ internal fun moltbookSection() {
     Spacer(Modifier.height(8.dp))
     MoltbookPanel(rememberMoltbookState(refresh))
 }
+
+private fun sectionHeadline(state: MoltbookSectionState, key: String?): String =
+    when {
+        state.busy -> "Работаю…"
+        state.error != null -> "Не получилось"
+        key == null -> "Агент не зарегистрирован"
+        else -> "Ключ: ${maskedMoltbookKey(key)}"
+    }
+
+private fun sectionDetail(state: MoltbookSectionState): String =
+    when {
+        state.busy -> "Связь с Moltbook…"
+        state.error != null -> "Ошибка: ${state.error}"
+        state.message.isNotBlank() -> state.message
+        else -> "Ключ и статус агента"
+    }
+
+private fun sectionOk(state: MoltbookSectionState): Boolean? =
+    when {
+        state.error != null -> false
+        state.status == "claimed" -> true
+        else -> null
+    }
 
 /**
  * Чтение снимка и скан уехали сюда из шапки. Пока секция раскрыта, снимок
@@ -217,7 +219,7 @@ private fun claimBlock(
             )
         }
     }
-    actionButton("Проверить статус") { scope.launch { state.refreshStatus(context) } }
+    actionButton("Проверить статус") { scope.launch { state.refreshStatus() } }
     actionButton("Скопировать код") { copyToClipboard(context, reg.verificationCode) }
     val safe = safeClaimUrl(reg.claimUrl)
     if (safe != null) {
@@ -358,10 +360,10 @@ private class MoltbookSectionState {
     suspend fun load(context: Context) {
         val stored = withContext(Dispatchers.IO) { readMoltbookKey(context) }
         key = stored
-        if (stored != null) refreshStatus(context)
+        if (stored != null) refreshStatus()
     }
 
-    suspend fun refreshStatus(context: Context) {
+    suspend fun refreshStatus() {
         val current = key ?: return
         val result = withContext(Dispatchers.IO) { runCatching { agentStatus(current) } }
         result
@@ -406,7 +408,7 @@ private class MoltbookSectionState {
                 token = ""
                 claim = null
                 message = "Токен сохранён в moltkey"
-                refreshStatus(context)
+                refreshStatus()
             }
             .onFailure { cause -> error = cause.message?.takeIf { it.isNotBlank() } ?: NO_REASON }
         busy = false

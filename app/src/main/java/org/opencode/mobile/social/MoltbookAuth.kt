@@ -1,3 +1,5 @@
+@file:Suppress("MatchingDeclarationName") // файл назван по теме (авторизация), а не по классу ответа
+
 package org.opencode.mobile.social
 
 import android.content.Context
