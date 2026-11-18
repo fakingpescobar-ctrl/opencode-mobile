@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 11 и ниже. Секреты не должны попадать в облачный backup
+  и в device-to-device transfer. Остальные данные копируются как раньше:
+  правил <include> здесь нет, значит действует «всё, кроме exclude».
+-->
+<full-backup-content>
+    <!-- Пароль локального serve (ServerAuth, AES + Keystore). -->
+    <exclude domain="sharedpref" path="opencode_server.xml" />
+    <exclude domain="device_sharedpref" path="opencode_server.xml" />
+
+    <!-- OAuth access/refresh token Яндекса (YandexTokenStore/YandexDeviceStore). -->
+    <exclude domain="sharedpref" path="opencode_yandex_auth.xml" />
+    <exclude domain="device_sharedpref" path="opencode_yandex_auth.xml" />
+
+    <!-- Ключ ElevenLabs (ElevenLabsSecret). -->
+    <exclude domain="sharedpref" path="opencode_tts_secrets.xml" />
+    <exclude domain="device_sharedpref" path="opencode_tts_secrets.xml" />
+    <exclude domain="sharedpref" path="elevenlabs_tts.xml" />
+    <exclude domain="device_sharedpref" path="elevenlabs_tts.xml" />
+
+    <!-- Токен Moltbook: File(context.filesDir, "mcp-token"). -->
+    <exclude domain="file" path="mcp-token" />
+    <exclude domain="device_file" path="mcp-token" />
+</full-backup-content>
