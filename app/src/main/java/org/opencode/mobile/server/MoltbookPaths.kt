@@ -67,7 +67,7 @@ internal object MoltbookPaths {
         }
 
     /** Состояние лежит снаружи и переживёт переустановку APK. */
-    fun external(context: Context): Boolean = Workspace.usingExternal(context)
+    fun external(context: Context): Boolean = Workspace.dataRoot(context) != null
 
     /**
      * Создать каталог базы, если его нет. [ensureDir] и это - единственные места,
@@ -81,8 +81,14 @@ internal object MoltbookPaths {
     /**
      * Общий каталог: тот же, что у памяти и opencode-данных, - иначе «переживает
      * переустановку» значило бы разное для разных файлов одного плагина.
+     *
+     * Считается от [Workspace.dataRoot], а не от рабочей папки: рабочую папку
+     * пользователь может сменить, и журнал Молтбука не должен уехать вместе с ней.
      */
-    private fun base(context: Context): File = if (external(context)) File(Workspace.resolve(context), "opencode") else context.filesDir
+    private fun base(context: Context): File {
+        val root = Workspace.dataRoot(context) ?: return context.filesDir
+        return File(root, "opencode")
+    }
 
     /**
      * Контекст, у которого база открывается по нашему пути, а не там, где решил

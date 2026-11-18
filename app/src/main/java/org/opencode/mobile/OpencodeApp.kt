@@ -104,14 +104,17 @@ class OpencodeApp : Application() {
         fun init(context: Context) {
             appFiles = context.filesDir
             // Есть «Доступ ко всем файлам»? Тогда HOME/XDG_DATA/CACHE — на внешнее
-            // хранилище (Documents/OpencodeTerminal/opencode), рядом с workspace. Иначе
-            // внутренний sandbox (app без прав — данные остаются в filesDir).
-            externalBase = Workspace.usingExternal(context)
-            if (externalBase) {
-                opencodeBase = File(Workspace.resolve(context), "opencode").apply { mkdirs() }
-            } else {
-                opencodeBase = appFiles
-            }
+            // хранилище (Documents/OpencodeTerminal/opencode). Иначе внутренний sandbox
+            // (app без прав — данные остаются в filesDir).
+            //
+            // База считается от [Workspace.dataRoot], а НЕ от рабочей папки: рабочую
+            // папку пользователь выбирает сам (WorkspacePrefs), и она не должна уносить
+            // с собой дом opencode. Иначе смена папки выглядела бы как «пропала память»:
+            // memory.sqlite и сессии остались бы на месте, но лежали бы не там, где их
+            // ищет serve, и в новой папке появился бы пустой дом.
+            val dataRoot = Workspace.dataRoot(context)
+            externalBase = dataRoot != null
+            opencodeBase = dataRoot?.let { File(it, "opencode").apply { mkdirs() } } ?: appFiles
             opencodeHome = File(opencodeBase, "opencode-home")
             opencodeData = File(opencodeBase, "opencode-data")
             opencodeCache = File(opencodeBase, "opencode-cache")

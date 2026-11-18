@@ -41,6 +41,10 @@ class OpencodeServerService : Service() {
         val port: Int = OpencodeApp.ServerConfig.PORT,
         val logTail: String = "",
         val workspaceExternal: Boolean = false,
+        /** Реальная рабочая папка serve: её же показывает диагностика. */
+        val workspacePath: String = "",
+        /** Почему выбранная папка не принята (serve тогда работает в папке по умолчанию). */
+        val workspaceProblem: String? = null,
         val lastError: RuntimeError? = null,
         val stopReason: StopReason? = null,
         val restartCount: Int = 0,
@@ -205,6 +209,8 @@ class OpencodeServerService : Service() {
                 status = rt.stage.toServerStatus(),
                 port = rt.port,
                 workspaceExternal = rt.workspaceExternal,
+                workspacePath = rt.workspacePath,
+                workspaceProblem = rt.workspaceProblem,
                 lastError = rt.lastError,
                 stopReason = rt.stopReason,
                 restartCount = rt.restartCount,

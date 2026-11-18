@@ -600,7 +600,6 @@ fun DiagnosticsScreen(
 
                 DiagSection("Сервер opencode", serverTone) {
                     serverState.stage?.let { InfoRow("Стадия runtime", stageLabel(it)) }
-                    InfoRow("Workspace", if (serverState.workspaceExternal) "Внешний (MANAGE_EXTERNAL_STORAGE)" else "Внутренний")
                     serverState.lastError?.let { err ->
                         val resolved = err.resolvedAt != null
                         InfoRow(
@@ -623,6 +622,11 @@ fun DiagnosticsScreen(
                         InfoRow("Сбои (последние ${serverState.errorHistory.size})", historyText(serverState.errorHistory))
                     }
                 }
+
+                // Рабочая папка — отдельной секцией: это единственная настройка,
+                // которую пользователь меняет сам, и рядом с ней должны быть
+                // причина отказа и кнопка, а не одна строка «внешняя/внутренняя».
+                WorkspaceCard(serverState.workspacePath, serverState.workspaceProblem)
 
                 // Права собраны в одной секции, потому что чинятся они одинаково —
                 // уходом в системные настройки и возвратом сюда. Раньше наложение
@@ -669,14 +673,6 @@ fun DiagnosticsScreen(
                             openAppDetails(context)
                         }
                     }
-                    InfoRow(
-                        "Рабочая папка",
-                        if (serverState.workspaceExternal) {
-                            "внешняя (MANAGE_EXTERNAL_STORAGE)"
-                        } else {
-                            "внутренняя (доступ ко всем файлам не нужен)"
-                        },
-                    )
                     InfoRow("Снимок экрана", shotNote, shotTone.color())
                     // Проверка идёт тем же путём, что у моста (/v1/screen/shot):
                     // «работает» здесь значит «работает и агенту», а не «кнопка жива».
@@ -1357,7 +1353,8 @@ private fun dumpServerSection(
     st.stage?.let { sb.append("Стадия runtime: ${stageLabel(it)} (${it.name})\n") }
     sb.append("Порт: ${st.port}\n")
     sb.append("Рестарты цикла: ${st.restartCount}\n")
-    sb.append("Workspace: ${if (st.workspaceExternal) "внешний" else "внутренний"}\n")
+    sb.append("Рабочая папка: ${st.workspacePath.ifBlank { "(ещё не стартовал)" }}\n")
+    st.workspaceProblem?.let { sb.append("Рабочая папка не принята: $it\n") }
     st.lastError?.let {
         val resolved = it.resolvedAt != null
         val ts = if (resolved) "resolved@" + fmtTime(it.resolvedAt) else "active@" + fmtTime(it.at)
