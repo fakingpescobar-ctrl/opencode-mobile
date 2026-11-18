@@ -370,6 +370,8 @@ object AppInstallBridge {
      * просьба дошла до секции, нет — ещё не дошла или адрес не тот. Видимость на
      * экране по-прежнему доказывает только кадр.
      */
+    // GET без параметров: request нужен только сигнатуре Route, телу он не нужен.
+    @Suppress("UnusedParameter")
     private fun uiDiagnosticsReadback(
         output: BufferedOutputStream,
         request: Request,
