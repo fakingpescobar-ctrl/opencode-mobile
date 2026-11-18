@@ -16,6 +16,8 @@
         <exclude domain="device_sharedpref" path="elevenlabs_tts.xml" />
         <exclude domain="file" path="mcp-token" />
         <exclude domain="device_file" path="mcp-token" />
+        <exclude domain="file" path="moltbook/moltkey" />
+        <exclude domain="device_file" path="moltbook/moltkey" />
     </cloud-backup>
 
     <device-transfer>
@@ -29,5 +31,7 @@
         <exclude domain="device_sharedpref" path="elevenlabs_tts.xml" />
         <exclude domain="file" path="mcp-token" />
         <exclude domain="device_file" path="mcp-token" />
+        <exclude domain="file" path="moltbook/moltkey" />
+        <exclude domain="device_file" path="moltbook/moltkey" />
     </device-transfer>
 </data-extraction-rules>
