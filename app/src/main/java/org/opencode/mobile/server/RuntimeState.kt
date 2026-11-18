@@ -126,6 +126,10 @@ data class RuntimeState(
     val port: Int = OpencodeApp.ServerConfig.PORT,
     val memoryPort: Int = OpencodeRuntime.MEMORY_PORT,
     val workspaceExternal: Boolean = false,
+    /** Реальная рабочая папка, с которой стартовал serve (пустая до первого старта). */
+    val workspacePath: String = "",
+    /** Почему выбранная папка не принята и serve работает в папке по умолчанию. */
+    val workspaceProblem: String? = null,
     val lastError: RuntimeError? = null,
     val stopReason: StopReason? = null,
     /** Сколько рестартов сделал цикл с момента последнего HEALTHY. */

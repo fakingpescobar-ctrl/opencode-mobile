@@ -237,14 +237,15 @@ class RuntimeManager(
                 // понимает --dir, поэтому директория задаётся через CWD (workDir).
                 val wsResult =
                     runCatching {
-                        val w = Workspace.resolve(context)
-                        val readme = File(w, "README.md")
-                        if (!readme.exists()) {
-                            readme.writeText(
+                        val resolution = Workspace.resolveWithStatus(context)
+                        // README — только в папке по умолчанию. В чужом проекте наш файл
+                        // был бы мусором: папку выбрали именно чтобы работать в ней как есть.
+                        if (resolution.requested == null && !File(resolution.dir, "README.md").exists()) {
+                            File(resolution.dir, "README.md").writeText(
                                 "# OpenCode Terminal\n\nРабочая директория на внешнем хранилище (Documents/OpencodeTerminal).\n",
                             )
                         }
-                        w to Workspace.usingExternal(context)
+                        resolution
                     }
                 if (wsResult.isFailure) {
                     consecutiveFailures++
@@ -261,8 +262,14 @@ class RuntimeManager(
                     restartBackoff(consecutiveFailures)
                     continue
                 }
-                val (workspace, ext) = wsResult.getOrThrow()
-                android.util.Log.i("OpencodeServer", "workspace=${workspace.absolutePath} external=$ext")
+                val resolution = wsResult.getOrThrow()
+                val workspace = resolution.dir
+                val ext = resolution.isExternal(context)
+                android.util.Log.i(
+                    "OpencodeServer",
+                    "workspace=${workspace.absolutePath} external=$ext " +
+                        "requested=${resolution.requested} problem=${resolution.problem}",
+                )
 
                 val memoryToken = UUID.randomUUID().toString()
                 // Тот же токен отдаём проверкам приложения (RuntimeValidation в
@@ -288,7 +295,14 @@ class RuntimeManager(
                 // Не фатал: плагин не поднялся - приложение работает, агент просто не
                 // получает инструменты молтбука. Тикер-молтбук на этом шаге ещё существует
                 // и работает сам, его удаление - отдельная правка.
-                emit { copy(stage = RuntimeStage.STARTING_MEMORY, workspaceExternal = ext) }
+                emit {
+                    copy(
+                        stage = RuntimeStage.STARTING_MEMORY,
+                        workspaceExternal = ext,
+                        workspacePath = workspace.absolutePath,
+                        workspaceProblem = resolution.problem,
+                    )
+                }
                 val moltbookToken = UUID.randomUUID().toString()
                 val moltbookStarted =
                     startMoltbookAndVerify(
@@ -316,7 +330,14 @@ class RuntimeManager(
                 // Живой process != поднятая память: startMemoryServer возвращает процесс,
                 // который может мгновенно упасть или не открыть сокет — верифицируем
                 // isAlive + TCP-коннект на MEMORY_PORT (окно ~5s).
-                emit { copy(stage = RuntimeStage.STARTING_MEMORY, workspaceExternal = ext) }
+                emit {
+                    copy(
+                        stage = RuntimeStage.STARTING_MEMORY,
+                        workspaceExternal = ext,
+                        workspacePath = workspace.absolutePath,
+                        workspaceProblem = resolution.problem,
+                    )
+                }
                 var memoryStarted = startMemoryAndVerify(context, logFile, workspace, memoryToken)
                 if (!memoryStarted) {
                     emitFailure(
