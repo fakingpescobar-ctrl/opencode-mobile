@@ -389,7 +389,7 @@ object AppInstallBridge {
                             .put("section", it.section)
                             .put("expand", it.expand)
                             .put("seq", it.seq)
-                    },
+                    } ?: JSONObject.NULL,
                 ),
         )
     }

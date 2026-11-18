@@ -91,6 +91,7 @@ object DiagnosticsCommand {
      * Отметка ставится ПОСЛЕ сверки заголовка (это делает вызывающая секция):
      * иначе первая же секция съедала бы просьбу, адресованную другой.
      */
+    @Synchronized
     fun claimFocus(request: FocusRequest): Boolean {
         if (request.seq <= appliedFocusSeq) return false
         appliedFocusSeq = request.seq
@@ -105,6 +106,7 @@ object DiagnosticsCommand {
      * собирается в другом потоке, и заголовок сверяется уже там. Доказательство
      * того, что секция видна, — кадр экрана.
      */
+    @Synchronized
     fun focusSection(
         section: String,
         expand: Boolean,
