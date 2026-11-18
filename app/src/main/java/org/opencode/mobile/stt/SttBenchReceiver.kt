@@ -30,6 +30,13 @@ import android.util.Log
  *
  * Работает ТОЛЬКО в debug-сборке: приложение ещё и HTTP-сервер поднимает на
  * 4096, а экспортированный приёмник, читающий произвольный файл, — дыра.
+ *
+ * Поэтому дыра закрыта с двух сторон:
+ *  - манифест требует `android.permission.DUMP` — его держит только shell
+ *    (то есть `adb`), сторонние приложения получают SecurityException;
+ *  - путь из extra `file` должен лежать в своих каталогах приложения или в
+ *    `/data/local/tmp`, откуда клипы кладёт `tools/stt-accuracy.ps1`
+ *    (см. [SttBenchPaths]).
  */
 class SttBenchReceiver : BroadcastReceiver() {
     override fun onReceive(
@@ -41,9 +48,9 @@ class SttBenchReceiver : BroadcastReceiver() {
     }
 
     /**
-     * Задание для сервиса либо null, если это не наш broadcast / не debug / нет файла.
-     * Сделано одним `when` без ранних возвратов: detekt держит лимит ReturnCount = 2,
-     * а проверок тут три.
+     * Задание для сервиса либо null, если это не наш broadcast / не debug / нет файла /
+     * файл вне разрешённых корней. Сделано одним `when` без ранних возвратов: detekt
+     * держит лимит ReturnCount = 2, а проверок тут четыре.
      */
     private fun serviceIntentFor(
         context: Context,
@@ -62,6 +69,11 @@ class SttBenchReceiver : BroadcastReceiver() {
                 null
             }
 
+            !SttBenchPaths.isAllowed(path, allowedRoots(context)) -> {
+                Log.w(TAG, "ignored: '$path' вне разрешённых корней")
+                null
+            }
+
             else ->
                 Intent(context, WhisperTranscribeService::class.java)
                     .setAction(ACTION)
@@ -70,6 +82,15 @@ class SttBenchReceiver : BroadcastReceiver() {
                     .putExtra(EXTRA_ENGINE, intent.getStringExtra(EXTRA_ENGINE))
         }
     }
+
+    /** Свои каталоги приложения плюс adb-каталог бенча. */
+    private fun allowedRoots(context: Context): List<String> =
+        listOfNotNull(
+            context.filesDir?.absolutePath,
+            context.cacheDir?.absolutePath,
+            context.getExternalFilesDir(null)?.absolutePath,
+            SttBenchPaths.ADB_BENCH_ROOT,
+        )
 
     companion object {
         const val TAG = "STT_BENCH"
