@@ -76,6 +76,7 @@ class RuntimeManager(
     }
 
     private val logFile = File(context.filesDir, "opencode.log")
+    private val logRotator = LogRotator(MAX_LOG_BYTES, MAX_LOG_FILES, LOG_TOTAL_BUDGET)
     private val serve = ProcessSupervisor("serve")
     private val memory = ProcessSupervisor("memory")
     private val ynison = ProcessSupervisor("ynison")
@@ -193,7 +194,7 @@ class RuntimeManager(
                 memory.stop()
                 ynison.stop()
                 moltbook.stop()
-                rotateLogFile(logFile)
+                logRotator.rotate(logFile)
 
                 // Новый виток: прошлая ошибка (если была активна) помечается
                 // resolved — новый виток «берёт её на себя», но не стирает из
@@ -955,76 +956,6 @@ class RuntimeManager(
         } catch (e: Exception) {
             false
         }
-
-    /**
-     * Ротация opencode.log по размеру: при превышении MAX_LOG_BYTES текущий лог
-     * сдвигается по цепочке opencode.log.N (N=1..MAX_LOG_FILES): .2→.3, .1→.2,
-     * .log→.1. Старые хвосты затираются. После сдвига — прунинг по общему бюджету
-     * (LOG_TOTAL_BUDGET). Вызывается перед стартом процесса serve — сам процесс
-     * пишет в открытый fd, живая ротация невозможна без его перезапуска.
-     */
-    private fun rotateLogFile(logFile: File) {
-        // Общий бюджет пруним при КАЖДОМ вызове (не только после сдвига): хвосты
-        // могли раздуть извне, а .log ещё не дорос до порога MAX_LOG_BYTES.
-        pruneLogs(logFile)
-        if (!logFile.exists()) return
-        if (logFile.length() < MAX_LOG_BYTES) return
-        val parent = logFile.parentFile ?: return
-        // Сдвиг хвостов от старшего к младшему: .2→.3, .1→.2 (старый хвост затираем).
-        for (i in MAX_LOG_FILES - 1 downTo 1) {
-            val cur = File(parent, "opencode.log.$i")
-            val next = File(parent, "opencode.log.${i + 1}")
-            if (!cur.exists()) continue
-            // Не затираем next заранее: при неудаче renameTo пробуем delete+ретрай —
-            // иначе потеряли бы и данные next, и (при неудаче) содержимое cur.
-            if (!cur.renameTo(next)) {
-                next.delete()
-                if (!cur.renameTo(next)) {
-                    android.util.Log.w("OpencodeServer", "сдвиг ${cur.name} -> ${next.name} не удался")
-                }
-            }
-        }
-        val rotated = File(parent, "opencode.log.1")
-        if (logFile.renameTo(rotated)) {
-            android.util.Log.i("OpencodeServer", "rotated opencode.log -> opencode.log.1")
-        } else {
-            android.util.Log.w("OpencodeServer", "rotate opencode.log не удался (renameTo=false)")
-        }
-    }
-
-    /**
-     * Общий лимит логов: пока сумма всех файлов цепочки (opencode.log + .1..MAX)
-     * превышает LOG_TOTAL_BUDGET, удаляем самые старые из имеющихся (.N с конца).
-     * Пик во время самой ротации на ≤8MB выше бюджета (4×8MB=32MB vs 30MB),
-     * сразу после — прунинг до 24MB. Вызывается после каждого сдвига.
-     */
-    private fun pruneLogs(logFile: File) {
-        val parent = logFile.parentFile ?: return
-        var total = logFile.length()
-        (1..MAX_LOG_FILES)
-            .map { File(parent, "opencode.log.$it") }
-            .filter { it.exists() }
-            .forEach { total += it.length() }
-        var idx = MAX_LOG_FILES
-        while (total > LOG_TOTAL_BUDGET && idx > 0) {
-            val f = File(parent, "opencode.log.$idx")
-            if (f.exists()) {
-                // Длину берём ДО удаления; вычитаем только при успехе — иначе
-                // неудачный delete (файл занят) ложно «соблюдал» бы бюджет.
-                val len = f.length()
-                if (f.delete()) {
-                    total -= len
-                    android.util.Log.i("OpencodeServer", "pruned ${f.name} (total ${total / 1024 / 1024}MB)")
-                } else {
-                    android.util.Log.w("OpencodeServer", "не удалось удалить ${f.name}")
-                }
-            }
-            idx--
-        }
-        if (total > LOG_TOTAL_BUDGET) {
-            android.util.Log.w("OpencodeServer", "бюджет логов всё ещё превышен: $total байт")
-        }
-    }
 
     /** Пингует HTTP localhost:port, ждёт пока сервер ответит (до 30s).
      *  Выходит раньше при стопе (running=false) или мягком рестарте (restartRequested). */
