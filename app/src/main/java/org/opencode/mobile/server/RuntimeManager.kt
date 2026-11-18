@@ -37,6 +37,11 @@ class RuntimeManager(
         /** Максимум подряд идущих витков без HEALTHY (лимит рестартов). */
         const val MAX_RESTART_ATTEMPTS = 5
 
+        /** Backoff рестартов: base × 2^failures, но не выше потолка; степень ≤ shiftCap. */
+        private const val RESTART_BASE_DELAY_MS = 1_000L
+        private const val RESTART_MAX_DELAY_MS = 15_000L
+        private const val RESTART_SHIFT_CAP = 4
+
         /**
          * Запасной id для Ynison, если хранилище недоступно.
          *
@@ -89,6 +94,13 @@ class RuntimeManager(
             httpAttempts = HEALTH_HTTP_ATTEMPTS,
             httpPollMs = HEALTH_HTTP_POLL_MS,
             isStopping = { !running || restartRequested },
+        )
+    private val restartPolicy =
+        RestartPolicy(
+            maxAttempts = MAX_RESTART_ATTEMPTS,
+            baseDelayMs = RESTART_BASE_DELAY_MS,
+            capDelayMs = RESTART_MAX_DELAY_MS,
+            shiftCap = RESTART_SHIFT_CAP,
         )
     private val serve = ProcessSupervisor("serve")
     private val memory = ProcessSupervisor("memory")
@@ -246,7 +258,7 @@ class RuntimeManager(
                         message = "workspace resolve: ${wsResult.exceptionOrNull()?.message}",
                         recoverable = true,
                     ) { copy(stage = RuntimeStage.CRASHED, restartCount = consecutiveFailures) }
-                    if (consecutiveFailures >= MAX_RESTART_ATTEMPTS) {
+                    if (restartPolicy.isLimitReached(consecutiveFailures)) {
                         emitTerminalRestartLimit()
                         return
                     }
@@ -391,7 +403,7 @@ class RuntimeManager(
                         message = "startServe вернул null (runtime не собрался)",
                         recoverable = true,
                     ) { copy(stage = RuntimeStage.CRASHED, restartCount = consecutiveFailures) }
-                    if (consecutiveFailures >= MAX_RESTART_ATTEMPTS) {
+                    if (restartPolicy.isLimitReached(consecutiveFailures)) {
                         emitTerminalRestartLimit()
                         return
                     }
@@ -727,7 +739,7 @@ class RuntimeManager(
                     }
                 }
 
-                if (consecutiveFailures >= MAX_RESTART_ATTEMPTS) {
+                if (restartPolicy.isLimitReached(consecutiveFailures)) {
                     emitTerminalRestartLimit()
                     return
                 }
@@ -834,19 +846,11 @@ class RuntimeManager(
             }.start()
     }
 
-    /**
-     * Backoff после неудачного витка: 2s, 4s, 8s, 15s (cap). Первый фейл = 2s.
-     */
-    private fun backoff(failures: Int): Long {
-        val shift = if (failures > 0) failures else 1
-        return (1000L shl minOf(shift, 4)).coerceAtMost(15_000L)
-    }
-
     /** Backoff-пауза с явной фазой RESTARTING: UI видит «перезапускается», а не
      *  зависший CRASHED. Пауза отменяемая (стоп/рестарт выходят сразу). */
     private suspend fun restartBackoff(failures: Int) {
         emit { copy(stage = RuntimeStage.RESTARTING) }
-        delay(backoff(failures))
+        delay(restartPolicy.backoffMs(failures))
     }
 
     /**
