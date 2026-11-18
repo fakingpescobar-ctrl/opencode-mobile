@@ -3,6 +3,7 @@ package org.opencode.mobile.server
 import android.content.Context
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import org.opencode.mobile.OpencodeApp
 import org.opencode.mobile.account.YandexAccountController
@@ -86,6 +87,13 @@ class RuntimeManager(
 
     private val logFile = File(context.filesDir, "opencode.log")
     private val logRotator = LogRotator(MAX_LOG_BYTES, MAX_LOG_FILES, LOG_TOTAL_BUDGET)
+
+    /** Единая точка состояния: снимок + флаги цикла под одним монитором. */
+    private val holder = RuntimeStateHolder(listener = onState)
+
+    /** Снимок состояния для подписчиков: UI и диагностика читают его без колбэка. */
+    val state: StateFlow<RuntimeState> get() = holder.state
+
     private val health =
         HealthProbe(
             timeoutMs = PROBE_TIMEOUT_MS,
@@ -93,7 +101,7 @@ class RuntimeManager(
             startupPollMs = STARTUP_HEALTH_POLL_MS,
             httpAttempts = HEALTH_HTTP_ATTEMPTS,
             httpPollMs = HEALTH_HTTP_POLL_MS,
-            isStopping = { !running || restartRequested },
+            isStopping = { holder.isStopping },
         )
     private val restartPolicy =
         RestartPolicy(
@@ -109,19 +117,8 @@ class RuntimeManager(
     /** Плагин Moltbook. Отдельный супервизор, чтобы падение плагина не трогало память. */
     private val moltbook = ProcessSupervisor("moltbook")
 
-    @Volatile
-    private var running = false
-
-    /** Флаг мягкого рестарта: requestRestart() убил serve, но цикл может быть НЕ в HEALTHY-фазе
-     *  (например, ждёт waitForHttp) — без флага это было бы HEALTH_TIMEOUT, а не рестарт. */
-    @Volatile
-    private var restartRequested = false
-
-    private var currentState = RuntimeState()
-
     private fun emit(transform: RuntimeState.() -> RuntimeState) {
-        currentState = currentState.transform()
-        onState(currentState)
+        holder.dispatch(RuntimeAction.Update(transform))
     }
 
     /** Коды, относящиеся к подсистеме локальной памяти (фиксируют lastMemoryFailureAt). */
@@ -171,10 +168,9 @@ class RuntimeManager(
         }
     }
 
-    /** Главный цикл. Вызывается из корутины сервиса; завершается сам по running=false. */
+    /** Главный цикл. Вызывается из корутины сервиса; завершается сам по isRunning=false. */
     suspend fun run() {
-        running = true
-        emit { copy(restartCount = 0) }
+        holder.dispatch(RuntimeAction.Begin)
 
         // Будильник молтбук-тика взводится здесь, а не в приёмнике: рестарт
         // процесса, обновление APK или падение serve иначе оставляли бы расписание
@@ -205,7 +201,7 @@ class RuntimeManager(
             // достаточно: состояние не меняется, пока не появится новый успех.
             var localMcpGaveUpReported = false
 
-            while (running) {
+            while (holder.isRunning) {
                 // Гасим ПРОЦЕССЫ прошлого витка (serve тоже — см. continue из restart-ветки:
                 // там процесс мог ещё не умереть, а новый виток уже пошёл) ДО ротации:
                 // fd старого serve держит старый inode opencode.log, и после rename
@@ -419,11 +415,10 @@ class RuntimeManager(
                 if (healthy) detectServerFlavor(OpencodeApp.ServerConfig.PORT)
                 // Штатная отмена (стоп сервиса / рестарт юзера) во время health-ожидания
                 // не должна трактоваться как HEALTH_TIMEOUT и растить счётчик крашей.
-                if (!running || !currentCoroutineContext().isActive) break
+                if (!holder.isRunning || !currentCoroutineContext().isActive) break
                 // requestRestart мог убить serve во время waitForHttp (рестарт из UI):
                 // это НЕ ошибка старта, а мягкий рестарт — выходим на новый виток.
-                if (restartRequested) {
-                    restartRequested = false
+                if (holder.dispatch(RuntimeAction.ConsumeRestart)) {
                     consecutiveFailures = 0
                     continue
                 }
@@ -464,9 +459,9 @@ class RuntimeManager(
 
                     // Живём, пока процесс жив и цикл не остановлен. Респавн поверх живого
                     // запрещён (иначе порт занят и рестарт каждые ~2 сек).
-                    // restartRequested выводит мгновенно (не ждём смерти процесса
+                    // isRestartPending выводит мгновенно (не ждём смерти процесса
                     // от daemon-треда — флаг уже обработан ниже).
-                    while (serve.isAlive && running && !restartRequested) {
+                    while (serve.isAlive && holder.isRunning && !holder.isRestartPending) {
                         // Мониторинг локальных MCP-серверов: деградация только из HEALTHY
                         // (не спамим lastError каждые 3s), восстановление DEGRADED→HEALTHY
                         // при оживлении всех, кто был поднят (процесс жив и TCP-порт отвечает).
@@ -499,7 +494,7 @@ class RuntimeManager(
                             val moltAlive =
                                 !moltbookStarted || (moltbook.isAlive && health.tcpOk(MoltbookMcp.PORT))
                             val allAlive = memAlive && ynAlive && moltAlive
-                            when (currentState.stage) {
+                            when (holder.snapshot().stage) {
                                 RuntimeStage.HEALTHY ->
                                     if (!allAlive) {
                                         val (code, message) =
@@ -713,12 +708,11 @@ class RuntimeManager(
                         }
                         delay(RETRY_DELAY_MS)
                     }
-                    if (!running) break
+                    if (!holder.isRunning) break
 
                     // Мягкий рестарт из HEALTHY: флаг выигрывает у разбора краша
                     // (гонка: process мог умереть от stop() daemon-треда requestRestart).
-                    if (restartRequested) {
-                        restartRequested = false
+                    if (holder.dispatch(RuntimeAction.ConsumeRestart)) {
                         consecutiveFailures = 0
                         continue
                     }
@@ -745,7 +739,7 @@ class RuntimeManager(
                 }
                 // При явном стопе выходим сразу; backoff только после реальных фейлов
                 // (consecutiveFailures > 0: мягкий рестарт — без паузы, мгновенно).
-                if (consecutiveFailures > 0 && running) {
+                if (consecutiveFailures > 0 && holder.isRunning) {
                     restartBackoff(consecutiveFailures)
                 }
             }
@@ -754,7 +748,7 @@ class RuntimeManager(
             // флаг (при отмене корутины его не сбрасывает ни один emitTerminal*),
             // процессы гасём (двойной stop безопасен — synchronized; при
             // RESTART_LIMIT memory осталась бы жить без этого).
-            running = false
+            holder.dispatch(RuntimeAction.MarkStopped)
             serve.stop()
             memory.stop()
             ynison.stop()
@@ -773,8 +767,9 @@ class RuntimeManager(
             // (CancellationException из delay). НО: CRASHED/FAILED_PERMANENTLY не затираем
             // НИКОГДА — информация о терминальном отказе важнее (RESTART_LIMIT /
             // INVALID_RUNTIME / просто последний краш, который юзер прервал кнопкой Stop).
-            if (currentState.stage != RuntimeStage.CRASHED &&
-                currentState.stage != RuntimeStage.FAILED_PERMANENTLY
+            val stage = holder.snapshot().stage
+            if (stage != RuntimeStage.CRASHED &&
+                stage != RuntimeStage.FAILED_PERMANENTLY
             ) {
                 emit { copy(stage = RuntimeStage.STOPPED, stopReason = StopReason.USER_STOP) }
             }
@@ -790,31 +785,30 @@ class RuntimeManager(
         ) {
             copy(stage = RuntimeStage.FAILED_PERMANENTLY, stopReason = StopReason.INVALID_RUNTIME)
         }
-        running = false
+        holder.dispatch(RuntimeAction.MarkStopped)
     }
 
     private fun emitTerminalRestartLimit() {
         // lastError проставляем явно: после HEALTHY он может быть null, и UI
         // увидел бы CRASHED без причины. recoverable=false — терминально.
         emitFailure(
-            stage = currentState.stage,
+            stage = holder.snapshot().stage,
             code = RuntimeErrorCode.SERVER_CRASHED,
             message = "превышен лимит рестартов ($MAX_RESTART_ATTEMPTS) — runtime не поднялся",
             recoverable = false,
         ) {
             copy(stage = RuntimeStage.FAILED_PERMANENTLY, stopReason = StopReason.RESTART_LIMIT)
         }
-        running = false
+        holder.dispatch(RuntimeAction.MarkStopped)
     }
 
     /**
-     * Явный стоп. Не блокирует вызывающий поток: флаг running=false — цикл сам
+     * Явный стоп. Не блокирует вызывающий поток: флаг isRunning=false — цикл сам
      * выйдет на ближайшей проверке, процессы погасит finally run() (отдельный
      * daemon-тред не нужен и создавал бы гонку с finally-stop по explicitlyStopped).
      */
     fun requestStop() {
-        if (!running) return
-        running = false
+        holder.dispatch(RuntimeAction.Stop)
     }
 
     /**
@@ -823,7 +817,7 @@ class RuntimeManager(
      * выживут. Блокирует вызывающий поток на время kill-timeout (~6s максимум).
      */
     fun stopNow() {
-        running = false
+        holder.dispatch(RuntimeAction.MarkStopped)
         serve.stop()
         memory.stop()
         ynison.stop()
@@ -833,12 +827,12 @@ class RuntimeManager(
     /**
      * Мягкий рестарт serve: убивает текущий процесс (цикл перезапустит с заново
      * резолвнутым workspace — нужно для подхвата внешнего хранилища). Счётчик
-     * отказов не растёт: флаг restartRequested перехватывает цикл в ЛЮБОЙ фазе
+     * отказов не растёт: флаг isRestartPending перехватывает цикл в ЛЮБОЙ фазе
      * (не только HEALTHY), плюс ProcessSupervisor.stop ставит explicitlyStopped
      * + stoppedWhileAlive. Не блокирует поток.
      */
     fun requestRestart() {
-        restartRequested = true
+        holder.dispatch(RuntimeAction.Restart)
         Thread { serve.stop() }
             .apply {
                 isDaemon = true
