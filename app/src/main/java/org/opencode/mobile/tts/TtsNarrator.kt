@@ -117,6 +117,13 @@ object TtsNarrator {
             // Откладываем последний куст текста и доигрываем его сразу после
             // загрузки движка.
             deferred = text to isFinal
+            TtsStats.record(
+                chars = text.length,
+                chunks = 0,
+                spoken = 0,
+                note = "deferred",
+                head = text.take(LOG_PREVIEW_CHARS),
+            )
             Log.i(TAG, "движок ещё грузится, текст отложен: ${text.length} симв., isFinal=$isFinal")
             return
         }
@@ -147,8 +154,15 @@ object TtsNarrator {
         consumedPrefix = text
 
         val chunks = if (isFinal) chunker.push(delta.text) + chunker.flush() else chunker.push(delta.text)
-        val spoken = chunks.filter(SpeechFilter::isSpeechable)
+        val spoken = chunks.mapNotNull(SpeechFilter::speechableText)
         spoken.forEach { sp.enqueue(it) }
+        TtsStats.record(
+            chars = delta.text.length,
+            chunks = chunks.size,
+            spoken = spoken.size,
+            note = if (spoken.isEmpty()) "filtered" else "queued",
+            head = spoken.firstOrNull()?.take(LOG_PREVIEW_CHARS).orEmpty(),
+        )
         if (spoken.isNotEmpty()) {
             val head = spoken.first().take(LOG_PREVIEW_CHARS)
             Log.d(TAG, "в очередь ${spoken.size} из ${chunks.size}: $head…")
@@ -168,7 +182,7 @@ object TtsNarrator {
      */
     fun onNewAssistantMessage() {
         val sp = speaker
-        val rest = if (sp == null) emptyList() else chunker.flush().filter(SpeechFilter::isSpeechable)
+        val rest = if (sp == null) emptyList() else chunker.flush().mapNotNull(SpeechFilter::speechableText)
         if (rest.isNotEmpty()) {
             rest.forEach { sp?.enqueue(it) }
             Log.d(TAG, "перед новым сообщением доигрываю остаток: ${rest.size}")
@@ -256,32 +270,46 @@ object TtsNarrator {
         // заблуждение: кажется, движок починился. Старая причина уедет сама,
         // когда попытка закончится успехом (reason = null).
         loader.execute {
-            val resolved = SpeechFactory.build(context, cfg)
-            val synth = resolved.synth
-            // Пока грузились (~2 с на Supertonic), юзер мог сменить движок, и ключ
-            // уехал вперёд. Тогда причина отката уже не про текущий движок, и в UI
-            // её показывать нельзя - следующая загрузка запишет свою.
-            if (loadedFor == key) fallback.value = resolved.reason
-            if (synth == null) {
-                Log.w(TAG, "движок ${cfg.engine.label} недоступен, озвучка выключена")
-                // Снимаем ключ: следующий вызов попробует снова (пользователь мог
-                // переключить движок обратно или скачать модель).
-                if (loadedFor == key) loadedFor = ""
-                return@execute
-            }
-            Log.i(TAG, "движок готов: ${resolved.effective.label}")
-            speaker?.release()
-            speaker = TtsSpeaker(synth)
-            applyDumpPref(context)
+            // Исключение в этом потоке раньше убивало его молча: пул одноразовый,
+            // `fallback` не записывался, плашка в панели не появлялась — и озвучка
+            // молчала навсегда без единой причины на экране. Теперь падение
+            // движка становится таким же наблюдаемым исходом, как «модель не
+            // установлена»: причина уходит в `fallbackReason`, ключ снимается,
+            // следующая попытка возможна.
+            runCatching {
+                val resolved = SpeechFactory.build(context, cfg)
+                val synth = resolved.synth
+                // Пока грузились (~2 с на Supertonic), юзер мог сменить движок, и ключ
+                // уехал вперёд. Тогда причина отката уже не про текущий движок, и в UI
+                // её показывать нельзя - следующая загрузка запишет свою.
+                if (loadedFor == key) fallback.value = resolved.reason
+                if (synth == null) {
+                    Log.w(TAG, "движок ${cfg.engine.label} недоступен, озвучка выключена")
+                    // Снимаем ключ: следующий вызов попробует снова (пользователь мог
+                    // переключить движок обратно или скачать модель).
+                    if (loadedFor == key) loadedFor = ""
+                    return@execute
+                }
+                Log.i(TAG, "движок готов: ${resolved.effective.label}")
+                speaker?.release()
+                speaker = TtsSpeaker(synth)
+                applyDumpPref(context)
 
-            // Текст, пришедший во время загрузки, озвучиваем сразу — иначе первый
-            // ответ после включения озвучки пропадал бы молча.
-            val late = deferred
-            if (late != null) {
-                deferred = null
-                speaker?.let { fresh ->
-                    Log.i(TAG, "доигрываю отложенный текст: ${late.first.length} симв.")
-                    speak(fresh, cfg, late.first, late.second)
+                // Текст, пришедший во время загрузки, озвучиваем сразу — иначе первый
+                // ответ после включения озвучки пропадал бы молча.
+                val late = deferred
+                if (late != null) {
+                    deferred = null
+                    speaker?.let { fresh ->
+                        Log.i(TAG, "доигрываю отложенный текст: ${late.first.length} симв.")
+                        speak(fresh, cfg, late.first, late.second)
+                    }
+                }
+            }.onFailure { failure ->
+                Log.e(TAG, "движок ${cfg.engine.label} упал при загрузке", failure)
+                if (loadedFor == key) {
+                    fallback.value = "движок ${cfg.engine.label} упал: ${failure.javaClass.simpleName}"
+                    loadedFor = ""
                 }
             }
         }

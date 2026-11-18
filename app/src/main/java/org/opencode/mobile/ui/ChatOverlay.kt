@@ -55,6 +55,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import org.opencode.mobile.ChatUiCommand
 import org.opencode.mobile.DiagnosticsCommand
 import org.opencode.mobile.server.ApiPaths
 import org.opencode.mobile.server.ApiShape
@@ -387,6 +388,23 @@ fun ChatOverlay(
     // одновременно и хедер вздваивался по высоте. Выводить признаки из одного
     // значения дешевле, чем каждый раз вспоминать остальные.
     var activePanel by remember { mutableStateOf<String?>(null) }
+
+    // Панель может открыть не только палец, но и мост приложения: тап из
+    // оболочки агента недоступен (`INJECT_EVENTS`), а снимок экрана — доступен.
+    // Просьба применяется здесь, потому что состояние панели живёт в композиции,
+    // а не в обработчике HTTP. `tts` — это та же карточка, что и `stt`: панель
+    // озвучки рисуется вместе с настройками распознавания.
+    val panelRequest by ChatUiCommand.request.collectAsState()
+    LaunchedEffect(panelRequest?.seq) {
+        val request = panelRequest ?: return@LaunchedEffect
+        if (!ChatUiCommand.claim(request)) return@LaunchedEffect
+        activePanel =
+            when (request.panel) {
+                null -> null
+                PANEL_STT, "tts" -> PANEL_STT
+                else -> request.panel
+            }
+    }
 
     fun toggleHeaderPanel(self: String) {
         activePanel = if (activePanel == self) null else self
