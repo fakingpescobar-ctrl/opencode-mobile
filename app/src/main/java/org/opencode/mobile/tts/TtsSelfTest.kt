@@ -121,8 +121,7 @@ object TtsSelfTest {
             played = false,
         )
 
-    private fun peakOf(audio: TtsAudio): Double =
-        audio.samples.fold(0.0) { acc, value -> maxOf(acc, abs(value).toDouble()) }
+    private fun peakOf(audio: TtsAudio): Double = audio.samples.fold(0.0) { acc, value -> maxOf(acc, abs(value).toDouble()) }
 
     private fun playAudio(audio: TtsAudio): Boolean {
         val current =
