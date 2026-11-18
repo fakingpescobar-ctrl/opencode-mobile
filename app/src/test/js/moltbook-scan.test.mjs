@@ -195,7 +195,7 @@ await test("a scan with nothing to write is not a failure", () => {
   // commentsSeen - сколько дошло до записи. Он нужен, чтобы отличить «в тредах
   // пусто» от «дошло, но не записалось»: молчаливый ноль в commentsWritten
   // выглядит одинаково, и именно этим прикрывался баг с датой.
-  eq(written, { postsWritten: 0, commentsWritten: 0, commentsSeen: 0, ourReplyIds: [], refused: null });
+  eq(written, { postsWritten: 0, commentsWritten: 0, commentsSeen: 0, adopted: 0, ourReplyIds: [], refused: null });
 });
 
 await test("no ledger at all is a refusal, not an exception", () => {
@@ -203,6 +203,7 @@ await test("no ledger at all is a refusal, not an exception", () => {
     postsWritten: 0,
     commentsWritten: 0,
     commentsSeen: 0,
+    adopted: 0,
     ourReplyIds: [],
     refused: "ledger-missing",
   });

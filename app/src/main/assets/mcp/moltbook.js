@@ -203,6 +203,15 @@ export const REPLY_OUTCOME = {
   // ключуется его собственным id. Отдельное значение нужно, чтобы отчёт не
   // выдавал корень за ответ на чей-то вопрос.
   ROOT: "root",
+  // Сервер принял проверку, а наша перечитка комментарий не увидела. Это не
+  // провал: ответ существует, но пока не подтверждён, и строка хранит его id.
+  // Отдельное значение нужно, чтобы «мы не смогли посмотреть» не читалось как
+  // «сервер отказал» (правило 8), а повторная перечитка могла закрыть строку.
+  UNCONFIRMED: "unconfirmed",
+  // Проверку отвергли: комментарий виден в дереве, но читателям не показывается.
+  // Отличается от UNCONFIRMED тем, что ждать больше нечего - нужен новый текст,
+  // а старый id надо удалить (правило 37).
+  VERIFICATION_FAILED: "verification-failed",
   UNKNOWN: "",
 };
 
@@ -871,15 +880,36 @@ export function nextNotificationPath(previousCursor, parsed, pageIndex, pageBudg
   return notificationPath(next);
 }
 
+/**
+ * Сколько символов тела ответа хранить в архиве.
+ *
+ * Архив растёт на ~42 МБ в сутки, потому что каждый ответ писался целиком: один
+ * снимок треда - это сотни килобайт, а нужны из него обычно статус, заголовки и
+ * начало тела. Полное тело сохраняется как `body_bytes` + `body_sha256`, то есть
+ * подмену или потерю видно, а диск не кончается. Решение принято по раскладке
+ * `raw-age.mjs` 18.11 (part99 §9).
+ */
+export const RAW_BODY_LIMIT = 64 * 1024;
+
 /** Кладёт сырой ответ в архив. Тот же формат, что у MoltbookRawArchive: <мс>-<хэш>.json. */
 export function archiveRaw(dir, at, path, status, body, method = "GET") {
   if (!dir) return null;
   try {
-    const name = String(at) + "-" + simpleHash(path + "|" + String(body)) + ".json";
+    const full = String(body);
+    // Имя считается по ПОЛНОМУ телу: усечение не должно менять адрес записи,
+    // иначе два разных ответа с одинаковым началом слились бы в один файл.
+    const name = String(at) + "-" + simpleHash(path + "|" + full) + ".json";
     mkdirSync(dir, { recursive: true });
     // Метод часть данных: ответ на запрос и код сверки лежат
     // в той же архиве, что бы по нему можно был попубтимь, а не прочитать.
-    writeFileSync(join(dir, name), JSON.stringify({ method, path, status, at, body }));
+    const record = { method, path, status, at, body: full };
+    if (full.length > RAW_BODY_LIMIT) {
+      record.body = full.slice(0, RAW_BODY_LIMIT);
+      record.body_truncated = true;
+      record.body_bytes = Buffer.byteLength(full, "utf8");
+      record.body_sha256 = createHash("sha256").update(full, "utf8").digest("hex");
+    }
+    writeFileSync(join(dir, name), JSON.stringify(record));
     return name;
   } catch (error) {
     return null;
@@ -1253,12 +1283,22 @@ export function adoptOurAnswers(db, comments, now) {
     if (!isPublishedStatus(comment.verification_status)) continue;
     try {
       if (!stmt) {
+        // Строка «unconfirmed» уже хранит id ответа, поэтому условие «нашего id
+        // ещё нет» её бы пропустило - и ответ, который стал виден позже, навсегда
+        // остался бы провалом. Свой id в строке разрешаем, чужой - нет: иначе
+        // наблюдение одного комментария закрывало бы другой.
         stmt = db.prepare(
           "UPDATE comments SET our_reply_id=?, status='POSTED', replied_at=?, reply_outcome='verified'" +
-            " WHERE id=? AND UPPER(status)='FAILED' AND (our_reply_id IS NULL OR our_reply_id='')",
+            " WHERE id=? AND UPPER(status)='FAILED'" +
+            " AND (our_reply_id IS NULL OR our_reply_id='' OR our_reply_id=?)",
         );
       }
-      const result = stmt.run(String(comment.id), Number(now) || Date.now(), String(comment.parent_id));
+      const result = stmt.run(
+        String(comment.id),
+        Number(now) || Date.now(),
+        String(comment.parent_id),
+        String(comment.id),
+      );
       if (result && Number(result.changes) > 0) adopted += 1;
     } catch (error) {
       // Починка по наблюдению не должна ронять скан: не удалось признать -
@@ -1312,7 +1352,9 @@ export function rankCandidates(candidates, postInfo, ourReplyIds) {
 
 export function writeScan(db, posts, comments, now, ourPostIds = [], partialPostIds = []) {
   if (!db) {
-    return { postsWritten: 0, commentsWritten: 0, commentsSeen: 0, ourReplyIds: [], refused: "ledger-missing" };
+    // Форма ответа одна и на отказе: вызывающий читает `adopted` не проверяя,
+    // был ли журнал, и `undefined` там читался бы как «неизвестно» вместо нуля.
+    return { postsWritten: 0, commentsWritten: 0, commentsSeen: 0, adopted: 0, ourReplyIds: [], refused: "ledger-missing" };
   }
   let postsWritten = 0;
   let commentsWritten = 0;
@@ -2420,6 +2462,37 @@ export function markFailed(db, commentId, now, row) {
     body: extra.body || "",
     created_at: Number(extra.created_at || 0),
     status: COMMENT_STATUS.FAILED,
+    // id опубликованного ответа и исход передаются, когда они известны: строка
+    // «провал» без id не говорит, ЧТО удалять и ЧТО перепроверять, и удаление
+    // отвергнутого комментария не открывало бы вопрос заново.
+    our_reply_id: extra.our_reply_id || null,
+    reply_outcome: extra.reply_outcome || "",
+    parent_id: extra.parent_id || "",
+    parent_state: extra.parent_state || "",
+    now,
+  });
+}
+
+/**
+ * Проверка прошла на сервере, но перечитка комментарий не увидела.
+ *
+ * Статус `FAILED` здесь - только способ не оставить строку в очереди `NEW` и не
+ * ответить второй раз. Отдельно хранятся id ответа и `reply_outcome`, чтобы
+ * повторная перечитка могла закрыть именно эту строку (`adoptOurAnswers`), а
+ * отчёт не выдавал «сервер сказал ок» за опубликованное.
+ */
+export function markUnconfirmed(db, commentId, ourReplyId, now, row) {
+  if (!db || !commentId) return false;
+  const extra = row || {};
+  return recordComment(db, {
+    id: commentId,
+    post_id: extra.post_id || "",
+    author: extra.author || "",
+    body: extra.body || "",
+    created_at: Number(extra.created_at || 0),
+    status: COMMENT_STATUS.FAILED,
+    our_reply_id: ourReplyId || null,
+    reply_outcome: REPLY_OUTCOME.UNCONFIRMED,
     parent_id: extra.parent_id || "",
     parent_state: extra.parent_state || "",
     now,
@@ -3676,8 +3749,49 @@ export function statusText(value) {
   return text === "" ? UNKNOWN_STATUS : text;
 }
 
-/** Решение по задаче платформы. Её решает агент, а не плагин. */
-export async function moltbookVerify(args, deps) {
+/**
+ * Очередь проверок: решение по задаче платформы принимает агент, плагин только
+ * отправляет его ответ.
+ *
+ * Наблюдение 18.11 (part99 §8): два `moltbook_verify`, запущенные одновременно,
+ * - второй получает `404 Invalid verification code`, хотя код верный и взят из
+ * ответа публикации; тот же код последовательно проходит. Похоже, на аккаунт
+ * живёт один активный challenge. Правило, записанное только в документе,
+ * зависит от того, прочитают ли документ (AGENTS.md п.6), поэтому очередь
+ * стоит здесь: проверки идут строго по одной, публикации можно параллелить.
+ */
+let verifyQueue = Promise.resolve();
+
+export function moltbookVerify(args, deps) {
+  const run = verifyQueue.then(
+    () => moltbookVerifyOnce(args, deps),
+    () => moltbookVerifyOnce(args, deps),
+  );
+  // Хвост очереди не должен нести отказ: иначе одна упавшая проверка
+  // отравила бы все следующие.
+  verifyQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+/**
+ * `404 Invalid verification code` у верного кода.
+ *
+ * Отличаем от «ответ неверный»: 400 с `success:false` - это отказ, его повторять
+ * нельзя (код уже потрачен). 404 с текстом про код - это неизвестность: запрос
+ * мог не дойти или код ещё не зарегистрирован.
+ */
+export function isUnknownVerificationCode(response, root) {
+  if (!response || Number(response.status) !== 404) return false;
+  const message = String((root && (root.message || root.hint)) || response.body || "");
+  return /verification code/i.test(message) && /not found|invalid|not recognized/i.test(message);
+}
+
+const VERIFY_RETRY_PAUSE_MS = 1500;
+
+async function moltbookVerifyOnce(args, deps) {
   const io = deps || {};
   const now = io.now ? io.now() : Date.now();
   const key = io.key ? io.key() : readMoltbookKey();
@@ -3725,15 +3839,37 @@ export async function moltbookVerify(args, deps) {
   // Как и публикация: сначала замысел, потом запрос. Одноразовый код
   // проверки нельзя тратить молча - журнал должен показать, что он ушёл.
   appendVerifier(VERIFIER_KIND.ATTEMPT, now, postId, "verify code=" + code + " answer=" + answer + " id=" + commentId);
-  const verified = await send(key, "/api/v1/verify", { verification_code: code, answer });
+  let verified = await send(key, "/api/v1/verify", { verification_code: code, answer });
   requests.push({ path: verified.path, status: verified.status, ok: verified.ok });
-  const root = safeJson(verified.body);
-  const accepted = Boolean(root && root.success === true);
+  let root = safeJson(verified.body);
+  let accepted = Boolean(root && root.success === true);
+  if (!accepted && isUnknownVerificationCode(verified, root)) {
+    // Код не «неверный», а неизвестный серверу. Один повтор тем же кодом: он
+    // одноразовый, но пока не потрачен, и повтор не гадает. Ответ «неверно»
+    // сюда не попадает - это отказ, а не неизвестность.
+    await new Promise((resolve) => setTimeout(resolve, VERIFY_RETRY_PAUSE_MS));
+    const retried = await send(key, "/api/v1/verify", { verification_code: code, answer });
+    requests.push({ path: retried.path, status: retried.status, ok: retried.ok });
+    if (retried && (retried.status !== verified.status || retried.ok !== verified.ok)) {
+      appendVerifier(VERIFIER_KIND.ATTEMPT, now, postId, "verify retry code=" + code + " status=" + retried.status);
+    }
+    verified = retried;
+    root = safeJson(verified.body);
+    accepted = Boolean(root && root.success === true);
+  }
   if (!accepted) {
     refusals.push("verification-rejected");
     // Корень проверка не переводит в verified, но отказ обязан быть виден:
     // иначе отчёт продолжит считать его опубликованным.
-    if (parentId) journal((db) => markFailed(db, parentId, now, { post_id: postId, ...(parentRow || {}) }));
+    if (parentId)
+      journal((db) =>
+        markFailed(db, parentId, now, {
+          post_id: postId,
+          ...(parentRow || {}),
+          our_reply_id: commentId,
+          reply_outcome: REPLY_OUTCOME.VERIFICATION_FAILED,
+        }),
+      );
     else recordOwnRoot(openDb, refusals, { id: commentId, post_id: postId, body: "", created_at: now, accepted: false, now });
     appendVerifier(VERIFIER_KIND.REFUSED, now, postId, "verify answer=" + answer + " id=" + commentId);
     const rejected = replyResult("verification-failed", commentId, postId, parentId, now, requests, refusals, false);
@@ -3745,9 +3881,13 @@ export async function moltbookVerify(args, deps) {
   const kind = verifyVerdict(confirmed);
   if (kind !== VERIFIER_KIND.CONFIRMED) {
     refusals.push("server-said-ok-but-not-visible");
-    // Сервер сказал «ок», но комментария не видно - и для корня это не повод
-    // оставлять строку опубликованной: отчёт должен показать провал.
-    if (parentId) journal((db) => markFailed(db, parentId, now, { post_id: postId, ...(parentRow || {}) }));
+    // Сервер сказал «ок», но комментария не видно. Это не провал: строка
+    // хранит id ответа и `unconfirmed`, чтобы следующая перечитка закрыла её,
+    // а не оставила навсегда провалом (правило 30).
+    if (parentId)
+      journal((db) =>
+        markUnconfirmed(db, parentId, commentId, now, { post_id: postId, ...(parentRow || {}) }),
+      );
     else recordOwnRoot(openDb, refusals, { id: commentId, post_id: postId, body: "", created_at: now, accepted: false, now });
     appendVerifier(kind, now, postId, "verify answer=" + answer + " id=" + commentId + " status=" + statusText(confirmed.status));
     const doubted = replyResult("unconfirmed", commentId, postId, parentId, now, requests, refusals, false);

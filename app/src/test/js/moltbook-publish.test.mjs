@@ -309,7 +309,34 @@ const args = { post_id: POST, parent_id: PARENT, content: "answer" };
   );
   eq(r.outcome, "verification-failed", "rejected answer is a failure, not a success");
   eq(r.counted, false, "rejected answer counts nothing");
-  eq(postCount(file, PARENT), "FAILED||", "a failed attempt is marked so it is not retried at once");
+  eq(
+    postCount(file, PARENT),
+    "FAILED|verification-failed|c-ch",
+    "a rejected answer is marked, and the row names the id to delete and the branch to reopen",
+  );
+  eq(d.posts.length, 1, "a rejected answer is never retried: the code is spent, not unknown");
+}
+
+// ---- 10b. unknown code is not a rejection: one retry with the same code --------------
+// 18.11: two parallel verifies - the second got 404 "Invalid verification code" for a
+// correct code, and the same code passed when retried alone. A 404 is uncertainty, not
+// an answer, so one retry is allowed; a 400 "wrong answer" (test 10) never is.
+{
+  const file = fresh();
+  const d = deps(file, {
+    posts: [
+      { status: 404, body: JSON.stringify({ success: false, message: "Invalid verification code" }) },
+      { status: 200, body: JSON.stringify({ success: true }) },
+    ],
+    threads: { new: threadWith([ourAnswer("c-ch", PARENT, "verified")]) },
+  });
+  const r = await m.moltbookVerify(
+    { post_id: POST, parent_id: PARENT, comment_id: "c-ch", verification_code: "vc-1", answer: "40.00" },
+    d,
+  );
+  eq(r.outcome, "verified", "an unknown code is retried once and can still verify");
+  eq(d.posts.length, 2, "exactly one retry, not a loop");
+  eq(postCount(file, PARENT), "POSTED|verified|c-ch", "the retry closes the branch");
 }
 
 // ---- 11. server says ok but read-back is blind => unconfirmed, not counted -----------
@@ -326,6 +353,68 @@ const args = { post_id: POST, parent_id: PARENT, content: "answer" };
   eq(r.outcome, "unconfirmed", "verified by the server but not seen by us");
   eq(r.counted, false, "our own eyes decide, not the server");
   eq(r.refusals, ["server-said-ok-but-not-visible"], "and it says so out loud");
+  eq(
+    postCount(file, PARENT),
+    "FAILED|unconfirmed|c-ch",
+    "the row keeps the id it could not see, so a later read can close it instead of a human",
+  );
+}
+
+// ---- 11b. a later read closes the unconfirmed row, but only for the same id ----------
+{
+  const file = fresh();
+  const d = deps(file, {
+    posts: [{ status: 200, body: JSON.stringify({ success: true }) }],
+    threads: { new: threadWith([]) },
+  });
+  await m.moltbookVerify(
+    { post_id: POST, parent_id: PARENT, comment_id: "c-ch", verification_code: "vc-1", answer: "40.00" },
+    d,
+  );
+  const db = new DatabaseSync(file);
+  eq(
+    m.adoptOurAnswers(db, [{ id: "c-other", parent_id: PARENT, author: "opencodekz", verification_status: "verified" }], AT + 1),
+    0,
+    "a different id must not close a row that named its own reply",
+  );
+  eq(postCount(file, PARENT), "FAILED|unconfirmed|c-ch", "the row is untouched by a foreign id");
+  eq(
+    m.adoptOurAnswers(db, [{ id: "c-ch", parent_id: PARENT, author: "opencodekz", verification_status: "verified" }], AT + 2),
+    1,
+    "the very answer we named is adopted when it becomes visible",
+  );
+  db.close();
+  eq(postCount(file, PARENT), "POSTED|verified|c-ch", "and the row is no longer a failure");
+}
+
+// ---- 11c. verifies are serialized: one active challenge per account ------------------
+// Rule 39 lives in the code, not only in the document: two concurrent verify calls used
+// to give the second one a 404 for a correct code.
+{
+  const file = fresh();
+  const d = deps(file, {});
+  let active = 0;
+  let peak = 0;
+  d.send = async (key, path, payload) => {
+    active += 1;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    active -= 1;
+    return { ok: true, status: 200, path, at: AT, body: JSON.stringify({ success: true }) };
+  };
+  d.get = async (key, path) => ({
+    ok: true,
+    status: 200,
+    path,
+    at: AT,
+    body: threadWith([ourAnswer("c-a", PARENT, "verified"), ourAnswer("c-b", PARENT, "verified")]),
+  });
+  const [a, b] = await Promise.all([
+    m.moltbookVerify({ post_id: POST, parent_id: PARENT, comment_id: "c-a", verification_code: "vc-a", answer: "1.00" }, d),
+    m.moltbookVerify({ post_id: POST, parent_id: PARENT, comment_id: "c-b", verification_code: "vc-b", answer: "2.00" }, d),
+  ]);
+  eq([a.outcome, b.outcome], ["verified", "verified"], "both verifies still succeed");
+  eq(peak, 1, "verify requests never overlap, even when the caller fires them together");
 }
 
 // ---- 12. the happy verify path ------------------------------------------------------
@@ -556,6 +645,25 @@ function countRows(file) {
   const names = readdirSync(dir);
   const methods = names.map((n) => JSON.parse(readFileSync(join4(dir, n), "utf8")).method).sort();
   eq(methods, ["GET", "POST"], "the archive tells GET and POST apart");
+}
+
+// ---- 27b. the archive keeps a bounded body and still names the full one ---------------
+// raw/ grew ~42 MB/day because every response was stored whole. A snapshot of a thread
+// is hundreds of KB and only its head is useful; the full length and hash stay, so a
+// lost or swapped body is still detectable.
+{
+  const dir = tmpPath() + "-raw-big";
+  const big = "x".repeat(m.RAW_BODY_LIMIT + 5000);
+  const name = m.archiveRaw(dir, AT, "/api/v1/posts/p/comments", 200, big);
+  const rec = JSON.parse(readFileSync(join4(dir, name), "utf8"));
+  eq(rec.body.length, m.RAW_BODY_LIMIT, "a large body is cut at the limit");
+  eq(rec.body_truncated, true, "and says it was cut");
+  eq(rec.body_bytes, big.length, "the full length is kept as a number");
+  eq(rec.body_sha256.length, 64, "and a sha256 of the full body");
+  const small = m.archiveRaw(dir, AT + 1, "/api/v1/home", 200, "{}");
+  const smallRec = JSON.parse(readFileSync(join4(dir, small), "utf8"));
+  eq(smallRec.body, "{}", "a small body is stored whole");
+  eq(smallRec.body_truncated, undefined, "and carries no truncation flag");
 }
 
 // ---- 28. already_existed is looked for in every scope, not only in the root -------------
