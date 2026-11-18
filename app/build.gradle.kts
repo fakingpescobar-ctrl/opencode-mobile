@@ -84,7 +84,8 @@ val gitStatus: String =
         // механическая и воспроизводимая (тот же коммит + тот же run number
         // дают тот же файл). Проверено живьём 19.11: apk-35 показывал
         // `сборка 35 · 55776985+`, хотя дерево отличалось только этой строкой.
-        out.lines()
+        out
+            .lines()
             .filterNot { it.trimEnd().endsWith("app/build.gradle.kts") }
             .joinToString("\n")
             .trim()
