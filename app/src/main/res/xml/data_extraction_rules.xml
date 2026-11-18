@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+. Те же секреты исключаются и из облака, и из прямого
+  устройства-на-устройство переноса. Остальное копируется по умолчанию:
+  правил <include> нет, действует «всё, кроме exclude».
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="opencode_server.xml" />
+        <exclude domain="device_sharedpref" path="opencode_server.xml" />
+        <exclude domain="sharedpref" path="opencode_yandex_auth.xml" />
+        <exclude domain="device_sharedpref" path="opencode_yandex_auth.xml" />
+        <exclude domain="sharedpref" path="opencode_tts_secrets.xml" />
+        <exclude domain="device_sharedpref" path="opencode_tts_secrets.xml" />
+        <exclude domain="sharedpref" path="elevenlabs_tts.xml" />
+        <exclude domain="device_sharedpref" path="elevenlabs_tts.xml" />
+        <exclude domain="file" path="mcp-token" />
+        <exclude domain="device_file" path="mcp-token" />
+        <exclude domain="file" path="moltbook/moltkey" />
+        <exclude domain="device_file" path="moltbook/moltkey" />
+    </cloud-backup>
+
+    <device-transfer>
+        <exclude domain="sharedpref" path="opencode_server.xml" />
+        <exclude domain="device_sharedpref" path="opencode_server.xml" />
+        <exclude domain="sharedpref" path="opencode_yandex_auth.xml" />
+        <exclude domain="device_sharedpref" path="opencode_yandex_auth.xml" />
+        <exclude domain="sharedpref" path="opencode_tts_secrets.xml" />
+        <exclude domain="device_sharedpref" path="opencode_tts_secrets.xml" />
+        <exclude domain="sharedpref" path="elevenlabs_tts.xml" />
+        <exclude domain="device_sharedpref" path="elevenlabs_tts.xml" />
+        <exclude domain="file" path="mcp-token" />
+        <exclude domain="device_file" path="mcp-token" />
+        <exclude domain="file" path="moltbook/moltkey" />
+        <exclude domain="device_file" path="moltbook/moltkey" />
+    </device-transfer>
+</data-extraction-rules>
