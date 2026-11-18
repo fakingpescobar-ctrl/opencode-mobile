@@ -1127,22 +1127,7 @@ object OpencodeRuntime {
             append(mcpBlock())
             append(
                 ",\n  \"permission\": {\n" +
-                    "    \"mobile_launch_app\": \"ask\"\n" +
-                    "  }",
-            )
-        }
-
-    /**
-     * То же для формы с музыкой. Без неё дозапись permission-ключей в конфиг с music
-     * сносила бы саму music: [mcpBlock] в таком файле не ищется, и подстановка
-     * без-музыкальной формы его бы не нашла — а нашлась бы замена, убирающая регистрацию.
-     */
-    private fun managedConfigBlockWithMusic(): String =
-        buildString {
-            append(mcpBlockWithMusic())
-            append(
-                ",\n  \"permission\": {\n" +
-                    "    \"mobile_launch_app\": \"ask\"\n" +
+                    "    $MOBILE_LAUNCH_PERMISSION_ENTRY\n" +
                     "  }",
             )
         }
@@ -1190,10 +1175,20 @@ object OpencodeRuntime {
                 )
                 false
             }
-            // Музыку сохраняем: замена формы без music убрала бы её регистрацию.
-            text.contains(mcpBlockWithMusic()) ->
-                writeMemoryConfigText(file, text.replace(mcpBlockWithMusic(), managedConfigBlockWithMusic()))
-            else -> writeMemoryConfigText(file, text.replace(mcpBlock(), managedConfigBlock()))
+            else -> {
+                // Вставка по границе mcp, а не замена всей формы: и music, и запись
+                // moltbook после телефона остаются на месте, как и комментарии.
+                val updated = insertLaunchPermissionAfterMcp(text, MOBILE_LAUNCH_PERMISSION_ENTRY)
+                if (updated == null) {
+                    android.util.Log.w(
+                        "OpencodeRuntime",
+                        "Managed mcp block has no structural object boundary; cannot add launch permission safely",
+                    )
+                    false
+                } else {
+                    writeMemoryConfigText(file, updated)
+                }
+            }
         }
 
     /** Записывает managed-секцию mcp.memory и permission в opencode.jsonc атомарно. */
