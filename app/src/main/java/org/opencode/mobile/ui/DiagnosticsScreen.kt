@@ -1258,7 +1258,7 @@ private fun CreatorCredit(modifier: Modifier = Modifier) {
             label = "credit-phase",
         )
     Text(
-        text = "Titov.Maksim.Alexandrovich ✨",
+        text = "Developer Titov.Maksim.Alexandrovich✨",
         color = Color(0xFF39DBFF),
         fontSize = 12.sp,
         fontWeight = FontWeight.Bold,
