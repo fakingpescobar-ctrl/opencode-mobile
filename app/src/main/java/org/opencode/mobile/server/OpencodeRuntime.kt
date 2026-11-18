@@ -905,18 +905,32 @@ object OpencodeRuntime {
      */
     internal fun ensureMemorySection(file: File): Boolean {
         val text = file.readTextOrNull()
-        val memoryKey = "\"${MemoryMcp.MEMORY_NAME}\""
-        return when {
-            text == null -> writeManagedConfig(file, managedConfigBlock())
-            !text.contains(memoryKey) && !text.contains("\"mcp\"") ->
-                writeManagedConfig(file, managedConfigBlock())
-            !text.contains(memoryKey) -> {
+            ?: return writeManagedConfig(file, managedConfigBlock())
+        return when (planMcpSection(text, MemoryMcp.MEMORY_NAME)) {
+            McpSectionPlan.Create -> writeManagedConfig(file, managedConfigBlock())
+            McpSectionPlan.Refuse -> {
                 android.util.Log.w(
                     "OpencodeRuntime",
                     "Existing mcp config is not managed; refusing to append a duplicate mcp object",
                 )
                 false
             }
+            McpSectionPlan.Migrate -> migrateManagedMcpSection(file, text)
+        }
+    }
+
+    /**
+     * Лестница миграций уже распознанного своего конфига.
+     *
+     * Каждая ступень — точное совпадение ранее сгенерированной нами формы.
+     * Непохожий текст означает чужой (ручной) конфиг, и мы его не переписываем,
+     * а отказываемся, чтобы не включить неаутентифицированный доступ к портам.
+     */
+    private fun migrateManagedMcpSection(
+        file: File,
+        text: String,
+    ): Boolean =
+        when {
             // Старая форма без auth-заголовка: доращиваем до двух серверов.
             text.contains(legacyMemoryBlock()) ->
                 upgradeMcpSection(file, text.replace(legacyMemoryBlock(), mcpEntries()))
@@ -938,7 +952,6 @@ object OpencodeRuntime {
                 false
             }
         }
-    }
 
     /**
      * Держит запись «music» в конфиге вровень с тем, подключён ли Яндекс.
