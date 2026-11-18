@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import org.opencode.mobile.ChatUiCommand
 import org.opencode.mobile.DiagnosticsCommand
 import org.opencode.mobile.account.LikedPage
 import org.opencode.mobile.account.PlaylistEdit
@@ -21,6 +22,9 @@ import org.opencode.mobile.media.MediaUiAutomation
 import org.opencode.mobile.media.MediaWire
 import org.opencode.mobile.media.ScreenshotOutcome
 import org.opencode.mobile.media.screenshotFile
+import org.opencode.mobile.tts.TtsConfig
+import org.opencode.mobile.tts.TtsNarrator
+import org.opencode.mobile.tts.TtsSelfTest
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
@@ -94,9 +98,14 @@ object AppInstallBridge {
     @Volatile
     private var token: String = ""
 
+    /** Контекст приложения: нужен маршрутам, которые читают настройки (озвучка). */
+    @Volatile
+    private var appContext: Context? = null
+
     fun start(context: Context) {
         synchronized(lock) {
             if (started) return
+            appContext = context.applicationContext
             ApkInstaller.initialize(context)
             InstalledAppController.initialize(context)
             MediaControlController.initialize(context)
@@ -210,6 +219,19 @@ object AppInstallBridge {
             // «секция её забрала», с тем же seq. Без него агент проверяет форму
             // ответа, а не состояние секции (issue #1).
             Route("GET", "/v1/ui/diagnostics/readback", ::uiDiagnosticsReadback),
+            // Панель шапки чата: открыть (`panel`) или закрыть (`panel: null`).
+            // Тап оболочке агента недоступен (INJECT_EVENTS), поэтому «покажи
+            // озвучку» — это запись общего состояния, а не нажатие.
+            Route("POST", "/v1/ui/panel", ::uiPanel),
+            // Readback по панели: POST говорит «просьба записана», этот GET —
+            // «оверлей её применил». Совпал seq — просьба дошла; видимость на
+            // экране по-прежнему доказывает только кадр.
+            Route("GET", "/v1/ui/panel", ::uiPanelReadback),
+            // Состояние озвучки и исход последнего куска текста: причина тишины
+            // без похода в UI и без слуха (движок, фильтр или вывод).
+            Route("GET", "/v1/ui/tts", ::uiTts),
+            // Самопроверка движка: синтез в WAV, замер пика и, по желанию, звук.
+            Route("POST", "/v1/ui/tts/test", ::uiTtsTest),
             Route("POST", "/v1/apps/install", ::install),
             // Из /v1/media/* живёт только like: лайк у Яндекс Музыки идёт кастомной
             // командой сессии, и REST/OAuth его не заменяют. Остальные десять маршрутов
@@ -391,6 +413,143 @@ object AppInstallBridge {
                             .put("seq", it.seq)
                     } ?: JSONObject.NULL,
                 ),
+        )
+    }
+
+    /**
+     * Открыть панель шапки чата по просьбе агента.
+     *
+     * `accepted: true` значит только «просьба записана в общее состояние»: панель
+     * ставит композиция в другом потоке. Применение проверяется `GET /v1/ui/panel`,
+     * а видимость — кадром экрана, как и у секций диагностики.
+     */
+    private fun uiPanel(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val body = jsonObject(request)
+        val accepted =
+            try {
+                ChatUiCommand.open(body.optionalString("panel"))
+            } catch (failure: IllegalArgumentException) {
+                writeJson(output, 400, error(failure.message ?: "bad panel"))
+                return
+            }
+        writeJson(
+            output,
+            200,
+            JSONObject()
+                .put("ok", true)
+                .put("accepted", true)
+                .put("panel", accepted.panel ?: JSONObject.NULL)
+                .put("seq", accepted.seq),
+        )
+    }
+
+    // GET без параметров: request нужен только сигнатуре Route, телу он не нужен.
+    @Suppress("UnusedParameter")
+    private fun uiPanelReadback(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val applied = ChatUiCommand.applied.value
+        writeJson(
+            output,
+            200,
+            JSONObject()
+                .put("ok", true)
+                .put(
+                    "applied",
+                    applied?.let {
+                        JSONObject()
+                            .put("panel", it.panel ?: JSONObject.NULL)
+                            .put("seq", it.seq)
+                    } ?: JSONObject.NULL,
+                ),
+        )
+    }
+
+    /**
+     * Состояние озвучки: что выбрано, что поднялось и что стало с последним текстом.
+     *
+     * Три причины тишины различимы по полям, а не по догадке: `fallback` — движок
+     * не тот, что выбран; `last.note = filtered` — фильтр выбросил фразу;
+     * `last.note = queued` при `speaking = false` — звук ушёл в трек и уже кончился.
+     */
+    @Suppress("UnusedParameter")
+    private fun uiTts(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val context = appContext
+        if (context == null) {
+            writeJson(output, 503, error("bridge is not started"))
+            return
+        }
+        val cfg = TtsConfig.read(context)
+        val last = TtsNarrator.lastNarration()
+        writeJson(
+            output,
+            200,
+            JSONObject()
+                .put("ok", true)
+                .put("engine", cfg.engine.prefValue)
+                .put("on", cfg.isEnabled)
+                .put("model", cfg.model)
+                .put("sid", cfg.sid)
+                .put("speed", cfg.speechRate.toDouble())
+                .put("dump", cfg.dumpPcm)
+                .put("speaking", TtsNarrator.isSpeaking())
+                .put("fallback", TtsNarrator.fallbackReason.value ?: JSONObject.NULL)
+                .put(
+                    "last",
+                    last?.let {
+                        JSONObject()
+                            .put("at", it.at)
+                            .put("chars", it.chars)
+                            .put("chunks", it.chunks)
+                            .put("spoken", it.spoken)
+                            .put("note", it.note)
+                            .put("head", it.head)
+                    } ?: JSONObject.NULL,
+                ),
+        )
+    }
+
+    /**
+     * Самопроверка озвучки: синтез известной фразы в WAV и, по просьбе, звук.
+     *
+     * Нужна, чтобы «я не слышу» перестало быть единственным свидетельством:
+     * `ok` и `peak` говорят, есть ли сигнал, `duration_sec` — сколько его,
+     * `file` — где лежит, `played` — ушёл ли он в тот же AudioTrack.
+     */
+    private fun uiTtsTest(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val context = appContext
+        if (context == null) {
+            writeJson(output, 503, error("bridge is not started"))
+            return
+        }
+        val body = jsonObject(request)
+        val text = body.optionalString("text")?.takeIf { it.isNotBlank() } ?: TtsSelfTest.DEFAULT_TEXT
+        val play = body.optionalBoolean("play") ?: false
+        val result = TtsSelfTest.run(context, text, play)
+        writeJson(
+            output,
+            200,
+            JSONObject()
+                .put("ok", result.ok)
+                .put("reason", result.reason ?: JSONObject.NULL)
+                .put("engine", result.engine)
+                .put("effective", result.effective)
+                .put("samples", result.samples)
+                .put("sample_rate", result.sampleRate)
+                .put("duration_sec", result.durationSec)
+                .put("peak", result.peak)
+                .put("file", result.file ?: JSONObject.NULL)
+                .put("played", result.played),
         )
     }
 

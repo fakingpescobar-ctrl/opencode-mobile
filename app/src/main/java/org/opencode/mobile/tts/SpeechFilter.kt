@@ -43,6 +43,16 @@ internal object SpeechFilter {
     private const val MIN_LETTERS = 4
 
     /**
+     * Разметка, которую вслух не читают: фенсы, инлайн-код, табличные строки.
+     *
+     * Собираются здесь, а не на каждом вызове: `Regex` в цикле синтеза — это
+     * компиляция на каждое предложение.
+     */
+    private val fence = Regex("```[\\s\\S]*?```")
+    private val inlineCode = Regex("`[^`]*`")
+    private val whitespace = Regex("\\s+")
+
+    /**
      * Что отдать в очередь. [text] — единственное поле для всех случаев, а
      * [Rewritten.from] и сам класс [Rollback] нужны вызывающему, чтобы понять,
      * сбрасывать ли чанкер.
@@ -83,6 +93,36 @@ internal object SpeechFilter {
             noMarkup &&
             letters >= MIN_LETTERS &&
             letters.toDouble() / text.length >= MIN_LETTER_RATIO
+    }
+
+    /**
+     * Что реально отправить в синтез, или `null`.
+     *
+     * До 18.11 фраза с одним `бэктиком` выбрасывалась целиком, и агент, который
+     * пишет «Проверил `sha256` — совпало», молчал всем предложением. Замер по
+     * восьми реальным ответам агента (42 куска): годных к озвучке 11, то есть
+     * 26%; 74% терялись почти целиком из-за разметки (31 кусок из 42 — бэктик).
+     * Поэтому код не отбрасывает фразу, а вырезается из неё: вслух читается
+     * проза, а имена файлов, хеши и таблицы остаются на экране.
+     */
+    fun speechableText(text: String): String? {
+        val cleaned = stripCode(text).replace(whitespace, " ").trim()
+        return cleaned.takeIf { isSpeechable(it) }
+    }
+
+    /**
+     * Убирает фенсы, инлайн-код и табличные строки — то, что читать вслух нельзя.
+     *
+     * Строка таблицы отбрасывается целиком, а не превращается в пробелы: из
+     * `| POSTED | 255 |` после вырезания палочек остались бы числа без смысла.
+     */
+    private fun stripCode(text: String): String {
+        val withoutFences = fence.replace(text, " ")
+        val withoutInline = inlineCode.replace(withoutFences, " ")
+        return withoutInline
+            .lineSequence()
+            .filterNot { it.contains('|') }
+            .joinToString("\n")
     }
 
     /**
