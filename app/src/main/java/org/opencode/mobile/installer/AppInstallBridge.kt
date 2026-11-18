@@ -25,6 +25,7 @@ import org.opencode.mobile.media.screenshotFile
 import org.opencode.mobile.tts.TtsConfig
 import org.opencode.mobile.tts.TtsNarrator
 import org.opencode.mobile.tts.TtsSelfTest
+import org.opencode.mobile.tts.TtsStats
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
@@ -487,7 +488,7 @@ object AppInstallBridge {
             return
         }
         val cfg = TtsConfig.read(context)
-        val last = TtsNarrator.lastNarration()
+        val last = TtsStats.last()
         writeJson(
             output,
             200,

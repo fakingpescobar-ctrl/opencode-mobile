@@ -57,29 +57,6 @@ object TtsNarrator {
      */
     private var deferred: Pair<String, Boolean>? = null
 
-    /**
-     * Что случилось с последним куском текста: для `GET /v1/ui/tts`, без UI и без ушей.
-     *
-     * Зачем: причина тишины живёт в трёх местах сразу (движок, фильтр, вывод), и
-     * по логу приложения её не достать — `logcat` приложению закрыт. Поле
-     * `note` разделяет исходы, которые раньше сливались в «ничего не слышно»:
-     * `queued` — текст ушёл в синтез, `filtered` — фильтр выбросил всё,
-     * `deferred` — ждёт загрузки движка.
-     */
-    data class NarrationStats(
-        val at: Long,
-        val chars: Int,
-        val chunks: Int,
-        val spoken: Int,
-        val note: String,
-        val head: String,
-    )
-
-    @Volatile
-    private var lastStats: NarrationStats? = null
-
-    fun lastNarration(): NarrationStats? = lastStats
-
     private val loader = Executors.newSingleThreadExecutor { r ->
         Thread(r, "tts-loader").apply { isDaemon = true }
     }
@@ -140,7 +117,13 @@ object TtsNarrator {
             // Откладываем последний куст текста и доигрываем его сразу после
             // загрузки движка.
             deferred = text to isFinal
-            lastStats = NarrationStats(System.currentTimeMillis(), text.length, 0, 0, "deferred", text.take(LOG_PREVIEW_CHARS))
+            TtsStats.record(
+                chars = text.length,
+                chunks = 0,
+                spoken = 0,
+                note = "deferred",
+                head = text.take(LOG_PREVIEW_CHARS),
+            )
             Log.i(TAG, "движок ещё грузится, текст отложен: ${text.length} симв., isFinal=$isFinal")
             return
         }
@@ -173,15 +156,13 @@ object TtsNarrator {
         val chunks = if (isFinal) chunker.push(delta.text) + chunker.flush() else chunker.push(delta.text)
         val spoken = chunks.mapNotNull(SpeechFilter::speechableText)
         spoken.forEach { sp.enqueue(it) }
-        lastStats =
-            NarrationStats(
-                at = System.currentTimeMillis(),
-                chars = delta.text.length,
-                chunks = chunks.size,
-                spoken = spoken.size,
-                note = if (spoken.isEmpty()) "filtered" else "queued",
-                head = spoken.firstOrNull()?.take(LOG_PREVIEW_CHARS).orEmpty(),
-            )
+        TtsStats.record(
+            chars = delta.text.length,
+            chunks = chunks.size,
+            spoken = spoken.size,
+            note = if (spoken.isEmpty()) "filtered" else "queued",
+            head = spoken.firstOrNull()?.take(LOG_PREVIEW_CHARS).orEmpty(),
+        )
         if (spoken.isNotEmpty()) {
             val head = spoken.first().take(LOG_PREVIEW_CHARS)
             Log.d(TAG, "в очередь ${spoken.size} из ${chunks.size}: $head…")
