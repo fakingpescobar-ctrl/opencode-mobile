@@ -903,7 +903,7 @@ object OpencodeRuntime {
      * и мы его не переписываем, а отказываемся, чтобы не включить неаутентифицированный
      * доступ к локальным портам.
      */
-    private fun ensureMemorySection(file: File): Boolean {
+    internal fun ensureMemorySection(file: File): Boolean {
         val text = file.readTextOrNull()
         val memoryKey = "\"${MemoryMcp.MEMORY_NAME}\""
         return when {
