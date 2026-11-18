@@ -206,6 +206,10 @@ object AppInstallBridge {
             // агенту, чтобы проверять вид своими глазами, а не просить человека
             // прокрутить и нажать: прокрутка и тап ему недоступны.
             Route("POST", "/v1/ui/diagnostics/focus", ::uiDiagnosticsFocus),
+            // Readback по фокусу: POST говорит «просьба записана», этот GET —
+            // «секция её забрала», с тем же seq. Без него агент проверяет форму
+            // ответа, а не состояние секции (issue #1).
+            Route("GET", "/v1/ui/diagnostics/readback", ::uiDiagnosticsReadback),
             Route("POST", "/v1/apps/install", ::install),
             // Из /v1/media/* живёт только like: лайк у Яндекс Музыки идёт кастомной
             // командой сессии, и REST/OAuth его не заменяют. Остальные десять маршрутов
@@ -326,9 +330,9 @@ object AppInstallBridge {
      * Показать секцию диагностики: раскрыть её и подтянуть в кадр.
      *
      * Ответ — «просьба принята», а не «секция найдена»: заголовки живут в
-     * композабле, и сверка идёт там. Доказательство того, что секция видна, —
-     * кадр экрана; поэтому в ответе есть seq: по нему видно, что это новая
-     * просьба, а не эхо прошлой.
+     * композабле, и сверка идёт там. По seq видно, что это новая просьба, а не
+     * эхо прошлой; дошла ли она до секции — GET /v1/ui/diagnostics/readback,
+     * а что реально видно на экране — только кадр.
      *
      * `expand=false` — только прокрутить, не раскрывая: у свёрнутой секции
      * высота меньше, и она гарантированно влезает в кадр целиком.
@@ -354,6 +358,37 @@ object AppInstallBridge {
                 .put("section", accepted.section)
                 .put("expand", accepted.expand)
                 .put("seq", accepted.seq),
+        )
+    }
+
+    /**
+     * Что секция диагностики реально применила после последней просьбы.
+     *
+     * `accepted:true` у POST /focus значит только «просьба записана»: заголовок
+     * сверяется в композабле, в другом потоке. Здесь отдаётся seq, который секция
+     * забрала через claimFocus. Агент сравнивает его с seq из POST: совпало —
+     * просьба дошла до секции, нет — ещё не дошла или адрес не тот. Видимость на
+     * экране по-прежнему доказывает только кадр.
+     */
+    private fun uiDiagnosticsReadback(
+        output: BufferedOutputStream,
+        request: Request,
+    ) {
+        val applied = DiagnosticsCommand.appliedFocus.value
+        writeJson(
+            output,
+            200,
+            JSONObject()
+                .put("ok", true)
+                .put(
+                    "applied",
+                    applied?.let {
+                        JSONObject()
+                            .put("section", it.section)
+                            .put("expand", it.expand)
+                            .put("seq", it.seq)
+                    },
+                ),
         )
     }
 

@@ -54,4 +54,18 @@ class DiagnosticsCommandTest {
         val second = DiagnosticsCommand.focusSection("музыка", expand = true)
         assertTrue(DiagnosticsCommand.claimFocus(second))
     }
+
+    @Test
+    fun `readback показывает примененную просьбу, а не последнюю выданную`() {
+        val first = DiagnosticsCommand.focusSection("музыка", expand = true)
+        assertTrue(DiagnosticsCommand.claimFocus(first))
+        assertEquals(first, DiagnosticsCommand.appliedFocus.value)
+
+        val second = DiagnosticsCommand.focusSection("модели", expand = false)
+        // Секция ещё не забрала новую просьбу — readback обязан показывать
+        // ту, что реально применилась, иначе это эхо response shape.
+        assertEquals(first, DiagnosticsCommand.appliedFocus.value)
+        assertTrue(DiagnosticsCommand.claimFocus(second))
+        assertEquals(second, DiagnosticsCommand.appliedFocus.value)
+    }
 }

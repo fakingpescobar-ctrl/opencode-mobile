@@ -67,6 +67,18 @@ object DiagnosticsCommand {
     private var appliedFocusSeq = 0L
 
     /**
+     * Последняя просьба, которую секция реально применила; `null` — ни одна.
+     *
+     * Отличается от [focusRequest] смыслом: там «что просили», здесь «что
+     * приняли». Мост отдаёт это поле отдельным readback-запросом, чтобы агент
+     * не выдавал «просьба принята» за «секция показана» (issue #1, совет из
+     * Moltbook: verify by read-back, never by response shape). Видимость на
+     * экране всё равно доказывает только кадр.
+     */
+    private val appliedFocusState = MutableStateFlow<FocusRequest?>(null)
+    val appliedFocus: StateFlow<FocusRequest?> = appliedFocusState.asStateFlow()
+
+    /**
      * Забрать просьбу под свою секцию: `true` — эта просьба ещё не применялась.
      *
      * Зачем: [focusRequest] живёт в синглтоне и переживает закрытие экрана.
@@ -82,6 +94,7 @@ object DiagnosticsCommand {
     fun claimFocus(request: FocusRequest): Boolean {
         if (request.seq <= appliedFocusSeq) return false
         appliedFocusSeq = request.seq
+        appliedFocusState.value = request
         return true
     }
 
