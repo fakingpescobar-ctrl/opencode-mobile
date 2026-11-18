@@ -58,8 +58,12 @@ class RuntimeManager(
         private const val STARTUP_HEALTH_TIMEOUT_MS = 10_000L
         private const val STARTUP_HEALTH_POLL_MS = 500L
 
-        /** Таймаут TCP-коннекта к сокету памяти. */
-        private const val MEMORY_TCP_TIMEOUT_MS = 1_000
+        /** Таймаут одного TCP-коннекта или HTTP HEAD-запроса при проверке живости. */
+        private const val PROBE_TIMEOUT_MS = 1_000
+
+        /** Окно ожидания HTTP-ответа serve: 60 попыток × 500 мс = 30 с. */
+        private const val HEALTH_HTTP_ATTEMPTS = 60
+        private const val HEALTH_HTTP_POLL_MS = 500L
 
         /**
          * Сколько раз за жизнь serve можно поднять умерший локальный MCP обратно.
@@ -77,6 +81,15 @@ class RuntimeManager(
 
     private val logFile = File(context.filesDir, "opencode.log")
     private val logRotator = LogRotator(MAX_LOG_BYTES, MAX_LOG_FILES, LOG_TOTAL_BUDGET)
+    private val health =
+        HealthProbe(
+            timeoutMs = PROBE_TIMEOUT_MS,
+            startupTimeoutMs = STARTUP_HEALTH_TIMEOUT_MS,
+            startupPollMs = STARTUP_HEALTH_POLL_MS,
+            httpAttempts = HEALTH_HTTP_ATTEMPTS,
+            httpPollMs = HEALTH_HTTP_POLL_MS,
+            isStopping = { !running || restartRequested },
+        )
     private val serve = ProcessSupervisor("serve")
     private val memory = ProcessSupervisor("memory")
     private val ynison = ProcessSupervisor("ynison")
@@ -388,7 +401,10 @@ class RuntimeManager(
                 serve.setProcess(proc)
                 Retention.schedule(context, logFile)
 
-                val healthy = waitForHttp(OpencodeApp.ServerConfig.PORT)
+                val healthy = health.waitForHttp(OpencodeApp.ServerConfig.PORT)
+                // Сверку версии делаем сразу после первого успешного ответа — там же,
+                // где это происходило внутри waitForHttp до выноса.
+                if (healthy) detectServerFlavor(OpencodeApp.ServerConfig.PORT)
                 // Штатная отмена (стоп сервиса / рестарт юзера) во время health-ожидания
                 // не должна трактоваться как HEALTH_TIMEOUT и растить счётчик крашей.
                 if (!running || !currentCoroutineContext().isActive) break
@@ -461,15 +477,15 @@ class RuntimeManager(
                                 ) { copy(stage = RuntimeStage.DEGRADED) }
                             }
                             val memAlive =
-                                !memoryStarted || (memory.isAlive && tcpOk(OpencodeRuntime.MEMORY_PORT))
+                                !memoryStarted || (memory.isAlive && health.tcpOk(OpencodeRuntime.MEMORY_PORT))
                             val ynAlive =
-                                !ynisonStarted || (ynison.isAlive && tcpOk(OpencodeRuntime.YNISON_PORT))
+                                !ynisonStarted || (ynison.isAlive && health.tcpOk(OpencodeRuntime.YNISON_PORT))
                             // Плагин Moltbook жив, только если процесс жив И держит порт.
                             // Отдельная проверка порта (а не только isAlive): процесс мог
                             // зависнуть с открытым fd и не отвечать — для агента это то же
                             // самое, что мёртвый, а две копии на одном порту не поднимутся.
                             val moltAlive =
-                                !moltbookStarted || (moltbook.isAlive && tcpOk(MoltbookMcp.PORT))
+                                !moltbookStarted || (moltbook.isAlive && health.tcpOk(MoltbookMcp.PORT))
                             val allAlive = memAlive && ynAlive && moltAlive
                             when (currentState.stage) {
                                 RuntimeStage.HEALTHY ->
@@ -858,7 +874,7 @@ class RuntimeManager(
                 extraEnv = mapOf("MCP_MEMORY_TOKEN" to memoryToken) + AppInstallBridge.environment(),
             ) ?: return false
         memory.setProcess(proc)
-        val ok = waitForPort(proc, OpencodeRuntime.MEMORY_PORT)
+        val ok = health.waitForPort(OpencodeRuntime.MEMORY_PORT) { proc.isAlive }
         // Гасим явно: процесс мог стартовать, но не поднять MCP-порт (битый старт).
         // Без stop() следующая попытка создала бы ещё один поверх занятого порта.
         if (!ok) memory.stop()
@@ -892,7 +908,7 @@ class RuntimeManager(
                     ),
             ) ?: return false
         ynison.setProcess(proc)
-        val ok = waitForPort(proc, OpencodeRuntime.YNISON_PORT)
+        val ok = health.waitForPort(OpencodeRuntime.YNISON_PORT) { proc.isAlive }
         if (!ok) ynison.stop()
         return ok
     }
@@ -918,66 +934,18 @@ class RuntimeManager(
                 extraEnv = mapOf("MCP_MOLTBOOK_TOKEN" to token),
             ) ?: return false
         moltbook.setProcess(proc)
-        val ok = waitForPort(proc, MoltbookMcp.PORT)
+        val ok = health.waitForPort(MoltbookMcp.PORT) { proc.isAlive }
         if (!ok) moltbook.stop()
         return ok
-    }
-
-    /**
-     * Ждём, пока локальный MCP-сервер реально поднимется: процесс жив И открыл TCP
-     * на порту (окно ~10s = 20 × 500ms). startMemoryServer/startYnisonServer возвращают
-     * живой process и в случае, когда тот мгновенно падает или сокет не открыт, —
-     * без этой проверки сервер ошибочно считался бы стартовавшим (P0-3).
-     */
-    private suspend fun waitForPort(
-        proc: Process,
-        port: Int,
-    ): Boolean {
-        val deadline = System.currentTimeMillis() + STARTUP_HEALTH_TIMEOUT_MS
-        var ok = false
-        while (!ok && System.currentTimeMillis() < deadline) {
-            if (!currentCoroutineContext().isActive || !running || restartRequested) break
-            if (proc.isAlive && tcpOk(port)) {
-                ok = true
-            } else {
-                delay(STARTUP_HEALTH_POLL_MS)
-            }
-        }
-        return ok
-    }
-
-    /** TCP-коннект до localhost:port (память слушает сокет, не HTTP). */
-    private fun tcpOk(port: Int): Boolean =
-        try {
-            java.net.Socket().use { socket ->
-                socket.connect(java.net.InetSocketAddress("127.0.0.1", port), MEMORY_TCP_TIMEOUT_MS)
-            }
-            true
-        } catch (e: Exception) {
-            false
-        }
-
-    /** Пингует HTTP localhost:port, ждёт пока сервер ответит (до 30s).
-     *  Выходит раньше при стопе (running=false) или мягком рестарте (restartRequested). */
-    private suspend fun waitForHttp(port: Int): Boolean {
-        repeat(60) {
-            if (!currentCoroutineContext().isActive || !running || restartRequested) return false
-            if (pingOk(port)) {
-                detectServerFlavor(port)
-                return true
-            }
-            delay(500)
-        }
-        return false
     }
 
     /**
      * Сверяет версию поднявшегося сервера с бинарём, зашитым в APK, и пишет
      * результат в лог. Пути ни на что не влияют — контракт один.
      *
-     * Сделано здесь, а не лениво при первом запросе: [waitForHttp] — единственное
-     * место, где сервер уже отвечает на HTTP, но ещё не обслуживал ни одного
-     * запроса приложения. Здесь расхождение видно раньше всего остального.
+     * Сделано здесь, а не лениво при первом запросе: это единственное место,
+     * где сервер уже отвечает на HTTP, но ещё не обслуживал ни одного запроса
+     * приложения. Здесь расхождение видно раньше всего остального.
      */
     private fun detectServerFlavor(port: Int) {
         try {
@@ -986,18 +954,4 @@ class RuntimeManager(
             android.util.Log.w("OpencodeServer", "не удалось сверить версию сервера: ${e.message}")
         }
     }
-
-    private fun pingOk(port: Int): Boolean =
-        try {
-            val url = java.net.URL("http://127.0.0.1:$port/")
-            val conn = url.openConnection() as java.net.HttpURLConnection
-            conn.connectTimeout = 1000
-            conn.readTimeout = 1000
-            conn.requestMethod = "HEAD"
-            val code = conn.responseCode
-            conn.disconnect()
-            code in 200..499
-        } catch (e: Exception) {
-            false
-        }
 }
