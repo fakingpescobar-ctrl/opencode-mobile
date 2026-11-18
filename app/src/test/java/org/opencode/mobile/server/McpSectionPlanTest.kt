@@ -4,11 +4,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * Первые три ветки [OpencodeRuntime.ensureMemorySection] как чистое решение.
+ * Структурное решение по секции mcp.
  *
- * Тест фиксирует текущую семантику подстрок до перехода на структурный поиск
- * ключа: Create/Refuse/Migrate должны сохраниться при любом последующем
- * рефакторинге, иначе чужой конфиг можно будет переписать.
+ * Тест фиксирует не только три исхода, но и причину перехода со строковых
+ * проверок: слово `mcp` в комментарии и `memory` как строковое значение раньше
+ * принимались за ключи, и чужой конфиг уходил в лестницу миграций.
  */
 class McpSectionPlanTest {
     private val memory = "memory"
@@ -29,7 +29,29 @@ class McpSectionPlanTest {
     }
 
     @Test
-    fun `ключ памяти без секции mcp - мигрировать`() {
-        assertEquals(McpSectionPlan.Migrate, planMcpSection("\"memory\"", memory))
+    fun `ключ памяти без секции mcp - отказаться`() {
+        assertEquals(McpSectionPlan.Refuse, planMcpSection("{\"memory\": {}}", memory))
+    }
+
+    @Test
+    fun `mcp в комментарии - создать`() {
+        val text = "{\n  // \"mcp\": {}\n  \"theme\": \"dark\"\n}"
+        assertEquals(McpSectionPlan.Create, planMcpSection(text, memory))
+    }
+
+    @Test
+    fun `memory как строковое значение - создать`() {
+        assertEquals(McpSectionPlan.Create, planMcpSection("{\"note\": \"memory\"}", memory))
+    }
+
+    @Test
+    fun `mcp не объект - отказаться`() {
+        assertEquals(McpSectionPlan.Refuse, planMcpSection("{\"mcp\": null}", memory))
+    }
+
+    @Test
+    fun `memory в комментарии внутри mcp - отказаться`() {
+        val text = "{\n  \"mcp\": {\n    // \"memory\": {}\n    \"custom\": {}\n  }\n}"
+        assertEquals(McpSectionPlan.Refuse, planMcpSection(text, memory))
     }
 }

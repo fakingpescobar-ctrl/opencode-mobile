@@ -20,22 +20,55 @@ internal sealed interface McpSectionPlan {
     data object Migrate : McpSectionPlan
 }
 
+private const val MCP_SECTION_KEY = "mcp"
+
 /**
- * Чистый аналог первых трёх веток [OpencodeRuntime.ensureMemorySection].
+ * Структурный аналог первых трёх веток [OpencodeRuntime.ensureMemorySection].
  *
- * Пока повторяет те же проверки подстрок, чтобы первый шаг не менял поведение:
- * переход на структурный поиск ключа — отдельный PR. Параметр [memoryName]
- * передаётся явно, чтобы функция оставалась чистой и не знала про константы
- * рантайма.
+ * Вместо `text.contains("\"mcp\"")` и `text.contains("\"memory\"")` здесь
+ * различаются ключ корня, ключ внутри секции и просто слово в строке или
+ * комментарии. Ложное срабатывание раньше уводило чужой конфиг в лестницу
+ * миграций; теперь он сразу получает [McpSectionPlan.Refuse].
+ *
+ * Консервативность важнее полноты: если ключ mcp есть, но его значение не объект,
+ * либо ключ памяти найден вне mcp — файл не трогаем. [McpSectionPlan.Create]
+ * выдаётся только когда нет ни корневого mcp, ни ключа памяти ни на какой глубине.
  */
 internal fun planMcpSection(
     text: String,
     memoryName: String,
 ): McpSectionPlan {
-    val memoryKey = "\"$memoryName\""
+    val hasMcp = hasTopLevelKey(text, MCP_SECTION_KEY)
+    val mcpSpan = memberObjectSpan(text, MCP_SECTION_KEY)
+    val memoryInMcp =
+        mcpSpan
+            ?.let { (open, close) -> hasTopLevelKey(text.substring(open, close + 1), memoryName) }
+            ?: false
     return when {
-        !text.contains(memoryKey) && !text.contains("\"mcp\"") -> McpSectionPlan.Create
-        !text.contains(memoryKey) -> McpSectionPlan.Refuse
-        else -> McpSectionPlan.Migrate
+        !hasMcp && !hasAnyKey(text, memoryName) -> McpSectionPlan.Create
+        memoryInMcp -> McpSectionPlan.Migrate
+        else -> McpSectionPlan.Refuse
     }
+}
+
+/** Ключ [key] на любой глубине, но не внутри строк и комментариев. */
+private fun hasAnyKey(
+    text: String,
+    key: String,
+): Boolean {
+    val needle = "\"$key\""
+    var i = 0
+    while (i < text.length) {
+        val c = text[i]
+        when {
+            c == '"' -> {
+                if (text.startsWith(needle, i) && colonFollows(text, i + needle.length)) return true
+                i = skipString(text, i + 1)
+            }
+            isLineCommentAt(text, i) -> i = skipToLineEnd(text, i)
+            isBlockCommentAt(text, i) -> i = skipToBlockEnd(text, i + 2)
+            else -> i++
+        }
+    }
+    return false
 }
