@@ -212,7 +212,7 @@ private fun endOfScalar(
  * Позиция закрывающей скобки, парной скобке в [open], либо -1, если пара не
  * закрылась — тогда файл битый и вставлять в него нечего.
  */
-private fun matchBrace(
+internal fun matchBrace(
     text: String,
     open: Int,
 ): Int {
