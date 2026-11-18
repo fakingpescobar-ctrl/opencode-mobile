@@ -22,14 +22,15 @@ class ConfigRefusalTest {
     @Test
     fun `неизвестная форма mcp не переписывается`() {
         val file = tmp.newFile("opencode.jsonc")
-        val original = """
+        val original =
+            """
             {
               "${'$'}schema": "https://opencode.ai/config.json",
               "mcp": {
                 "custom": {}
               }
             }
-        """.trimIndent() + "\n"
+            """.trimIndent() + "\n"
         file.writeText(original)
 
         val changed = OpencodeRuntime.ensureMemorySection(file)
