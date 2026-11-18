@@ -77,7 +77,17 @@ val gitStatus: String =
             .use { it.readText() }
             .trim()
         if (proc.waitFor() != 0) throw IllegalStateException("git status -> $out")
-        out
+        // Релизный workflow подставляет versionCode/versionName через `sed`
+        // прямо в app/build.gradle.kts ПЕРЕД сборкой. Без фильтра этот файл
+        // всегда «изменён», и КАЖДЫЙ релизный APK получал бы метку dirty
+        // («+» после хэша), хотя в APK нет ничего, чего нет в коммите: правка
+        // механическая и воспроизводимая (тот же коммит + тот же run number
+        // дают тот же файл). Проверено живьём 19.11: apk-35 показывал
+        // `сборка 35 · 55776985+`, хотя дерево отличалось только этой строкой.
+        out.lines()
+            .filterNot { it.trimEnd().endsWith("app/build.gradle.kts") }
+            .joinToString("\n")
+            .trim()
     }.getOrElse { "" }
 
 val gitDirty: Boolean = gitStatus.isNotEmpty()
