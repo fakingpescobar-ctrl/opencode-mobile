@@ -8,6 +8,12 @@ import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
@@ -45,9 +51,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -468,6 +481,11 @@ fun DiagnosticsScreen(
                 ramFree = memInfo.availMem,
                 sdk = Build.VERSION.SDK_INT,
             )
+            // По кадру должно быть видно, какая сборка стоит на телефоне:
+            // раньше версия жила только в «О программе», и снимок экрана её не
+            // содержал (18.11, part103).
+            BuildLine()
+            CreatorCredit(Modifier.padding(top = 1.dp))
 
             Column(
                 Modifier
@@ -598,35 +616,50 @@ fun DiagnosticsScreen(
 
                 Spacer(Modifier.height(6.dp))
 
-                DiagSection("Сервер opencode", serverTone) {
-                    serverState.stage?.let { InfoRow("Стадия runtime", stageLabel(it)) }
-                    serverState.lastError?.let { err ->
-                        val resolved = err.resolvedAt != null
-                        InfoRow(
-                            if (resolved) "Последняя ошибка (разрешена)" else "Активная ошибка",
-                            "${err.stage} / ${err.code}" +
-                                (if (err.recoverable) " (recoverable)" else " (терминальная)") +
-                                (if (resolved) "\nв ${fmtTime(err.resolvedAt)}" else "\nс ${fmtTime(err.at)}") +
-                                if (err.message.isNotBlank()) "\n${err.message}" else "",
-                            if (resolved) Color(0xFFBDBDBD) else Color(0xFFFF6F5A),
-                        )
-                    }
-                    serverState.stopReason?.let { InfoRow("Причина остановки", it.name) }
-                    serverState.lastMemoryFailureAt?.let {
-                        InfoRow("Память MCP упала в", fmtTime(it))
-                    }
-                    serverState.lastRecoveredAt?.let {
-                        InfoRow("Восстановилась в", fmtTime(it))
-                    }
-                    if (serverState.errorHistory.isNotEmpty()) {
-                        InfoRow("Сбои (последние ${serverState.errorHistory.size})", historyText(serverState.errorHistory))
+                // Секция «Сервер opencode» была третьим повтором одного факта:
+                // «Работает» в шапке, плашка «СЕРВЕР», и здесь «Стадия runtime —
+                // здоров». Строка `Workspace` дублировала «Рабочую папку» в
+                // разрешениях. Поэтому карточка теперь называется «Сбои сервера»
+                // и появляется ТОЛЬКО когда есть что сказать: активная ошибка,
+                // причина остановки, падение памяти или не-здоровая стадия.
+                // На здоровом телефоне экран короче на две карточки (part103).
+                val serverHasNews =
+                    (serverState.stage != null && serverState.stage != RuntimeStage.HEALTHY) ||
+                        serverState.lastError != null ||
+                        serverState.stopReason != null ||
+                        serverState.lastMemoryFailureAt != null ||
+                        serverState.errorHistory.isNotEmpty()
+                if (serverHasNews) {
+                    DiagSection("Сбои сервера", serverTone) {
+                        serverState.stage?.let {
+                            if (it != RuntimeStage.HEALTHY) InfoRow("Стадия runtime", stageLabel(it))
+                        }
+                        serverState.lastError?.let { err ->
+                            val resolved = err.resolvedAt != null
+                            InfoRow(
+                                if (resolved) "Последняя ошибка (разрешена)" else "Активная ошибка",
+                                "${err.stage} / ${err.code}" +
+                                    (if (err.recoverable) " (recoverable)" else " (терминальная)") +
+                                    (if (resolved) "\nв ${fmtTime(err.resolvedAt)}" else "\nс ${fmtTime(err.at)}") +
+                                    if (err.message.isNotBlank()) "\n${err.message}" else "",
+                                if (resolved) Color(0xFFBDBDBD) else Color(0xFFFF6F5A),
+                            )
+                        }
+                        serverState.stopReason?.let { InfoRow("Причина остановки", it.name) }
+                        serverState.lastMemoryFailureAt?.let {
+                            InfoRow("Память MCP упала в", fmtTime(it))
+                        }
+                        serverState.lastRecoveredAt?.let {
+                            InfoRow("Восстановилась в", fmtTime(it))
+                        }
+                        if (serverState.errorHistory.isNotEmpty()) {
+                            InfoRow(
+                                "Сбои (последние ${serverState.errorHistory.size})",
+                                historyText(serverState.errorHistory),
+                            )
+                        }
                     }
                 }
-
-                // Рабочая папка — отдельной секцией: это единственная настройка,
-                // которую пользователь меняет сам, и рядом с ней должны быть
-                // причина отказа и кнопка, а не одна строка «внешняя/внутренняя».
-                WorkspaceCard(serverState.workspacePath, serverState.workspaceProblem)
 
                 // Права собраны в одной секции, потому что чинятся они одинаково —
                 // уходом в системные настройки и возвратом сюда. Раньше наложение
@@ -673,6 +706,14 @@ fun DiagnosticsScreen(
                             openAppDetails(context)
                         }
                     }
+                    InfoRow(
+                        "Рабочая папка",
+                        if (serverState.workspaceExternal) {
+                            "внешняя (MANAGE_EXTERNAL_STORAGE)"
+                        } else {
+                            "внутренняя (доступ ко всем файлам не нужен)"
+                        },
+                    )
                     InfoRow("Снимок экрана", shotNote, shotTone.color())
                     // Проверка идёт тем же путём, что у моста (/v1/screen/shot):
                     // «работает» здесь значит «работает и агенту», а не «кнопка жива».
@@ -1182,6 +1223,76 @@ private fun ServerSummary(
     )
 }
 
+/**
+ * Строка версии сборки под статусом сервера: номер сборки, короткий коммит и
+ * версия ядра opencode. Все три — из `BuildConfig`, то есть из той сборки,
+ * которая реально запущена, а не из документации.
+ */
+@Composable
+private fun BuildLine() {
+    Text(
+        text = shortBuildLabel(),
+        color = MoltIdle,
+        fontSize = TINY,
+        lineHeight = TINY_LINE,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+/**
+ * Подпись автора: наклонный неон с бегущим бликом.
+ *
+ * Блик — не анимация цвета текста (она перерисовывала бы весь экран), а
+ * градиентная полоса в фазе рисования: `drawWithContent` читает фазу только
+ * внутри draw, поэтому композиция не пересобирается на каждый кадр. Режим
+ * `SrcAtop` красит только уже нарисованные буквы, фон остаётся прозрачным.
+ */
+@Composable
+private fun CreatorCredit(modifier: Modifier = Modifier) {
+    val phase =
+        rememberInfiniteTransition(label = "credit").animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(2600, easing = LinearEasing), RepeatMode.Restart),
+            label = "credit-phase",
+        )
+    Text(
+        text = "Creator's Maxim Tiov",
+        color = Color(0xFF39DBFF),
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Bold,
+        fontStyle = FontStyle.Italic,
+        letterSpacing = 0.6.sp,
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Clip,
+        style = TextStyle(shadow = Shadow(color = Color(0xCC00A8FF), blurRadius = 12f)),
+        modifier =
+            modifier.drawWithContent {
+                drawContent()
+                val span = size.width * 2.2f
+                val x = -size.width + phase.value * span
+                drawRect(
+                    brush =
+                        Brush.linearGradient(
+                            colors =
+                                listOf(
+                                    Color.Transparent,
+                                    Color(0x66FFFFFF),
+                                    Color.White,
+                                    Color(0x66FFFFFF),
+                                    Color.Transparent,
+                                ),
+                            start = Offset(x, 0f),
+                            end = Offset(x + size.width * 0.55f, size.height),
+                        ),
+                    blendMode = BlendMode.SrcAtop,
+                )
+            },
+    )
+}
+
 private fun statusLabel(s: ServerStatus): String =
     when (s) {
         ServerStatus.STARTING -> "Запускается"
@@ -1353,8 +1464,7 @@ private fun dumpServerSection(
     st.stage?.let { sb.append("Стадия runtime: ${stageLabel(it)} (${it.name})\n") }
     sb.append("Порт: ${st.port}\n")
     sb.append("Рестарты цикла: ${st.restartCount}\n")
-    sb.append("Рабочая папка: ${st.workspacePath.ifBlank { "(ещё не стартовал)" }}\n")
-    st.workspaceProblem?.let { sb.append("Рабочая папка не принята: $it\n") }
+    sb.append("Workspace: ${if (st.workspaceExternal) "внешний" else "внутренний"}\n")
     st.lastError?.let {
         val resolved = it.resolvedAt != null
         val ts = if (resolved) "resolved@" + fmtTime(it.resolvedAt) else "active@" + fmtTime(it.at)
@@ -1426,6 +1536,16 @@ private fun dumpValidationSection(
 private fun buildStampLabel(): String {
     val dirty = if (BuildConfig.GIT_DIRTY) " · dirty" else ""
     return "${BuildConfig.GIT_SHA} · ${BuildConfig.BUILD_STAMP}$dirty"
+}
+
+/**
+ * Короткая версия для шапки диагностики: номер сборки, коммит и ядро, без
+ * метки времени. Метка живёт в секции «Система» и в дампе — в шапке она
+ * съедала бы всю ширину (363 dp) и вытесняла версию ядра многоточием.
+ */
+private fun shortBuildLabel(): String {
+    val dirty = if (BuildConfig.GIT_DIRTY) "+" else ""
+    return "сборка ${BuildConfig.VERSION_CODE} · ${BuildConfig.GIT_SHA}$dirty · ядро ${opencodeBinaryLabel()}"
 }
 
 /**
