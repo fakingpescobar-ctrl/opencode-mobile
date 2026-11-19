@@ -58,6 +58,7 @@ jobs:
             -DLLAMA_BUILD_EXAMPLES=OFF \
             -DLLAMA_BUILD_SERVER=OFF \
             -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=ON \
             -DLLAMA_STATIC=ON
           cmake --build build -j4 --target llama
 
@@ -69,10 +70,10 @@ jobs:
           LLAMA_A=$(find build -name 'libllama.a' | head -1)
           GGML_A=$(find build -name 'libggml.a' | head -1)
           BASE_A=$(find build -name 'libggml-base.a' | head -1)
-          CPU_A=$(find build -name 'libggml-cpu.a' -o -name 'libggml-cpu-*.a' | head -1)
-          echo "libs: $LLAMA_A $GGML_A $BASE_A $CPU_A"
+          CPU_LIBS=$(find build -name 'libggml-cpu*.a' | tr '\n' ' ')
+          echo "libs: $LLAMA_A $GGML_A $BASE_A $CPU_LIBS"
           /tmp/aarch64-musl-cc -shared -o libllama-bench.so wrapper.o \
-            -Wl,--whole-archive $LLAMA_A $GGML_A $BASE_A $CPU_A -Wl,--no-whole-archive \
+            -Wl,--whole-archive $LLAMA_A $GGML_A $BASE_A $CPU_LIBS -Wl,--no-whole-archive \
             -lm -lpthread
           file libllama-bench.so
           readelf -Ws libllama-bench.so | grep -E 'lb_bench|lb_version'
