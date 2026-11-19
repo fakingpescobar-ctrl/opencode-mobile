@@ -55,19 +55,18 @@
 ## Правка живого кода
 
 15. Живой плагин: `/data/user/0/org.opencode.mobile.debug/files/mem/*.js`
-    (его запускает приложение через `libbun-musl.so`). Копия
-    `opencode/moltbook.deploy.js` в рабочей папке **устарела** — не путать.
-16. Перед правкой — бэкап рядом, после правки — тест на том же раннере и
-    проверка баланса скобок. Перезапуск MCP: `sh opencode/moltbook/restart-mcp.sh`
-    (процесс сам не поднимается).
+    (его запускает приложение через `libbun-musl.so`). Эталон для правки —
+    `MOBILE_AGENT/opencode/moltbook.deploy.js.patched-<дата>`, не живой файл.
+16. Перед правкой — бэкап рядом, после правки — тест на том же раннере.
+    Перезапуск MCP: `sh MOBILE_AGENT/opencode/moltbook/restart-mcp.sh`
+    (процесс сам не поднимается). Полный порядок — правила 38–49.
 17. После перезапуска — живая проверка через инструмент, а не «файл записан».
 
 ## Документирование — сразу, не по просьбе
 
 18. Любое изменение в рантайме, плагине, правилах или конфиге **в тот же момент**
-    дописывается в `PC_AGENT/ISSUES_FOR_PC_AGENT_partNN.md` (новый part, не
-    правка старого): что изменено, чем доказано, что осталось. Затем — строка в
-    `PC_AGENT/СОСТОЯНИЕ.md` (тема + пункт чеклиста).
+    дописывается в `MOBILE_AGENT/ЖУРНАЛ.md`: что изменено, чем доказано, что
+    осталось. Затем обновить `MOBILE_AGENT/СОСТОЯНИЕ.md` (тема + пункт чеклиста).
 19. Не спрашивать разрешения на документацию. Спрашивать — только на удаление
     файлов и на изменения, которые ломают тик.
 
@@ -94,9 +93,10 @@
     `verified-live` (видно через инструмент). Если живого вердикта ещё не было,
     писать `tested`, а не «работает».
 26. Живой `moltbook.js` — **расходник**: приложение при старте распаковывает
-    поверх него свою копию из APK. Эталон — `opencode/moltbook.deploy.js.patched-<дата>`
-    плюс `opencode/moltbook/plugin.sha256`; после каждой проверенной правки —
-    `sh opencode/moltbook/approve-plugin.sh`, затем `cmp`/sha256. Откат видели
+    поверх него свою копию из APK. Эталон —
+    `MOBILE_AGENT/opencode/moltbook.deploy.js.patched-<дата>` плюс
+    `MOBILE_AGENT/opencode/moltbook/plugin.sha256`; после каждой проверенной правки —
+    `sh MOBILE_AGENT/opencode/moltbook/approve-plugin.sh`, затем `cmp`/sha256. Откат видели
     15.11 в 21:59: файл стал 286 096 б, хэш совпал с бэкапом. Теперь откат
     виден отказом `plugin-sha-mismatch` и строкой в отчёте.
 27. «Проверено, но не видно» бывает кэшем листинга: перечитывать с
@@ -124,7 +124,7 @@
 
 32. Данные приложения живут в `/data/user/0/org.opencode.mobile.debug`, а не в
     этом воркспейсе. При переустановке (смена ключа подписи) приватная папка
-    стирается — вернуть её: `sh restore-appdata.sh`, инструкция целиком в
+    стирается — вернуть её: `sh MOBILE_AGENT/restore-appdata.sh`, инструкция целиком в
     `RESTORE_AFTER_REINSTALL.md`. Снимок сделан 16.11: `appdata-backup/`
     (shared_prefs, mem, moltbook, конфиг) + `loop-backup/` (harness).
     После восстановления — force-stop приложения и открыть заново, иначе
@@ -187,7 +187,8 @@
     корневого ответа и `status='POSTED'`, `reply_outcome='root-link'`.
     Подтверждено 17.11 (part65/66): 11 старых вопросов остались `NEW` после
     трёх `verified` корневых ответов; связывание увеличило `POSTED` 229→240,
-    `NEW` 247→236. Скрипт — `opencode-cache/opencode/link-root-replies.mjs`.
+    `NEW` 247→236. Скрипт —
+    `MOBILE_AGENT/opencode/opencode-cache/opencode/link-root-replies.mjs`.
     Не путать с удалённым ответом: он не ответ (правило 10), в `our_reply_id`
     его писать нельзя.
 37. **Challenge — арифметику перепроверять перед отправкой.** Текст challenge
@@ -200,3 +201,119 @@
     (`moltbook_delete`, мягкое удаление с задержкой) и переопубликовать
     изменённым текстом: дедуп по точному тексту вернёт `reused`. Статусы
     `failed`/`deleting`/`deleted` писать раздельно (правило 8).
+
+## Пайплайн: от правки до установки APK (правила 38–49)
+
+38. **Порядок не переставлять.** Эталон + бэкап → тесты → `approve-plugin.sh` →
+    живая проверка → коммит/пуш → сборка → скачивание → установка → повторная
+    живая проверка → запись в память. APK нельзя ставить до зелёного CI;
+    «собрал» не значит «установил».
+
+39. **Правим эталон, не живой файл.** Эталон:
+    `MOBILE_AGENT/opencode/moltbook.deploy.js.patched-<дата>`. Перед правкой
+    `cp` в `…bak-<дата>[-метка]` рядом. Живой
+    `/data/user/0/org.opencode.mobile.debug/files/mem/moltbook.js` — расходник
+    (правило 26): приложение перезаписывает его из APK и поднимает свой
+    MCP-процесс, поэтому временная правка живого файла **не сохраняется** без
+    пересборки APK.
+
+40. **Тесты — на копии `.mjs`.** Bun отдаёт `.js` как CJS без named exports.
+    Копируем эталон в `MOBILE_AGENT/opencode/opencode-cache/opencode/moltbook-patched.mjs`,
+    запускаем с `MOLTBOOK_JS_PATH=<этот .mjs>`. Раннер — `libbun-musl.so` через
+    `libldmusl.so`, путь к нативам **не заучивать** (правило 33):
+
+    ```
+    NATIVE=$(dirname "$(pm path org.opencode.mobile.debug | sed 's/package://' | head -1)")/lib/arm64
+    LD_LIBRARY_PATH="/data/user/0/org.opencode.mobile.debug/files/musl:$NATIVE" \
+      "$NATIVE/libldmusl.so" "$NATIVE/libbun-musl.so" <тест.mjs>
+    ```
+
+    Базовый набор (все в `MOBILE_AGENT/opencode/opencode-cache/opencode/`):
+    `app_src_test_js_moltbook-report.test.mjs` (185+), `-publish.test.mjs` (261),
+    `-scan.test.mjs` (92), плюс `MOBILE_AGENT/opencode/moltbook-advice5.test.mjs`
+    (31). `.main-publish.test.mjs` (1) и `.main-scan.test.mjs` (2) падают
+    **предсуществующе** — прежде чем назвать это регрессом, прогнать тот же
+    тест на бэкапе до правки.
+
+41. **Approve и сверка.** Скопировать эталон в живой файл, затем
+    `sh MOBILE_AGENT/opencode/moltbook/approve-plugin.sh` — он перезаписывает
+    эталон из живого файла и пишет `MOBILE_AGENT/opencode/moltbook/plugin.sha256`.
+    Обязательны `cmp <живой> <эталон>` и совпадение sha256.
+
+42. **Живая проверка — временная.** `sh MOBILE_AGENT/opencode/moltbook/restart-mcp.sh`
+    гасит старые процессы и поднимает :4201, затем JSON-RPC: endpoint
+    `http://127.0.0.1:4201/mcp`, токен из
+    `/data/user/0/org.opencode.mobile.debug/files/mcp-token`, заголовки
+    `Authorization: Bearer …`, `Content-Type: application/json`,
+    `Accept: application/json, text/event-stream`, метод `tools/call` с
+    `name:"moltbook_report"`. Источник истины — `cross_check.plugin_sha_match:true`
+    и `written` (сейчас ровно один путь). Если видим старое поведение и
+    `plugin_sha_match:false` — приложение перезаписало файл из APK; это не баг
+    правки, а команда собирать APK.
+
+43. **Коммит/пуш — только через GitHub API.** `git` CLI на телефоне нет. Рабочий
+    инструмент: `MOBILE_AGENT/opencode/opencode-cache/opencode/gh-push-many.mjs
+    "<сообщение>" <локальный> <путь_в_репо> …` (минимум 2 пары; скрипт
+    перечитывает каждый файл и сверяет sha256 байт в байт). Маппинг:
+    - `MOBILE_AGENT/opencode/moltbook.deploy.js.patched-<дата>` →
+      `app/src/main/assets/mcp/moltbook.js`
+    - `MOBILE_AGENT/opencode/moltbook-advice5.test.mjs` →
+      `app/src/test/js/moltbook-advice5.test.mjs`
+    - `MOBILE_AGENT/opencode/opencode-cache/opencode/app_src_test_js_moltbook-report.test.mjs` →
+      `app/src/test/js/moltbook-report.test.mjs`
+
+    Токен: `/storage/emulated/0/Documents/ghtoken_mobile_agent.txt`
+    (не публиковать).
+
+44. **Сборка.** `MOBILE_AGENT/opencode/opencode-cache/opencode/gh-release-dispatch.mjs
+    "<заметка>"` запускает `release-apk.yml` на `main`. Тег `apk-*` тоже запускает
+    сборку, но workflow сам создаёт тег `apk-<versionCode>`;
+    `versionCode = 4 + GITHUB_RUN_NUMBER`. Ждать
+    `gh-watch-run.mjs <run_id>` до `completed/success`.
+
+45. **Скачивание.** `MOBILE_AGENT/opencode/opencode-cache/opencode/gh-release-download.mjs
+    apk-NN <путь_в_Download>` — сам сверит sha256 и размер с GitHub. Если
+    одиночный fetch рвётся `ECONNRESET`, есть `download-apk-parallel.sh`, но там
+    зашит старый `apk-24` — перед использованием править URL/TOTAL/SHA.
+
+46. **Установка — только инструментом телефона.** `pm install -r
+    /storage/emulated/0/Download/...` **не работает**: `system_server` не читает
+    FUSE (`Error: Unable to open file … Can't open file`), а `/data/local/tmp`
+    из оболочки агента не writable. Верный путь —
+    `tools.mobile_tools.mobile_app_install` с `action:"local"`, `path`
+    (абсолютный путь в Download), `sha256`, `size_bytes`. Инструменты телефона
+    вызываются **только внутри `execute`** (Code Mode); не перечисленные в
+    каталоге искать через `search(...)`:
+
+    ```
+    const r = await tools.mobile_tools.mobile_app_install({action:"local", path:"…", sha256:"…", size_bytes:…});
+    // → state:"awaiting_user", requires_user_tap:true — Макс подтверждает системный диалог
+    const s = await tools.mobile_tools.mobile_app_install_status({job_id:r.id});
+    // → state:"installed", "INSTALL_SUCCEEDED"
+    ```
+
+47. **После установки.** Проверить
+    `sh MOBILE_AGENT/opencode/opencode-cache/verify-install.sh <sha256> <size>`
+    (пишет `opencode/opencode-cache/install-etaron.json`), затем повторить шаг 42:
+    живой плагин равен эталону по sha, `restart-mcp.sh`, живой `moltbook_report`
+    с `plugin_sha_match:true`. Только после этого считать `verified-live`
+    (правило 25).
+
+48. **Память — сразу.** В тот же момент дописать в `MOBILE_AGENT/ЖУРНАЛ.md`
+    (что изменено, чем доказано, что осталось), обновить
+    `MOBILE_AGENT/СОСТОЯНИЕ.md` (версия, sha, ссылка на run) и
+    `MOBILE_AGENT/ХАРНЕС.md` (если поменялись пути). Брифингов для PC-агента
+    больше нет — пишем только в `MOBILE_AGENT/`.
+
+49. **Служба доступности после APK сбрасывается** (правило 34) — нужна ручная
+    помощь Макса. Не тратить время на «почему мост не работает», пока она не
+    проверена.
+
+50. **После переустановки APK MCP поднимает приложение, а не `restart-mcp.sh`.**
+    Супервайзер пересоздаёт процесс со своим env — смотреть
+    `tr '\0' '\n' < /proc/<pid>/environ | grep '^MCP_'`. Наш перезапуск его не
+    пересиливает: если отчёт ушёл не туда, дело в старом APK, а не в плагине.
+    Env задаёт `OpencodeRuntime.kt`, функция `moltbookReportDir()`; с apk-40 она
+    возвращает `externalRoot()/MOBILE_AGENT`. Для `plugin_sha_match:true` файл
+    `plugin.sha256` должен лежать в `MCP_MOLTBOOK_DIR` приложения
+    (`opencode/moltbook/`), а не только в `MOBILE_AGENT/opencode/moltbook/`.
