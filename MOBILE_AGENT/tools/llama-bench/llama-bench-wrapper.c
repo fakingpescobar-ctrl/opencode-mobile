@@ -1,6 +1,12 @@
-// Обёртка вокруг llama.cpp (API b10000+) для замера реальной latency на железе.
+// Обёртка вокруг llama.cpp (API b12554+) для замера реальной latency на железе.
 // Собирается в CI как libllama-bench.so (musl aarch64), грузится через bun:ffi + libldmusl.
 // Экспортирует функции: lb_bench, lb_version.
+//
+// Методология (версия 3):
+//  - промпт без чат-спецтокенов, один и тот же набор байт для всех моделей;
+//  - декодируется ровно n_predict токенов, EOG не прерывает замер (иначе
+//    модели с ранним EOS дают несравнимое «общее время»);
+//  - позиция первого EOG тоже возвращается — это наблюдение, не метрика скорости.
 
 #include "llama.h"
 #include "ggml.h"
@@ -20,8 +26,10 @@ static void quiet_log(enum ggml_log_level level, const char *text, void *user_da
   (void)level; (void)text; (void)user_data;
 }
 
-// Возвращает: [0]=decode tokens/s, [1]=prefill ms, [2]=TTFT ms (от начала промпта),
-// [3]=всего ms, [4]=сгенерировано токенов. 0 — успех, -1 — ошибка.
+// Возвращает out[7]:
+// [0]=decode tok/s, [1]=prefill ms, [2]=TTFT ms (от начала промпта),
+// [3]=всего ms, [4]=сгенерировано токенов, [5]=токенов в промпте,
+// [6]=позиция первого EOG (0 — не наступил). 0 — успех, -1 — ошибка.
 int lb_bench(const char *model_path, int n_ctx, int n_predict, double *out) {
   if (!model_path || !out || n_ctx < 64 || n_predict < 1) return -1;
 
@@ -40,17 +48,17 @@ int lb_bench(const char *model_path, int n_ctx, int n_predict, double *out) {
   struct llama_context *ctx = llama_init_from_model(model, cp);
   if (!ctx) { llama_model_free(model); llama_backend_free(); return -1; }
 
-  // Префилл: короткий системный промпт + вопрос по памяти.
+  // Один и тот же нейтральный промпт для всех моделей: никаких <|im_start|>,
+  // которые у моделей без ChatML токенизируются в десятки обычных токенов.
   const char *prompt =
-      "<|im_start|>system\nТы семантический сопроцессор ядра памяти. "
-      "Отвечай только JSON.<|im_end|>\n"
-      "<|im_start|>user\nВыбери 3 релевантных чанка для запроса: "
-      "куда плагин пишет отчёт moltbook<|im_end|>\n"
-      "<|im_start|>assistant\n";
+      "Ты семантический сопроцессор ядра памяти. Отвечай только JSON.\n"
+      "Запрос: куда плагин пишет отчёт moltbook?\n"
+      "Выбери 3 релевантных чанка. Ответ:\n";
   llama_token *tokens = (llama_token *)malloc(sizeof(llama_token) * 4096);
   if (!tokens) { llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1; }
   int ntok = llama_tokenize(vocab, prompt, (int)strlen(prompt), tokens, 4096, true, true);
   if (ntok <= 0) { free(tokens); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1; }
+  out[5] = (double)ntok;
 
   double t0 = now_s();
   struct llama_batch batch = llama_batch_get_one(tokens, (int32_t)ntok);
@@ -67,12 +75,14 @@ int lb_bench(const char *model_path, int n_ctx, int n_predict, double *out) {
 
   double tf = -1.0;  // момент получения первого токена
   int generated = 0;
+  int eos_at = 0;
   for (int i = 0; i < n_predict; i++) {
     llama_token next = llama_sampler_sample(smpl, ctx, -1);
     double tn = now_s();
     if (tf < 0) tf = tn;
     generated++;
-    if (llama_vocab_is_eog(vocab, next)) break;
+    if (llama_vocab_is_eog(vocab, next) && eos_at == 0) eos_at = i + 1;
+    // EOG НЕ прерывает цикл: меряем фиксированную работу n_predict токенов.
     struct llama_batch b2 = llama_batch_get_one(&next, 1);
     if (llama_decode(ctx, b2) != 0) break;
   }
@@ -81,6 +91,7 @@ int lb_bench(const char *model_path, int n_ctx, int n_predict, double *out) {
   out[2] = tf > 0 ? (tf - t0) * 1000.0 : -1.0;  // TTFT от начала промпта
   out[3] = (t2 - t0) * 1000.0;
   out[4] = (double)generated;
+  out[6] = (double)eos_at;
 
   llama_sampler_free(smpl);
   free(tokens);
@@ -90,4 +101,4 @@ int lb_bench(const char *model_path, int n_ctx, int n_predict, double *out) {
   return 0;
 }
 
-const char *lb_version(void) { return "llama-bench-musl-2"; }
+const char *lb_version(void) { return "llama-bench-musl-3"; }

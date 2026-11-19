@@ -41,7 +41,7 @@ jobs:
 
       - name: llama.cpp source
         run: |
-          git clone --depth 1 --branch ${{ github.event.inputs.llama_ref || 'b4680' }} \
+          git clone --depth 1 --branch ${{ github.event.inputs.llama_ref || 'b12554' }} \
             https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp
           cp "$GITHUB_WORKSPACE/MOBILE_AGENT/tools/llama-bench/llama-bench-wrapper.c" /tmp/llama.cpp/
 
