@@ -1,0 +1,364 @@
+{
+  "runtime": "llama-bench-musl-3",
+  "method": 3,
+  "repeats": 3,
+  "results": [
+    {
+      "id": "smollm2-135m-q4km",
+      "repo": "bartowski/SmolLM2-135M-Instruct-GGUF",
+      "file": "SmolLM2-135M-Instruct-Q4_K_M.gguf",
+      "size": 105454432,
+      "sha256": "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d",
+      "url": "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf?download=true",
+      "avg": {
+        "decode": 37.18821997525231,
+        "prefill": 269.9133856658591,
+        "ttft": 270.1428646663165,
+        "total": 888.9140449997891,
+        "tokens": 24,
+        "promptTokens": 110,
+        "eosAt": 0
+      },
+      "median": {
+        "decode": 37.0199106489256,
+        "total": 871.5601040021284
+      },
+      "complete": true,
+      "runs": [
+        {
+          "decode": 36.284124394707675,
+          "prefill": 210.40650999930222,
+          "ttft": 210.64916600153083,
+          "total": 844.5352080016164,
+          "tokens": 24,
+          "promptTokens": 110,
+          "eosAt": 0
+        },
+        {
+          "decode": 38.26062488212365,
+          "prefill": 270.1764590019593,
+          "ttft": 270.41989599820226,
+          "total": 871.5601040021284,
+          "tokens": 24,
+          "promptTokens": 110,
+          "eosAt": 0
+        },
+        {
+          "decode": 37.0199106489256,
+          "prefill": 329.15718799631577,
+          "ttft": 329.3595319992164,
+          "total": 950.6468229956226,
+          "tokens": 24,
+          "promptTokens": 110,
+          "eosAt": 0
+        }
+      ]
+    },
+    {
+      "id": "qwen3-0.6b-q2k",
+      "repo": "unsloth/Qwen3-0.6B-GGUF",
+      "file": "Qwen3-0.6B-Q2_K.gguf",
+      "size": 296238784,
+      "sha256": "26d035ea15c4a2853e8d20ffc56a76f6164e17dbb6c9e532c5766700c404519d",
+      "url": "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q2_K.gguf?download=true",
+      "avg": {
+        "decode": 21.474829346717843,
+        "prefill": 590.5796700026258,
+        "ttft": 591.1608680010735,
+        "total": 1665.3309716687847,
+        "tokens": 24,
+        "promptTokens": 58,
+        "eosAt": 0
+      },
+      "median": {
+        "decode": 21.016900059438115,
+        "total": 1700.7826550034224
+      },
+      "complete": true,
+      "runs": [
+        {
+          "decode": 20.315476921199746,
+          "prefill": 568.071145004069,
+          "ttft": 568.6408850015141,
+          "total": 1700.7826550034224,
+          "tokens": 24,
+          "promptTokens": 58,
+          "eosAt": 0
+        },
+        {
+          "decode": 23.09211105951567,
+          "prefill": 586.4780210031313,
+          "ttft": 587.0839060007711,
+          "total": 1583.0950520030456,
+          "tokens": 24,
+          "promptTokens": 58,
+          "eosAt": 0
+        },
+        {
+          "decode": 21.016900059438115,
+          "prefill": 617.1898440006771,
+          "ttft": 617.7578130009351,
+          "total": 1712.1152079998865,
+          "tokens": 24,
+          "promptTokens": 58,
+          "eosAt": 0
+        }
+      ]
+    },
+    {
+      "id": "qwen3-0.6b-q4km",
+      "repo": "unsloth/Qwen3-0.6B-GGUF",
+      "file": "Qwen3-0.6B-Q4_K_M.gguf",
+      "size": 396705472,
+      "sha256": "ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a",
+      "url": "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf?download=true",
+      "avg": {
+        "decode": 26.980513330564694,
+        "prefill": 432.68800333316904,
+        "ttft": 433.27496533311205,
+        "total": 1286.1793746657593,
+        "tokens": 24,
+        "promptTokens": 58,
+        "eosAt": 0
+      },
+      "median": {
+        "decode": 27.028621715767677,
+        "total": 1288.990624998405
+      },
+      "complete": true,
+      "runs": [
+        {
+          "decode": 26.210474617011112,
+          "prefill": 410.88203099934617,
+          "ttft": 411.4788539955043,
+          "total": 1288.990624998405,
+          "tokens": 24,
+          "promptTokens": 58,
+          "eosAt": 0
+        },
+        {
+          "decode": 27.702443658915296,
+          "prefill": 496.035625001241,
+          "ttft": 496.63114600116387,
+          "total": 1326.8828119980753,
+          "tokens": 24,
+          "promptTokens": 58,
+          "eosAt": 0
+        },
+        {
+          "decode": 27.028621715767677,
+          "prefill": 391.14635399891995,
+          "ttft": 391.71489600266796,
+          "total": 1242.6646870007971,
+          "tokens": 24,
+          "promptTokens": 58,
+          "eosAt": 0
+        }
+      ]
+    },
+    {
+      "id": "gemma3-270m-q4km",
+      "repo": "unsloth/gemma-3-270m-it-GGUF",
+      "file": "gemma-3-270m-it-Q4_K_M.gguf",
+      "size": 253115424,
+      "sha256": "b1baabd6b729e4041822220d3e648e00d99cac5df86b10dffb77bcccf0688e39",
+      "url": "https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-Q4_K_M.gguf?download=true",
+      "avg": {
+        "decode": 36.95631671915701,
+        "prefill": 167.7162326668622,
+        "ttft": 168.72335066727828,
+        "total": 794.8317183351415,
+        "tokens": 24,
+        "promptTokens": 46,
+        "eosAt": 0
+      },
+      "median": {
+        "decode": 38.14857109309431,
+        "total": 821.0747400007676
+      },
+      "complete": true,
+      "runs": [
+        {
+          "decode": 38.14857109309431,
+          "prefill": 283.1069270032458,
+          "ttft": 284.080729004927,
+          "total": 886.9866660024854,
+          "tokens": 24,
+          "promptTokens": 46,
+          "eosAt": 0
+        },
+        {
+          "decode": 33.09278861505467,
+          "prefill": 125.18781299877446,
+          "ttft": 126.05927099502878,
+          "total": 821.0747400007676,
+          "tokens": 24,
+          "promptTokens": 46,
+          "eosAt": 0
+        },
+        {
+          "decode": 39.62759044932204,
+          "prefill": 94.85395799856633,
+          "ttft": 96.03005200187908,
+          "total": 676.4337490021717,
+          "tokens": 24,
+          "promptTokens": 46,
+          "eosAt": 0
+        }
+      ]
+    },
+    {
+      "id": "lfm2.5-350m-q4km",
+      "repo": "LiquidAI/LFM2.5-350M-GGUF",
+      "file": "LFM2.5-350M-Q4_K_M.gguf",
+      "size": 229312224,
+      "sha256": "7e6f72643caafc9a68256686638c4d7916f2cec76d1df478d4c3ddcd95a6aed4",
+      "url": "https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF/resolve/main/LFM2.5-350M-Q4_K_M.gguf?download=true",
+      "avg": {
+        "decode": 37.19285319062929,
+        "prefill": 256.2360073328212,
+        "ttft": 256.50220499907545,
+        "total": 875.0283159994675,
+        "tokens": 24,
+        "promptTokens": 57,
+        "eosAt": 1
+      },
+      "median": {
+        "decode": 37.1236439278797,
+        "total": 854.8774480004795
+      },
+      "complete": true,
+      "runs": [
+        {
+          "decode": 37.88019154189639,
+          "prefill": 238.76645899872528,
+          "ttft": 239.04109399882145,
+          "total": 846.2185940006748,
+          "tokens": 24,
+          "promptTokens": 57,
+          "eosAt": 1
+        },
+        {
+          "decode": 37.1236439278797,
+          "prefill": 304.1788539994741,
+          "ttft": 304.4376559992088,
+          "total": 923.9889059972484,
+          "tokens": 24,
+          "promptTokens": 57,
+          "eosAt": 1
+        },
+        {
+          "decode": 36.5747241021118,
+          "prefill": 225.7627090002643,
+          "ttft": 226.02786499919603,
+          "total": 854.8774480004795,
+          "tokens": 24,
+          "promptTokens": 57,
+          "eosAt": 1
+        }
+      ]
+    },
+    {
+      "id": "lfm2.5-1.2b-q4km",
+      "repo": "LiquidAI/LFM2.5-1.2B-Instruct-GGUF",
+      "file": "LFM2.5-1.2B-Instruct-Q4_K_M.gguf",
+      "size": 730895168,
+      "sha256": "b1b3de114215d9507409a662a501a631095a479a419584e8a2ded6304b19b4f5",
+      "url": "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-Q4_K_M.gguf?download=true",
+      "avg": {
+        "decode": 21.94934356038127,
+        "prefill": 748.7550859999222,
+        "ttft": 749.0352946648878,
+        "total": 1798.3995996643596,
+        "tokens": 24,
+        "promptTokens": 57,
+        "eosAt": 0
+      },
+      "median": {
+        "decode": 21.447137869481445,
+        "total": 1815.706561996194
+      },
+      "complete": true,
+      "runs": [
+        {
+          "decode": 21.447137869481445,
+          "prefill": 770.324321994849,
+          "ttft": 770.5859369962127,
+          "total": 1842.9901029958273,
+          "tokens": 24,
+          "promptTokens": 57,
+          "eosAt": 0
+        },
+        {
+          "decode": 21.268431736172985,
+          "prefill": 734.0329680009745,
+          "ttft": 734.291613996902,
+          "total": 1815.706561996194,
+          "tokens": 24,
+          "promptTokens": 57,
+          "eosAt": 0
+        },
+        {
+          "decode": 23.13246107548938,
+          "prefill": 741.9079680039431,
+          "ttft": 742.2283330015489,
+          "total": 1736.5021340010571,
+          "tokens": 24,
+          "promptTokens": 57,
+          "eosAt": 0
+        }
+      ]
+    },
+    {
+      "id": "lfm3-1.7b-q4km",
+      "repo": "LiquidAI/LFM3-1.7B-GGUF",
+      "file": "LFM3-1.7B-Q4_K_M.gguf",
+      "size": 1099627808,
+      "sha256": "3793e1e6e2266919d6e015287221b41100175a98eddaba92e111aed3b05c93c4",
+      "url": "https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/main/LFM3-1.7B-Q4_K_M.gguf?download=true",
+      "avg": {
+        "decode": 17.35600224776823,
+        "prefill": 1079.9271523355856,
+        "ttft": 1080.4389926682536,
+        "total": 2408.1358323358777,
+        "tokens": 24,
+        "promptTokens": 56,
+        "eosAt": 0
+      },
+      "median": {
+        "decode": 17.141148359814615,
+        "total": 2449.812655002461
+      },
+      "complete": true,
+      "runs": [
+        {
+          "decode": 17.141148359814615,
+          "prefill": 1107.5315100024454,
+          "ttft": 1108.0122389976168,
+          "total": 2449.812655002461,
+          "tokens": 24,
+          "promptTokens": 56,
+          "eosAt": 0
+        },
+        {
+          "decode": 16.550762611569496,
+          "prefill": 1076.7786970027373,
+          "ttft": 1077.3271870057215,
+          "total": 2466.9912490062416,
+          "tokens": 24,
+          "promptTokens": 56,
+          "eosAt": 0
+        },
+        {
+          "decode": 18.376095771920586,
+          "prefill": 1055.471250001574,
+          "ttft": 1055.9775520014227,
+          "total": 2307.6035929989303,
+          "tokens": 24,
+          "promptTokens": 56,
+          "eosAt": 0
+        }
+      ]
+    }
+  ]
+}
