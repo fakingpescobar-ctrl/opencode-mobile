@@ -65,14 +65,14 @@ jobs:
       - name: Wrap in shared .so (Musl)
         run: |
           cd /tmp/llama.cpp
-          /tmp/aarch64-musl-cc -O3 -fPIC -Iinclude -Iggml/include \
+          /tmp/aarch64-musl-cxx -O3 -fPIC -Iinclude -Iggml/include \
             -c llama-bench-wrapper.c -o wrapper.o
           STATIC_LIBS=$(find build -name '*.a' | tr '\n' ' ')
           echo "static libs: $STATIC_LIBS"
           test -n "$STATIC_LIBS" || { echo "нет статических архивов"; exit 1; }
-          /tmp/aarch64-musl-cc -shared -o libllama-bench.so wrapper.o \
+          /tmp/aarch64-musl-cxx -shared -o libllama-bench.so wrapper.o \
             -Wl,--whole-archive $STATIC_LIBS -Wl,--no-whole-archive \
-            -lm -lpthread
+            -static-libstdc++ -static-libgcc -lm -lpthread
           file libllama-bench.so
           readelf -Ws libllama-bench.so | grep -E 'lb_bench|lb_version'
 
