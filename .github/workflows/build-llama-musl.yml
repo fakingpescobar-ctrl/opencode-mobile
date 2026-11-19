@@ -10,7 +10,7 @@ on:
       llama_ref:
         description: 'тег llama.cpp'
         required: false
-        default: 'b4680'
+        default: 'b10000'
 
 jobs:
   build:
