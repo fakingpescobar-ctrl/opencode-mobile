@@ -1,0 +1,70 @@
+# CI: собрать llama.cpp + обёртку под musl aarch64 и выложить .so артефактом.
+# НЕ трогает release-apk.yml и живой APK. Класть в .github/workflows/build-llama-musl.yml.
+# На телефоне грузится через наш libldmusl.so + bun:ffi (bionic-.so так не грузится).
+name: Build llama.cpp musl bench (arm64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      llama_ref:
+        description: 'тег llama.cpp'
+        required: false
+        default: 'b4680'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout репо (за wrapper.c)
+        uses: actions/checkout@v4
+
+      - name: musl cross toolchain (aarch64)
+        run: |
+          curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz -o /tmp/musl.tgz
+          tar -xzf /tmp/musl.tgz -C /tmp
+          echo "/tmp/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
+          aarch64-linux-musl-gcc --version | head -1
+
+      - name: llama.cpp source
+        run: |
+          git clone --depth 1 --branch ${{ github.event.inputs.llama_ref || 'b4680' }} \
+            https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp
+          cp "$GITHUB_WORKSPACE/MOBILE_AGENT/tools/llama-bench/llama-bench-wrapper.c" /tmp/llama.cpp/
+
+      - name: CMake static libs (CPU only)
+        run: |
+          cd /tmp/llama.cpp
+          cmake -S . -B build \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_C_COMPILER=aarch64-linux-musl-gcc \
+            -DCMAKE_CXX_COMPILER=aarch64-linux-musl-g++ \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_SERVER=OFF \
+            -DGGML_NATIVE=OFF \
+            -DLLAMA_STATIC=ON
+          cmake --build build -j4 --target llama
+
+      - name: Wrap in shared .so (Musl)
+        run: |
+          cd /tmp/llama.cpp
+          aarch64-linux-musl-gcc -O3 -fPIC -Iinclude -Iggml/include \
+            -c llama-bench-wrapper.c -o wrapper.o
+          LLAMA_A=$(find build -name 'libllama.a' | head -1)
+          GGML_A=$(find build -name 'libggml.a' | head -1)
+          BASE_A=$(find build -name 'libggml-base.a' | head -1)
+          CPU_A=$(find build -name 'libggml-cpu.a' -o -name 'libggml-cpu-*.a' | head -1)
+          echo "libs: $LLAMA_A $GGML_A $BASE_A $CPU_A"
+          aarch64-linux-musl-gcc -shared -o libllama-bench.so wrapper.o \
+            -Wl,--whole-archive $LLAMA_A $GGML_A $BASE_A $CPU_A -Wl,--no-whole-archive \
+            -lm -lpthread
+          file libllama-bench.so
+          readelf -Ws libllama-bench.so | grep -E 'lb_bench|lb_version'
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-bench-musl-arm64
+          path: /tmp/llama.cpp/libllama-bench.so
