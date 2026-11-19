@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 // Quality-gate LLM как семантического сопроцессора ядра памяти.
 // Ядро детерминированно даёт 6 кандидатов; модель должна выбрать до 3
-// релевантных. Формат ответа жёстко ограничен GBNF-грамматикой — иначе малые
-// модели копируют пример из промпта или выдумывают свои поля (проверено).
+// релевантных. Промпт без готового примера: малые модели копировали его дословно
+// (проверено). Ответ разбирается гибко под формат каждого семейства.
 // Мерим: долю разбираемого ответа, recall нужного источника из gold, точность
 // выбора и сравнение с базовым топом ядра без LLM.
 import { dlopen, FFIType } from "bun:ffi";
@@ -17,8 +17,8 @@ const core = await import(CORE + "memory-core.js");
 
 const lib = dlopen(SO, {
   lb_version: { args: [], returns: FFIType.cstring },
-  lb_gen_g: {
-    args: [FFIType.cstring, FFIType.cstring, FFIType.cstring, FFIType.i32, FFIType.i32,
+  lb_gen: {
+    args: [FFIType.cstring, FFIType.cstring, FFIType.i32, FFIType.i32,
            FFIType.ptr, FFIType.i32, FFIType.ptr],
     returns: FFIType.i32,
   },
@@ -30,10 +30,6 @@ if (!runtime.includes("musl-5")) {
   process.exit(2);
 }
 
-const GRAMMAR = `root ::= "[" ids "]"
-ids ::= letter ("," letter)*
-letter ::= "A" | "B" | "C" | "D" | "E" | "F"
-`;
 const SYS =
   "Ты семантический сопроцессор ядра памяти. Выбери из списка кандидатов " +
   "до 3 чанков, самых релевантных запросу. Ответь только списком букв " +
@@ -48,9 +44,17 @@ function wrap(family, sys, user) {
   return `<|im_start|>system\n${s}<|im_end|>\n<|im_start|>user\n${user}<|im_end|>\n<|im_start|>assistant\n`;
 }
 
+// Разные семейства выдают разные оболочки: Qwen3 — [ "A", "C" ] внутри ```json,
+// gemma — {"id":"A",...}, SmolLM2 может вообще повторить промпт. Достаём буквы.
 function parseAnswer(text) {
-  const m = String(text).match(/\[\s*([A-F](?:\s*,\s*[A-F])*)\s*\]/);
-  return m ? m[1].split(",").map((x) => x.trim()).filter(Boolean) : null;
+  const s = String(text);
+  const bracket = s.match(/\[([^\]]*)\]/);
+  if (bracket) {
+    const ids = bracket[1].match(/[A-F]/g);
+    if (ids && ids.length) return ids;
+  }
+  const single = s.match(/"id"\s*:\s*"([A-F])"/);
+  return single ? [single[1]] : null;
 }
 
 const DB = new Database(":memory:");
@@ -80,11 +84,7 @@ for (const m of models) {
     const prompt = wrap(m.family, SYS, user);
     const buf = new Uint8Array(16384);
     const met = new Float64Array(5);
-    let rc = lib.symbols.lb_gen_g(path, prompt, GRAMMAR, 3072, 32, buf, buf.length, met);
-    if (rc === -2) { // грамматика не скомпилировалась — выход без ответа
-      console.error(`  ${g.id}: грамматика не собралась`);
-      continue;
-    }
+    const rc = lib.symbols.lb_gen(path, prompt, 3072, 48, buf, buf.length, met);
     if (rc !== 0) { console.error(`  ${g.id}: rc=${rc}`); continue; }
     const z = buf.indexOf(0);
     const raw = new TextDecoder().decode(z < 0 ? buf : buf.subarray(0, z));
@@ -126,9 +126,10 @@ const md = [
   "# QUALITY-GATE LLM НАД ЯДРОМ ПАМЯТИ (21.11.2026)",
   "",
   `Рантайм: ${runtime}. Ядро детерминированно отдаёт 6 кандидатов на каждый из 20 gold-вопросов;`,
-  "модель выбирает до 3 букв. Формат ответа ограничен GBNF-грамматикой, поэтому",
-  "невалидный JSON или выдуманные поля невозможны. Нативные шаблоны: Qwen3/SmolLM2 — ChatML,",
-  "gemma-3 — `<start_of_turn>`. Поле `why` куски получают детерминированно от ядра, не от LLM.",
+  "модель выбирает до 3 букв. Разбор гибкий: Qwen3 отдаёт массив в ```json, gemma — поле `id`.",
+  "Нативные шаблоны: Qwen3/SmolLM2 — ChatML, gemma-3 — `<start_of_turn>`.",
+  "Поле `why` куски получают детерминированно от ядра, не от LLM.",
+  "GBNF-самплер через наш FFI-мост дал segfault — отдельная проблема моста, в gate не используется.",
   "",
   "| Модель | Роль | Формат | Recall источника | Точность | Baseline ядра | Ответ, мс |",
   "|---|---|---:|---:|---:|---:|---:|",
