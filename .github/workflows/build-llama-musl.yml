@@ -58,7 +58,7 @@ jobs:
             -DLLAMA_BUILD_EXAMPLES=OFF \
             -DLLAMA_BUILD_SERVER=OFF \
             -DGGML_NATIVE=OFF \
-            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DGGML_CPU_ARM_ARCH="armv9.2-a+sve2+i8mm+bf16+fp16+dotprod" \
             -DLLAMA_STATIC=ON
           cmake --build build -j4 --target llama
 
