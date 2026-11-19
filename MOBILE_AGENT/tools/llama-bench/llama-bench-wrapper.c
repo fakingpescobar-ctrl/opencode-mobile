@@ -177,4 +177,85 @@ int lb_gen(const char *model_path, const char *prompt, int n_ctx, int n_predict,
   return 0;
 }
 
-const char *lb_version(void) { return "llama-bench-musl-4"; }
+// То же, но с GBNF-ограничением формата: малые модели физически не могут выдать
+// невалидный ответ. Используется в quality-gate для честной проверки выбора.
+int lb_gen_g(const char *model_path, const char *prompt, const char *grammar,
+             int n_ctx, int n_predict, char *out_text, int out_len, double *metrics) {
+  if (!model_path || !prompt || !grammar || !out_text || out_len < 16 || !metrics ||
+      n_ctx < 64 || n_predict < 1) return -1;
+
+  llama_log_set(quiet_log, NULL);
+  llama_backend_init();
+  struct llama_model_params mp = llama_model_default_params();
+  mp.n_gpu_layers = 0;
+  struct llama_model *model = llama_model_load_from_file(model_path, mp);
+  if (!model) { llama_backend_free(); return -1; }
+  const struct llama_vocab *vocab = llama_model_get_vocab(model);
+
+  struct llama_context_params cp = llama_context_default_params();
+  cp.n_ctx = n_ctx;
+  cp.n_batch = n_ctx;
+  cp.n_threads = 8;
+  cp.n_threads_batch = 8;
+  struct llama_context *ctx = llama_init_from_model(model, cp);
+  if (!ctx) { llama_model_free(model); llama_backend_free(); return -1; }
+
+  llama_token *ptok = (llama_token *)malloc(sizeof(llama_token) * 8192);
+  llama_token *gtok = (llama_token *)malloc(sizeof(llama_token) * (size_t)n_predict);
+  if (!ptok || !gtok) {
+    free(ptok); free(gtok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
+  }
+  int ntok = llama_tokenize(vocab, prompt, (int)strlen(prompt), ptok, 8192, true, true);
+  if (ntok <= 0) {
+    free(ptok); free(gtok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
+  }
+  metrics[4] = (double)ntok;
+
+  double t0 = now_s();
+  struct llama_batch batch = llama_batch_get_one(ptok, (int32_t)ntok);
+  if (llama_decode(ctx, batch) != 0) {
+    free(ptok); free(gtok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
+  }
+  struct llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
+  struct llama_sampler *smpl = llama_sampler_chain_init(sparams);
+  if (!smpl) {
+    free(ptok); free(gtok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
+  }
+  struct llama_sampler *gr = llama_sampler_init_grammar(vocab, grammar, NULL);
+  if (!gr) {
+    llama_sampler_free(smpl); free(ptok); free(gtok);
+    llama_free(ctx); llama_model_free(model); llama_backend_free(); return -2;
+  }
+  llama_sampler_chain_add(smpl, gr);
+  llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+
+  double tf = -1.0;
+  int generated = 0;
+  for (int i = 0; i < n_predict; i++) {
+    llama_token next = llama_sampler_sample(smpl, ctx, -1);
+    if (tf < 0) tf = now_s();
+    gtok[generated++] = next;
+    if (llama_vocab_is_eog(vocab, next)) break;
+    struct llama_batch b2 = llama_batch_get_one(&next, 1);
+    if (llama_decode(ctx, b2) != 0) break;
+  }
+  double t2 = now_s();
+  int nbytes = llama_detokenize(vocab, gtok, generated, out_text, out_len, true, false);
+  if (nbytes < 0) nbytes = 0;
+  if (nbytes >= out_len) nbytes = out_len - 1;
+  out_text[nbytes] = '\0';
+
+  metrics[0] = tf > 0 ? (tf - t0) * 1000.0 : -1.0;
+  metrics[1] = (generated > 1 && t2 > tf) ? (double)(generated - 1) / (t2 - tf) : 0.0;
+  metrics[2] = (t2 - t0) * 1000.0;
+  metrics[3] = (double)generated;
+
+  llama_sampler_free(smpl);
+  free(ptok); free(gtok);
+  llama_free(ctx);
+  llama_model_free(model);
+  llama_backend_free();
+  return 0;
+}
+
+const char *lb_version(void) { return "llama-bench-musl-5"; }

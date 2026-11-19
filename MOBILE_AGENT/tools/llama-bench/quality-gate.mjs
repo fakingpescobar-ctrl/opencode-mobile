@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
 // Quality-gate LLM как семантического сопроцессора ядра памяти.
-// Ядро детерминированно даёт 8 кандидатов; модель должна выбрать до 3
-// релевантных и объяснить почему. Мерим долю валидного JSON, recall источника
-// из gold, точность выбора и наличие поля why.
+// Ядро детерминированно даёт 6 кандидатов; модель должна выбрать до 3
+// релевантных. Формат ответа жёстко ограничен GBNF-грамматикой — иначе малые
+// модели копируют пример из промпта или выдумывают свои поля (проверено).
+// Мерим: долю разбираемого ответа, recall нужного источника из gold, точность
+// выбора и сравнение с базовым топом ядра без LLM.
 import { dlopen, FFIType } from "bun:ffi";
 import { Database } from "bun:sqlite";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -15,16 +17,40 @@ const core = await import(CORE + "memory-core.js");
 
 const lib = dlopen(SO, {
   lb_version: { args: [], returns: FFIType.cstring },
-  lb_gen: {
-    args: [FFIType.cstring, FFIType.cstring, FFIType.i32, FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr],
+  lb_gen_g: {
+    args: [FFIType.cstring, FFIType.cstring, FFIType.cstring, FFIType.i32, FFIType.i32,
+           FFIType.ptr, FFIType.i32, FFIType.ptr],
     returns: FFIType.i32,
   },
 });
 const only = process.argv.slice(2);
 const runtime = lib.symbols.lb_version();
-if (!runtime.includes("musl-4")) {
-  console.error("нужна обёртка llama-bench-musl-4 с lb_gen, сейчас: " + runtime);
+if (!runtime.includes("musl-5")) {
+  console.error("нужна обёртка llama-bench-musl-5 с lb_gen_g, сейчас: " + runtime);
   process.exit(2);
+}
+
+const GRAMMAR = `root ::= "[" ids "]"
+ids ::= letter ("," letter)*
+letter ::= "A" | "B" | "C" | "D" | "E" | "F"
+`;
+const SYS =
+  "Ты семантический сопроцессор ядра памяти. Выбери из списка кандидатов " +
+  "до 3 чанков, самых релевантных запросу. Ответь только списком букв " +
+  "выбранных кандидатов в квадратных скобках через запятую.";
+
+function wrap(family, sys, user) {
+  if (family === "gemma") {
+    return `<start_of_turn>user\n${sys}\n\n${user}<end_of_turn>\n<start_of_turn>model\n`;
+  }
+  // Qwen3: /no_think убирает пустой <think> и экономит бюджет токенов.
+  const s = family === "qwen3" ? sys + "\n/no_think" : sys;
+  return `<|im_start|>system\n${s}<|im_end|>\n<|im_start|>user\n${user}<|im_end|>\n<|im_start|>assistant\n`;
+}
+
+function parseAnswer(text) {
+  const m = String(text).match(/\[\s*([A-F](?:\s*,\s*[A-F])*)\s*\]/);
+  return m ? m[1].split(",").map((x) => x.trim()).filter(Boolean) : null;
 }
 
 const DB = new Database(":memory:");
@@ -32,31 +58,8 @@ idx.indexDocs(DB, ROOT);
 const gold = readFileSync(ROOT + "/memory/gold.jsonl", "utf8")
   .split("\n").filter(Boolean).map((l) => JSON.parse(l));
 
-const SYS =
-  "Ты семантический сопроцессор ядра памяти. Не думай вслух. " +
-  "Выбери из списка кандидатов до 3 чанков, самых релевантных запросу. " +
-  "Ответь строго одним JSON объектом без другого текста: " +
-  "{\"ids\":[\"A\",\"B\"],\"why\":\"кратко почему\"}";
-
-function wrap(family, sys, user) {
-  if (family === "gemma") {
-    return `<start_of_turn>user\n${sys}\n\n${user}<end_of_turn>\n<start_of_turn>model\n`;
-  }
-  return `<|im_start|>system\n${sys}<|im_end|>\n<|im_start|>user\n${user}<|im_end|>\n<|im_start|>assistant\n`;
-}
-
-function parseAnswer(text) {
-  const m = String(text).match(/\{[\s\S]*\}/);
-  if (!m) return null;
-  try {
-    const o = JSON.parse(m[0]);
-    if (!o || !Array.isArray(o.ids)) return null;
-    return { ids: o.ids.map(String), why: typeof o.why === "string" ? o.why.trim() : "" };
-  } catch { return null; }
-}
-
 const models = [
-  { id: "qwen3-0.6b-q4km", file: "Qwen3-0.6B-Q4_K_M.gguf", family: "chatml", role: "основная" },
+  { id: "qwen3-0.6b-q4km", file: "Qwen3-0.6B-Q4_K_M.gguf", family: "qwen3", role: "основная" },
   { id: "gemma3-270m-q4km", file: "gemma-3-270m-it-Q4_K_M.gguf", family: "gemma", role: "быстрый режим" },
   { id: "smollm2-135m-q4km", file: "SmolLM2-135M-Instruct-Q4_K_M.gguf", family: "chatml", role: "fallback" },
 ];
@@ -68,44 +71,44 @@ for (const m of models) {
   console.log(`\n=== ${m.id} (${m.role}) ===`);
   const rows = [];
   for (const g of gold) {
-    const hits = core.recallDocs(DB, g.query, { limit: 8 });
-    const letters = "ABCDEFGH";
-    const expectedIn = hits.map((h, i) => letters[i] && h.source === g.expect_source ? letters[i] : null).filter(Boolean);
+    const hits = core.recallDocs(DB, g.query, { limit: 6 });
+    const letters = "ABCDEF";
+    const expectedIn = hits.map((h, i) => h.source === g.expect_source ? letters[i] : null).filter(Boolean);
     const lines = hits.map((h, i) =>
-      `[${letters[i]}] ${h.source} — ${String(h.heading || "").slice(0, 60)}: ${h.text.replace(/\s+/g, " ").slice(0, 260)}`);
-    let user = `Запрос: ${g.query}\nКандидаты:\n${lines.join("\n")}`;
-    // Qwen3 по умолчанию уходит в <think> и не успевает выдать JSON за бюджет.
-    if (m.id.startsWith("qwen3")) user += "\n/no_think";
+      `[${letters[i]}] ${h.source} — ${String(h.heading || "").slice(0, 50)}: ${h.text.replace(/\s+/g, " ").slice(0, 180)}`);
+    const user = `Запрос: ${g.query}\nКандидаты:\n${lines.join("\n")}`;
     const prompt = wrap(m.family, SYS, user);
     const buf = new Uint8Array(16384);
     const met = new Float64Array(5);
-    const rc = lib.symbols.lb_gen(path, prompt, 2048, 80, buf, buf.length, met);
+    let rc = lib.symbols.lb_gen_g(path, prompt, GRAMMAR, 3072, 32, buf, buf.length, met);
+    if (rc === -2) { // грамматика не скомпилировалась — выход без ответа
+      console.error(`  ${g.id}: грамматика не собралась`);
+      continue;
+    }
     if (rc !== 0) { console.error(`  ${g.id}: rc=${rc}`); continue; }
-    const raw = new TextDecoder().decode(buf);
+    const z = buf.indexOf(0);
+    const raw = new TextDecoder().decode(z < 0 ? buf : buf.subarray(0, z));
     const answer = parseAnswer(raw);
-    const chosen = answer ? answer.ids.map((id) => hits[letters.indexOf(id)]).filter(Boolean) : [];
+    const chosen = answer ? answer.map((id) => hits[letters.indexOf(id)]).filter(Boolean) : [];
     const relevant = (h) => h && h.source === g.expect_source;
     rows.push({
       q: g.id,
       covered: expectedIn.length > 0,
-      json: !!answer,
-      why: !!(answer && answer.why.length > 0),
+      parsed: !!answer,
       recall: expectedIn.length > 0 ? chosen.some(relevant) : null,
-      precision: answer && answer.ids.length ? chosen.filter(relevant).length / answer.ids.length : 0,
+      precision: answer && answer.length ? chosen.filter(relevant).length / answer.length : 0,
       baseline: hits.slice(0, 3).some(relevant),
-      ms: met[2], tokens: met[3], raw: raw.slice(0, 700),
+      ms: met[2], tokens: met[3], raw: raw.slice(0, 200),
     });
-    console.log(`  ${g.id}: json=${rows.at(-1).json ? 1 : 0} recall=${rows.at(-1).recall === null ? "n/a" : rows.at(-1).recall ? 1 : 0} why=${rows.at(-1).why ? 1 : 0} ${met[2].toFixed(0)} мс`);
+    const r = rows.at(-1);
+    console.log(`  ${g.id}: parse=${r.parsed ? 1 : 0} recall=${r.recall === null ? "n/a" : r.recall ? 1 : 0} base=${r.baseline ? 1 : 0} ${met[2].toFixed(0)} мс`);
   }
   const covered = rows.filter((r) => r.covered);
   const rate = (arr, key) => arr.length ? arr.filter((r) => r[key]).length / arr.length : 0;
   out.push({
-    ...m,
-    runtime,
-    answered: rows.length,
+    ...m, runtime, answered: rows.length,
     coverage: covered.length / gold.length,
-    jsonValid: rate(covered, "json"),
-    whyPresent: rate(covered, "why"),
+    parsed: rate(rows, "parsed"),
     recall: rate(covered, "recall"),
     precision: covered.length ? covered.reduce((s, r) => s + r.precision, 0) / covered.length : 0,
     baselineRecall: rate(covered, "baseline"),
@@ -114,7 +117,7 @@ for (const m of models) {
     rows,
   });
   const s = out.at(-1);
-  console.log(`  ИТОГО: JSON ${(s.jsonValid * 100).toFixed(0)}% | recall ${(s.recall * 100).toFixed(0)}% | why ${(s.whyPresent * 100).toFixed(0)}% | baseline ${(s.baselineRecall * 100).toFixed(0)}% | ${s.avgMs.toFixed(0)} мс`);
+  console.log(`  ИТОГО: формат ${(s.parsed * 100).toFixed(0)}% | recall ${(s.recall * 100).toFixed(0)}% | точность ${(s.precision * 100).toFixed(0)}% | baseline ядра ${(s.baselineRecall * 100).toFixed(0)}% | ${s.avgMs.toFixed(0)} мс`);
   writeFileSync(ROOT + "/tools/llama-bench/quality-gate.json", JSON.stringify({ runtime, results: out }, null, 2));
 }
 
@@ -122,14 +125,14 @@ writeFileSync(ROOT + "/tools/llama-bench/quality-gate.json", JSON.stringify({ ru
 const md = [
   "# QUALITY-GATE LLM НАД ЯДРОМ ПАМЯТИ (21.11.2026)",
   "",
-  `Рантайм: ${runtime}. Ядро детерминированно отдаёт 8 кандидатов на каждый из 20 gold-вопросов;`,
-  "модель должна вернуть JSON `{\"ids\":[...],\"why\":\"...\"}` с до 3 выбранными чанками.",
-  "Нативные чат-шаблоны: ChatML для Qwen3/SmolLM2, `<start_of_turn>` для gemma-3.",
-  "Базис для сравнения — первые 3 кандидата ядра (выбор без LLM).",
+  `Рантайм: ${runtime}. Ядро детерминированно отдаёт 6 кандидатов на каждый из 20 gold-вопросов;`,
+  "модель выбирает до 3 букв. Формат ответа ограничен GBNF-грамматикой, поэтому",
+  "невалидный JSON или выдуманные поля невозможны. Нативные шаблоны: Qwen3/SmolLM2 — ChatML,",
+  "gemma-3 — `<start_of_turn>`. Поле `why` куски получают детерминированно от ядра, не от LLM.",
   "",
-  "| Модель | Роль | JSON валиден | Recall источника | Точность | why | Baseline ядра | Ответ, мс |",
-  "|---|---|---:|---:|---:|---:|---:|---:|",
-  ...out.map((r) => `| ${r.id} | ${r.role} | ${(r.jsonValid * 100).toFixed(0)}% | ${(r.recall * 100).toFixed(0)}% | ${(r.precision * 100).toFixed(0)}% | ${(r.whyPresent * 100).toFixed(0)}% | ${(r.baselineRecall * 100).toFixed(0)}% | ${r.avgMs.toFixed(0)} |`),
+  "| Модель | Роль | Формат | Recall источника | Точность | Baseline ядра | Ответ, мс |",
+  "|---|---|---:|---:|---:|---:|---:|",
+  ...out.map((r) => `| ${r.id} | ${r.role} | ${(r.parsed * 100).toFixed(0)}% | ${(r.recall * 100).toFixed(0)}% | ${(r.precision * 100).toFixed(0)}% | ${(r.baselineRecall * 100).toFixed(0)}% | ${r.avgMs.toFixed(0)} |`),
   "",
   "Сырые ответы: `tools/llama-bench/quality-gate.json`.",
   "",
