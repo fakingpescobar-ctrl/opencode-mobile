@@ -1,6 +1,7 @@
 # CI: собрать llama.cpp + обёртку под musl aarch64 и выложить .so артефактом.
 # НЕ трогает release-apk.yml и живой APK. Класть в .github/workflows/build-llama-musl.yml.
 # На телефоне грузится через наш libldmusl.so + bun:ffi (bionic-.so так не грузится).
+# musl.cc в CI недоступен (таймаут) — тулчейн берём через Zig с GitHub Releases.
 name: Build llama.cpp musl bench (arm64)
 
 on:
@@ -18,12 +19,17 @@ jobs:
       - name: Checkout репо (за wrapper.c)
         uses: actions/checkout@v4
 
-      - name: musl cross toolchain (aarch64)
+      - name: Zig toolchain (aarch64-linux-musl через zig cc)
         run: |
-          curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz -o /tmp/musl.tgz
-          tar -xzf /tmp/musl.tgz -C /tmp
-          echo "/tmp/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
-          aarch64-linux-musl-gcc --version | head -1
+          ZIG=0.13.0
+          curl -fsSL -o /tmp/zig.tar.xz \
+            "https://github.com/ziglang/zig/releases/download/${ZIG}/zig-linux-x86_64-${ZIG}.tar.xz"
+          tar -xf /tmp/zig.tar.xz -C /tmp
+          echo "/tmp/zig-linux-x86_64-${ZIG}" >> $GITHUB_PATH
+          zig version
+          printf '#!/bin/sh\nexec zig cc -target aarch64-linux-musl "$@"\n' > /tmp/aarch64-musl-cc
+          printf '#!/bin/sh\nexec zig c++ -target aarch64-linux-musl "$@"\n' > /tmp/aarch64-musl-cxx
+          chmod +x /tmp/aarch64-musl-cc /tmp/aarch64-musl-cxx
 
       - name: llama.cpp source
         run: |
@@ -37,8 +43,8 @@ jobs:
           cmake -S . -B build \
             -DCMAKE_SYSTEM_NAME=Linux \
             -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
-            -DCMAKE_C_COMPILER=aarch64-linux-musl-gcc \
-            -DCMAKE_CXX_COMPILER=aarch64-linux-musl-g++ \
+            -DCMAKE_C_COMPILER=/tmp/aarch64-musl-cc \
+            -DCMAKE_CXX_COMPILER=/tmp/aarch64-musl-cxx \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DLLAMA_BUILD_TESTS=OFF \
             -DLLAMA_BUILD_EXAMPLES=OFF \
@@ -50,14 +56,14 @@ jobs:
       - name: Wrap in shared .so (Musl)
         run: |
           cd /tmp/llama.cpp
-          aarch64-linux-musl-gcc -O3 -fPIC -Iinclude -Iggml/include \
+          /tmp/aarch64-musl-cc -O3 -fPIC -Iinclude -Iggml/include \
             -c llama-bench-wrapper.c -o wrapper.o
           LLAMA_A=$(find build -name 'libllama.a' | head -1)
           GGML_A=$(find build -name 'libggml.a' | head -1)
           BASE_A=$(find build -name 'libggml-base.a' | head -1)
           CPU_A=$(find build -name 'libggml-cpu.a' -o -name 'libggml-cpu-*.a' | head -1)
           echo "libs: $LLAMA_A $GGML_A $BASE_A $CPU_A"
-          aarch64-linux-musl-gcc -shared -o libllama-bench.so wrapper.o \
+          /tmp/aarch64-musl-cc -shared -o libllama-bench.so wrapper.o \
             -Wl,--whole-archive $LLAMA_A $GGML_A $BASE_A $CPU_A -Wl,--no-whole-archive \
             -lm -lpthread
           file libllama-bench.so
