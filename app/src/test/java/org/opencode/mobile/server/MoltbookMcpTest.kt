@@ -254,6 +254,13 @@ class MoltbookMcpTest {
     }
 
     @Test
+    fun `каталог отчёта лежит внутри MOBILE_AGENT а не в корне`() {
+        assertEquals("MOBILE_AGENT", MoltbookMcp.REPORT_DIR_NAME)
+        assertTrue(!MoltbookMcp.REPORT_DIR_NAME.contains('/'))
+        assertTrue(!MoltbookMcp.REPORT_DIR_NAME.contains('\\'))
+    }
+
+    @Test
     fun `удаление не сбивается скобкой в хвостовом комментарии`() {
         val text =
             "{\n  \"mcp\": {\n    ${memoryEntry()},\n    ${MoltbookMcp.entry()}\n" +

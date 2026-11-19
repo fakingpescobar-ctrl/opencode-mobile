@@ -35,6 +35,13 @@ internal object MoltbookMcp {
     /** Приватная папка плагина: журнал, ключ, witness.log, verifier.log, raw/. */
     const val DIR_NAME = "moltbook"
 
+    /**
+     * Подпапка отчёта внутри рабочей папки. Отчёт больше не пишется в самый корень:
+     * вся живая память агента лежит в `MOBILE_AGENT/`, а бродячая копия рядом
+     * превращалась в неотличимый второй экземпляр того же файла.
+     */
+    const val REPORT_DIR_NAME = "MOBILE_AGENT"
+
     /** Файл с ключом API. Плагин без него не публикует ничего, но читать журнал может. */
     const val KEY_FILE = "moltkey"
 

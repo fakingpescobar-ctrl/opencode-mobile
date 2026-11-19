@@ -504,12 +504,13 @@ object OpencodeRuntime {
                 "MCP_MOLTBOOK_DB_DIR" to MoltbookPaths.databasesDir(context).absolutePath,
                 "MCP_MOLTBOOK_KEY_FILE" to keyFile(context).absolutePath,
                 "MCP_MOLTBOOK_PORT" to MoltbookMcp.PORT.toString(),
-                // Отчёт ПК-агента. Сюда идёт ТОЛЬКО настоящее внешнее хранилище:
+                // Отчёт агента. Сюда идёт ТОЛЬКО настоящее внешнее хранилище:
                 // [Workspace.resolve] при отсутствии MANAGE_EXTERNAL_STORAGE молча
                 // отдаёт песочницу, и плагин написал бы отчёт по пути, который
-                // ПК-агент открыть не может, а ответ назвал бы «written». Пустая
+                // агент открыть не может, а ответ назвал бы «written». Пустая
                 // строка - честный отказ: плагин пишет приватную копию и сам
-                // помечает результат «ПК-агент отчёт не увидит».
+                // помечает результат. Сам каталог — подпапка MOBILE_AGENT, чтобы
+                // отчёт не валялся в корне рабочей папки вторым экземпляром.
                 "MCP_MOLTBOOK_REPORT_DIR" to moltbookReportDir(context),
             )
         val env = base + proxyEnv() + extraEnv
@@ -523,15 +524,19 @@ object OpencodeRuntime {
     }
 
     /**
-     * Каталог отчёта для ПК-агента — только если внешнее хранилище действительно доступно.
+     * Каталог отчёта — только если внешнее хранилище действительно доступно.
      *
      * Возвращает пустую строку вместо пути-песочницы намеренно: пустой каталог плагин
      * трактует как «внешней копии не будет» и говорит об этом вслух, а путь внутрь
      * песочницы выглядел бы как успешно записанный отчёт, который никто не увидит.
+     *
+     * Путь — `externalRoot()/MOBILE_AGENT`, а не сам корень: вся наша память живёт
+     * в этой подпапке, и отчёт в корне оказался бы вторым, бродящим экземпляром.
      */
     private fun moltbookReportDir(context: Context): String {
         if (!Workspace.usingExternal(context)) return ""
-        return Workspace.externalRoot()?.absolutePath ?: ""
+        val root = Workspace.externalRoot() ?: return ""
+        return File(root, MoltbookMcp.REPORT_DIR_NAME).absolutePath
     }
 
     /**
