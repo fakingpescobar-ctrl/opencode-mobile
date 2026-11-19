@@ -58,7 +58,8 @@ jobs:
             -DLLAMA_BUILD_EXAMPLES=OFF \
             -DLLAMA_BUILD_SERVER=OFF \
             -DGGML_NATIVE=OFF \
-            -DLLAMA_STATIC=ON
+            -DBUILD_SHARED_LIBS=OFF \
+            -DGGML_STATIC=ON
           cmake --build build -j4 --target llama
 
       - name: Wrap in shared .so (Musl)
@@ -66,13 +67,11 @@ jobs:
           cd /tmp/llama.cpp
           /tmp/aarch64-musl-cc -O3 -fPIC -Iinclude -Iggml/include \
             -c llama-bench-wrapper.c -o wrapper.o
-          LLAMA_A=$(find build -name 'libllama.a' | head -1)
-          GGML_A=$(find build -name 'libggml.a' | head -1)
-          BASE_A=$(find build -name 'libggml-base.a' | head -1)
-          CPU_LIBS=$(find build -name 'libggml-cpu*.a' | tr '\n' ' ')
-          echo "libs: $LLAMA_A $GGML_A $BASE_A $CPU_LIBS"
+          STATIC_LIBS=$(find build -name '*.a' | tr '\n' ' ')
+          echo "static libs: $STATIC_LIBS"
+          test -n "$STATIC_LIBS" || { echo "нет статических архивов"; exit 1; }
           /tmp/aarch64-musl-cc -shared -o libllama-bench.so wrapper.o \
-            -Wl,--whole-archive $LLAMA_A $GGML_A $BASE_A $CPU_LIBS -Wl,--no-whole-archive \
+            -Wl,--whole-archive $STATIC_LIBS -Wl,--no-whole-archive \
             -lm -lpthread
           file libllama-bench.so
           readelf -Ws libllama-bench.so | grep -E 'lb_bench|lb_version'
