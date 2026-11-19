@@ -3,6 +3,7 @@
 // Экспортирует функции: lb_bench, lb_version.
 
 #include "llama.h"
+#include "ggml.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,11 +16,16 @@ static double now_s(void) {
   return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
-// Возвращает: [0]=decode tokens/s, [1]=prefill ms, [2]=первый токен ms,
+static void quiet_log(enum ggml_log_level level, const char *text, void *user_data) {
+  (void)level; (void)text; (void)user_data;
+}
+
+// Возвращает: [0]=decode tokens/s, [1]=prefill ms, [2]=TTFT ms (от начала промпта),
 // [3]=всего ms, [4]=сгенерировано токенов. 0 — успех, -1 — ошибка.
 int lb_bench(const char *model_path, int n_ctx, int n_predict, double *out) {
   if (!model_path || !out || n_ctx < 64 || n_predict < 1) return -1;
 
+  llama_log_set(quiet_log, NULL);
   llama_backend_init();
   struct llama_model_params mp = llama_model_default_params();
   mp.n_gpu_layers = 0;  // только CPU: сравниваем честно, без GPU-поблачек
@@ -59,21 +65,20 @@ int lb_bench(const char *model_path, int n_ctx, int n_predict, double *out) {
   if (!smpl) { free(tokens); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1; }
   llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
 
-  double first_ms = -1.0;
+  double tf = -1.0;  // момент получения первого токена
   int generated = 0;
   for (int i = 0; i < n_predict; i++) {
     llama_token next = llama_sampler_sample(smpl, ctx, -1);
     double tn = now_s();
-    if (first_ms < 0) first_ms = (tn - t1) * 1000.0;
+    if (tf < 0) tf = tn;
     generated++;
     if (llama_vocab_is_eog(vocab, next)) break;
     struct llama_batch b2 = llama_batch_get_one(&next, 1);
     if (llama_decode(ctx, b2) != 0) break;
   }
   double t2 = now_s();
-  double decode_s = (t2 - t1) - first_ms / 1000.0;
-  out[0] = (generated > 1 && decode_s > 0) ? (double)(generated - 1) / decode_s : 0.0;
-  out[2] = first_ms;
+  out[0] = (generated > 1 && t2 > tf) ? (double)(generated - 1) / (t2 - tf) : 0.0;
+  out[2] = tf > 0 ? (tf - t0) * 1000.0 : -1.0;  // TTFT от начала промпта
   out[3] = (t2 - t0) * 1000.0;
   out[4] = (double)generated;
 
