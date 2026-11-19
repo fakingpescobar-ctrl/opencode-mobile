@@ -43,6 +43,7 @@ int lb_bench(const char *model_path, int n_ctx, int n_predict, double *out) {
 
   struct llama_context_params cp = llama_context_default_params();
   cp.n_ctx = n_ctx;
+  cp.n_batch = n_ctx;     // иначе дефолтные 512 не вмещают длинный промпт quality-gate
   cp.n_threads = 8;       // 8 ядер CPH2747 (2×4.608 + 6×3.629 ГГц)
   cp.n_threads_batch = 8;
   struct llama_context *ctx = llama_init_from_model(model, cp);
@@ -118,6 +119,7 @@ int lb_gen(const char *model_path, const char *prompt, int n_ctx, int n_predict,
 
   struct llama_context_params cp = llama_context_default_params();
   cp.n_ctx = n_ctx;
+  cp.n_batch = n_ctx;     // длинный промпт quality-gate больше дефолтных 512
   cp.n_threads = 8;
   cp.n_threads_batch = 8;
   struct llama_context *ctx = llama_init_from_model(model, cp);

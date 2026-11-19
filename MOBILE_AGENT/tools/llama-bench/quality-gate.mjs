@@ -20,6 +20,7 @@ const lib = dlopen(SO, {
     returns: FFIType.i32,
   },
 });
+const only = process.argv.slice(2);
 const runtime = lib.symbols.lb_version();
 if (!runtime.includes("musl-4")) {
   console.error("нужна обёртка llama-bench-musl-4 с lb_gen, сейчас: " + runtime);
@@ -62,6 +63,7 @@ const models = [
 
 const out = [];
 for (const m of models) {
+  if (only.length && !only.includes(m.id)) continue;
   const path = ROOT + "/models/" + m.file;
   console.log(`\n=== ${m.id} (${m.role}) ===`);
   const rows = [];
@@ -71,13 +73,16 @@ for (const m of models) {
     const expectedIn = hits.map((h, i) => letters[i] && h.source === g.expect_source ? letters[i] : null).filter(Boolean);
     const lines = hits.map((h, i) =>
       `[${letters[i]}] ${h.source} — ${String(h.heading || "").slice(0, 60)}: ${h.text.replace(/\s+/g, " ").slice(0, 260)}`);
-    const user = `Запрос: ${g.query}\nКандидаты:\n${lines.join("\n")}`;
+    let user = `Запрос: ${g.query}\nКандидаты:\n${lines.join("\n")}`;
+    // Qwen3 по умолчанию уходит в <think> и не успевает выдать JSON за бюджет.
+    if (m.id.startsWith("qwen3")) user += "\n/no_think";
     const prompt = wrap(m.family, SYS, user);
-    const text = new Uint8Array(16384);
+    const buf = new Uint8Array(16384);
     const met = new Float64Array(5);
-    const rc = lib.symbols.lb_gen(path, prompt, 2048, 72, text, text.length, met);
+    const rc = lib.symbols.lb_gen(path, prompt, 2048, 80, buf, buf.length, met);
     if (rc !== 0) { console.error(`  ${g.id}: rc=${rc}`); continue; }
-    const answer = parseAnswer(new TextDecoder().decode(text));
+    const raw = new TextDecoder().decode(buf);
+    const answer = parseAnswer(raw);
     const chosen = answer ? answer.ids.map((id) => hits[letters.indexOf(id)]).filter(Boolean) : [];
     const relevant = (h) => h && h.source === g.expect_source;
     rows.push({
@@ -88,7 +93,7 @@ for (const m of models) {
       recall: expectedIn.length > 0 ? chosen.some(relevant) : null,
       precision: answer && answer.ids.length ? chosen.filter(relevant).length / answer.ids.length : 0,
       baseline: hits.slice(0, 3).some(relevant),
-      ms: met[2], tokens: met[3],
+      ms: met[2], tokens: met[3], raw: raw.slice(0, 700),
     });
     console.log(`  ${g.id}: json=${rows.at(-1).json ? 1 : 0} recall=${rows.at(-1).recall === null ? "n/a" : rows.at(-1).recall ? 1 : 0} why=${rows.at(-1).why ? 1 : 0} ${met[2].toFixed(0)} мс`);
   }
@@ -110,6 +115,7 @@ for (const m of models) {
   });
   const s = out.at(-1);
   console.log(`  ИТОГО: JSON ${(s.jsonValid * 100).toFixed(0)}% | recall ${(s.recall * 100).toFixed(0)}% | why ${(s.whyPresent * 100).toFixed(0)}% | baseline ${(s.baselineRecall * 100).toFixed(0)}% | ${s.avgMs.toFixed(0)} мс`);
+  writeFileSync(ROOT + "/tools/llama-bench/quality-gate.json", JSON.stringify({ runtime, results: out }, null, 2));
 }
 
 writeFileSync(ROOT + "/tools/llama-bench/quality-gate.json", JSON.stringify({ runtime, results: out }, null, 2));
