@@ -272,7 +272,20 @@ object OpencodeRuntime {
                     "(memory.js imports ./${PROVENANCE_SCRIPT})",
             )
         }
-        return if (companion) main else null
+        // Ядро памяти — тоже импорты memory.js. Отсутствие любого модуля
+        // означает «памяти нет», а не «часть инструментов недоступна»:
+        // static import упадёт на старте процесса, и MCP не поднимется вовсе.
+        val coreOk = CORE_ASSETS.all { (asset, name) ->
+            ensureAssetScript(context, asset, name) != null
+        }
+        if (!coreOk) {
+            android.util.Log.e(
+                "OpencodeRuntime",
+                "ensureMemoryScript: core modules not installed, memory MCP disabled " +
+                    "(memory.js imports ${CORE_ASSETS.map { it.second }})",
+            )
+        }
+        return if (companion && coreOk) main else null
     }
 
     /**
@@ -367,6 +380,10 @@ object OpencodeRuntime {
                                 "MCP_MEMORY_DIR" to
                                     File(OpencodeApp.ServerConfig.opencodeHome, ".memory").absolutePath,
                                 "MCP_TCP_PORT" to MEMORY_PORT.toString(),
+                                // Рабочая память агента для индексатора ядра.
+                                // Пустая строка = внешнее хранилище недоступно:
+                                // инструменты ядра честно скажут no-docs-dir.
+                                "MCP_DOCS_DIR" to moltbookReportDir(context),
                             ) + extraEnv,
                     ),
             )
@@ -998,6 +1015,16 @@ object OpencodeRuntime {
     private const val MEMORY_SCRIPT = "memory.js"
     private const val PROVENANCE_ASSET = "mcp/provenance.js"
     private const val PROVENANCE_SCRIPT = "provenance.js"
+    /** Модули ядра памяти и gold-набор: копируются рядом с memory.js в filesDir/mem. */
+    private val CORE_ASSETS =
+        listOf(
+            "mcp/memory-core.js" to "memory-core.js",
+            "mcp/memory-adaptive.js" to "memory-adaptive.js",
+            "mcp/memory-lemma.js" to "memory-lemma.js",
+            "mcp/memory-index.mjs" to "memory-index.mjs",
+            "mcp/russian-stemmer.js" to "russian-stemmer.js",
+            "mcp/memory-gold.jsonl" to "memory-gold.jsonl",
+        )
     private const val YNISON_ASSET = "mcp/ynison.js"
     private const val YNISON_SCRIPT = "ynison.js"
     private const val RETENTION_ASSET = "harness/retention.js"

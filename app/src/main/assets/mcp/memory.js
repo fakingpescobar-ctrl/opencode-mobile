@@ -3,8 +3,19 @@
 // Vector search (TF-IDF + cosine) + knowledge graph, stored in embedded SQLite.
 // Transport: JSON-RPC 2.0 over stdio (newline-delimited), MCP protocol.
 import { Database } from "bun:sqlite";
-import { mkdirSync, appendFileSync } from "fs";
+import { mkdirSync, appendFileSync, readFileSync } from "fs";
 import { dirname, join } from "path";
+// Самодостаточное ядро памяти: гибридный поиск, упаковка контекста, адаптив,
+// staged→approve→audit→rollback. Модули лежат рядом в assets/mcp и копируются
+// в filesDir/mem тем же кодом, что и memory.js. Внешних зависимостей нет.
+import {
+  CORE_SCHEMA, recallDocs, memoryPack, indexSha, followThread,
+  ingest, approve, rollback, runBench,
+} from "./memory-core.js";
+import { indexDocs } from "./memory-index.mjs";
+import {
+  confidenceOf, conceptThread, learnFromFeedback, adaptivePack, runAdaptiveBench,
+} from "./memory-adaptive.js";
 // Правило доверия живёт отдельным файлом не для красоты: его обязано быть
 // видно целиком, без погружения в тысячу строк MCP, и оно обязано
 // тестироваться на ПК под node, а не только на устройстве под bun:sqlite.
@@ -87,6 +98,13 @@ CREATE INDEX IF NOT EXISTS idx_graph_src ON graph(source);
 CREATE INDEX IF NOT EXISTS idx_graph_tgt ON graph(target);
 CREATE VIEW IF NOT EXISTS v_graph AS SELECT * FROM graph;
 `);
+
+// Таблицы ядра создаются в ТОЙ ЖЕ базе: один процесс, одна SQLite, одна точка
+// аудита. Ошибка схемы не роняет MCP — она попадает в boot.log, а инструменты
+// ядра честно отвечают ошибкой при вызове (правило «не падать молча»).
+let coreSchemaOk = true;
+try { DB.exec(CORE_SCHEMA); }
+catch (e) { coreSchemaOk = false; noteBoot("core schema unavailable: " + (e && e.message)); }
 
 // ---- Migration: provenance ---------------------------------------------------
 // колонка появилась у уже существующих баз, поэтому `CREATE TABLE IF NOT
@@ -306,6 +324,103 @@ function graphDecay(created, now) {
   return Math.pow(0.5, age / HALF_LIFE_MS);
 }
 
+// ---- Ядро памяти: индекс, пак, адаптив, аудит -------------------------------
+// Каталог рабочей памяти приходит из Kotlin (MCP_DOCS_DIR = <external>/MOBILE_AGENT).
+// Пустая строка — честный отказ: без внешнего хранилища не притворяемся, что
+// память проиндексирована. Переиндексация инкрементальная (по sha+mtime файлов).
+const DOCS_DIR = process.env.MCP_DOCS_DIR || "";
+const SCRIPT_DIR = import.meta.dir || dirname(process.argv[1] || "");
+let coreIndex = null;
+
+function ensureCoreIndex(force = false) {
+  if (!coreSchemaOk) throw new Error("схема ядра памяти недоступна — см. boot.log");
+  if (coreIndex && !force) return coreIndex;
+  if (!DOCS_DIR) return { status: "no-docs-dir", files: 0, chunks: 0, sources: 0, docsDir: "" };
+  try {
+    const stat = indexDocs(DB, DOCS_DIR);
+    coreIndex = { ...stat, status: "ok", docsDir: DOCS_DIR, index_sha: indexSha(DB) };
+    return coreIndex;
+  } catch (e) {
+    return { status: "error", error: String((e && e.message) || e), docsDir: DOCS_DIR };
+  }
+}
+
+function coreQuery(args) {
+  const q = String((args && args.query) || "").trim();
+  if (!q) throw new Error("query required");
+  return q;
+}
+
+function coreGold(args) {
+  if (Array.isArray(args.gold)) return args.gold;
+  const path = args.gold_path || join(SCRIPT_DIR, "memory-gold.jsonl");
+  try {
+    return readFileSync(path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  } catch (e) {
+    throw new Error("gold недоступен (" + path + "): " + ((e && e.message) || e));
+  }
+}
+
+function corePack(args) {
+  const a = args || {};
+  if (a.refresh) ensureCoreIndex(true); else ensureCoreIndex();
+  return memoryPack(DB, coreQuery(a), {
+    budgetTokens: a.budgetTokens, limit: a.limit, scope: a.scope, as_of: a.as_of,
+  });
+}
+
+function coreRecallDoc(args) {
+  const a = args || {};
+  if (a.refresh) ensureCoreIndex(true); else ensureCoreIndex();
+  return {
+    query: coreQuery(a),
+    hits: recallDocs(DB, a.query, { limit: a.limit || 10, scope: a.scope, as_of: a.as_of }),
+  };
+}
+
+function coreAdaptive(args) {
+  const a = args || {};
+  if (a.refresh) ensureCoreIndex(true); else ensureCoreIndex();
+  const probe = recallDocs(DB, coreQuery(a), { limit: 12 });
+  const confidence = confidenceOf(probe);
+  if (a.explain) return { query: a.query, confidence };
+  return adaptivePack(DB, a.query, recallDocs, memoryPack, {
+    scope: a.scope, withThread: a.withThread !== false,
+    maxChunks: a.maxChunks, maxBudget: a.maxBudget,
+  });
+}
+
+function coreFeedback(args) {
+  const a = args || {};
+  const ids = Array.isArray(a.chunk_ids) ? a.chunk_ids.map(String) : [];
+  if (!ids.length) throw new Error("chunk_ids required");
+  const r = learnFromFeedback(DB, coreQuery(a), ids, a.success !== false);
+  return { ...r, query: a.query };
+}
+
+function coreThread(args) {
+  const a = args || {};
+  const node = String(a.node || "");
+  if (!node) throw new Error("node required");
+  return {
+    node,
+    concept: conceptThread(DB, [node], { max: a.max || 6, fuzzy: a.fuzzy !== false }),
+    graph: followThread(DB, node, a.depth || 2),
+  };
+}
+
+function coreBench(args) {
+  const a = args || {};
+  ensureCoreIndex();
+  const gold = coreGold(a);
+  if (a.mode === "adaptive") {
+    return runAdaptiveBench(DB, gold, recallDocs, memoryPack, {
+      suite: a.suite || "adaptive", scope: a.scope, withThread: !!a.withThread,
+    });
+  }
+  return runBench(DB, a.suite || "gold", gold, { scope: a.scope });
+}
+
 // ---- MCP tools ---------------------------------------------------------------
 const memoryTools = [
   { name: "local_memory_store", description: "Save a memory (content, optional id/type/tags/project/provenance/modality/doubt). " +
@@ -361,6 +476,49 @@ const memoryTools = [
     inputSchema: { type: "object", properties: { source: { type: "string" }, target: { type: "string" }, relation: { type: "string" } }, required: ["source", "target"] } },
   { name: "local_memory_graph_connect", description: "Connect a memory id to a file path (File nodes appear in graph).",
     inputSchema: { type: "object", properties: { memory_id: { type: "string" }, file_path: { type: "string" }, relation: { type: "string" } }, required: ["memory_id", "file_path"] } },
+
+  // ---- Самодостаточное ядро памяти (детерминированный слой) -----------------
+  { name: "memory_pack", description: " Главный инструмент ядра: гибридный поиск по рабочей памяти и упаковка контекста в бюджет токенов. Каждый кусок несёт why (веса bm25/anchor/graph/authority/recency/trust/feedback). Пак идёт строго по убыванию score, поэтому самый релевантный кусок не отрезается.",
+    inputSchema: { type: "object", properties: {
+      query: { type: "string" }, budgetTokens: { type: "number" }, limit: { type: "number" },
+      scope: { type: ["string", "array"], items: { type: "string" } },
+      as_of: { type: "number" }, refresh: { type: "boolean" } }, required: ["query"] } },
+  { name: "memory_recall_doc", description: " Топ чанков рабочей памяти с полными весами и пояснением why. Без LLM, без эмбеддингов, на FTS5 + леммах + графе. scope ограничивает kind (rule/state/journal/path/catalog/advice/doc).",
+    inputSchema: { type: "object", properties: {
+      query: { type: "string" }, limit: { type: "number" },
+      scope: { type: ["string", "array"], items: { type: "string" } },
+      as_of: { type: "number" }, refresh: { type: "boolean" } }, required: ["query"] } },
+  { name: "memory_adaptive", description: " Адаптивный доступ: confidence по peak=top1−медиана, бюджет по уверенности, концептуальная нить. explain=true возвращает только оценку уверенности без упаковки.",
+    inputSchema: { type: "object", properties: {
+      query: { type: "string" }, scope: { type: ["string", "array"], items: { type: "string" } },
+      withThread: { type: "boolean" }, maxChunks: { type: "number" }, maxBudget: { type: "number" },
+      explain: { type: "boolean" }, refresh: { type: "boolean" } }, required: ["query"] } },
+  { name: "memory_feedback", description: " Обучение ядра: отметить, какие chunk_id реально помогли (или не помогли) для запроса. Вес влияет на ранжирование мягко (≤6%).",
+    inputSchema: { type: "object", properties: {
+      query: { type: "string" }, chunk_ids: { type: "array", items: { type: "string" } },
+      success: { type: "boolean" } }, required: ["query", "chunk_ids"] } },
+  { name: "memory_thread", description: " Нить концепта: соседние чанки по общим якорям/леммам плюс обход явного графа. Возвращает concept и graph.",
+    inputSchema: { type: "object", properties: {
+      node: { type: "string" }, max: { type: "number" }, depth: { type: "number" },
+      fuzzy: { type: "boolean" } }, required: ["node"] } },
+  { name: "memory_bench", description: " Измерить recall@5/MRR/nDCG на gold-наборе. mode=adaptive сравнивает фиксированный и адаптивный бюджет; gate регресса recall@5 ≤2 п.п. встроен.",
+    inputSchema: { type: "object", properties: {
+      suite: { type: "string" }, mode: { type: "string", enum: ["core", "adaptive"] },
+      gold_path: { type: "string" }, gold: { type: "array", items: { type: "object" } },
+      scope: { type: ["string", "array"], items: { type: "string" } },
+      withThread: { type: "boolean" } } } },
+  { name: "memory_index_stats", description: " Состояние индекса ядра: файлы, чанки, источники, sha, пропущенные secret-файлы. Инкрементальная переиндексация при каждом вызове.",
+    inputSchema: { type: "object", properties: {} } },
+  { name: "memory_ingest", description: " Положить запись в staged без немедленного применения. Внешние советы никогда не применяются автоматически: нужен явный approve оператора.",
+    inputSchema: { type: "object", properties: {
+      content: { type: "string" }, id: { type: "string" },
+      provenance: { type: "string" } }, required: ["content"] } },
+  { name: "memory_approve", description: " Применить staged-запись: создать audit-запись и снимок для отката. approved_by обязателен — approve без подписи запрещён.",
+    inputSchema: { type: "object", properties: {
+      id: { type: "string" }, approved_by: { type: "string" }, reason: { type: "string" } },
+      required: ["id", "approved_by"] } },
+  { name: "memory_rollback", description: " Откатить approve по audit_id: восстановить staged-запись и удалить audit-запись. Ничего не исчезает молча.",
+    inputSchema: { type: "object", properties: { audit_id: { type: "string" } }, required: ["audit_id"] } },
 ];
 
 const MOBILE_INSTALL_TOOLS = [
@@ -1385,6 +1543,20 @@ async function callTool(name, args) {
     case "local_memory_graph_query": return graphQuery(args || {});
     case "local_memory_graph_add_edge": return graphAddEdge(args || {});
     case "local_memory_graph_connect": return graphConnect(args || {});
+    case "memory_pack": return corePack(args || {});
+    case "memory_recall_doc": return coreRecallDoc(args || {});
+    case "memory_adaptive": return coreAdaptive(args || {});
+    case "memory_feedback": return coreFeedback(args || {});
+    case "memory_thread": return coreThread(args || {});
+    case "memory_bench": return coreBench(args || {});
+    case "memory_index_stats": return ensureCoreIndex(true);
+    case "memory_ingest": return ingest(DB, args || {}, { normalizeProvenance, autoApplyable });
+    case "memory_approve": {
+      const a = args || {};
+      if (!String(a.approved_by || "").trim()) throw new Error("approved_by required");
+      return approve(DB, String(a.id || ""), String(a.approved_by), String(a.reason || ""));
+    }
+    case "memory_rollback": return rollback(DB, String((args || {}).audit_id || ""));
     case "mobile_app_install": return mobileAppInstall(args || {});
     case "mobile_app_install_status": return mobileAppInstallStatus(args || {});
     case "mobile_list_apps": return mobileListApps(args || {});
