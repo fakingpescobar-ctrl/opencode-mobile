@@ -58,7 +58,6 @@ jobs:
             -DLLAMA_BUILD_EXAMPLES=OFF \
             -DLLAMA_BUILD_SERVER=OFF \
             -DGGML_NATIVE=OFF \
-            -DGGML_CPU_ARM_ARCH="cortex-x4" \
             -DLLAMA_STATIC=ON
           cmake --build build -j4 --target llama
 
