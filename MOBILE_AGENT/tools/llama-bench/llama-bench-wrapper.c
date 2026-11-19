@@ -21,17 +21,17 @@ int lb_bench(const char *model_path, int n_ctx, int n_predict, double *out) {
   if (!model_path || !out || n_ctx < 64 || n_predict < 1) return -1;
 
   llama_backend_init();
-  llama_model_params mp = llama_model_default_params();
+  struct llama_model_params mp = llama_model_default_params();
   mp.n_gpu_layers = 0;  // только CPU: сравниваем честно, без GPU-поблачек
-  struct llama_model *model = llama_load_model_from_file(model_path, mp);
+  struct llama_model *model = llama_model_load_from_file(model_path, mp);
   if (!model) { llama_backend_free(); return -1; }
   const struct llama_vocab *vocab = llama_model_get_vocab(model);
 
-  llama_context_params cp = llama_context_default_params();
+  struct llama_context_params cp = llama_context_default_params();
   cp.n_ctx = n_ctx;
   cp.n_threads = 8;       // 8 ядер CPH2747 (2×4.608 + 6×3.629 ГГц)
   cp.n_threads_batch = 8;
-  struct llama_context *ctx = llama_new_context_with_model(model, cp);
+  struct llama_context *ctx = llama_init_from_model(model, cp);
   if (!ctx) { llama_model_free(model); llama_backend_free(); return -1; }
 
   // Префилл: короткий системный промпт + вопрос по памяти.
