@@ -1,7 +1,7 @@
 # CI: собрать llama.cpp + обёртку под musl aarch64 и выложить .so артефактом.
 # НЕ трогает release-apk.yml и живой APK. Класть в .github/workflows/build-llama-musl.yml.
 # На телефоне грузится через наш libldmusl.so + bun:ffi (bionic-.so так не грузится).
-# musl.cc в CI недоступен (таймаут) — тулчейн берём через Zig с GitHub Releases.
+# Источники тулчейна: apt zig → ziglang.org (GitHub release-ассетов у Zig нет).
 name: Build llama.cpp musl bench (arm64)
 
 on:
@@ -21,11 +21,19 @@ jobs:
 
       - name: Zig toolchain (aarch64-linux-musl через zig cc)
         run: |
-          ZIG=0.13.0
-          curl -fsSL -o /tmp/zig.tar.xz \
-            "https://github.com/ziglang/zig/releases/download/${ZIG}/zig-linux-x86_64-${ZIG}.tar.xz"
-          tar -xf /tmp/zig.tar.xz -C /tmp
-          echo "/tmp/zig-linux-x86_64-${ZIG}" >> $GITHUB_PATH
+          if command -v zig >/dev/null 2>&1; then
+            echo "zig уже есть: $(zig version)"
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq zig || true
+          fi
+          if ! command -v zig >/dev/null 2>&1; then
+            ZIG=0.13.0
+            curl -fsSL --max-time 120 -o /tmp/zig.tar.xz \
+              "https://ziglang.org/download/${ZIG}/zig-linux-x86_64-${ZIG}.tar.xz"
+            tar -xf /tmp/zig.tar.xz -C /tmp
+            echo "/tmp/zig-linux-x86_64-${ZIG}" >> $GITHUB_PATH
+          fi
           zig version
           printf '#!/bin/sh\nexec zig cc -target aarch64-linux-musl "$@"\n' > /tmp/aarch64-musl-cc
           printf '#!/bin/sh\nexec zig c++ -target aarch64-linux-musl "$@"\n' > /tmp/aarch64-musl-cxx
