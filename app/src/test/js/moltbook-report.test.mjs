@@ -43,6 +43,7 @@ const {
   DEFERRED_DEADLINE_MS,
   renderReport,
   writeReport,
+  reportDirs,
   moltbookReport,
 } = mod;
 
@@ -639,6 +640,19 @@ await test("with an external directory there is nothing to complain about", asyn
   try {
     const result = await moltbookReport({}, depsFor(file, [dir]));
     eq(result.notes.length, 0, "no note when the PC agent can read it");
+  } finally {
+    if (before === undefined) delete process.env.MCP_MOLTBOOK_REPORT_DIR;
+    else process.env.MCP_MOLTBOOK_REPORT_DIR = before;
+  }
+});
+
+await test("reportDirs writes to exactly one place when an external dir is set", () => {
+  const before = process.env.MCP_MOLTBOOK_REPORT_DIR;
+  process.env.MCP_MOLTBOOK_REPORT_DIR = "/tmp/moltbook-single-report";
+  try {
+    const dirs = reportDirs();
+    eq(dirs.length, 1, "one destination only, not two identical copies");
+    eq(dirs[0], "/tmp/moltbook-single-report", "the destination is the external dir");
   } finally {
     if (before === undefined) delete process.env.MCP_MOLTBOOK_REPORT_DIR;
     else process.env.MCP_MOLTBOOK_REPORT_DIR = before;

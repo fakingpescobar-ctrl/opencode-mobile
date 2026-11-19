@@ -5182,11 +5182,12 @@ export function writeReport(dir, text) {
     }
   }
 }
-/** Куда класть отчёт: своё хранилище всегда, внешний каталог - если дан. */
+/** Куда класть отчёт ровно в одно место: внешний каталог, если дан, иначе своё
+ *  хранилище. Раньше возвращали оба каталога и получали два одинаковых файла. */
 export function reportDirs() {
   const external = String(process.env.MCP_MOLTBOOK_REPORT_DIR || "");
-  const list = [MOLTBOOK_DIR, external].filter((dir) => dir !== "");
-  return list.filter((dir, index) => list.indexOf(dir) === index);
+  if (external !== "") return [external];
+  return MOLTBOOK_DIR !== "" ? [MOLTBOOK_DIR] : [];
 }
 
 /** Все записи журнала: проекции нужны полные строки, а не только сводка. */
