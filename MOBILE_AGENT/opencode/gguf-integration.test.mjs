@@ -98,6 +98,11 @@ section("4. Единый пульт Memory Core ⚡ и JVM-тест");
   truthy(panel.includes("MemoryTools.corePack("), "кнопка пак");
   truthy(panel.includes("MemoryTools.coreBench("), "кнопка бенча");
   truthy(panel.includes("memorySection()"), "управление записями внутри пульта");
+  truthy(panel.includes('InfoRow("Зачем"'), "в UI объяснено назначение моделей");
+  truthy(panel.includes("Семантический сопроцессор ядра"), "пояснение: LLM не заменяет ядро");
+  truthy(panel.includes('InfoRow("Источник"'), "в UI указан источник закачки");
+  truthy(panel.includes("model.repo + \"/\" + model.file"), "у каждой модели показан repo и файл");
+  truthy(panel.includes('InfoRow("Откуда"'), "во время загрузки показан источник");
   truthy(panel.includes("GgufCatalog.byId(context, dl.model)"), "повтор докачки по id из каталога");
 
   const t = read("GgufCatalogTest.kt");

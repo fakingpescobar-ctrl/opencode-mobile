@@ -170,23 +170,32 @@ private fun GgufModelRows(
         remember(refreshKey, models) {
             models.associateWith { GgufStore.isReady(context, it) }
         }
+    InfoRow("Зачем", "Семантический сопроцессор ядра: объяснения и переформулировка. " +
+        "Чанки выбирает код, LLM ядро не заменяет и память не трогает.")
     InfoRow("Каталог", "assets/llm/models.json (" + models.size + " моделей)")
+    InfoRow("Источник", "Hugging Face · huggingface.co, точный URL и sha256 в манифесте")
     InfoRow("Зафиксирована", GgufCatalog.preferred(), Color(0xFFFFC107))
     for (model in models) {
         val isReady = ready[model] == true
         val size = if (isReady) GgufStore.bytesOnDisk(context, model) else model.size
         InfoRow(
             model.id,
-            (if (isReady) "готов · " else "нет · ") + fmtBytes(size),
+            (if (isReady) "готов · " else "нет · ") + fmtBytes(size) + " · " + model.repo + "/" + model.file,
             if (isReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A),
         )
     }
     when (val dl = state) {
-        is GgufDownloadState.Running -> InfoRow(
-            "Загрузка " + dl.model,
-            fmtBytes(dl.done) + " из " + fmtBytes(dl.total),
-            Color(0xFFFFC107),
-        )
+        is GgufDownloadState.Running -> {
+            val model = GgufCatalog.byId(context, dl.model)
+            InfoRow(
+                "Загрузка " + dl.model,
+                fmtBytes(dl.done) + " из " + fmtBytes(dl.total),
+                Color(0xFFFFC107),
+            )
+            if (model != null) {
+                InfoRow("Откуда", model.repo + "/" + model.file, Color(0xFFFFC107))
+            }
+        }
 
         is GgufDownloadState.Failed -> {
             InfoRow("Скачивание не удалось", dl.message, Color(0xFFFF6F5A))
