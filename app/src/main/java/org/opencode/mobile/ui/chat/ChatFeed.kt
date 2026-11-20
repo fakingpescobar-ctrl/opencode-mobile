@@ -170,11 +170,7 @@ private fun LazyListScope.feedItems(
     // Их сообщения в ленту не приходят — только этот честный индикатор.
     // Блок вне thinking: сабагент может ещё считать, когда родитель уже снял
     // думание, а пропадать индикатор до его завершения не должен.
-    for (sub in state.snapshot?.subagents.orEmpty()) {
-        item(key = "subagent_${sub.id}") {
-            SubagentRow(sub)
-        }
-    }
+    subagentRows(state.snapshot?.subagents.orEmpty())
     // Причина отказа сервера (квота/ретрай) — всегда последняя строка,
     // чтобы её не съедал автоскролл вниз и она читалась как вывод.
     // Рендерим защёлку: плашка должна висеть, пока сервер держит
@@ -182,6 +178,15 @@ private fun LazyListScope.feedItems(
     (state.noticeLatch ?: state.snapshot?.notice)?.let { n ->
         item(key = "notice_${n.title}_${n.attempt}") {
             NoticeRow(n, context)
+        }
+    }
+}
+
+/** Отдельная функция, чтобы не раздувать циклом сложность составления ленты. */
+private fun LazyListScope.subagentRows(subagents: List<SubagentWork>) {
+    for (sub in subagents) {
+        item(key = "subagent_${sub.id}") {
+            SubagentRow(sub)
         }
     }
 }

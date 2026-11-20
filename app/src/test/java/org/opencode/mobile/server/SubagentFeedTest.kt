@@ -72,6 +72,38 @@ class SubagentFeedTest {
     }
 
     @Test
+    fun `давний сабагент без outcome и idle не горит в индикаторе`() {
+        // Живой случай: сессия Staged assets audit завершилась, но сервер не
+        // записал ей ни outcome, ни idle. Один busy оставлять нельзя — строка
+        // ⚡ висела бы в чате до перезапуска приложения.
+        val now = 1_000_000L
+        val old = session("old", parent = "root", outcome = null, busy = 900_000L, idle = 0L)
+            .apply { getJSONObject("time").put("updated", 100_000L) }
+        val fresh = session("fresh", parent = "root", outcome = null, busy = 990_000L, idle = 0L)
+            .apply { getJSONObject("time").put("updated", 999_000L) }
+        val sessions =
+            JSONArray()
+                .put(session("root"))
+                .put(old)
+                .put(fresh)
+        val active = SubagentFeed.activeOf(sessions, "root", now)
+        assertEquals(1, active.size)
+        assertEquals("fresh", active[0].id)
+    }
+
+    @Test
+    fun `завершённый outcome гасит индикатор даже при свежем updated`() {
+        val now = 1_000_000L
+        val done = session("done", parent = "root", outcome = "succeeded", busy = 990_000L, idle = 0L)
+            .apply { getJSONObject("time").put("updated", now) }
+        val sessions =
+            JSONArray()
+                .put(session("root"))
+                .put(done)
+        assertTrue(SubagentFeed.activeOf(sessions, "root", now).isEmpty())
+    }
+
+    @Test
     fun `пустая или неизвестная сессия не даёт индикатор`() {
         assertTrue(SubagentFeed.activeOf(JSONArray(), "root").isEmpty())
         assertTrue(SubagentFeed.activeOf(JSONArray().put(session("x")), null).isEmpty())

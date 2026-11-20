@@ -252,15 +252,7 @@ internal object ApiShape {
         if (content != null) {
             for (i in 0 until content.length()) {
                 val item = content.optJSONObject(i) ?: continue
-                // Вызов сабагента несёт в state/input промпт и в state/content его
-                // ответ. В наш чат ни то, ни другое не должно попадать: агент
-                // общается со своими помощниками в фоне, лента остаётся нашей.
-                // Сам факт работы виден отдельным индикатором ⚡ под думанием.
                 val partType = item.optString("type")
-                val toolName = item.optString("name", "")
-                if (partType == "tool" && (toolName == "subagent" || toolName == "task")) {
-                    continue
-                }
                 when (partType) {
                     // Размышление, пришедшее в текстовый канал, отрезается —
                     // см. answerText: иначе в ленте видно английский монолог
@@ -273,14 +265,21 @@ internal object ApiShape {
                     // него нечем сцепить запрос «вопрос задать» с текстом вопроса,
                     // который лежит именно в этой части ленты. Раньше id молча
                     // терялся, потому что потребителям он не был нужен.
+                    //
+                    // Вызов сабагента несёт в state/input промпт и в state/content
+                    // его ответ. В наш чат не должно попадать ни то, ни другое —
+                    // общение с помощниками идёт в фоне. Сам факт работы виден
+                    // отдельным индикатором ⚡ под «Модель думает…».
                     "tool" ->
-                        out.put(
-                            JSONObject()
-                                .put("type", "tool")
-                                .put("id", item.optString("id"))
-                                .put("tool", item.optString("name"))
-                                .put("state", item.optJSONObject("state") ?: JSONObject()),
-                        )
+                        if (!isSubagentTool(item)) {
+                            out.put(
+                                JSONObject()
+                                    .put("type", "tool")
+                                    .put("id", item.optString("id"))
+                                    .put("tool", item.optString("name"))
+                                    .put("state", item.optJSONObject("state") ?: JSONObject()),
+                            )
+                        }
                     else -> out.put(item)
                 }
             }
@@ -296,5 +295,11 @@ internal object ApiShape {
         }
         if (error != null) out.put(JSONObject().put("type", ERROR_PART).put("text", error))
         return out
+    }
+
+    /** Сабагент приходит частью tool с именем `subagent` (иногда `task`). */
+    private fun isSubagentTool(part: JSONObject): Boolean {
+        val name = part.optString("name", "")
+        return name == "subagent" || name == "task"
     }
 }
