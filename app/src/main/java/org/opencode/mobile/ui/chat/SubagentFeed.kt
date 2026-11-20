@@ -23,6 +23,7 @@ internal data class SubagentWork(
 internal object SubagentFeed {
     private const val PARENT_V2 = "parentID"
     private const val PARENT_V1 = "parent_id"
+
     /**
      * Порог «давным-давно не обновлялась». У части завершивших сабагентов сервер
      * не пишет ни `outcome`, ни `time.idle` (поймано на живой сессии
@@ -33,8 +34,7 @@ internal object SubagentFeed {
     private const val STALE_MS = 120_000L
 
     /** Родитель сессии: v2 пишет `parentID`, старые ответы — `parent_id`. */
-    internal fun parentOf(session: JSONObject): String =
-        session.optString(PARENT_V2, "").ifBlank { session.optString(PARENT_V1, "") }
+    internal fun parentOf(session: JSONObject): String = session.optString(PARENT_V2, "").ifBlank { session.optString(PARENT_V1, "") }
 
     /** Дочерняя сессия — это и есть сессия сабагента, а не наш чат. */
     internal fun isChild(session: JSONObject): Boolean = parentOf(session).isNotBlank()
