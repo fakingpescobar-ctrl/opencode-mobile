@@ -22,12 +22,10 @@ class SubagentFeedTest {
         outcome: String? = "succeeded",
         busy: Long = 100L,
         idle: Long = 200L,
-        title: String = "",
     ): JSONObject {
         val o = JSONObject()
             .put("id", id)
             .put("agent", "explore")
-            .put("title", title)
             .put("time", JSONObject().put("busy", busy).put("idle", idle))
         if (parent != null) o.put("parentID", parent)
         if (outcome != null) o.put("outcome", outcome)
@@ -44,12 +42,16 @@ class SubagentFeedTest {
 
     @Test
     fun `в индикатор попадают только работающие сабагенты под активной сессией`() {
+        val work1 = session("work1", parent = "root", outcome = null, busy = 300L, idle = 0L)
+            .apply { put("title", "Разбор кода") }
+        val work2 = session("work2", parent = "root", outcome = null, busy = 310L, idle = 0L)
+            .apply { put("title", "Разбор тестов") }
         val sessions =
             JSONArray()
                 .put(session("root"))
-                .put(session("done", parent = "root", title = "Готовый разбор"))
-                .put(session("work1", parent = "root", outcome = null, busy = 300L, idle = 0L, title = "Разбор кода"))
-                .put(session("work2", parent = "root", outcome = null, busy = 310L, idle = 0L, title = "Разбор тестов"))
+                .put(session("done", parent = "root"))
+                .put(work1)
+                .put(work2)
                 .put(session("alien", parent = "other", outcome = null, busy = 320L, idle = 0L))
         val active = SubagentFeed.activeOf(sessions, "root")
         assertEquals(2, active.size)
@@ -60,11 +62,13 @@ class SubagentFeedTest {
 
     @Test
     fun `индикатор находит и вложенных сабагентов`() {
+        val level2 = session("level2", parent = "level1", outcome = null, busy = 400L, idle = 0L)
+            .apply { put("title", "Внутренний") }
         val sessions =
             JSONArray()
                 .put(session("root"))
                 .put(session("level1", parent = "root"))
-                .put(session("level2", parent = "level1", outcome = null, busy = 400L, idle = 0L, title = "Внутренний"))
+                .put(level2)
         val active = SubagentFeed.activeOf(sessions, "root")
         assertEquals(1, active.size)
         assertEquals("Внутренний", active[0].label)
