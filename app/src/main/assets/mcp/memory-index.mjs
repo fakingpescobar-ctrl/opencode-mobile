@@ -199,6 +199,18 @@ export function indexFiles(DB, files, opts = {}) {
       if (looksSecret(text)) { secret++; continue; }
       const kind = kindOf(rel);
       const chunks = chunkMarkdown(text, rel, kind, opts.maxLen || 800, opts.overlap || 80);
+      // created — это возраст конкретного чанка, а не время переиндексации файла.
+      // Иначе правка одного абзаца делает «свежими» все чанки документа, и
+      // составляющая свежести вытесняет эталон, который вообще не менялся.
+      // id чанка включает source, номер строки и sha текста, поэтому у
+      // неизменившегося чанка он совпадает — старое время и сохраняем.
+      const oldCreated = prev
+        ? new Map(
+            DB.prepare("SELECT id, created FROM doc_chunks WHERE source = ?")
+              .all(rel)
+              .map((r) => [r.id, r.created]),
+          )
+        : new Map();
       if (prev) {
         delFtsDoc.run(rel);
         delFtsAnchor.run(rel);
@@ -209,7 +221,7 @@ export function indexFiles(DB, files, opts = {}) {
         const anchors = parsed.anchors.join(" ");
         const lemmas = parsed.lemmas.join(" ");
         const trigram = forTrigram(c.text);
-        insChunk.run(c.id, c.source, c.heading, c.line_from, c.line_to, c.kind, c.text, trigram, anchors, lemmas, sha, now);
+        insChunk.run(c.id, c.source, c.heading, c.line_from, c.line_to, c.kind, c.text, trigram, anchors, lemmas, sha, oldCreated.get(c.id) ?? now);
         insFtsDoc.run(c.id, c.text);
         insFtsAnchor.run(c.id, anchors);
       }

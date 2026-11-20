@@ -10,7 +10,8 @@
 // Живой плагин memory.js в этом наборе не участвует.
 
 import { Database } from "bun:sqlite";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -97,6 +98,33 @@ section("2. Индексатор и FTS5");
   const fts = DB.prepare("SELECT count(*) n FROM doc_fts WHERE doc_fts MATCH ?").get('"память"');
   truthy(fts.n > 0, "FTS5 trigram ищет: " + fts.n);
   DB.close();
+}
+
+// ------------------------------------------- 2b. Возраст чанков при переиндексации
+section("2b. created не обновляется у неизменившихся чанков");
+{
+  const tmp = mkdtempSync(join(tmpdir(), "mem-created-"));
+  const file = join(tmp, "a.md");
+  const before = "# Старый\nТекст который не тронем\n\n## Второй\nЕщё текст\n";
+  writeFileSync(file, before);
+  const DB = new Database(":memory:");
+  idx.indexDocs(DB, tmp);
+  // Зафиксировать возраст искусственно, чтобы не зависеть от миллисекунд.
+  DB.prepare("UPDATE doc_chunks SET created = 1000").run();
+
+  writeFileSync(file, before + "\n## Новый\nСовсем свежий раздел\n");
+  const stat = idx.indexDocs(DB, tmp);
+  eq(stat.updated, 1, "изменённый файл переиндексирован");
+
+  const rows = DB.prepare("SELECT heading, created FROM doc_chunks WHERE source = ? ORDER BY line_from").all("a.md");
+  const old = rows.filter((r) => r.heading !== "Новый");
+  const fresh = rows.filter((r) => r.heading === "Новый");
+  truthy(old.length >= 1, "старые чанки остались");
+  eq(old.every((r) => r.created === 1000), true, "у старых чанков created сохранён");
+  eq(fresh.length, 1, "новый чанк добавлен");
+  truthy(fresh[0].created > 1000, "новый чанк получил свежее время");
+  DB.close();
+  rmSync(tmp, { recursive: true, force: true });
 }
 
 // ---------------------------------------------------------------- 3. Поиск
