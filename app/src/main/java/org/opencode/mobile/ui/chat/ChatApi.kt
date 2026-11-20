@@ -22,6 +22,17 @@ import org.opencode.mobile.ui.noticeFromStatus
 
 private const val MAX_SHOWN = 120
 
+/**
+ * Что из нормализованной ленты имеет право стать видимой строкой чата.
+ *
+ * `system` сюда не пускаем вообще: после v2→v1 под этой ролью оказываются
+ * `system`, `idle`, `compaction` и неизвестные типы. Живое подтверждение —
+ * `compaction` с многостраничным саммари, которое лезло в наш чат под «Система».
+ * Ошибки остаются под отдельной ролью `error` и должны быть видны.
+ */
+internal fun keepInFeed(role: String, hasText: Boolean, finish: Boolean): Boolean =
+    role != "system" && !(role == "assistant" && !hasText && finish)
+
 // Контекст-лимит активной модели (входные токены) — порог, при котором opencode
 // начнёт компакт. big-pickle (opencode free) имеет окно 200000 токенов.
 // Если сменить модель с другим окном — поправить здесь. Круговой индикатор в
@@ -399,10 +410,10 @@ internal suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                 latestCompleted = messageCompleted
                 // Завершённый tool-only шаг (step-start->tool...->step-finish без text)
                 // не должен отображаться как «… генерируется …» — это не зависание,
-                // а просто шаг без текста. Фильтруем его из ленты. ДУМАЮЩИЙ assistant
+                // а просто шаг без текста. Системные роли (compaction/idle/system)
+                // тоже не реплики: они не должны лезть в наш чат. ДУМАЮЩИЙ assistant
                 // (без step-finish) остаётся, чтобы UI показал «генерируется».
-                val hiddenToolStep = role == "assistant" && !hasText && finish
-                if (!hiddenToolStep) {
+                if (keepInFeed(role, hasText, finish)) {
                     out.add(
                         ChatMsg(
                             role = role,
