@@ -19,7 +19,7 @@
 
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
-import { mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import * as os from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -244,9 +244,11 @@ await test("status on a directory without a ledger says so instead of guessing",
   const dir = mkdtempSync(join(os.tmpdir(), "moltbook-status-"));
   try {
     process.env.MCP_MOLTBOOK_DIR = dir;
-    const fresh = await import(pathToFileURL(MOLTBOOK_JS).href + "?dir=" + dir);
-    // MOLTBOOK_DIR is captured at module load, so re-importing with a cache
-    // bust is the only way to point the constants at the temp dir.
+    // MOLTBOOK_DIR is captured at module load. A query string alone is not a
+    // reliable cache bust under Bun, so load a fresh copy from another path.
+    const copy = join(dir, "moltbook-copy.mjs");
+    copyFileSync(MOLTBOOK_JS, copy);
+    const fresh = await import(pathToFileURL(copy).href);
     if (fresh.MOLTBOOK_DIR !== dir) throw new Error("dir not picked up: " + fresh.MOLTBOOK_DIR);
     const status = fresh.moltbookStatus();
     eq(status.plugin, "moltbook", "plugin name");
