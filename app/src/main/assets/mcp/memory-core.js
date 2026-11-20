@@ -135,9 +135,29 @@ export function recallDocs(DB, query, opts = {}) {
   // 18 — минимальное значение, при котором свежий и живой индексы одновременно
   // дают gold 0.95 при hard 1.000 (проверено на обеих БД).
   const ANCHOR_POOL = 18;
+  // Диверсификация кандидатов: первые места в anchor_fts иногда занимают
+  // несколько чанков одного источника (у `commit` — КАТАЛОГ_ПЕРЕДЕЛОК.md),
+  // из-за чего эталон из ХАРНЕС.md выпадал за пределы пула. Берём не более
+  // трёх чанков с одного источника, затем добираем до ANCHOR_POOL.
+  const ANCHOR_PER_SOURCE = 3;
   const textHits = queryFts(DB, "doc_fts", trigramQuery, FTS_POOL);
-  const anchorHits = anchorQuery ? queryFts(DB, "anchor_fts", anchorQuery, ANCHOR_POOL) : [];
+  let anchorHits = anchorQuery ? queryFts(DB, "anchor_fts", anchorQuery, ANCHOR_POOL * 3) : [];
   const getChunk = DB.prepare("SELECT * FROM doc_chunks WHERE id = ?");
+  if (anchorHits.length) {
+    const getSource = DB.prepare("SELECT source FROM doc_chunks WHERE id = ?");
+    const perSource = new Map();
+    const picked = [];
+    for (const h of anchorHits) {
+      const row = getSource.get(h.chunk_id);
+      const source = row ? row.source : "";
+      const used = perSource.get(source) || 0;
+      if (used >= ANCHOR_PER_SOURCE) continue;
+      perSource.set(source, used + 1);
+      picked.push(h);
+      if (picked.length >= ANCHOR_POOL) break;
+    }
+    anchorHits = picked;
+  }
   const byId = new Map();
   for (const h of textHits) {
     const c = getChunk.get(h.chunk_id);

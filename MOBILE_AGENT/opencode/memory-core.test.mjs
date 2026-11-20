@@ -314,6 +314,23 @@ section("4d. Якорный пул включает эталон по точно
   D.close();
 }
 
+// ------------------------------------------- 4e. Диверсификация якорных кандидатов
+section("4e. Якорный пул не монополизирован одним источником");
+{
+  const D = new Database(":memory:");
+  idx.indexDocs(D, DOCS);
+  for (const [q, expect] of [
+    ["git CLI на телефоне нет API скрипты", "ХАРНЕС.md"],
+    ["ports memory mcp /mcp /mobile MemoryMcp", "АРХИТЕКТУРА_ПАМЯТИ.md"],
+  ]) {
+    const hits = core.recallDocs(D, q, { limit: 5 });
+    truthy(hits.some((x) => x.source === expect), "эталон в топ-5 после дедупа: " + q);
+    const top = hits.slice(0, 5);
+    truthy(new Set(top.map((x) => x.source)).size >= 2, "в топ-5 больше одного источника: " + q);
+  }
+  D.close();
+}
+
 // ---------------------------------------------------------------- 5. Guard
 section("5. Guard: без внешних зависимостей и мусорных вкраплений");
 {
