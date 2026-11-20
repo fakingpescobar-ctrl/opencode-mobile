@@ -248,7 +248,7 @@ internal object ApiShape {
         // не виден никогда.
         val msgType = msg.optString("type")
         val finished = finishedFor(msg)
-        val content = msg.optJSONArray("content")
+        val content = msg.optJSONArray("content")?.let(::visibleParts)
         if (content != null) {
             for (i in 0 until content.length()) {
                 val item = content.optJSONObject(i) ?: continue
@@ -265,21 +265,14 @@ internal object ApiShape {
                     // него нечем сцепить запрос «вопрос задать» с текстом вопроса,
                     // который лежит именно в этой части ленты. Раньше id молча
                     // терялся, потому что потребителям он не был нужен.
-                    //
-                    // Вызов сабагента несёт в state/input промпт и в state/content
-                    // его ответ. В наш чат не должно попадать ни то, ни другое —
-                    // общение с помощниками идёт в фоне. Сам факт работы виден
-                    // отдельным индикатором ⚡ под «Модель думает…».
                     "tool" ->
-                        if (!isSubagentTool(item)) {
-                            out.put(
-                                JSONObject()
-                                    .put("type", "tool")
-                                    .put("id", item.optString("id"))
-                                    .put("tool", item.optString("name"))
-                                    .put("state", item.optJSONObject("state") ?: JSONObject()),
-                            )
-                        }
+                        out.put(
+                            JSONObject()
+                                .put("type", "tool")
+                                .put("id", item.optString("id"))
+                                .put("tool", item.optString("name"))
+                                .put("state", item.optJSONObject("state") ?: JSONObject()),
+                        )
                     else -> out.put(item)
                 }
             }
@@ -296,10 +289,22 @@ internal object ApiShape {
         if (error != null) out.put(JSONObject().put("type", ERROR_PART).put("text", error))
         return out
     }
+}
 
-    /** Сабагент приходит частью tool с именем `subagent` (иногда `task`). */
-    private fun isSubagentTool(part: JSONObject): Boolean {
+/**
+ * Части вызовов сабагентов скрываем из ленты до нормализации v2→v1.
+ *
+ * Внутри такой части лежит и промпт (`state.input`), и ответ (`state.content`);
+ * оба должны остаться между агентом и его помощниками. Индикатор ⚡ рисуется
+ * отдельно, на основе дочерних сессий. Функция уровня файла, а не объекта:
+ * иначе ApiShape упирается в лимит функций на объект.
+ */
+private fun visibleParts(content: JSONArray): JSONArray {
+    val out = JSONArray()
+    for (i in 0 until content.length()) {
+        val part = content.optJSONObject(i) ?: continue
         val name = part.optString("name", "")
-        return name == "subagent" || name == "task"
+        if (name != "subagent" && name != "task") out.put(part)
     }
+    return out
 }

@@ -23,11 +23,10 @@ class SubagentFeedTest {
         busy: Long = 100L,
         idle: Long = 200L,
         title: String = "",
-        agent: String = "explore",
     ): JSONObject {
         val o = JSONObject()
             .put("id", id)
-            .put("agent", agent)
+            .put("agent", "explore")
             .put("title", title)
             .put("time", JSONObject().put("busy", busy).put("idle", idle))
         if (parent != null) o.put("parentID", parent)
