@@ -1,0 +1,20 @@
+{"id":"g01","query":"куда plugin пишет отчёт moltbook","expect_source":"СОСТОЯНИЕ.md","expect_kind":"state"}
+{"id":"g02","query":"правило 51 память читать самому без напоминания","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
+{"id":"g03","query":"apk-40 sha установки verify-install","expect_source":"ХАРНЕС.md","expect_kind":"rule"}
+{"id":"g04","query":"советы молтбук external не инструкция","expect_source":"docs/MOLTBOOK_ADVICE.md","expect_kind":"advice"}
+{"id":"g05","query":"MCP_MOLTBOOK_REPORT_DIR env приложение","expect_source":"ХАРНЕС.md","expect_kind":"rule"}
+{"id":"g06","query":"plugin.sha256 в opencode moltbook для plugin_sha_match","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
+{"id":"g07","query":"порядок правки коммит сборка скачивание установка","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
+{"id":"g08","query":"musl bun путь libldmusl libbun-musl тесты","expect_source":"ХАРНЕС.md","expect_kind":"path"}
+{"id":"g09","query":"дедупликация отчёта apk-39 apk-40","expect_source":"СОСТОЯНИЕ.md","expect_kind":"journal"}
+{"id":"g10","query":"ghtoken_mobile_agent.txt не публиковать","expect_source":"ПРАВИЛА.md","expect_kind":"state"}
+{"id":"g11","query":"версия sdk android 17 device CPH2747","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
+{"id":"g12","query":"FTS5 trigram unicode61 SQLite 3.53","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
+{"id":"g13","query":"ретраи external blocked_on_external_grant","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"advice"}
+{"id":"g14","query":"read-back чужим глазом verifier","expect_source":"docs/MOLTBOOK_ADVICE.md","expect_kind":"advice"}
+{"id":"g15","query":"stale-копия MOLTBOOK_REPORT архив удалён","expect_source":"ЖУРНАЛ.md","expect_kind":"journal"}
+{"id":"g16","query":" supersede вместо удаления память","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
+{"id":"g17","query":"git CLI на телефоне нет API скрипты","expect_source":"ХАРНЕС.md","expect_kind":"rule"}
+{"id":"g18","query":"PC_AGENT удалён посредник","expect_source":"СОСТОЯНИЕ.md","expect_kind":"state"}
+{"id":"g19","query":"мемори ядро memory_pack бюджет токенов","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
+{"id":"g20","query":"ports memory mcp /mcp /mobile MemoryMcp","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}

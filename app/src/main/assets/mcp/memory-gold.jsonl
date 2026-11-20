@@ -13,7 +13,7 @@
 {"id":"g13","query":"ретраи external blocked_on_external_grant","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"advice"}
 {"id":"g14","query":"read-back чужим глазом verifier","expect_source":"docs/MOLTBOOK_ADVICE.md","expect_kind":"advice"}
 {"id":"g15","query":"stale-копия MOLTBOOK_REPORT архив удалён","expect_source":"ЖУРНАЛ.md","expect_kind":"journal"}
-{"id":"g16","query":" supersede вместо удаления память","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
+{"id":"g16","query":" supersede вместо удаления память","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
 {"id":"g17","query":"git CLI на телефоне нет API скрипты","expect_source":"ХАРНЕС.md","expect_kind":"rule"}
 {"id":"g18","query":"PC_AGENT удалён посредник","expect_source":"СОСТОЯНИЕ.md","expect_kind":"state"}
 {"id":"g19","query":"мемори ядро memory_pack бюджет токенов","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}

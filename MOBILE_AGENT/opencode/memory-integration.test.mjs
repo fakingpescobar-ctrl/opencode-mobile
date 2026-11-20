@@ -131,7 +131,9 @@ section("4. Pack на staged-модулях (изолированная БД)");
   truthy(pack.usedTokensEstimate <= 1536, "бюджет соблюдён");
   truthy(pack.packed.includes("why:"), "в пак есть why");
   truthy(pack.sources.every((s) => pack.packed.includes(s)), "sources только из упакованных чанков");
-  truthy((pack.packed.match(/^### /gm) || []).length === pack.chunks, "число чанков совпадает с паком");
+  // Считаем только наши заголовки пакета (`### source :: heading ... [score N]`):
+  // текст самих чанков тоже может содержать строки, начинающиеся с `### `.
+  truthy((pack.packed.match(/^### .+ \[score [\d.]+\]$/gm) || []).length === pack.chunks, "число чанков совпадает с паком");
 
   const conf = adaptive.confidenceOf(hits);
   truthy(["none", "low", "medium", "high"].includes(conf.level), "confidence level корректен");

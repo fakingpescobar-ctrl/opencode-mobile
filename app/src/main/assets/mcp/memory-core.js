@@ -113,8 +113,15 @@ export function recallDocs(DB, query, opts = {}) {
   const trigramQuery = trigramWords.map((w) => `"${w}"`).join(" OR ");
   const anchorQuery = anchors.length ? anchors.map((x) => `"${x}"`).join(" OR ") : "";
 
-  const textHits = queryFts(DB, "doc_fts", trigramQuery, Math.max(limit * 3, 12));
-  const anchorHits = anchorQuery ? queryFts(DB, "anchor_fts", anchorQuery, Math.max(limit * 3, 12)) : [];
+  // Фиксированный пул НЕ зависит от limit: раньше было limit*3, из-за чего
+  // recallDocs(limit=5) и (limit=12) scoring-или разные наборы (разный состав
+  // anchor-баллов и дедупа), top-5 не был префиксом top-12, и memoryPack (пул
+  // 12) терял найденное. Размер 15 = прежний пул при limit=5, на котором
+  // тюнился recall@5, поэтому поведение поиска не меняется, а ранжирование
+  // становится монотонным: top-N всегда префикс большего-N.
+  const FTS_POOL = 15;
+  const textHits = queryFts(DB, "doc_fts", trigramQuery, FTS_POOL);
+  const anchorHits = anchorQuery ? queryFts(DB, "anchor_fts", anchorQuery, FTS_POOL) : [];
   const getChunk = DB.prepare("SELECT * FROM doc_chunks WHERE id = ?");
   const byId = new Map();
   for (const h of textHits) {

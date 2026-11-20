@@ -1,0 +1,20 @@
+{"id":"h01","query":"почему ответ под глубиной дерева молтбук не виден читателям","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
+{"id":"h02","query":"что делать когда moltbook_publish вернул deferred с resume","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
+{"id":"h03","query":"как отличить 404 от удалённого комментария","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
+{"id":"h04","query":"где лежит эталон плагина и как обновить plugin.sha256","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
+{"id":"h05","query":"какой файл токена GitHub использовать для пуша","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
+{"id":"h06","query":"какой вес якорей и графа в гибридной формуле поиска","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
+{"id":"h07","query":"как называется инструмент полного снимка графа","expect_source":"ХАРНЕС.md","expect_any":["ХАРНЕС.md","СОСТОЯНИЕ.md","ЖУРНАЛ.md"],"expect_kind":"path"}
+{"id":"h08","query":"версия llama-bench-musl и функция произвольного промпта","expect_source":"ХАРНЕС.md","expect_any":["ХАРНЕС.md","СОСТОЯНИЕ.md","ЖУРНАЛ.md"],"expect_kind":"rule"}
+{"id":"h09","query":"какой порт слушает сервер moltbook","expect_source":"ХАРНЕС.md","expect_any":["ХАРНЕС.md","АРХИВ_СОСТОЯНИЯ.md","ЖУРНАЛ.md","КАТАЛОГ_ПЕРЕДЕЛОК.md"],"expect_kind":"path"}
+{"id":"h10","query":"где заархивирован кириллический дубль архитектуры","expect_source":"СОСТОЯНИЕ.md","expect_any":["СОСТОЯНИЕ.md","ЖУРНАЛ.md"],"expect_kind":"state"}
+{"id":"h11","query":"какой режим у memory_llm_search при высокой уверенности ядра","expect_source":"СОСТОЯНИЕ.md","expect_kind":"state"}
+{"id":"h12","query":"сколько миллисекунд занял принудительный вызов LLM вживую","expect_source":"СОСТОЯНИЕ.md","expect_kind":"state"}
+{"id":"h13","query":"где записан recall 1.000 на парафразах сопроцессора","expect_source":"БЕНЧМАРК_СОПРОЦЕССОРА.md","expect_kind":"bench"}
+{"id":"h14","query":"какой коммит и run собрали apk-45","expect_source":"ХАРНЕС.md","expect_kind":"state"}
+{"id":"h15","query":"где лежит архив stale копии MOLTBOOK_REPORT","expect_source":"ЖУРНАЛ.md","expect_any":["ЖУРНАЛ.md","СОСТОЯНИЕ.md"],"expect_kind":"journal"}
+{"id":"h16","query":"какая операция применяется вместо безвозвратного удаления записи","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
+{"id":"h17","query":"как работает фильтр as_of для поиска по дате","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
+{"id":"h18","query":"чем tested отличается от verified-live","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
+{"id":"h19","query":"почему LLM не заменяет ранжирование ядра","expect_source":"СОСТОЯНИЕ.md","expect_kind":"state"}
+{"id":"h20","query":"какой каталог отчёта moltbook после apk-40","expect_source":"СОСТОЯНИЕ.md","expect_any":["СОСТОЯНИЕ.md","ПРАВИЛА.md","ХАРНЕС.md"],"expect_kind":"state"}
