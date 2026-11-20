@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.opencode.mobile.ui.ChatMsg
 import org.opencode.mobile.ui.TypewriterText
+import org.opencode.mobile.ui.highlightMarkdown
 
 /** Отдельная роль для сообщения об ошибке — иначе она уезжает в «Система». */
 private const val ERROR_ROLE_ARGB = 0xFFE05B5B
@@ -42,6 +43,7 @@ private fun MessageText(
     modelFont: FontFamily,
     modelColor: Color,
     onTyped: (() -> Unit)?,
+    highlight: Boolean,
 ) {
     val style =
         TextStyle(
@@ -61,6 +63,7 @@ private fun MessageText(
             style = style,
             key = typedKeyOf(m),
             onTyped = { onTyped?.invoke() },
+            highlight = highlight,
         )
     } else {
         // Реплика с картинками не печатается по буквам: картинка встаёт на своё
@@ -68,7 +71,7 @@ private fun MessageText(
         // при показе всего куска целиком. Ключ печати всё равно гасим: иначе он
         // навсегда остался бы на этой реплике.
         LaunchedEffect(typedKeyOf(m)) { onTyped?.invoke() }
-        PictureSegments(segments, style)
+        PictureSegments(segments, style, highlight)
     }
 }
 
@@ -77,11 +80,12 @@ private fun MessageText(
 private fun PictureSegments(
     segments: List<ChatSegment>,
     style: TextStyle,
+    highlight: Boolean,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(PICTURE_GAP_DP.dp)) {
         segments.forEach { segment ->
             when (segment) {
-                is ChatSegment.Body -> BodyText(segment.text, style)
+                is ChatSegment.Body -> BodyText(segment.text, style, highlight)
                 is ChatSegment.Picture -> ChatPictureView(segment.picture)
             }
         }
@@ -92,10 +96,11 @@ private fun PictureSegments(
 private fun BodyText(
     text: String,
     style: TextStyle,
+    highlight: Boolean,
 ) {
     SelectionContainer {
         Text(
-            text = text,
+            text = if (highlight) highlightMarkdown(text, style.color) else text,
             color = style.color,
             fontFamily = style.fontFamily,
             fontSize = style.fontSize,
@@ -144,6 +149,7 @@ internal fun MessageRow(
                 modelFont = modelFont,
                 modelColor = modelColor,
                 onTyped = onTyped,
+                highlight = isModel,
             )
         }
         // Причина отказа лежит отдельно от текста, поэтому и рисуется отдельно:

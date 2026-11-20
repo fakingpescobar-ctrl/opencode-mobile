@@ -58,6 +58,8 @@ internal fun TypewriterText(
      */
     key: String,
     onTyped: () -> Unit,
+    /** Включить markdown-подсветку (только для ответов модели). */
+    highlight: Boolean = false,
 ) {
     val typing = animate && text.length <= TYPEWRITER_MAX_CHARS
     // Показывать по частям нельзя длиннее TYPEWRITER_MAX_CHARS, и для такого
@@ -93,7 +95,7 @@ internal fun TypewriterText(
     val alpha = cursorAlpha(animate)
     SelectionContainer {
         Text(
-            text = rendered(text, shown, style.color, alpha),
+            text = rendered(text, shown, style.color, alpha, highlight),
             color = style.color,
             fontFamily = style.fontFamily,
             fontSize = style.fontSize,
@@ -116,20 +118,28 @@ private fun rendered(
     shown: Int,
     color: Color,
     alpha: Float,
+    highlight: Boolean,
 ): AnnotatedString {
     val body = text.take(shown)
-    if (shown >= text.length) return AnnotatedString(body)
+    if (shown >= text.length) return styled(body, color, highlight)
     val tail = body.length - body.trimEnd('\n', ' ').length
-    val head = body.dropLast(tail)
+    val headText = body.dropLast(tail)
+    val head = styled(headText, color, highlight)
     return AnnotatedString
-        .Builder()
+        .Builder(head)
         .apply {
-            append(head)
             append(TYPEWRITER_CURSOR)
             addStyle(SpanStyle(color = color.copy(alpha = alpha)), head.length, head.length + 1)
-            append(body.drop(head.length))
+            append(body.drop(headText.length))
         }.toAnnotatedString()
 }
+
+/** Обычный текст или markdown-подсветка — зависит от роли реплики. */
+private fun styled(
+    text: String,
+    color: Color,
+    highlight: Boolean,
+): AnnotatedString = if (highlight) highlightMarkdown(text, color) else AnnotatedString(text)
 
 /**
  * Мигание курсора: 1 — печатать нечего, курсор не рисуется вовсе.
