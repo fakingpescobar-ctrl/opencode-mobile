@@ -57,14 +57,14 @@ class GgufCatalogTest {
 
     @Test
     fun rejectsTraversalAndNonGguf() {
-        for (bad in listOf("../escape.gguf", "sub/model.gguf", "c:\\x.gguf", "model.bin", "..")) {
+        for (bad in listOf("../escape.gguf", "sub/model.gguf", "c:\\\\x.gguf", "model.bin", "..")) {
             assertRejected(json(row(file = bad)), "имя модели")
         }
     }
 
     @Test
     fun rejectsBadHashUrlSizeAndDuplicates() {
-        assertRejected(json(row(id = "bad\"id")), "id")
+        assertRejected(json(row(id = "bad\\\"id")), "id")
         assertRejected(json(row(id = "../escape")), "id")
         assertRejected(json(row(hash = "abc")), "sha256")
         assertRejected(json(row(hash = "z".repeat(64))), "sha256")

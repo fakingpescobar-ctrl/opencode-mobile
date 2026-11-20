@@ -80,7 +80,16 @@ class McpAssetImportContractTest {
         // Обратная защита: импорт, которого нет в assets, может появиться снова
         // вместе с новым модулем. Здесь перечислено, что разрешено, - и любое
         // расхождение видно прямо в diff.
-        val allowed = setOf("./provenance.js")
+        // Сопроцессорные модули — часть рабочей связки ядра, а не случайный импорт:
+        // каждый из них реально лежит в assets/mcp и копируется на устройство.
+        val allowed =
+            setOf(
+                "./provenance.js",
+                "./memory-core.js",
+                "./memory-index.mjs",
+                "./memory-adaptive.js",
+                "./memory-llm.js",
+            )
         val unknown = relativeImportsOf(File(mcpDir, "memory.js")).filterNot { it in allowed }
         assertTrue(
             "memory.js тянет непредусмотренные модули: $unknown",
