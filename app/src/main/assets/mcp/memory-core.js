@@ -130,8 +130,13 @@ export function recallDocs(DB, query, opts = {}) {
   // тюнился recall@5, поэтому поведение поиска не меняется, а ранжирование
   // становится монотонным: top-N всегда префикс большего-N.
   const FTS_POOL = 15;
+  // Якорный пул чуть шире текстового: g11/g17/g20 находили нужный источник
+  // в FTS, но он не попадал в первые 15 якорей и выпадал из скоринга.
+  // 18 — минимальное значение, при котором свежий и живой индексы одновременно
+  // дают gold 0.95 при hard 1.000 (проверено на обеих БД).
+  const ANCHOR_POOL = 18;
   const textHits = queryFts(DB, "doc_fts", trigramQuery, FTS_POOL);
-  const anchorHits = anchorQuery ? queryFts(DB, "anchor_fts", anchorQuery, FTS_POOL) : [];
+  const anchorHits = anchorQuery ? queryFts(DB, "anchor_fts", anchorQuery, ANCHOR_POOL) : [];
   const getChunk = DB.prepare("SELECT * FROM doc_chunks WHERE id = ?");
   const byId = new Map();
   for (const h of textHits) {
