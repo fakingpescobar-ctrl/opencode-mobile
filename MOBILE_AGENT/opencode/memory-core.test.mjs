@@ -385,6 +385,40 @@ section("4f. Дедупликация не ломает порядок score в 
   D.close();
 }
 
+// ------------------------------- 4g. Канонический порядок FTS после переиндекса
+section("4g. Инкрементальная переиндексация восстанавливает порядок FTS");
+{
+  const q = "версия sdk android 17 device CPH2747";
+  const expect = "АРХИТЕКТУРА_ПАМЯТИ.md";
+  const D = new Database(":memory:");
+  idx.indexDocs(D, DOCS);
+  const before = core.recallDocs(D, q, { limit: 5 }).map((r) => r.id);
+  truthy(core.recallDocs(D, q, { limit: 5 }).some((r) => r.source === expect),
+    "эталон в топ-5 на свежем индексе");
+
+  // Имитируем историю живой БД: удаляем и вставляем все строки FTS в обратном
+  // порядке. bm25 у якоря `apk` почти нулевой во всех чанках, поэтому ORDER BY
+  // score возвращает их в порядке rowid — эталон теряет anchorScore (apk-53).
+  const rows = D.prepare("SELECT chunk_id, text FROM doc_fts").all();
+  const anchors = D.prepare("SELECT chunk_id, anchors FROM anchor_fts").all();
+  D.exec("DELETE FROM doc_fts; DELETE FROM anchor_fts;");
+  const insDoc = D.prepare("INSERT INTO doc_fts(chunk_id,text) VALUES(?,?)");
+  const insAnchor = D.prepare("INSERT INTO anchor_fts(chunk_id,anchors) VALUES(?,?)");
+  for (let i = rows.length - 1; i >= 0; i--) insDoc.run(rows[i].chunk_id, rows[i].text);
+  for (let i = anchors.length - 1; i >= 0; i--) insAnchor.run(anchors[i].chunk_id, anchors[i].anchors);
+  const broken = core.recallDocs(D, q, { limit: 5 }).map((r) => r.id);
+  truthy(JSON.stringify(broken) !== JSON.stringify(before), "порядок FTS реально сломан");
+
+  // Новая индексация не меняет файлы, но обязана пересобрать FTS в порядке ord
+  // и вернуть результат байт в байт.
+  idx.indexDocs(D, DOCS);
+  const after = core.recallDocs(D, q, { limit: 5 }).map((r) => r.id);
+  eq(after, before, "после переиндексации результат совпадает со свежим индексом");
+  truthy(core.recallDocs(D, q, { limit: 5 }).some((r) => r.source === expect),
+    "эталон вернулся в топ-5");
+  D.close();
+}
+
 // ---------------------------------------------------------------- 5. Guard
 section("5. Guard: без внешних зависимостей и мусорных вкраплений");
 {

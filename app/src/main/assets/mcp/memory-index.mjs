@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS doc_chunks (
   line_from INTEGER NOT NULL, line_to INTEGER NOT NULL, kind TEXT NOT NULL,
   text TEXT NOT NULL, trigram TEXT NOT NULL, anchors TEXT NOT NULL,
   lemmas TEXT NOT NULL DEFAULT '',
-  sha TEXT NOT NULL, created INTEGER NOT NULL
+  sha TEXT NOT NULL, created INTEGER NOT NULL,
+  ord INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_doc_chunks_source ON doc_chunks(source);
 CREATE INDEX IF NOT EXISTS idx_doc_chunks_kind ON doc_chunks(kind);
@@ -170,6 +171,8 @@ function statsOf(DB) {
 // Инкрементально: если sha и mtime совпадают с записанными — файл пропускается.
 export function indexFiles(DB, files, opts = {}) {
   DB.exec(DOC_SCHEMA);
+  // Старые базы не знают про ord — добавляем колонку точечно, без миграции.
+  try { DB.exec("ALTER TABLE doc_chunks ADD COLUMN ord INTEGER NOT NULL DEFAULT 0"); } catch {}
   const now = Date.now();
   let added = 0, updated = 0, skipped = 0, secret = 0;
   const getSource = DB.prepare("SELECT sha, mtime, chunks FROM doc_sources WHERE path = ?");
@@ -179,13 +182,14 @@ export function indexFiles(DB, files, opts = {}) {
   const insSource = DB.prepare(`INSERT INTO doc_sources(path, sha, mtime, chunks, kind, indexed_at)
     VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET
     sha=excluded.sha, mtime=excluded.mtime, chunks=excluded.chunks, kind=excluded.kind, indexed_at=excluded.indexed_at`);
-  const insChunk = DB.prepare(`INSERT INTO doc_chunks(id, source, heading, line_from, line_to, kind, text, trigram, anchors, lemmas, sha, created)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const insChunk = DB.prepare(`INSERT INTO doc_chunks(id, source, heading, line_from, line_to, kind, text, trigram, anchors, lemmas, sha, created, ord)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const insFtsDoc = DB.prepare("INSERT INTO doc_fts(chunk_id, text) VALUES (?, ?)");
   const insFtsAnchor = DB.prepare("INSERT INTO anchor_fts(chunk_id, anchors) VALUES (?, ?)");
 
   const run = DB.transaction(() => {
-    for (const { full, rel } of files) {
+    for (let fileIdx = 0; fileIdx < files.length; fileIdx++) {
+      const { full, rel } = files[fileIdx];
       let text, mtime;
       try {
         text = readFileSync(full, "utf8");
@@ -216,17 +220,42 @@ export function indexFiles(DB, files, opts = {}) {
         delFtsAnchor.run(rel);
         delChunks.run(rel);
       }
+      let ci = 0;
       for (const c of chunks) {
         const parsed = analyze(c.text);
         const anchors = parsed.anchors.join(" ");
         const lemmas = parsed.lemmas.join(" ");
         const trigram = forTrigram(c.text);
-        insChunk.run(c.id, c.source, c.heading, c.line_from, c.line_to, c.kind, c.text, trigram, anchors, lemmas, sha, oldCreated.get(c.id) ?? now);
-        insFtsDoc.run(c.id, c.text);
-        insFtsAnchor.run(c.id, anchors);
+        // ord — позиция чанка в каноническом порядке обхода файлов. Он не
+        // меняется при инкрементальных правках: файл всегда занимает одно и
+        // то же место в массиве files, поэтому переиндексация одного документа
+        // не перемещает его чанки относительно остальных.
+        insChunk.run(c.id, c.source, c.heading, c.line_from, c.line_to, c.kind, c.text, trigram, anchors, lemmas, sha, oldCreated.get(c.id) ?? now, fileIdx * 100000 + ci);
+        ci++;
       }
       insSource.run(rel, sha, mtime, chunks.length, kind, now);
       if (prev) updated++; else added++;
+    }
+    // Пересчитать ord для ВСЕХ чанков, включая те, что достались от старой БД
+    // с нулевым ord. Порядок файлов берём из того же массива files, который
+    // обошёл индексатор, номер чанка — из его id (source:line:idx:sha).
+    const fileOrder = new Map(files.map((f, i) => [f.rel, i]));
+    const updOrd = DB.prepare("UPDATE doc_chunks SET ord = ? WHERE id = ?");
+    for (const c of DB.prepare("SELECT id, source FROM doc_chunks").all()) {
+      const fi = fileOrder.get(c.source);
+      const ci = Number(String(c.id).split(":")[2]) || 0;
+      updOrd.run((fi == null ? 1000000 : fi) * 100000 + ci, c.id);
+    }
+    // Пересобрать FTS целиком в порядке ord. Иначе удаление и повторная вставка
+    // чанков при правке документа меняет rowid в FTS; у частого якоря (`apk`)
+    // bm25 почти нулевой во всех строках, и ORDER BY score возвращает их в
+    // порядке rowid — эталон выпадал из якорного пула (инцидент g11, apk-53).
+    // Теперь порядок строк FTS детерминирован содержимым и не зависит от истории.
+    DB.exec("DELETE FROM doc_fts; DELETE FROM anchor_fts;");
+    const all = DB.prepare("SELECT id, text, anchors FROM doc_chunks ORDER BY ord, id").all();
+    for (const c of all) {
+      insFtsDoc.run(c.id, c.text);
+      insFtsAnchor.run(c.id, c.anchors);
     }
   });
   run();
