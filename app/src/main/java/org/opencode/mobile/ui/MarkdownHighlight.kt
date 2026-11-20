@@ -30,11 +30,13 @@ internal fun highlightMarkdown(
 ): AnnotatedString {
     val spans = markdownSpans(text)
     if (spans.isEmpty()) return AnnotatedString(text)
-    return AnnotatedString.Builder(text)
+    return AnnotatedString
+        .Builder(text)
         .apply {
             addStyle(SpanStyle(color = base), 0, text.length)
             for (span in spans) addStyle(styleFor(span.kind), span.start, span.end)
-        }.toAnnotatedString()
+        }
+        .toAnnotatedString()
 }
 
 private fun styleFor(kind: MarkKind): SpanStyle =

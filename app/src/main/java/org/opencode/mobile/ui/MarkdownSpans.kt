@@ -131,5 +131,7 @@ private fun link(
     return if (end > paren) {
         val spanEnd = end + 1
         MarkSpan(offset + i, offset + spanEnd, MarkKind.LINK) to spanEnd
-    } else null
+    } else {
+        null
+    }
 }
