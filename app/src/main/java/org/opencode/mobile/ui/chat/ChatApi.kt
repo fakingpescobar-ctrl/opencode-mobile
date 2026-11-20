@@ -31,8 +31,11 @@ private const val MAX_SHOWN = 120
  * иначе вышло бы в ленту под «Система». Ошибки остаются отдельной ролью `error`
  * и должны быть видны.
  */
-internal fun keepInFeed(role: String, hasText: Boolean, finish: Boolean): Boolean =
-    role != "system" && !(role == "assistant" && !hasText && finish)
+internal fun keepInFeed(
+    role: String,
+    hasText: Boolean,
+    finish: Boolean,
+): Boolean = role != "system" && !(role == "assistant" && !hasText && finish)
 
 // Контекст-лимит активной модели (входные токены) — порог, при котором opencode
 // начнёт компакт. big-pickle (opencode free) имеет окно 200000 токенов.
