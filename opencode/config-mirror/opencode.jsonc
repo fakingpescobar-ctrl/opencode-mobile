@@ -1,0 +1,75 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "opencode/big-pickle",
+  "small_model": "opencode/hy4-flash-free",
+  "agents": {
+    "build": { "model": "opencode/big-pickle" },
+    "plan": { "model": "opencode/big-pickle" },
+    "explore": { "model": "opencode/hy4-flash-free" },
+    "general": { "model": "opencode/big-pickle" },
+    "audit": {
+      "description": "Глубокий аудит только на чтение: дефекты, важность, риск, фикс",
+      "mode": "subagent",
+      "model": "opencode/big-pickle",
+      "system": "Ты аудитор. Только читай указанные файлы, не меняй их и не пиши в базу. Находи все дефекты, для каждого указывай важность, номер строки, почему это опасно и конкретный фикс. Отвечай строго по-русски, без иноязычных вставок."
+    },
+    "audit2": {
+      "description": "Второе независимое мнение по сложному аудиту",
+      "mode": "subagent",
+      "model": "opencode/flint-40b-free",
+      "system": "Ты независимый аудитор. Только читай указанные файлы, не меняй их и не пиши в базу. Проверяй выводы первого аудитора и ищи пропущенные дефекты. Отвечай строго по-русски, без иноязычных вставок."
+    },
+    "refactor": {
+      "description": "Сложные правки кода с сохранением контрактов и детерминизма",
+      "mode": "subagent",
+      "model": "opencode/longcat-2.5-free",
+      "system": "Ты инженер по рефакторингу. Меняй только явно указанные файлы, сохраняй контракты и детерминизм. Перед правкой кратко перечисли найденные дефекты, после — путь результата. Отвечай строго по-русски, без иноязычных вставок."
+    },
+    "simple": {
+      "description": "Быстрые выборки, факты и узкие вопросы",
+      "mode": "subagent",
+      "model": "opencode/hy4-flash-free",
+      "system": "Ты помощник для быстрых задач. Читай только указанные файлы, отвечай кратко и точно, ничего не меняй. Отвечай строго по-русски, без иноязычных вставок."
+    },
+    "light": {
+      "description": "Самые простые действия, только не аудит",
+      "mode": "subagent",
+      "model": "opencode/nemotron-3.5-lightning-free",
+      "system": "Ты помощник для самых простых действий. Читай только указанные файлы, отвечай кратко, ничего не меняй. Для глубокого аудита не применяйся. Отвечай строго по-русски, без иноязычных вставок."
+    }
+  },
+  "mcp": {
+    "memory": {
+      "type": "remote",
+      "url": "http://127.0.0.1:4199/mcp",
+      "headers": {
+        "Authorization": "Bearer {env:MCP_MEMORY_TOKEN}"
+      }
+    },
+    "mobile_tools": {
+      "type": "remote",
+      "url": "http://127.0.0.1:4199/mobile",
+      "headers": {
+        "Authorization": "Bearer {env:MCP_MEMORY_TOKEN}"
+      }
+    },
+    "music": {
+      "type": "remote",
+      "url": "http://127.0.0.1:4200/mcp",
+      "timeout": 180000,
+      "headers": {
+        "Authorization": "Bearer {env:MCP_YNISON_TOKEN}"
+      }
+    },
+    "moltbook": {
+      "type": "remote",
+      "url": "http://127.0.0.1:4201/mcp",
+      "headers": {
+        "Authorization": "Bearer {env:MCP_MOLTBOOK_TOKEN}"
+      }
+    }
+  },
+  "permission": {
+    "question": "ask", "mobile_launch_app": "ask"
+  }
+}
