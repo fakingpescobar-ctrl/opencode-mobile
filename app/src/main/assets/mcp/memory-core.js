@@ -240,6 +240,25 @@ export function indexSha(DB) {
 }
 
 // Настоящий обход графа: от правила к подтверждающему коммиту и обратно.
+/**
+ * Полный снимок графа для визуализации. `followThread` даёт только окрестность
+ * одного узла, а карту связей надо показать целиком. Ограничение super limited:
+ * экран читают глазами, а не скроллом, — 200 рёбер хватает, остальное не рисуем.
+ */
+export function graphSnapshot(DB, limit = 200) {
+  const n = Math.max(1, Math.min(500, Number(limit) || 200));
+  const rows = DB.prepare(
+    "SELECT source, target, relation FROM graph ORDER BY source, target LIMIT ?",
+  ).all(n);
+  const nodes = new Set();
+  const edges = rows.map((r) => {
+    nodes.add(r.source);
+    nodes.add(r.target);
+    return { from: r.source, to: r.target, relation: r.relation || "related" };
+  });
+  return { nodes: [...nodes].sort(), edges };
+}
+
 export function followThread(DB, node, depth = 2) {
   const out = [];
   const seen = new Set([node]);

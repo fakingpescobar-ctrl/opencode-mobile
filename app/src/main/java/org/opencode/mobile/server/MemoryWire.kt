@@ -36,6 +36,13 @@ internal object MemoryWire {
         val needsHuman: Int,
     )
 
+    /** Одно ребро графа из `memory_graph`: узел → узел, тип связи. */
+    data class Edge(
+        val from: String,
+        val to: String,
+        val relation: String,
+    )
+
     private const val CONTENT = "content"
     private const val TEXT = "text"
     private const val NOT_JSON = "ответ памяти - не JSON"
@@ -87,6 +94,20 @@ internal object MemoryWire {
             autoApplyable = root.optInt("auto_applyable"),
             needsHuman = root.optInt("needs_human"),
         )
+    }
+
+    /** Рёбра графа: инструмент возвращает `{"nodes":[...],"edges":[...]}`. */
+    fun edges(text: String): List<Edge> {
+        val array = parse(text).optJSONArray("edges") ?: return emptyList()
+        return (0 until array.length()).mapNotNull { index ->
+            array.optJSONObject(index)?.let { row ->
+                Edge(
+                    from = row.optString("from"),
+                    to = row.optString("to"),
+                    relation = row.optString("relation").ifBlank { "related" },
+                )
+            }
+        }.filter { it.from.isNotBlank() && it.to.isNotBlank() }
     }
 
     private fun envelope(root: JSONObject): JSONObject {

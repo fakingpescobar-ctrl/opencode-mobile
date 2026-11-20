@@ -36,6 +36,21 @@ class GgufCatalogTest {
     }
 
     @Test
+    fun parseReadsModelSpec() {
+        val spec =
+            """{"id":"m1","repo":"x/y","file":"M.gguf","size":123,"sha256":"$sha",""" +
+                """"url":"https://huggingface.co/x","purpose":"объяснения","ttftMs":433,""" +
+                """"decodeTs":27.0,"total24Ms":1286,"license":"apache-2.0","quality":"60%"}"""
+        val m = GgufCatalog.parse("[$spec]")[0]
+        assertEquals("объяснения", m.purpose)
+        assertEquals(433, m.ttftMs)
+        assertEquals(27.0, m.decodeTs, 0.0)
+        assertEquals(1286, m.total24Ms)
+        assertEquals("apache-2.0", m.license)
+        assertEquals("60%", m.quality)
+    }
+
+    @Test
     fun preferredIsFixedByQualityGate() {
         assertEquals("qwen3-0.6b-q4km", GgufCatalog.preferred())
     }
@@ -49,6 +64,8 @@ class GgufCatalogTest {
 
     @Test
     fun rejectsBadHashUrlSizeAndDuplicates() {
+        assertRejected(json(row(id = "bad\"id")), "id")
+        assertRejected(json(row(id = "../escape")), "id")
         assertRejected(json(row(hash = "abc")), "sha256")
         assertRejected(json(row(hash = "z".repeat(64))), "sha256")
         assertRejected(json(row(url = "http://huggingface.co/x")), "https")

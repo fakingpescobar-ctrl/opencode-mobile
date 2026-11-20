@@ -9,7 +9,7 @@ import { dirname, join } from "path";
 // staged→approve→audit→rollback. Модули лежат рядом в assets/mcp и копируются
 // в filesDir/mem тем же кодом, что и memory.js. Внешних зависимостей нет.
 import {
-  CORE_SCHEMA, recallDocs, memoryPack, indexSha, followThread,
+  CORE_SCHEMA, recallDocs, memoryPack, indexSha, followThread, graphSnapshot,
   ingest, approve, rollback, runBench,
 } from "./memory-core.js";
 import { indexDocs } from "./memory-index.mjs";
@@ -409,6 +409,11 @@ function coreThread(args) {
   };
 }
 
+function coreGraph(args) {
+  const a = args || {};
+  return graphSnapshot(DB, a.limit);
+}
+
 function coreBench(args) {
   const a = args || {};
   ensureCoreIndex();
@@ -501,6 +506,8 @@ const memoryTools = [
     inputSchema: { type: "object", properties: {
       node: { type: "string" }, max: { type: "number" }, depth: { type: "number" },
       fuzzy: { type: "boolean" } }, required: ["node"] } },
+  { name: "memory_graph", description: " Полный снимок графа памяти: узлы и рёбра со связями. Для интерактивной 3D-карты в диагностике.",
+    inputSchema: { type: "object", properties: { limit: { type: "number" } } } },
   { name: "memory_bench", description: " Измерить recall@5/MRR/nDCG на gold-наборе. mode=adaptive сравнивает фиксированный и адаптивный бюджет; gate регресса recall@5 ≤2 п.п. встроен.",
     inputSchema: { type: "object", properties: {
       suite: { type: "string" }, mode: { type: "string", enum: ["core", "adaptive"] },
@@ -1548,6 +1555,7 @@ async function callTool(name, args) {
     case "memory_adaptive": return coreAdaptive(args || {});
     case "memory_feedback": return coreFeedback(args || {});
     case "memory_thread": return coreThread(args || {});
+    case "memory_graph": return coreGraph(args || {});
     case "memory_bench": return coreBench(args || {});
     case "memory_index_stats": return ensureCoreIndex(true);
     case "memory_ingest": return ingest(DB, args || {}, { normalizeProvenance, autoApplyable });

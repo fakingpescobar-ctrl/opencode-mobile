@@ -119,6 +119,67 @@ for (const f of ["GgufModels.kt", "GgufStore.kt", "GgufCatalogTest.kt", "Diagnos
   eq(/\bfetch\s*\(["']http/.test(src) && !src.includes("FileFetcher"), false, f + ": сеть только через FileFetcher");
 }
 
+// ---------------------------------------------------------------- 6. Выбор модели
+section("6. Выбор модели: характеристики и назначение");
+{
+  const m = JSON.parse(readFileSync(SRC + "models.json", "utf8"));
+  truthy(m.every((x) => x.purpose && x.license && x.quality), "у каждой модели purpose/license/quality");
+  truthy(m.every((x) => x.ttftMs > 0 && x.decodeTs > 0 && x.total24Ms > 0), "у каждой модели замер скорости");
+  const chosen = m.find((x) => x.id === "qwen3-0.6b-q4km");
+  eq(chosen.ttftMs, 433, "TTFT выбранной модели");
+  eq(chosen.decodeTs, 27.0, "decode выбранной модели");
+  eq(chosen.license, "apache-2.0", "лицензия выбранной модели");
+
+  const kt = read("GgufModels.kt");
+  truthy(kt.includes("val purpose: String"), "Kotlin хранит purpose");
+  truthy(kt.includes("val ttftMs: Int"), "Kotlin хранит ttftMs");
+  truthy(kt.includes("val decodeTs: Double"), "Kotlin хранит decodeTs");
+  truthy(kt.includes("val license: String"), "Kotlin хранит license");
+  truthy(kt.includes("ID_RE.matches(id)"), "id проверен на безопасность для JSON");
+
+  const store = read("GgufStore.kt");
+  truthy(store.includes("SELECTED_KEY"), "выбор модели сохраняется");
+  truthy(store.includes("ACTIVE_FILE"), "активная модель пишется в файл для рантайма");
+  truthy(store.includes("check(isReady(context, model))"), "назначить можно только готовую модель");
+
+  const panel = read("MemoryCorePanel.kt");
+  truthy(panel.includes("Назначить "), "кнопка назначения в UI");
+  truthy(panel.includes("GgufStore.select(context, model)"), "назначение вызывает хранилище");
+  truthy(panel.includes("\"Назначена\","), "в UI видно текущую модель");
+  truthy(panel.includes("\"Скорость\","), "в UI видны характеристики скорости");
+  truthy(panel.includes("InfoRow(\"Лицензия\""), "в UI видна лицензия");
+  truthy(panel.includes("InfoRow(\"Качество\""), "в UI видно качество");
+  truthy(panel.includes("★"), "выбранная модель помечена");
+}
+
+// ---------------------------------------------------------------- 7. Граф
+section("7. Интерактивный граф связей");
+{
+  const core = readFileSync(join(ROOT, "opencode", "memory-core", "memory-core.js"), "utf8");
+  truthy(core.includes("export function graphSnapshot"), "ядро отдаёт полный снимок графа");
+  const js = readFileSync(join(ROOT, "tmp", "memory.js"), "utf8");
+  truthy(js.includes('name: "memory_graph"'), "инструмент memory_graph зарегистрирован");
+  truthy(js.includes('case "memory_graph"'), "dispatch memory_graph есть");
+  const staged = readFileSync(join(ROOT, "tmp", "apk-integrate", "mcp", "memory-core.js"), "utf8");
+  eq(Buffer.compare(Buffer.from(core), Buffer.from(staged)), 0, "staging ядра = байт в байт");
+  const stagedJs = readFileSync(join(ROOT, "tmp", "apk-integrate", "mcp", "memory.js"), "utf8");
+  eq(Buffer.compare(Buffer.from(js), Buffer.from(stagedJs)), 0, "staging memory.js = байт в байт");
+
+  const wire = read("MemoryWire.kt");
+  truthy(wire.includes("data class Edge"), "MemoryWire разбирает ребра");
+  truthy(wire.includes("fun edges(text: String)"), "парсер рёбер есть");
+  const tools = readFileSync(join(ROOT, "tmp", "MemoryTools.kt"), "utf8");
+  truthy(tools.includes("fun coreGraph"), "MemoryTools вызывает memory_graph");
+  const view = read("MemoryGraphView.kt");
+  truthy(view.includes("detectDragGestures"), "граф вращается жестом");
+  truthy(view.includes("detectTapGestures"), "узел выбирается тапом");
+  truthy(view.includes("spherePoint"), "позиции узлов детерминированы");
+  truthy(view.includes("drawLine"), "связи рисуются линиями");
+  truthy(view.includes("CAMERA"), "есть проекция с глубиной (псевдо-3D)");
+  const panel = read("MemoryCorePanel.kt");
+  truthy(panel.includes("MemoryGraphView(edges)"), "граф внутри «Состояния ядра»");
+}
+
 console.log("\n" + "=".repeat(56));
 console.log("ГЕЙТ ЗАГРУЗЧИКА GGUF: OK=" + ok + " BAD=" + bad);
 if (bad) {

@@ -22,6 +22,7 @@ internal object MemoryTools {
     const val LIST_LIMIT = 20
 
     private const val TIMEOUT_MS = 4_000
+    private const val GRAPH_LIMIT = 200
     private const val HTTP_OK_MIN = 200
     private const val HTTP_OK_MAX = 299
 
@@ -47,6 +48,10 @@ internal object MemoryTools {
 
     fun coreBench(mode: String = "adaptive"): Result<String> =
         call("memory_bench", JSONObject().put("mode", mode).put("suite", "diag"))
+
+    /** Полный снимок графа для 3D-визуализации в диагностике. */
+    fun coreGraph(limit: Int = GRAPH_LIMIT): Result<List<MemoryWire.Edge>> =
+        call("memory_graph", JSONObject().put("limit", limit)).mapCatching(MemoryWire::edges)
 
     /** Живой список инструментов ядра из `tools/list`, а не константа в Kotlin. */
     fun coreTools(): Result<List<String>> =

@@ -24,6 +24,9 @@ internal object GgufStore {
     private const val TAG = "GgufStore"
     private const val REL = "musl"
     private const val OK_SUFFIX = ".ok"
+    private const val PREFS = "chat_overlay"
+    private const val SELECTED_KEY = "gguf_selected_model"
+    private const val ACTIVE_FILE = "active-model.json"
 
     /** Каталог общий с `libllama-bench.so`: рантайм и модель лежат рядом. */
     fun dir(context: Context): File = File(context.filesDir, REL).apply { mkdirs() }
@@ -47,6 +50,28 @@ internal object GgufStore {
         if (!marker.isFile || marker.readText().trim() != model.sha256) return false
         val target = fileOf(context, model)
         return target.isFile && target.length() == model.size
+    }
+
+    /**
+     * Назначенная модель. Хранится в SharedPreferences (переживает рестарт),
+     * а рядом с `.so` лежит `active-model.json` — контракт для будущего рантайма:
+     * сопроцессор читает файл, а не догадывается по имени первой попавшейся GGUF.
+     */
+    fun selectedId(context: Context): String? =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(SELECTED_KEY, null)
+
+    /** Назначить можно только скачанную и sha-сверенную модель. */
+    fun select(
+        context: Context,
+        model: GgufModel,
+    ) {
+        check(isReady(context, model)) { "модель ${model.id} не установлена — сначала скачайте" }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(SELECTED_KEY, model.id).apply()
+        File(dir(context), ACTIVE_FILE).writeText(
+            "{\"id\":\"${model.id}\",\"file\":\"${model.file}\",\"sha256\":\"${model.sha256}\"," +
+                "\"size\":${model.size},\"selectedAt\":${System.currentTimeMillis()}}\n",
+        )
+        Log.i(TAG, "gguf назначена: ${model.id}")
     }
 
     /** Сколько байт уже на диске: 0, если файла нет (для строк «готов/нет»). */

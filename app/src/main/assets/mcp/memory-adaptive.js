@@ -134,7 +134,10 @@ export function adaptivePack(DB, query, recallFn, packFn, opts = {}) {
   const probe = recallFn(DB, query, { limit: opts.probeLimit || 12 });
   const confidence = confidenceOf(probe);
   const plan = planFor(confidence, opts);
-  const pack = packFn(DB, query, { budgetTokens: plan.budget, limit: plan.limit, scope: opts.scope });
+  // planFor возвращает budgetTokens. Раньше здесь было plan.budget — поле с
+  // другим именем, из-за чего пак получал undefined и считал бюджет сам, а
+  // адаптивная экономия была иллюзорной. Передаём ровно то, что планировали.
+  const pack = packFn(DB, query, { budgetTokens: plan.budgetTokens, limit: plan.limit, scope: opts.scope });
   const thread = opts.withThread
     ? conceptThread(DB, probe.slice(0, 3).map((h) => h.id), { max: 4 })
     : [];

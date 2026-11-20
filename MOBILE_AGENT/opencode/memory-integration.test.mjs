@@ -72,7 +72,7 @@ section("2. Живой memory.js: импорты, инструменты, дис
 
   const tools = [
     "memory_pack", "memory_recall_doc", "memory_adaptive", "memory_feedback",
-    "memory_thread", "memory_bench", "memory_index_stats",
+    "memory_thread", "memory_graph", "memory_bench", "memory_index_stats",
     "memory_ingest", "memory_approve", "memory_rollback",
   ];
   for (const t of tools) {

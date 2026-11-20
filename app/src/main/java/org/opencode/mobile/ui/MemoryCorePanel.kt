@@ -68,13 +68,16 @@ internal fun MemoryCorePanel(
     }
 }
 
-/** Живые счётчики индекса: файлы, чанки, источники, секреты, хеш индекса. */
+/** Живые счётчики индекса плюс интерактивная карта связей. */
 @Composable
 private fun CoreStatusSection(refreshKey: Int) {
     var out by remember { mutableStateOf("запрос…") }
+    var edges by remember { mutableStateOf<List<org.opencode.mobile.server.MemoryWire.Edge>>(emptyList()) }
+    var graphNote by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     fun reload() {
         out = "запрос…"
+        graphNote = null
         scope.launch {
             out =
                 withContext(Dispatchers.IO) {
@@ -83,15 +86,21 @@ private fun CoreStatusSection(refreshKey: Int) {
                         onFailure = { "недоступно: ${it.message}" },
                     )
                 }
+            val r = withContext(Dispatchers.IO) { MemoryTools.coreGraph() }
+            edges = r.getOrElse { emptyList() }
+            graphNote = r.exceptionOrNull()?.message
         }
     }
     LaunchedEffect(refreshKey) { reload() }
     InfoRow("Индекс", out)
+    graphNote?.let { InfoRow("Граф", "недоступен: $it", Color(0xFFFF6F5A)) }
+    MemoryGraphView(edges)
     downloadButton("Обновить состояние") { reload() }
 }
 
 /** Список инструментов приходит из `tools/list`, а не из константы в Kotlin. */
 @Composable
+@Suppress("LongMethod")
 private fun CoreToolsSection(refreshKey: Int) {
     var tools by remember { mutableStateOf<List<String>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -159,6 +168,7 @@ private fun CoreToolsSection(refreshKey: Int) {
  * sha256 считается один раз — сразу после закачки.
  */
 @Composable
+@Suppress("LongMethod")
 private fun GgufModelRows(
     context: Context,
     refreshKey: Int,
@@ -170,20 +180,51 @@ private fun GgufModelRows(
         remember(refreshKey, models) {
             models.associateWith { GgufStore.isReady(context, it) }
         }
+    var selectedId by remember(refreshKey) { mutableStateOf(GgufStore.selectedId(context)) }
+    var note by remember { mutableStateOf<String?>(null) }
     InfoRow("Зачем", "Семантический сопроцессор ядра: объяснения и переформулировка. " +
         "Чанки выбирает код, LLM ядро не заменяет и память не трогает.")
     InfoRow("Каталог", "assets/llm/models.json (" + models.size + " моделей)")
     InfoRow("Источник", "Hugging Face · huggingface.co, точный URL и sha256 в манифесте")
-    InfoRow("Зафиксирована", GgufCatalog.preferred(), Color(0xFFFFC107))
+    InfoRow("Рекомендована", GgufCatalog.preferred(), Color(0xFFFFC107))
+    InfoRow(
+        "Назначена",
+        selectedId ?: "нет — выберите модель ниже",
+        if (selectedId == null) Color(0xFFFF6F5A) else Color(0xFF7BD88F),
+    )
     for (model in models) {
         val isReady = ready[model] == true
+        val isSelected = model.id == selectedId
         val size = if (isReady) GgufStore.bytesOnDisk(context, model) else model.size
         InfoRow(
-            model.id,
+            model.id + if (isSelected) " ★" else "",
             (if (isReady) "готов · " else "нет · ") + fmtBytes(size) + " · " + model.repo + "/" + model.file,
             if (isReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A),
         )
+        InfoRow(
+            "Назначение",
+            model.purpose.ifBlank { "не указано" },
+            if (isSelected) Color(0xFFFFC107) else Color(0xFF8A8A8A),
+        )
+        InfoRow(
+            "Скорость",
+            if (model.ttftMs > 0) {
+                "TTFT " + model.ttftMs + " мс · " + model.decodeTs + " t/s · 24 токена " + model.total24Ms + " мс"
+            } else {
+                "не замеряно"
+            },
+        )
+        InfoRow("Лицензия", model.license.ifBlank { "не указана" })
+        InfoRow("Качество", model.quality.ifBlank { "не проверено" })
+        if (isReady) {
+            downloadButton(if (isSelected) "Назначена ✓" else "Назначить " + model.id) {
+                runCatching { GgufStore.select(context, model) }
+                    .onSuccess { selectedId = model.id; note = "Назначена: ${model.id}" }
+                    .onFailure { note = "Не удалось назначить: ${it.message}" }
+            }
+        }
     }
+    note?.let { InfoRow("Результат", it, Color(0xFF7BD88F)) }
     when (val dl = state) {
         is GgufDownloadState.Running -> {
             val model = GgufCatalog.byId(context, dl.model)
@@ -220,6 +261,7 @@ private fun CoreTechSection() {
     InfoRow("Транспорт", "JSON-RPC 2.0, 127.0.0.1:4199/mcp, bearer из-environment")
     InfoRow("Каталог моделей", "assets/llm/models.json → " + GgufCatalog.preferred())
     InfoRow("Куда кладём GGUF", "files/musl/ рядом с libllama-bench.so, в APK модели нет")
+    InfoRow("Выбор рантайма", "files/musl/active-model.json — читает сопроцессор, не UI")
     InfoRow("Безопасность", "sha256 + размер до маркера .ok; при расхождении файл удаляется")
     Text(
         "Управление записями выше использует MemoryTools: удаление настоящее, " +
