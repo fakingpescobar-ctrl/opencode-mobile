@@ -1,3 +1,4 @@
+@file:Suppress("MatchingDeclarationName") // файл держит и печать, и её оформление
 package org.opencode.mobile.ui
 
 import androidx.compose.animation.core.RepeatMode

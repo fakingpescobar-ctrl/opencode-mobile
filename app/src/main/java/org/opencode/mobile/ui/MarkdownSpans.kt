@@ -126,11 +126,10 @@ private fun link(
     offset: Int,
 ): Pair<MarkSpan, Int>? {
     val close = line.indexOf("]", i + 1)
-    if (close <= i) return null
-    val paren = line.indexOf("(", close + 1)
-    if (paren <= close) return null
-    val end = line.indexOf(")", paren + 1)
-    if (end <= paren) return null
-    val spanEnd = end + 1
-    return MarkSpan(offset + i, offset + spanEnd, MarkKind.LINK) to spanEnd
+    val paren = if (close > i) line.indexOf("(", close + 1) else -1
+    val end = if (paren > close) line.indexOf(")", paren + 1) else -1
+    return if (end > paren) {
+        val spanEnd = end + 1
+        MarkSpan(offset + i, offset + spanEnd, MarkKind.LINK) to spanEnd
+    } else null
 }
