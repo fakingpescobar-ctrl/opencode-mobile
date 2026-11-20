@@ -63,6 +63,16 @@ function trustMultiplier(provenance, source) {
   return 0.7;
 }
 
+// Приоритет источника при дедупликации одинакового текста:
+// 0 — корневой эталон (ПРАВИЛА.md, СОСТОЯНИЕ.md, ХАРНЕС.md, ...),
+// 1 — вложенная копия (docs/agent-rules.md), 2 — архив.
+function sourceRank(source) {
+  const s = String(source || "");
+  if (s.startsWith("архив") || s.includes("/архивы/")) return 2;
+  if (s.includes("/")) return 1;
+  return 0;
+}
+
 // Поднять авторитетность того kind, про который явно спрашивают в запросе.
 // «советы молтбук» -> advice должен быть не ниже rule, даже при authority=0.5.
 function effectiveAuthority(kind, anchors) {
@@ -185,13 +195,21 @@ export function recallDocs(DB, query, opts = {}) {
   results.sort((x, y) => y.score - x.score);
   // Дедупликация: один и тот же текст в ПРАВИЛА.md и docs/agent-rules.md
   // занимал два места в топе. Оставляем первый (он уже отсортирован по score).
-  const seenText = new Set();
+  // Одинаковый текст живёт и в корневом эталоне (ПРАВИЛА.md), и в stale-копии
+  // (docs/agent-rules.md). При почти равном score порядок дедупа решал
+  // случайно: живой индекс иногда оставлял stale-копию вместо эталона, из-за
+  // чего g02/g06 выпадали из топ-5. Дедуп обязан выбирать канонический источник.
+  const seenText = new Map();
   const dedup = [];
   for (const r of results) {
     const key = sha256(r.text).slice(0, 16);
-    if (seenText.has(key)) continue;
-    seenText.add(key);
-    dedup.push(r);
+    const at = seenText.get(key);
+    if (at === undefined) {
+      seenText.set(key, dedup.length);
+      dedup.push(r);
+    } else if (sourceRank(r.source) < sourceRank(dedup[at].source)) {
+      dedup[at] = r; // заменяем stale-копию на корневой источник
+    }
   }
   return dedup.slice(0, limit);
 }

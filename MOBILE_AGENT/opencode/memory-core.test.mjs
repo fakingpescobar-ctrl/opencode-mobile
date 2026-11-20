@@ -278,6 +278,27 @@ section("4b. Негативные случаи и крайности");
 }
 DB.close();
 
+// ------------------------------------------- 4c. Канонический источник при дедупе
+section("4c. Дедупликация выбирает эталон, а не stale-копию");
+{
+  const D = new Database(":memory:");
+  idx.indexDocs(D, DOCS);
+  // Живой индекс копит created-метки: stale-копия docs/agent-rules.md может
+  // оказаться «свежее» корневых ПРАВИЛ и выиграть почти равный score.
+  const now = Date.now();
+  D.exec(`UPDATE doc_chunks SET created=${now - 10 * 86400000} WHERE source='ПРАВИЛА.md';
+          UPDATE doc_chunks SET created=${now} WHERE source='docs/agent-rules.md';`);
+  for (const q of [
+    "правило 51 память читать самому без напоминания",
+    "plugin.sha256 в opencode moltbook для plugin_sha_match",
+  ]) {
+    const hits = core.recallDocs(D, q, { limit: 5 });
+    truthy(hits.some((x) => x.source === "ПРАВИЛА.md"), "эталон не вытеснен копией: " + q);
+    eq(new Set(hits.map((x) => idx.sha256(x.text))).size, hits.length, "дублей текста нет");
+  }
+  D.close();
+}
+
 // ---------------------------------------------------------------- 5. Guard
 section("5. Guard: без внешних зависимостей и мусорных вкраплений");
 {
