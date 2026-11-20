@@ -552,6 +552,110 @@ section("6. Временны́е факты, слоты и связи");
   }
 }
 
+// ------------------------------------------- 7. Ночной проход предложений (волна 2)
+section("7. Ночной проход предложений");
+{
+  function makeFact(DB, id, content, topicKey, validFrom, confidence = 0.5, links = []) {
+    const staged = core.ingest(DB, {
+      content, id, provenance: "test-op", kind: "fact",
+      topic_key: topicKey, valid_from: validFrom, confidence, reason: "тест", links,
+    }, null);
+    return core.approve(DB, staged.id, "operator", "тест");
+  }
+  function snapshotFacts(DB) {
+    return DB.prepare("SELECT id, invalid_at, sha FROM memory_fact ORDER BY id").all();
+  }
+
+  // ── 7.1. Три вида кандидатов и полная идемпотентность ────────────────
+  {
+    const DB = new Database(":memory:");
+    makeFact(DB, "fact-dup-old", "старый вариант слота", "runtime/report-dir", 1000, 0.8);
+    makeFact(DB, "fact-dup-new", "новый вариант слота", "runtime/report-dir", 2000, 0.9);
+    makeFact(DB, "fact-merge-a", "одинаковая формулировка", "policy/gate-a", 1100, 0.7);
+    makeFact(DB, "fact-merge-b", "одинаковая формулировка", "policy/gate-b", 1200, 0.7);
+    makeFact(DB, "fact-conflict-t", "цель противоречия", "runtime/target", 1300, 0.6);
+    makeFact(DB, "fact-conflict-s", "источник противоречия", "runtime/source", 1400, 0.6,
+      [{ target: "fact-conflict-t", relation: "contradicts", evidence: "прямое противоречие" }]);
+
+    const before = snapshotFacts(DB);
+    const first = core.runProposalPass(DB, { at: 5000 });
+    const after = snapshotFacts(DB);
+
+    truthy(first.found >= 3, "найдено не менее трёх кандидатов: " + first.found);
+    const rows = DB.prepare("SELECT kind, status FROM memory_proposal").all();
+    truthy(rows.some((r) => r.kind === "duplicate"), "есть дубль по topic_key");
+    truthy(rows.some((r) => r.kind === "merge"), "есть кандидат на слияние");
+    truthy(rows.some((r) => r.kind === "contradiction"), "есть конфликт contradicts");
+    eq(rows.length, first.found, "столько строк, сколько кандидатов");
+    truthy(rows.every((r) => r.status === "open"), "все новые предложения открыты");
+    eq(JSON.stringify(before), JSON.stringify(after), "проход не изменил ни один факт");
+
+    const second = core.runProposalPass(DB, { at: 6000 });
+    eq(JSON.stringify(second.proposals), JSON.stringify(first.proposals),
+      "повторный проход дал те же детерминированные id");
+    eq(second.found, first.found, "повторный проход не создал дубликатов предложений");
+    eq(core.proposalStats(DB).proposals, first.found, "счётчик предложений устойчив");
+    eq(core.proposalStats(DB).silent_deletions, 0, "тихих удалений нет");
+    DB.close();
+  }
+
+  // ── 7.2. Решение через существующие approve / rollback ───────────────
+  {
+    const DB = new Database(":memory:");
+    makeFact(DB, "fact-v1", "значение одно", "runtime/slot", 1000, 0.8);
+    makeFact(DB, "fact-v2", "значение два", "runtime/slot", 2000, 0.9);
+    makeFact(DB, "fact-text-a", "Общая формулировка", "policy/a", 1100, 0.7);
+    makeFact(DB, "fact-text-b", "Общая формулировка", "policy/b", 1200, 0.7);
+    const baseline = snapshotFacts(DB);
+
+    const pass = core.runProposalPass(DB, { at: 7000 });
+    const dupId = DB.prepare("SELECT id FROM memory_proposal WHERE kind='duplicate' LIMIT 1").get().id;
+    const mergeId = DB.prepare("SELECT id FROM memory_proposal WHERE kind='merge' LIMIT 1").get().id;
+    truthy(!!dupId && !!mergeId, "есть и дубль, и слияние: " + pass.found);
+
+    const accepted = core.acceptProposal(DB, dupId, "operator", "подтверждено");
+    eq(accepted.status, "accepted", "предложение принято");
+    truthy(!!accepted.audit_id, "у принятого предложения есть аудит");
+    eq(snapshotFacts(DB).length, baseline.length + 1, "approve добавил факт через существующий путь");
+    let stats = core.proposalStats(DB);
+    eq(stats.accepted, 1, "счётчик принятых = 1");
+    eq(stats.silent_deletions, 0, "принятие не создало тихого удаления");
+
+    const rejected = core.rejectProposal(DB, mergeId, "operator", "не подтверждено");
+    eq(rejected.status, "rejected", "предложение отклонено");
+    stats = core.proposalStats(DB);
+    eq(stats.rejected, 1, "счётчик отклонённых = 1");
+
+    const rerun = core.runProposalPass(DB, { at: 8000 });
+    const kept = DB.prepare("SELECT status FROM memory_proposal WHERE id=?").get(dupId);
+    eq(kept.status, "accepted", "повторный проход не перезаписал решение");
+    eq(rerun.accepted, 1, "принятое предложение сохранилось в счётчике");
+
+    const undone = core.rollbackProposal(DB, dupId);
+    eq(undone.status, "rolled_back", "откат через существующий rollback прошёл");
+    eq(JSON.stringify(snapshotFacts(DB)), JSON.stringify(baseline), "все факты вернулись в исходное состояние");
+    const audit = DB.prepare("SELECT id FROM memory_audit WHERE id = ?").get(accepted.audit_id);
+    eq(audit, null, "аудит откатанной записи удалён честно, без тишины");
+    stats = core.proposalStats(DB);
+    eq(stats.rolled_back, 1, "счётчик откатов = 1");
+    eq(stats.silent_deletions, 0, "после отката тихих удалений нет");
+    DB.close();
+  }
+
+  // ── 7.3. Пустая база и контракт счётчика ─────────────────────────────
+  {
+    const DB = new Database(":memory:");
+    const zero = core.proposalStats(DB);
+    eq(zero.proposals, 0, "предложений нет");
+    eq(zero.open, 0, "открытых нет");
+    eq(zero.accepted + zero.rejected + zero.rolled_back, 0, "решений нет");
+    eq(zero.silent_deletions, 0, "тихих удалений нет");
+    const pass = core.runProposalPass(DB, { at: 9000 });
+    eq(pass.found, 0, "на пустой базе проход ничего не нашёл");
+    DB.close();
+  }
+}
+
 // ---------------------------------------------------------------- итог
 console.log("\n" + "=".repeat(56));
 console.log("ТЕСТЫ ЯДРА ПАМЯТИ: OK=" + ok + " BAD=" + bad);

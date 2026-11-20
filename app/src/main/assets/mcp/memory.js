@@ -11,6 +11,7 @@ import { dirname, join } from "path";
 import {
   CORE_SCHEMA, recallDocs, memoryPack, indexSha,
   followThread, graphSnapshot, factStats, runTemporalBench,
+  proposalStats, runProposalPass,
   ingest, approve, rollback, runBench,
 } from "./memory-core.js";
 import { indexDocs } from "./memory-index.mjs";
@@ -436,6 +437,9 @@ function coreGraph(args) {
 function coreBench(args) {
   const a = args || {};
   ensureCoreIndex();
+  // Волна 2: отдельный детерминированный проход предложений. Он не меняет
+  // индекс и не читает gold — результат содержит найденные кандидатов и счётчики.
+  if (String(a.suite || "") === "proposal") return runProposalPass(DB, { suite: "proposal" });
   const gold = coreGold(a);
   if (a.mode === "adaptive") {
     return runAdaptiveBench(DB, gold, recallDocs, memoryPack, {
@@ -529,7 +533,7 @@ const memoryTools = [
       fuzzy: { type: "boolean" } }, required: ["node"] } },
   { name: "memory_graph", description: " Полный снимок графа памяти: узлы и рёбра со связями. Для интерактивной 3D-карты в диагностике.",
     inputSchema: { type: "object", properties: { limit: { type: "number" } } } },
-  { name: "memory_bench", description: " Измерить recall@5/MRR/nDCG на gold-наборе. mode=adaptive сравнивает фиксированный и адаптивный бюджет; gate регресса recall@5 ≤2 п.п. встроен.",
+  { name: "memory_bench", description: " Измерить recall@5/MRR/nDCG на gold-наборе. mode=adaptive сравнивает фиксированный и адаптивный бюджет; gate регресса recall@5 ≤2 п.п. встроен. suite=proposal запускает детерминированный проход предложений и возвращает счётчики, не меняя индекс.",
     inputSchema: { type: "object", properties: {
       suite: { type: "string" }, mode: { type: "string", enum: ["core", "adaptive"] },
       gold_path: { type: "string" }, gold: { type: "array", items: { type: "object" } },
@@ -1590,7 +1594,7 @@ async function callTool(name, args) {
     case "memory_bench": return coreBench(args || {});
     case "memory_index_stats": {
       const stat = ensureCoreIndex(true);
-      try { return { ...stat, ...factStats(DB) }; } catch { return stat; }
+      try { return { ...stat, ...factStats(DB), ...proposalStats(DB) }; } catch { return stat; }
     }
     case "memory_ingest": return ingest(DB, args || {}, { normalizeProvenance, autoApplyable });
     case "memory_approve": {

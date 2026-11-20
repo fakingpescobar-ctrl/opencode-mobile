@@ -137,6 +137,12 @@ internal suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             var bestModelId = ""
             for (i in 0 until sessions.length()) {
                 val s = sessions.getJSONObject(i)
+                // Сессии сабагентов лежат в том же списке и на время работы
+                // оказываются свежее родителя. Без этого отсека лента прыгает
+                // в дочернюю сессию: в наш чат прилетают промпт и ответы
+                // сабагента, а после его завершения — обратно. Наш чат —
+                // всегда корневая сессия, без parentID.
+                if (SubagentFeed.isChild(s)) continue
                 val t = s.optJSONObject("time")?.optLong("updated") ?: -1L
                 if (t > bestTs) {
                     bestTs = t
@@ -155,6 +161,10 @@ internal suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
             }
             val activeId = bestId
             val label = titleOf(sessions, activeId)
+            // Работающие сабагенты — отдельные дочерние сессии. Их НЕ показываем
+            // в ленте, но рисуем индикатор под «Модель думает…», чтобы было видно,
+            // что агент что-то считает в фоне, а не завис.
+            val activeSub = SubagentFeed.activeOf(sessions, activeId)
             // Лента — единственный блокирующий вызов, тянуть больше нечего.
             val msgDeferred = async { LocalOpenCodeClient.get(p, ApiPaths.message(activeId)) }
             // Статус хода от сервера: квота/ретрай провайдера. Отдельным async,
@@ -218,6 +228,7 @@ internal suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                         ask = askAlone,
                         reachable = true,
                         notice = notice,
+                        subagents = activeSub,
                     )
             // Инкрементальный кэш: если за этой сессией тот же самый сырой JSON /message
             // (hash совпал) — лента и все производные (thinking/liveTool/ctxTokens)
@@ -266,6 +277,7 @@ internal suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                         mcpTotal = mcpTotal,
                         mcpServers = mcpServers,
                         notice = notice,
+                        subagents = activeSub,
                     )
                 android.util.Log.d(
                     "ChatOverlay",
@@ -369,7 +381,12 @@ internal suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                                 title.isNotBlank() -> title
                                 else -> ""
                             }
-                        lastTool = ChatTool(part.optString("tool", ""), det)
+                        val toolName = part.optString("tool", "")
+                        // Вызов сабагента — не «инструмент модели» в живом чипе:
+                        // для него ниже рисуется отдельный индикатор ⚡.
+                        if (toolName != "subagent" && toolName != "task") {
+                            lastTool = ChatTool(toolName, det)
+                        }
                     } else if (type == "step-start" || type == "reasoning") {
                         activity = true
                         ctxChars += part.optString("text", "").length
@@ -451,6 +468,7 @@ internal suspend fun fetchChatSnapshot(port: Int?): ChatSnapshot? =
                     mcpTotal = mcpTotal,
                     mcpServers = mcpServers,
                     notice = notice,
+                    subagents = activeSub,
                 )
             // notice тоже печатаем: он уехал из text, и без него в логе не видно, что
 // причина отказа вообще доехала до экрана, а не потерялась по дороге.

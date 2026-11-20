@@ -46,6 +46,20 @@ CREATE TABLE IF NOT EXISTS memory_fact_link (
   PRIMARY KEY(fact_id, target, relation)
 );
 CREATE INDEX IF NOT EXISTS idx_fact_link_fact ON memory_fact_link(fact_id);
+-- Волна 2: детерминированные предложения ночного прохода. Ничего не удаляет:
+-- проход только пишет кандидатов, решение принимает оператор через approve.
+CREATE TABLE IF NOT EXISTS memory_proposal (
+  id TEXT PRIMARY KEY, kind TEXT NOT NULL, topic_key TEXT NOT NULL,
+  content TEXT NOT NULL, sha TEXT NOT NULL, proof TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT '', target TEXT NOT NULL DEFAULT '',
+  evidence TEXT NOT NULL DEFAULT '', contribution REAL NOT NULL DEFAULT 0,
+  valid_from INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'open',
+  created INTEGER NOT NULL, seen_at INTEGER NOT NULL,
+  audit_id TEXT NOT NULL DEFAULT '', decided_by TEXT NOT NULL DEFAULT '',
+  reason TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_proposal_topic ON memory_proposal(topic_key, kind);
+CREATE INDEX IF NOT EXISTS idx_proposal_status ON memory_proposal(status);
 `;
 
 // Старые базы не знают про новые колонки. Добавляем их точечно, без миграции
@@ -583,6 +597,166 @@ export function factStats(DB) {
     active_facts: DB.prepare("SELECT count(*) n FROM memory_fact WHERE invalid_at IS NULL").get().n,
     fact_links: DB.prepare("SELECT count(*) n FROM memory_fact_link").get().n,
   };
+}
+
+// ---- Волна 2: ночной проход предложений -------------------------------------
+// Проход НЕ меняет факты, веса и чанки. Он только складывает кандидатов в
+// memory_proposal с детерминированным id. Решение остаётся за оператором:
+// acceptProposal идёт через ingest→approve, rollbackProposal — через rollback.
+
+function proposalId(kind, topicKey, source, target, proof) {
+  return `prop-${sha256([kind, topicKey, source, target, proof].join("|")).slice(0, 20)}`;
+}
+
+export function proposalStats(DB) {
+  ensureCoreSchema(DB);
+  const by = { open: 0, accepted: 0, rejected: 0, rolled_back: 0 };
+  for (const r of DB.prepare("SELECT status, count(*) n FROM memory_proposal GROUP BY status").all()) {
+    if (Object.prototype.hasOwnProperty.call(by, r.status)) by[r.status] = r.n;
+  }
+  // Принятое предложение обязано иметь живой аудит. Если аудит исчез — это
+  // не «ноль тихих удалений», а честный сигнал тревоги, а не заглушка.
+  const silent = DB.prepare(`
+    SELECT count(*) n FROM memory_proposal p
+    WHERE p.status = 'accepted' AND p.audit_id <> ''
+      AND NOT EXISTS (SELECT 1 FROM memory_audit a WHERE a.id = p.audit_id)
+  `).get().n;
+  return {
+    proposals: by.open + by.accepted + by.rejected + by.rolled_back,
+    open: by.open, accepted: by.accepted, rejected: by.rejected,
+    rolled_back: by.rolled_back, silent_deletions: silent,
+  };
+}
+
+export function runProposalPass(DB, opts = {}) {
+  ensureCoreSchema(DB);
+  const at = Number.isFinite(opts.at) ? Number(opts.at) : Date.now();
+  const found = [];
+  const put = (p) => {
+    const id = proposalId(p.kind, p.topic_key, p.source, p.target, p.proof);
+    DB.prepare(`INSERT INTO memory_proposal
+      (id, kind, topic_key, content, sha, proof, source, target, evidence,
+       contribution, valid_from, status, created, seen_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        proof=excluded.proof, evidence=excluded.evidence,
+        contribution=excluded.contribution, seen_at=excluded.seen_at,
+        status=CASE WHEN status IN ('accepted','rejected','rolled_back')
+          THEN status ELSE excluded.status END`)
+      .run(id, p.kind, p.topic_key, p.content, p.sha, p.proof, p.source, p.target,
+        p.evidence, p.contribution, p.valid_from, at, at);
+    found.push(id);
+  };
+
+  // 1. Дубли по слоту: активных в норме быть не должно, но импорт и старые базы
+  //    оставляют конкурентов. Канонический — самый свежий, id для устойчивости.
+  const dupTopics = DB.prepare(`
+    SELECT topic_key FROM memory_fact WHERE topic_key <> ''
+    GROUP BY topic_key HAVING count(*) > 1 ORDER BY topic_key
+  `).all();
+  for (const t of dupTopics) {
+    const rows = DB.prepare(
+      "SELECT * FROM memory_fact WHERE topic_key = ? ORDER BY valid_from DESC, id ASC",
+    ).all(t.topic_key);
+    const canonical = rows[0];
+    for (const r of rows.slice(1)) {
+      const proof = sha256(`${r.sha}|${canonical.sha}|${t.topic_key}|duplicate`).slice(0, 24);
+      put({ kind: "duplicate", topic_key: t.topic_key, content: r.content, sha: r.sha,
+        proof, source: r.id, target: canonical.id,
+        evidence: `canonical=${canonical.id}; duplicate=${r.id}`,
+        contribution: clamp(Number(r.confidence ?? 0.5)), valid_from: r.valid_from });
+    }
+  }
+
+  // 2. Кандидаты на слияние: один и тот же текст в разных слотах.
+  const sameSha = DB.prepare(`
+    SELECT sha FROM memory_fact WHERE sha <> ''
+    GROUP BY sha HAVING count(DISTINCT topic_key) > 1 ORDER BY sha
+  `).all();
+  for (const s of sameSha) {
+    const rows = DB.prepare(
+      "SELECT * FROM memory_fact WHERE sha = ? ORDER BY valid_from DESC, topic_key ASC",
+    ).all(s.sha);
+    const primary = rows[0];
+    for (const r of rows.slice(1)) {
+      const proof = sha256(`${s.sha}|${primary.topic_key}|${r.topic_key}|merge`).slice(0, 24);
+      put({ kind: "merge", topic_key: r.topic_key, content: r.content, sha: r.sha,
+        proof, source: r.id, target: primary.id,
+        evidence: `same content: ${primary.topic_key} / ${r.topic_key}`,
+        contribution: clamp(Number(r.confidence ?? 0.5)), valid_from: r.valid_from });
+    }
+  }
+
+  // 3. Конфликты по типизированному ребру contradicts.
+  const edges = DB.prepare(`
+    SELECT source, target, relation, COALESCE(evidence, '') AS evidence
+    FROM graph WHERE relation = 'contradicts' ORDER BY source, target
+  `).all();
+  for (const e of edges) {
+    const a = DB.prepare("SELECT * FROM memory_fact WHERE id = ?").get(e.source);
+    const b = DB.prepare("SELECT * FROM memory_fact WHERE id = ?").get(e.target);
+    if (!a || !b) continue;
+    const proof = sha256(`${a.sha}|${b.sha}|${e.relation}|${e.evidence}|contradiction`).slice(0, 24);
+    put({ kind: "contradiction", topic_key: a.topic_key || b.topic_key,
+      content: a.content, sha: a.sha, proof, source: a.id, target: b.id,
+      evidence: e.evidence || `edge ${a.id} -> ${b.id}`,
+      contribution: Math.max(clamp(Number(a.confidence ?? 0.5)), clamp(Number(b.confidence ?? 0.5))),
+      valid_from: a.valid_from });
+  }
+
+  const stats = proposalStats(DB);
+  return {
+    suite: opts.suite || "proposal", at, found: found.length, proposals: found,
+    open: stats.open, accepted: stats.accepted, rejected: stats.rejected,
+    rolled_back: stats.rolled_back, silent_deletions: stats.silent_deletions,
+  };
+}
+
+export function acceptProposal(DB, id, approvedBy = "operator", reason = "") {
+  ensureCoreSchema(DB);
+  const p = DB.prepare("SELECT * FROM memory_proposal WHERE id = ?").get(id);
+  if (!p) throw new Error("proposal not found: " + id);
+  if (p.status === "accepted") return { reused: true, id, status: "accepted", audit_id: p.audit_id };
+  if (p.status === "rejected") throw new Error("rejected proposal requires reopen: " + id);
+  const stagedId = `proposal-${id}`;
+  ingest(DB, {
+    id: stagedId, content: p.content, kind: "fact", topic_key: p.topic_key,
+    valid_from: p.valid_from, confidence: p.contribution || 0.5,
+    provenance: "operator",
+    reason: reason || p.reason || `proposal ${p.kind}`,
+    links: p.target ? [{
+      target: p.target,
+      relation: p.kind === "contradiction" ? "contradicts" : "supersedes",
+      evidence: p.proof || p.evidence,
+    }] : [],
+  }, null);
+  const applied = approve(DB, stagedId, approvedBy, reason || `proposal ${p.kind}`);
+  DB.prepare(`UPDATE memory_proposal
+    SET status='accepted', audit_id=?, decided_by=?, reason=?, seen_at=? WHERE id=?`)
+    .run(applied.audit_id, approvedBy, reason || "", Date.now(), id);
+  return { ...applied, proposal: id, kind: p.kind, status: "accepted" };
+}
+
+export function rejectProposal(DB, id, approvedBy = "operator", reason = "") {
+  ensureCoreSchema(DB);
+  const p = DB.prepare("SELECT * FROM memory_proposal WHERE id = ?").get(id);
+  if (!p) throw new Error("proposal not found: " + id);
+  if (p.status === "rejected") return { reused: true, id, status: "rejected" };
+  DB.prepare(`UPDATE memory_proposal
+    SET status='rejected', decided_by=?, reason=?, seen_at=? WHERE id=?`)
+    .run(approvedBy, reason, Date.now(), id);
+  return { rejected: true, id, status: "rejected" };
+}
+
+export function rollbackProposal(DB, id) {
+  ensureCoreSchema(DB);
+  const p = DB.prepare("SELECT * FROM memory_proposal WHERE id = ?").get(id);
+  if (!p) throw new Error("proposal not found: " + id);
+  if (!p.audit_id) throw new Error("proposal has no audit to roll back: " + id);
+  const undone = rollback(DB, p.audit_id);
+  DB.prepare("UPDATE memory_proposal SET status='rolled_back', reason=?, seen_at=? WHERE id=?")
+    .run(`rolled back to ${undone.restored || ""}`, Date.now(), id);
+  return { ...undone, proposal: id, status: "rolled_back" };
 }
 
 // ---- Бенчмарк ---------------------------------------------------------------

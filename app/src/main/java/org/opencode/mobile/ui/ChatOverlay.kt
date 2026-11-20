@@ -96,6 +96,7 @@ import org.opencode.mobile.ui.chat.ServerSendTransport
 import org.opencode.mobile.ui.chat.SharedPreferencesAppearanceStore
 import org.opencode.mobile.ui.chat.SharedPreferencesVoiceStore
 import org.opencode.mobile.ui.chat.SttPanel
+import org.opencode.mobile.ui.chat.SubagentWork
 import org.opencode.mobile.ui.chat.TtsNarration
 import org.opencode.mobile.ui.chat.TtsPanel
 import org.opencode.mobile.ui.chat.TtsSettings
@@ -166,6 +167,9 @@ internal data class ChatSnapshot(
     val stalled: Boolean = false,
     val stalledDead: Boolean = false,
     val liveTool: ChatTool? = null,
+    // Работающие сабагенты: по одной строке ⚡ под индикатором думания. Их
+    // сообщения в ленту не попадают — только этот список, без промптов и ответов.
+    val subagents: List<SubagentWork> = emptyList(),
     // Что сервер ждёт от пользователя: команда под «ask» или вопрос агента.
     // null — состояние неизвестно (сервер не ответил), пустой список — ждать
     // нечего. Различие обязательное: скрыть запрос значит оставить ход висеть.

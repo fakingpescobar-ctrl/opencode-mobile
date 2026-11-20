@@ -48,6 +48,9 @@ private fun feedChanged(
         old.stalled != new.stalled ||
         old.stalledDead != new.stalledDead ||
         old.liveTool != new.liveTool ||
+        // Индикатор сабагентов живёт в ленте под «Модель думает…»: без этого
+        // сравнения он появлялся бы только при следующем изменении сообщений.
+        old.subagents != new.subagents ||
         old.notice != new.notice ||
         // ask обязателен: запрос разрешения может прийти позже той же tool-части,
         // что уже в ленте, и тогда ни лента, ни thinking, ни liveTool не меняются.

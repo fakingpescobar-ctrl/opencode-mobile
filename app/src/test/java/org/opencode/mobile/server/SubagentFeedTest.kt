@@ -1,0 +1,105 @@
+package org.opencode.mobile.server
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.json.JSONArray
+import org.json.JSONObject
+import org.junit.Test
+import org.opencode.mobile.ui.chat.SubagentFeed
+
+/**
+ * Сабагенты не должны уводить наш чат в свою сессию.
+ *
+ * Проверяем ровно два правила: дочерние сессии отсекаются от выбора активной,
+ * а работающие — собираются в индикатор. Плюс: промпт и ответ сабагента не
+ * должны дойти до ленты даже через нормализацию v2→v1.
+ */
+class SubagentFeedTest {
+    private fun session(
+        id: String,
+        parent: String? = null,
+        outcome: String? = "succeeded",
+        busy: Long = 100L,
+        idle: Long = 200L,
+        title: String = "",
+        agent: String = "explore",
+    ): JSONObject {
+        val o = JSONObject()
+            .put("id", id)
+            .put("agent", agent)
+            .put("title", title)
+            .put("time", JSONObject().put("busy", busy).put("idle", idle))
+        if (parent != null) o.put("parentID", parent)
+        if (outcome != null) o.put("outcome", outcome)
+        return o
+    }
+
+    @Test
+    fun `дочерняя сессия определяется по обоим форматам родителя`() {
+        assertTrue(SubagentFeed.isChild(session("c1", parent = "root")))
+        assertFalse(SubagentFeed.isChild(session("root")))
+        val old = JSONObject().put("id", "c2").put("parent_id", "root")
+        assertTrue(SubagentFeed.isChild(old))
+    }
+
+    @Test
+    fun `в индикатор попадают только работающие сабагенты под активной сессией`() {
+        val sessions =
+            JSONArray()
+                .put(session("root"))
+                .put(session("done", parent = "root", title = "Готовый разбор"))
+                .put(session("work1", parent = "root", outcome = null, busy = 300L, idle = 0L, title = "Разбор кода"))
+                .put(session("work2", parent = "root", outcome = null, busy = 310L, idle = 0L, title = "Разбор тестов"))
+                .put(session("alien", parent = "other", outcome = null, busy = 320L, idle = 0L))
+        val active = SubagentFeed.activeOf(sessions, "root")
+        assertEquals(2, active.size)
+        assertEquals("Разбор кода", active[0].label)
+        assertEquals("Разбор тестов", active[1].label)
+        assertTrue(active.all { it.agent == "explore" })
+    }
+
+    @Test
+    fun `индикатор находит и вложенных сабагентов`() {
+        val sessions =
+            JSONArray()
+                .put(session("root"))
+                .put(session("level1", parent = "root"))
+                .put(session("level2", parent = "level1", outcome = null, busy = 400L, idle = 0L, title = "Внутренний"))
+        val active = SubagentFeed.activeOf(sessions, "root")
+        assertEquals(1, active.size)
+        assertEquals("Внутренний", active[0].label)
+    }
+
+    @Test
+    fun `пустая или неизвестная сессия не даёт индикатор`() {
+        assertTrue(SubagentFeed.activeOf(JSONArray(), "root").isEmpty())
+        assertTrue(SubagentFeed.activeOf(JSONArray().put(session("x")), null).isEmpty())
+    }
+
+    @Test
+    fun `промпт и ответ сабагента не попадают в нормализованную ленту`() {
+        val tool =
+            JSONObject()
+                .put("type", "tool")
+                .put("name", "subagent")
+                .put(
+                    "state",
+                    JSONObject()
+                        .put("input", JSONObject().put("prompt", "СЕКРЕТНЫЙ ПРОМПТ"))
+                        .put("content", JSONArray().put(JSONObject().put("type", "text").put("text", "ОТВЕТ САБАГЕНТА"))),
+                )
+        val text = JSONObject().put("type", "text").put("text", "Наш обычный ответ")
+        val msg =
+            JSONObject()
+                .put("id", "m1")
+                .put("type", "assistant")
+                .put("content", JSONArray().put(tool).put(text))
+        val envelope = ApiShape.toV1Envelope(msg)
+        val parts = envelope.getJSONArray("parts")
+        assertEquals(1, parts.length())
+        assertEquals("text", parts.getJSONObject(0).optString("type"))
+        assertFalse(JSONObject(envelope.toString()).toString().contains("СЕКРЕТНЫЙ"))
+        assertFalse(JSONObject(envelope.toString()).toString().contains("ОТВЕТ САБАГЕНТА"))
+    }
+}

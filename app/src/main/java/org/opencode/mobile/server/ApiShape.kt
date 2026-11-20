@@ -252,7 +252,16 @@ internal object ApiShape {
         if (content != null) {
             for (i in 0 until content.length()) {
                 val item = content.optJSONObject(i) ?: continue
-                when (item.optString("type")) {
+                // Вызов сабагента несёт в state/input промпт и в state/content его
+                // ответ. В наш чат ни то, ни другое не должно попадать: агент
+                // общается со своими помощниками в фоне, лента остаётся нашей.
+                // Сам факт работы виден отдельным индикатором ⚡ под думанием.
+                val partType = item.optString("type")
+                val toolName = item.optString("name", "")
+                if (partType == "tool" && (toolName == "subagent" || toolName == "task")) {
+                    continue
+                }
+                when (partType) {
                     // Размышление, пришедшее в текстовый канал, отрезается —
                     // см. answerText: иначе в ленте видно английский монолог
                     // модели перед ответом.

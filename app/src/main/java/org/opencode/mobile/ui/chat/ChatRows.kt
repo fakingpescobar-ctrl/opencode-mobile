@@ -136,6 +136,47 @@ internal fun LiveToolRow(tool: ChatTool) {
 }
 
 /**
+ * Строка «⚡ working subagent» — по одной на каждого работающего помощника.
+ *
+ * Анимация та же, что у «Модель думает…» (пульсация), только акцент янтарный:
+ * это не основная модель, а фоновый агент. Заголовок его сессии показываем
+ * приглушённым цветом, чтобы было видно, кто именно считает, без промпта и ответа.
+ */
+@Composable
+internal fun SubagentRow(work: SubagentWork) {
+    val transition = rememberInfiniteTransition(label = "subagent")
+    val pulse by transition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(420, delayMillis = 0), RepeatMode.Reverse),
+        label = "subagentPulse",
+    )
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(vertical = 4.dp),
+    ) {
+        Text("⚡", color = Color(0xFFFFC107), fontSize = 13.sp)
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "working subagent",
+            color = Color(0xFFD8C9A3).copy(alpha = pulse),
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+        )
+        if (work.label.isNotBlank()) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                work.label,
+                color = Color(0xFF8A8A8A),
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/**
  * Палитра плашки причины отказа: тёмно-коричневый фон (не красный — это не
  * ошибка приложения, а отказ провайдера), янтарный акцент и приглушённый вторичный.
  */
