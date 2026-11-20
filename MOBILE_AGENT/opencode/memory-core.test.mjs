@@ -331,6 +331,32 @@ section("4e. Якорный пул не монополизирован одни�
   D.close();
 }
 
+// ------------------------------------------- 4f. Дедуп сохраняет порядок score
+section("4f. Дедупликация не ломает порядок score в топ-N");
+{
+  const D = new Database(":memory:");
+  D.exec(idx.DOC_SCHEMA);
+  const now = Date.now();
+  // Одинаковый текст в stale-копии и корневом эталоне: дедуп заменяет копию
+  // эталоном, но score у эталона ниже. Без повторной сортировки топ-N шёл
+  // не по убыванию (живой случай p06: 0.4396 → 0.6940).
+  for (const [id, source, text, anchors, created] of [
+    ["stale", "docs/agent-rules.md", "recall mcp сервер памяти", "mcp", now],
+    ["other", "ХАРНЕС.md", "recall сервер", "", now - 30 * 86400000],
+    ["canon", "ПРАВИЛА.md", "recall mcp сервер памяти", "", now - 90 * 86400000],
+  ]) {
+    D.prepare("INSERT INTO doc_chunks(id,source,heading,line_from,line_to,kind,text,trigram,anchors,lemmas,sha,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
+      .run(id, source, "тест", 1, 2, idx.kindOf(source), text, text, anchors, "", id, created);
+    D.prepare("INSERT INTO doc_fts(chunk_id,text) VALUES(?,?)").run(id, text);
+    D.prepare("INSERT INTO anchor_fts(chunk_id,anchors) VALUES(?,?)").run(id, anchors);
+  }
+  const hits = core.recallDocs(D, "recall mcp", { limit: 5 });
+  eq(new Set(hits.map((x) => x.source)).size, hits.length, "дубли текста устранены");
+  truthy(hits.every((x, i) => i === 0 || x.score <= hits[i - 1].score + 1e-9),
+    "score убывает после дедупа");
+  D.close();
+}
+
 // ---------------------------------------------------------------- 5. Guard
 section("5. Guard: без внешних зависимостей и мусорных вкраплений");
 {
