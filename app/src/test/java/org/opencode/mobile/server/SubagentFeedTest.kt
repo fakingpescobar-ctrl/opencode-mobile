@@ -1,10 +1,10 @@
 package org.opencode.mobile.server
 
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.json.JSONArray
-import org.json.JSONObject
 import org.junit.Test
 import org.opencode.mobile.ui.chat.SubagentFeed
 
