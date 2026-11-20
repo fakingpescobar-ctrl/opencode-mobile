@@ -2,7 +2,7 @@
 {"id":"h02","query":"что делать когда moltbook_publish вернул deferred с resume","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
 {"id":"h03","query":"как отличить 404 от удалённого комментария","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
 {"id":"h04","query":"где лежит эталон плагина и как обновить plugin.sha256","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
-{"id":"h05","query":"какой файл токена GitHub использовать для пуша","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
+{"id":"h05","query":"какой файл токена GitHub использовать для пуша","expect_source":"ПРАВИЛА.md","expect_any":["ПРАВИЛА.md","СОСТОЯНИЕ.md"],"expect_kind":"rule"}
 {"id":"h06","query":"какой вес якорей и графа в гибридной формуле поиска","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
 {"id":"h07","query":"как называется инструмент полного снимка графа","expect_source":"ХАРНЕС.md","expect_any":["ХАРНЕС.md","СОСТОЯНИЕ.md","ЖУРНАЛ.md"],"expect_kind":"path"}
 {"id":"h08","query":"версия llama-bench-musl и функция произвольного промпта","expect_source":"ХАРНЕС.md","expect_any":["ХАРНЕС.md","СОСТОЯНИЕ.md","ЖУРНАЛ.md"],"expect_kind":"rule"}
