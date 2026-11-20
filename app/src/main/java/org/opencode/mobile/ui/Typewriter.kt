@@ -29,6 +29,12 @@ import kotlin.math.min
  * двумя наборами параметров — верный способ однажды развести их значения.
  */
 
+/** Оформление печати: стиль плюс признак markdown-подсветки. */
+internal data class TypewriterLook(
+    val style: TextStyle,
+    val highlight: Boolean,
+)
+
 /**
  * Печать ответа по буквам.
  *
@@ -49,7 +55,7 @@ import kotlin.math.min
 internal fun TypewriterText(
     text: String,
     animate: Boolean,
-    style: TextStyle,
+    look: TypewriterLook,
     /**
      * Устойчивый ключ реплики (идентификатор сообщения). Именно он, а не текст,
      * держит прогресс печати: сервер дописывает ход по мере генерации, и
@@ -58,8 +64,6 @@ internal fun TypewriterText(
      */
     key: String,
     onTyped: () -> Unit,
-    /** Включить markdown-подсветку (только для ответов модели). */
-    highlight: Boolean = false,
 ) {
     val typing = animate && text.length <= TYPEWRITER_MAX_CHARS
     // Показывать по частям нельзя длиннее TYPEWRITER_MAX_CHARS, и для такого
@@ -95,11 +99,11 @@ internal fun TypewriterText(
     val alpha = cursorAlpha(animate)
     SelectionContainer {
         Text(
-            text = rendered(text, shown, style.color, alpha, highlight),
-            color = style.color,
-            fontFamily = style.fontFamily,
-            fontSize = style.fontSize,
-            lineHeight = style.lineHeight,
+            text = rendered(text, shown, look.style.color, alpha, look.highlight),
+            color = look.style.color,
+            fontFamily = look.style.fontFamily,
+            fontSize = look.style.fontSize,
+            lineHeight = look.style.lineHeight,
         )
     }
 }

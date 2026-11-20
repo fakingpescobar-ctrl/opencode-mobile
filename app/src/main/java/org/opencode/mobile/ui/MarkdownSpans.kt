@@ -72,49 +72,65 @@ private fun isTableSeparator(next: String?): Boolean =
     next != null && next.trimStart().startsWith("|") && TABLE_SEP_RE.matches(next) && next.contains('-')
 
 /** Встроенные маркеры внутри одной строки. Диапазоны не пересекаются. */
-private fun inlineSpans(line: String, offset: Int): List<MarkSpan> {
+private fun inlineSpans(
+    line: String,
+    offset: Int,
+): List<MarkSpan> {
     val out = mutableListOf<MarkSpan>()
     var i = 0
     while (i < line.length) {
-        val rest = line.substring(i)
-        when {
-            rest.startsWith("`") -> {
-                val end = line.indexOf('`', i + 1)
-                if (end > i + 1) {
-                    out += MarkSpan(offset + i, offset + end + 1, MarkKind.INLINE_CODE)
-                    i = end + 1
-                    continue
-                }
-            }
-            rest.startsWith("**") -> {
-                val end = line.indexOf("**", i + 2)
-                if (end > i + 2) {
-                    out += MarkSpan(offset + i, offset + end + 2, MarkKind.BOLD)
-                    i = end + 2
-                    continue
-                }
-            }
-            rest.startsWith("[") -> {
-                val close = line.indexOf("]", i + 1)
-                val paren = if (close > i) line.indexOf("(", close + 1) else -1
-                val end = if (paren > close) line.indexOf(")", paren + 1) else -1
-                if (end > paren) {
-                    out += MarkSpan(offset + i, offset + end + 1, MarkKind.LINK)
-                    i = end + 1
-                    continue
-                }
-            }
-            rest.startsWith("*") || rest.startsWith("_") -> {
-                val mark = if (rest.startsWith("*")) "*" else "_"
-                val end = line.indexOf(mark, i + 1)
-                if (end > i + 1) {
-                    out += MarkSpan(offset + i, offset + end + 1, MarkKind.ITALIC)
-                    i = end + 1
-                    continue
-                }
-            }
+        val hit = nextInline(line, i, offset)
+        if (hit == null) {
+            i++
+            continue
         }
-        i++
+        out += hit.first
+        i = hit.second
     }
     return out
+}
+
+/** Первый маркер с позиции [i] или null, если здесь обычный текст. */
+private fun nextInline(
+    line: String,
+    i: Int,
+    offset: Int,
+): Pair<MarkSpan, Int>? {
+    val rest = line.substring(i)
+    return when {
+        rest.startsWith("`") -> between(line, i, "`", MarkKind.INLINE_CODE, offset)
+        rest.startsWith("**") -> between(line, i, "**", MarkKind.BOLD, offset)
+        rest.startsWith("[") -> link(line, i, offset)
+        rest.startsWith("*") -> between(line, i, "*", MarkKind.ITALIC, offset)
+        rest.startsWith("_") -> between(line, i, "_", MarkKind.ITALIC, offset)
+        else -> null
+    }
+}
+
+private fun between(
+    line: String,
+    i: Int,
+    mark: String,
+    kind: MarkKind,
+    offset: Int,
+): Pair<MarkSpan, Int>? {
+    val end = line.indexOf(mark, i + mark.length)
+    if (end <= i + mark.length) return null
+    val spanEnd = end + mark.length
+    return MarkSpan(offset + i, offset + spanEnd, kind) to spanEnd
+}
+
+private fun link(
+    line: String,
+    i: Int,
+    offset: Int,
+): Pair<MarkSpan, Int>? {
+    val close = line.indexOf("]", i + 1)
+    if (close <= i) return null
+    val paren = line.indexOf("(", close + 1)
+    if (paren <= close) return null
+    val end = line.indexOf(")", paren + 1)
+    if (end <= paren) return null
+    val spanEnd = end + 1
+    return MarkSpan(offset + i, offset + spanEnd, MarkKind.LINK) to spanEnd
 }

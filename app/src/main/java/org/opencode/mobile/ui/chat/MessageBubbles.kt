@@ -14,12 +14,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.opencode.mobile.ui.ChatMsg
+import org.opencode.mobile.ui.TypewriterLook
 import org.opencode.mobile.ui.TypewriterText
 import org.opencode.mobile.ui.highlightMarkdown
 
@@ -28,6 +30,13 @@ private const val ERROR_ROLE_ARGB = 0xFFE05B5B
 
 /** Промежуток между кусками реплики, когда в ней есть картинки. */
 private const val PICTURE_GAP_DP = 8
+
+/** Оформление реплики: шрифт, цвет и признак подсветки ответа модели. */
+private data class MessageLook(
+    val font: FontFamily,
+    val color: Color,
+    val highlight: Boolean,
+)
 
 /**
  * Текст реплики.
@@ -40,15 +49,13 @@ private const val PICTURE_GAP_DP = 8
 private fun MessageText(
     m: ChatMsg,
     isModel: Boolean,
-    modelFont: FontFamily,
-    modelColor: Color,
+    look: MessageLook,
     onTyped: (() -> Unit)?,
-    highlight: Boolean,
 ) {
     val style =
         TextStyle(
-            color = if (isModel) modelColor else Color(0xFFEDEDED),
-            fontFamily = if (isModel) modelFont else FontFamily.Default,
+            color = if (isModel) look.color else Color(0xFFEDEDED),
+            fontFamily = if (isModel) look.font else FontFamily.Default,
             fontSize = 14.sp,
             lineHeight = 19.sp,
         )
@@ -60,10 +67,9 @@ private fun MessageText(
         TypewriterText(
             text = m.text,
             animate = onTyped != null,
-            style = style,
+            look = TypewriterLook(style, look.highlight),
             key = typedKeyOf(m),
             onTyped = { onTyped?.invoke() },
-            highlight = highlight,
         )
     } else {
         // Реплика с картинками не печатается по буквам: картинка встаёт на своё
@@ -71,7 +77,7 @@ private fun MessageText(
         // при показе всего куска целиком. Ключ печати всё равно гасим: иначе он
         // навсегда остался бы на этой реплике.
         LaunchedEffect(typedKeyOf(m)) { onTyped?.invoke() }
-        PictureSegments(segments, style, highlight)
+        PictureSegments(segments, style, look.highlight)
     }
 }
 
@@ -100,7 +106,7 @@ private fun BodyText(
 ) {
     SelectionContainer {
         Text(
-            text = if (highlight) highlightMarkdown(text, style.color) else text,
+            text = if (highlight) highlightMarkdown(text, style.color) else AnnotatedString(text),
             color = style.color,
             fontFamily = style.fontFamily,
             fontSize = style.fontSize,
@@ -146,10 +152,8 @@ internal fun MessageRow(
             MessageText(
                 m = m,
                 isModel = isModel,
-                modelFont = modelFont,
-                modelColor = modelColor,
+                look = MessageLook(modelFont, modelColor, isModel),
                 onTyped = onTyped,
-                highlight = isModel,
             )
         }
         // Причина отказа лежит отдельно от текста, поэтому и рисуется отдельно:
