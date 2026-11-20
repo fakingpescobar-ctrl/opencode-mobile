@@ -129,6 +129,8 @@ class SubagentFeedTest {
             JSONObject()
                 .put("id", "m1")
                 .put("type", "assistant")
+                // Ход завершён: иначе answerText прячет ещё недописанный ответ.
+                .put("time", JSONObject().put("completed", 1_000L))
                 .put("content", JSONArray().put(tool).put(text))
         val envelope = ApiShape.toV1Envelope(msg)
         val parts = envelope.getJSONArray("parts")
