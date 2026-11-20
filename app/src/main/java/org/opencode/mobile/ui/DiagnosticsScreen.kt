@@ -78,6 +78,9 @@ import org.opencode.mobile.BuildConfig
 import org.opencode.mobile.OpencodeApp
 import org.opencode.mobile.engine.Engine
 import org.opencode.mobile.engine.EngineStore
+import org.opencode.mobile.engine.GgufCatalog
+import org.opencode.mobile.engine.GgufModel
+import org.opencode.mobile.engine.GgufStore
 import org.opencode.mobile.installer.InstalledAppController
 import org.opencode.mobile.media.MediaUiAutomation
 import org.opencode.mobile.media.ScreenshotOutcome
@@ -150,6 +153,25 @@ private sealed interface GgmlDownloadState {
         val model: String,
         val message: String,
     ) : GgmlDownloadState
+}
+
+/**
+ * Состояние закачки GGUF-модели для ядра памяти. Отдельное от STT/озвучки:
+ * модели весят до 400 МБ и лежат рядом с `.so`, а не в каталоге моделей STT.
+ */
+internal sealed interface GgufDownloadState {
+    data object Idle : GgufDownloadState
+
+    data class Running(
+        val model: String,
+        val done: Long,
+        val total: Long,
+    ) : GgufDownloadState
+
+    data class Failed(
+        val model: String,
+        val message: String,
+    ) : GgufDownloadState
 }
 
 /**
@@ -354,6 +376,27 @@ fun DiagnosticsScreen(
                 } catch (e: Exception) {
                     currentCoroutineContext().ensureActive()
                     ttsDl = TtsDownloadState.Failed(e.message ?: e.javaClass.simpleName)
+                }
+            }
+        }
+    }
+    // GGUF-модель семантического сопроцессора ядра памяти. В APK её нет:
+    // каталог с URL/размером/sha256 лежит в assets, сам файл качается сюда,
+    // в files/musl/ — рядом с libllama-bench.so. После сверки sha ставится .ok.
+    var ggufDl by remember { mutableStateOf<GgufDownloadState>(GgufDownloadState.Idle) }
+    val startGgufDownload: (GgufModel) -> Unit = { model ->
+        if (ggufDl !is GgufDownloadState.Running) {
+            ggufDl = GgufDownloadState.Running(model.id, 0L, model.size)
+            scope.launch {
+                try {
+                    GgufStore.download(context, model) { done, total ->
+                        ggufDl = GgufDownloadState.Running(model.id, done, total)
+                    }
+                    ggufDl = GgufDownloadState.Idle
+                    refreshKey++
+                } catch (e: Exception) {
+                    currentCoroutineContext().ensureActive()
+                    ggufDl = GgufDownloadState.Failed(model.id, e.message ?: e.javaClass.simpleName)
                 }
             }
         }
@@ -818,10 +861,11 @@ fun DiagnosticsScreen(
                     }
                 }
 
-                // Память стоит рядом с журналом: обе секции про то, что копится само
-                // и что человек иногда должен почистить руками.
-                DiagSection("Локальная память (что агент помнит)", DiagTone.IDLE) {
-                    memorySection()
+                // Единый пульт ядра памяти: статус, инструменты, загрузчик GGUF,
+                // записи и технические детали — всё внутри одной карточки, которая
+                // раскрывается по тапу. Раньше это были две разрозненные секции.
+                DiagSection("Memory Core ⚡", DiagTone.IDLE) {
+                    MemoryCorePanel(context, refreshKey, ggufDl, startGgufDownload)
                 }
 
                 // Маршрутизация моделей рисует СВОЮ секцию [DiagSection] — ровно
@@ -1373,7 +1417,7 @@ private fun historyText(history: List<RuntimeError>): String =
         }
 
 /** Человекочитаемый размер: МБ (1 десятичный знак) или ГБ; <0 — «недоступно». */
-private fun fmtBytes(b: Long): String {
+internal fun fmtBytes(b: Long): String {
     if (b < 0) return "недоступно"
     if (b >= 1024L * 1024 * 1024) {
         val gb = b.toDouble() / (1024.0 * 1024 * 1024)

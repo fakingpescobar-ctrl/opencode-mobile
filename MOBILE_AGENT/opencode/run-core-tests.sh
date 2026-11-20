@@ -45,6 +45,14 @@ if [ "$status" -eq 0 ]; then
   status=$?
 fi
 
+if [ "$status" -eq 0 ]; then
+  echo ""
+  echo "Тест: $ROOT/opencode/gguf-integration.test.mjs"
+  echo ""
+  $RUN "$ROOT/opencode/gguf-integration.test.mjs"
+  status=$?
+fi
+
 echo ""
 if [ "$status" -eq 0 ]; then
   echo "ИТОГ: ядро памяти — ВСЕ ТЕСТЫ ПРОШЛИ"

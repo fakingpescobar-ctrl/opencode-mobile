@@ -35,6 +35,56 @@ internal object MemoryTools {
         return call("local_memory_forget", args).map { }
     }
 
+    // ---- Ядро памяти: те же вызовы, что делает агент, но по кнопке -------------
+    // Счётчики НЕ хардкодим: список инструментов спрашиваем у живого сервера.
+    fun coreStats(): Result<String> = call("memory_index_stats", JSONObject())
+
+    fun corePack(
+        query: String,
+        budget: Int = 1024,
+    ): Result<String> =
+        call("memory_pack", JSONObject().put("query", query).put("budgetTokens", budget))
+
+    fun coreBench(mode: String = "adaptive"): Result<String> =
+        call("memory_bench", JSONObject().put("mode", mode).put("suite", "diag"))
+
+    /** Живой список инструментов ядра из `tools/list`, а не константа в Kotlin. */
+    fun coreTools(): Result<List<String>> =
+        runCatching {
+            val authorization =
+                MemoryAuth.bearerHeader()
+                    ?: error("токен памяти неизвестен: сервер ещё не стартовал")
+            val url = URL("http://127.0.0.1:${OpencodeRuntime.MEMORY_PORT}${MemoryMcp.MEMORY_PATH}")
+            val payload =
+                JSONObject()
+                    .put("jsonrpc", "2.0")
+                    .put("id", 1)
+                    .put("method", "tools/list")
+                    .put("params", JSONObject())
+            val conn =
+                (url.openConnection() as HttpURLConnection)
+                    .apply {
+                        requestMethod = "POST"
+                        connectTimeout = TIMEOUT_MS
+                        readTimeout = TIMEOUT_MS
+                        doOutput = true
+                        setRequestProperty("Content-Type", "application/json")
+                        setRequestProperty("Authorization", authorization)
+                    }
+            try {
+                conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+                val code = conn.responseCode
+                val body = conn.inputStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                if (code !in HTTP_OK_MIN..HTTP_OK_MAX) error("память ответила HTTP $code")
+                val tools = JSONObject(body).getJSONObject("result").getJSONArray("tools")
+                (0 until tools.length())
+                    .map { tools.getJSONObject(it).getString("name") }
+                    .filter { it.startsWith("memory_") }
+            } finally {
+                conn.disconnect()
+            }
+        }
+
     private fun call(
         name: String,
         args: JSONObject,

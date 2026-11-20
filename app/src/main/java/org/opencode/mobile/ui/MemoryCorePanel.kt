@@ -1,0 +1,234 @@
+@file:Suppress("MagicNumber")
+
+package org.opencode.mobile.ui
+
+import android.content.Context
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.opencode.mobile.engine.GgufCatalog
+import org.opencode.mobile.engine.GgufModel
+import org.opencode.mobile.engine.GgufStore
+import org.opencode.mobile.server.MemoryTools
+
+/**
+ * Единый пульт ядра памяти: одна карточка в диагностике, внутри — всё, что
+ * относится к памяти. Раньше загрузчик GGUF и список записей были двумя
+ * соседними секциями; человек искал «память», а находил «модели LLM» и не
+ * понимал, где собственно управлять ядром. Теперь одна точка входа.
+ *
+ * Содержимое раскрывается вложенными [DiagSection], каждая из которых сама
+ * запоминает открытое состояние — можно оставить открытой только нужную.
+ * Ничего не хардкодим: список инструментов спрашиваем у живого сервера,
+ * готовность моделей — из маркеров, статистику — из MCP-вызовов.
+ */
+@Composable
+internal fun MemoryCorePanel(
+    context: Context,
+    refreshKey: Int,
+    ggufState: GgufDownloadState,
+    onGgufDownload: (GgufModel) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        InfoRow(
+            "Что это",
+            "Самодостаточное ядро: SQLite + FTS5, гибридный поиск, адаптивные " +
+                "бюджеты, аудит и откат. LLM — только объяснения, чанки выбирает код.",
+        )
+
+        DiagSection("Состояние ядра", DiagTone.IDLE) {
+            CoreStatusSection(refreshKey)
+        }
+        DiagSection("Инструменты и вызовы", DiagTone.IDLE) {
+            CoreToolsSection(refreshKey)
+        }
+        DiagSection("Модели LLM (GGUF)", DiagTone.IDLE) {
+            GgufModelRows(context, refreshKey, ggufState, onGgufDownload)
+        }
+        DiagSection("Записи и удаление", DiagTone.IDLE) {
+            memorySection()
+        }
+        DiagSection("Технические детали", DiagTone.IDLE) {
+            CoreTechSection()
+        }
+    }
+}
+
+/** Живые счётчики индекса: файлы, чанки, источники, секреты, хеш индекса. */
+@Composable
+private fun CoreStatusSection(refreshKey: Int) {
+    var out by remember { mutableStateOf("запрос…") }
+    val scope = rememberCoroutineScope()
+    fun reload() {
+        out = "запрос…"
+        scope.launch {
+            out =
+                withContext(Dispatchers.IO) {
+                    MemoryTools.coreStats().fold(
+                        onSuccess = { compactJson(it) },
+                        onFailure = { "недоступно: ${it.message}" },
+                    )
+                }
+        }
+    }
+    LaunchedEffect(refreshKey) { reload() }
+    InfoRow("Индекс", out)
+    downloadButton("Обновить состояние") { reload() }
+}
+
+/** Список инструментов приходит из `tools/list`, а не из константы в Kotlin. */
+@Composable
+private fun CoreToolsSection(refreshKey: Int) {
+    var tools by remember { mutableStateOf<List<String>>(emptyList()) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var packOut by remember { mutableStateOf<String?>(null) }
+    var benchOut by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    fun reload() {
+        error = null
+        scope.launch {
+            val r = withContext(Dispatchers.IO) { MemoryTools.coreTools() }
+            tools = r.getOrElse { emptyList() }
+            error = r.exceptionOrNull()?.message
+        }
+    }
+    LaunchedEffect(refreshKey) { reload() }
+
+    InfoRow("Всего memory_*", tools.size.toString(), if (tools.isEmpty()) Color(0xFFFF6F5A) else Color(0xFF7BD88F))
+    if (tools.isEmpty() && error != null) {
+        InfoRow("Ошибка", error.orEmpty(), Color(0xFFFF6F5A))
+    } else {
+        tools.forEach { InfoRow(it, "доступен", Color(0xFF7BD88F)) }
+    }
+    downloadButton("Обновить список") { reload() }
+
+    downloadButton("Проверить пак (memory_pack, 1024 токена)") {
+        if (busy) return@downloadButton
+        busy = true
+        packOut = "считаю…"
+        scope.launch {
+            packOut =
+                withContext(Dispatchers.IO) {
+                    MemoryTools.corePack("архитектура ядра памяти").fold(
+                        onSuccess = { compactJson(it) },
+                        onFailure = { "ошибка: ${it.message}" },
+                    )
+                }
+            busy = false
+        }
+    }
+    packOut?.let { InfoRow("Пак", it.take(PREVIEW) + if (it.length > PREVIEW) "…" else "") }
+
+    downloadButton("Быстрый бенч (adaptive)") {
+        if (busy) return@downloadButton
+        busy = true
+        benchOut = "считаю…"
+        scope.launch {
+            benchOut =
+                withContext(Dispatchers.IO) {
+                    MemoryTools.coreBench("adaptive").fold(
+                        onSuccess = { compactJson(it) },
+                        onFailure = { "ошибка: ${it.message}" },
+                    )
+                }
+            busy = false
+        }
+    }
+    benchOut?.let { InfoRow("Бенч", it.take(PREVIEW) + if (it.length > PREVIEW) "…" else "") }
+}
+
+/**
+ * Список GGUF-моделей и кнопки скачивания. Готовность намеренно без хеширования
+ * 400 МБ: [GgufStore.isReady] читает только маркер `.ok` и размер, а полный
+ * sha256 считается один раз — сразу после закачки.
+ */
+@Composable
+private fun GgufModelRows(
+    context: Context,
+    refreshKey: Int,
+    state: GgufDownloadState,
+    onDownload: (GgufModel) -> Unit,
+) {
+    val models = remember { GgufCatalog.load(context) }
+    val ready =
+        remember(refreshKey, models) {
+            models.associateWith { GgufStore.isReady(context, it) }
+        }
+    InfoRow("Каталог", "assets/llm/models.json (" + models.size + " моделей)")
+    InfoRow("Зафиксирована", GgufCatalog.preferred(), Color(0xFFFFC107))
+    for (model in models) {
+        val isReady = ready[model] == true
+        val size = if (isReady) GgufStore.bytesOnDisk(context, model) else model.size
+        InfoRow(
+            model.id,
+            (if (isReady) "готов · " else "нет · ") + fmtBytes(size),
+            if (isReady) Color(0xFF7BD88F) else Color(0xFFFF6F5A),
+        )
+    }
+    when (val dl = state) {
+        is GgufDownloadState.Running -> InfoRow(
+            "Загрузка " + dl.model,
+            fmtBytes(dl.done) + " из " + fmtBytes(dl.total),
+            Color(0xFFFFC107),
+        )
+
+        is GgufDownloadState.Failed -> {
+            InfoRow("Скачивание не удалось", dl.message, Color(0xFFFF6F5A))
+            downloadButton("Повторить (докачка)") {
+                GgufCatalog.byId(context, dl.model)?.let(onDownload)
+            }
+        }
+
+        GgufDownloadState.Idle ->
+            for (model in models) {
+                if (ready[model] == true) continue
+                downloadButton("Скачать " + model.id + " (~" + fmtBytes(model.size) + ")") {
+                    onDownload(model)
+                }
+            }
+    }
+}
+
+/** Не меняющиеся руками факты: пути, порт, whence модели. */
+@Composable
+private fun CoreTechSection() {
+    InfoRow("Транспорт", "JSON-RPC 2.0, 127.0.0.1:4199/mcp, bearer из-environment")
+    InfoRow("Каталог моделей", "assets/llm/models.json → " + GgufCatalog.preferred())
+    InfoRow("Куда кладём GGUF", "files/musl/ рядом с libllama-bench.so, в APK модели нет")
+    InfoRow("Безопасность", "sha256 + размер до маркера .ok; при расхождении файл удаляется")
+    Text(
+        "Управление записями выше использует MemoryTools: удаление настоящее, " +
+            "поэтому перед ним всегда диалог подтверждения.",
+        color = Color(0xFF8A8A8A),
+        fontSize = 11.sp,
+        maxLines = 3,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+/** JSON в одну строку для InfoRow, чтобы ответ MCP не ломал вёрстку. */
+private fun compactJson(raw: String): String =
+    raw
+        .lines()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .joinToString(" ")
+        .ifEmpty { "(пустой ответ)" }
+
+private const val PREVIEW = 400
