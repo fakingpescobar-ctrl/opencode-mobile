@@ -51,6 +51,10 @@ for (const f of CORE_FILES) {
   const src = readFileSync(join(ROOT, "memory", "gold.jsonl"));
   const staged = readFileSync(STAGE + "memory-gold.jsonl");
   eq(Buffer.compare(src, staged), 0, "memory-gold.jsonl: байт в байт");
+  const srcTemporal = readFileSync(join(ROOT, "memory", "gold-temporal.jsonl"));
+  const stagedTemporal = readFileSync(STAGE + "gold-temporal.jsonl");
+  eq(Buffer.compare(srcTemporal, stagedTemporal), 0,
+    "gold-temporal.jsonl: байт в байт");
   const js = readFileSync(join(TMP, "memory.js"));
   const stagedJs = readFileSync(STAGE + "memory.js");
   eq(Buffer.compare(js, stagedJs), 0, "memory.js: staged копия байт в байт");
@@ -100,7 +104,7 @@ section("3. Kotlin: копирование ассетов и env");
   checkKotlin("OpencodeRuntime.kt");
   function checkKotlin(file) {
     const kt = readFileSync(join(TMP, file), "utf8");
-    for (const f of [...CORE_FILES, "memory-gold.jsonl"]) {
+    for (const f of [...CORE_FILES, "memory-gold.jsonl", "gold-temporal.jsonl"]) {
       truthy(kt.includes('"mcp/' + f + '" to "' + f + '"'), f + ": в CORE_ASSETS");
     }
     truthy(kt.includes('"MCP_DOCS_DIR" to moltbookReportDir(context)'), "MCP_DOCS_DIR в env памяти");

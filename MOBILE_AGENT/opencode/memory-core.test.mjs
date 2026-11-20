@@ -391,7 +391,7 @@ section("5. Guard: без внешних зависимостей и мусор�
   const files = readdirSync(CORE).filter((f) => /\.(js|mjs)$/.test(f));
   for (const f of files) {
     const src = readFileSync(CORE + f, "utf8");
-    const imports = [...src.matchAll(/(?:from|import)\s*["']([^"']+)["']/g)].map((m) => m[1]);
+    const imports = [...src.matchAll(/\b(?:from|import)\s*["']([^"']+)["']/g)].map((m) => m[1]);
     for (const imp of imports) {
       truthy(imp.startsWith(".") || ["crypto", "fs", "path", "bun:sqlite", "bun:ffi", "node:crypto", "node:fs", "node:path", "node:url"].includes(imp),
         f + ": импорт «" + imp + "» встроенный/относительный");
@@ -403,6 +403,119 @@ section("5. Guard: без внешних зависимостей и мусор�
   }
   const stemSize = readFileSync(CORE + "russian-stemmer.js").length;
   truthy(stemSize < 20 * 1024, "стеммер <20 КБ: " + stemSize);
+}
+
+// ------------------------------------------- 6. Временны́е факты, слоты и связи
+section("6. Временны́е факты, слоты и связи");
+{
+  function makeFact(DB, id, content, topicKey, validFrom, confidence = 0.5, reason = "", links = []) {
+    const staged = core.ingest(DB, {
+      content, id, provenance: "test-op", kind: "fact",
+      topic_key: topicKey, valid_from: validFrom, confidence, reason, links,
+    }, null);
+    return core.approve(DB, staged.id, "operator", reason);
+  }
+
+  // ── 6.1. Два факта с одним topic_key: старое закрывается новым ─────
+  {
+    const DB = new Database(":memory:");
+    idx.indexDocs(DB, DOCS);
+    const first = makeFact(DB, "fact-report-v1", "первый отчёт о баге",
+      "runtime/report-dir", 1000, 0.9, "начало отслеживания");
+    const second = makeFact(DB, "fact-report-v2", "исправленный отчёт о баге",
+      "runtime/report-dir", 2000, 0.95, "новое исправление");
+    eq(first.superseded, 0, "первый факт не закрывает старых");
+    eq(second.superseded, 1, "второй факт закрыл первый");
+
+    const stats = core.factStats(DB);
+    eq(stats.facts, 2, "фактов всего 2");
+    eq(stats.active_facts, 1, "активных фактов 1");
+    eq(stats.fact_links, 0, "ссылок пока нет");
+
+    const old = DB.prepare("SELECT invalid_at FROM memory_fact WHERE id = ?").get("fact-report-v1");
+    truthy(Number.isFinite(old && old.invalid_at), "старый факт получил invalid_at");
+
+    const current = core.recallFacts(DB, "runtime/report-dir");
+    eq(current.length, 1, "recallFacts без as_of: 1 результат");
+    eq(current[0].id, "fact-report-v2", "вернулся текущий факт");
+
+    const historical = core.recallFacts(DB, "runtime/report-dir", { as_of: 1500 });
+    eq(historical.length, 1, "recallFacts с as_of: 1 результат");
+    eq(historical[0].id, "fact-report-v1", "вернулся архивный факт");
+
+    const pack = core.memoryPack(DB, "runtime/report-dir", { limit: 6 });
+    truthy(pack.sources.includes("fact-report-v2"),
+      "memoryPack содержит текущий факт: " + JSON.stringify(pack.sources));
+    DB.close();
+  }
+
+  // ── 6.2. Откат: активным снова становится прежний факт ──────────────
+  {
+    const DB = new Database(":memory:");
+    idx.indexDocs(DB, DOCS);
+    makeFact(DB, "fact-report-v1", "первый отчёт о баге",
+      "runtime/report-dir", 1000, 0.9, "начало отслеживания");
+    const second = makeFact(DB, "fact-report-v2", "исправленный отчёт о баге",
+      "runtime/report-dir", 2000, 0.95, "новое исправление");
+
+    const back = core.rollback(DB, second.audit_id);
+    eq(back.restored, "fact-report-v2", "новый факт вернулся в staged");
+    const active = core.recallFacts(DB, "runtime/report-dir");
+    eq(active.length, 1, "после отката активен ровно один факт");
+    eq(active[0].id, "fact-report-v1", "прежний факт снова активен");
+    eq(core.factStats(DB).active_facts, 1, "активных фактов снова 1");
+    const audit = DB.prepare("SELECT id FROM memory_audit WHERE id = ?").get(second.audit_id);
+    eq(audit, null, "аудит отказанной записи удалён");
+    DB.close();
+  }
+
+  // ── 6.3. Типизированные связи в graph и фактах ──────────────────────
+  {
+    const DB = new Database(":memory:");
+    idx.indexDocs(DB, DOCS);
+    core.ingest(DB, {
+      content: "заплатка памяти", id: "fact-links", provenance: "test-op", kind: "fact",
+      topic_key: "runtime/bug-fix", valid_from: 1000, confidence: 0.8, reason: "патч",
+      links: [
+        { target: "fact-report-v1", relation: "fixes", evidence: "исправление каталога" },
+        { target: "fact-report-v2", relation: "supersedes", evidence: "новый слот" },
+      ],
+    }, null);
+    core.approve(DB, "fact-links", "operator", "патч одобрен");
+
+    const edges = DB.prepare("SELECT source, target, relation FROM graph ORDER BY relation").all();
+    eq(edges.length, 2, "в graph попали 2 ребра");
+    truthy(edges.some((r) => r.relation === "fixes"), "есть ребро fixes");
+    truthy(edges.some((r) => r.relation === "supersedes"), "есть ребро supersedes");
+    eq(DB.prepare("SELECT count(*) n FROM memory_fact_link").get().n, 2,
+      "в memory_fact_link попали 2 связи");
+    DB.close();
+  }
+
+  // ── 6.4. Отдельный бенч по временно́му gold ─────────────────────────
+  {
+    const DB = new Database(":memory:");
+    idx.indexDocs(DB, DOCS);
+    const pairs = [
+      ["runtime/report-dir", "fact-report-v1", "fact-report-v2"],
+      ["policy/gate-threshold", "fact-gate-v1", "fact-gate-v2"],
+      ["runtime/llm-model", "fact-model-v1", "fact-model-v2"],
+    ];
+    for (const [topic, oldId, newId] of pairs) {
+      makeFact(DB, oldId, "прежнее значение " + topic, topic, 1000, 0.9, "старая запись");
+      makeFact(DB, newId, "новое значение " + topic, topic, 2000, 0.95, "новая запись");
+    }
+    makeFact(DB, "fact-bugfix", "заплатка памяти", "runtime/bug-fix", 1000, 0.8, "патч");
+    makeFact(DB, "fact-other", "чужой порог", "policy/other-gate", 1000, 0.7, "другой слот");
+
+    const gold = readFileSync(join(DOCS, "memory", "gold-temporal.jsonl"), "utf8")
+      .trim().split("\n").filter(Boolean).map(JSON.parse);
+    const bench = core.runTemporalBench(DB, "temporal-suite", gold, { limit: 6 });
+    eq(bench.n, gold.length, "runTemporalBench посчитал все вопросы");
+    truthy(bench.recall5 >= 0.90, "recall5 >= 0.90, получено " + bench.recall5);
+    truthy(bench.misses.length === 0, "нет промахов: " + JSON.stringify(bench.misses));
+    DB.close();
+  }
 }
 
 // ---------------------------------------------------------------- итог

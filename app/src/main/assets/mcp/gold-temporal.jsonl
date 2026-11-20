@@ -1,0 +1,16 @@
+{"id":"t01","query":"runtime/report-dir","expect_source":"fact-report-v2"}
+{"id":"t02","query":"runtime/report-dir","as_of":1500,"expect_source":"fact-report-v1"}
+{"id":"t03","query":"runtime/report-dir","as_of":2500,"expect_source":"fact-report-v2"}
+{"id":"t04","query":"policy/gate-threshold","expect_source":"fact-gate-v2"}
+{"id":"t05","query":"policy/gate-threshold","as_of":1500,"expect_source":"fact-gate-v1"}
+{"id":"t06","query":"runtime/llm-model","expect_source":"fact-model-v2"}
+{"id":"t07","query":"runtime/llm-model","as_of":1500,"expect_source":"fact-model-v1"}
+{"id":"t08","query":"runtime/bug-fix","expect_source":"fact-bugfix"}
+{"id":"t09","query":"policy/other-gate","expect_source":"fact-other"}
+{"id":"t10","query":"report-dir","expect_source":"fact-report-v2"}
+{"id":"t11","query":"gate-threshold","expect_source":"fact-gate-v2"}
+{"id":"t12","query":"llm-model","expect_source":"fact-model-v2"}
+{"id":"t13","query":"runtime/report-dir","as_of":999999999999,"expect_source":"fact-report-v2"}
+{"id":"t14","query":"runtime/report-dir","as_of":1000,"expect_source":"fact-report-v1"}
+{"id":"t15","query":"policy/gate-threshold","as_of":1000,"expect_source":"fact-gate-v1"}
+{"id":"t16","query":"runtime/llm-model","as_of":1000,"expect_source":"fact-model-v1"}

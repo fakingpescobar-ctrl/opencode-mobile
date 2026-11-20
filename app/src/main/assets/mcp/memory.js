@@ -9,7 +9,8 @@ import { dirname, join } from "path";
 // staged→approve→audit→rollback. Модули лежат рядом в assets/mcp и копируются
 // в filesDir/mem тем же кодом, что и memory.js. Внешних зависимостей нет.
 import {
-  CORE_SCHEMA, recallDocs, memoryPack, indexSha, followThread, graphSnapshot,
+  CORE_SCHEMA, recallDocs, memoryPack, indexSha,
+  followThread, graphSnapshot, factStats, runTemporalBench,
   ingest, approve, rollback, runBench,
 } from "./memory-core.js";
 import { indexDocs } from "./memory-index.mjs";
@@ -382,7 +383,8 @@ function corePack(args) {
   const a = args || {};
   if (a.refresh) ensureCoreIndex(true); else ensureCoreIndex();
   return memoryPack(DB, coreQuery(a), {
-    budgetTokens: a.budgetTokens, limit: a.limit, scope: a.scope, as_of: a.as_of,
+    budgetTokens: a.budgetTokens, limit: a.limit, scope: a.scope,
+    as_of: a.as_of, facts: a.facts,
   });
 }
 
@@ -440,7 +442,9 @@ function coreBench(args) {
       suite: a.suite || "adaptive", scope: a.scope, withThread: !!a.withThread,
     });
   }
-  return runBench(DB, a.suite || "gold", gold, { scope: a.scope });
+  const suite = String(a.suite || "gold");
+  if (suite === "temporal") return runTemporalBench(DB, suite, gold, { limit: a.limit || 5 });
+  return runBench(DB, suite, gold, { scope: a.scope });
 }
 
 // ---- MCP tools ---------------------------------------------------------------
@@ -504,7 +508,7 @@ const memoryTools = [
     inputSchema: { type: "object", properties: {
       query: { type: "string" }, budgetTokens: { type: "number" }, limit: { type: "number" },
       scope: { type: ["string", "array"], items: { type: "string" } },
-      as_of: { type: "number" }, refresh: { type: "boolean" } }, required: ["query"] } },
+      as_of: { type: "number" }, facts: { type: "boolean" }, refresh: { type: "boolean" } }, required: ["query"] } },
   { name: "memory_recall_doc", description: " Топ чанков рабочей памяти с полными весами и пояснением why. Без LLM, без эмбеддингов, на FTS5 + леммах + графе. scope ограничивает kind (rule/state/journal/path/catalog/advice/doc).",
     inputSchema: { type: "object", properties: {
       query: { type: "string" }, limit: { type: "number" },
@@ -535,8 +539,10 @@ const memoryTools = [
     inputSchema: { type: "object", properties: {} } },
   { name: "memory_ingest", description: " Положить запись в staged без немедленного применения. Внешние советы никогда не применяются автоматически: нужен явный approve оператора.",
     inputSchema: { type: "object", properties: {
-      content: { type: "string" }, id: { type: "string" },
-      provenance: { type: "string" } }, required: ["content"] } },
+      content: { type: "string" }, id: { type: "string" }, provenance: { type: "string" },
+      kind: { type: "string", enum: ["doc", "fact"] }, topic_key: { type: "string" },
+      valid_from: { type: "number" }, confidence: { type: "number" },
+      reason: { type: "string" }, links: { type: "array" } }, required: ["content"] } },
   { name: "memory_approve", description: " Применить staged-запись: создать audit-запись и снимок для отката. approved_by обязателен — approve без подписи запрещён.",
     inputSchema: { type: "object", properties: {
       id: { type: "string" }, approved_by: { type: "string" }, reason: { type: "string" } },
@@ -1582,7 +1588,10 @@ async function callTool(name, args) {
     case "memory_thread": return coreThread(args || {});
     case "memory_graph": return coreGraph(args || {});
     case "memory_bench": return coreBench(args || {});
-    case "memory_index_stats": return ensureCoreIndex(true);
+    case "memory_index_stats": {
+      const stat = ensureCoreIndex(true);
+      try { return { ...stat, ...factStats(DB) }; } catch { return stat; }
+    }
     case "memory_ingest": return ingest(DB, args || {}, { normalizeProvenance, autoApplyable });
     case "memory_approve": {
       const a = args || {};

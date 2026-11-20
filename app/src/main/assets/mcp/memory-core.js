@@ -31,7 +31,59 @@ CREATE TABLE IF NOT EXISTS graph (
 );
 CREATE INDEX IF NOT EXISTS idx_graph_src ON graph(source);
 CREATE INDEX IF NOT EXISTS idx_graph_tgt ON graph(target);
+-- Волна 1: временны́е факты с окном действия и типизированными связями.
+CREATE TABLE IF NOT EXISTS memory_fact (
+  id TEXT PRIMARY KEY, topic_key TEXT NOT NULL, content TEXT NOT NULL,
+  sha TEXT NOT NULL, provenance TEXT NOT NULL DEFAULT 'unknown',
+  valid_from INTEGER NOT NULL, invalid_at INTEGER,
+  confidence REAL NOT NULL DEFAULT 0.5, reason TEXT NOT NULL DEFAULT '',
+  created INTEGER NOT NULL, approved_by TEXT NOT NULL DEFAULT '', audit_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_fact_topic ON memory_fact(topic_key, invalid_at);
+CREATE TABLE IF NOT EXISTS memory_fact_link (
+  fact_id TEXT NOT NULL, target TEXT NOT NULL, relation TEXT NOT NULL,
+  evidence TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL,
+  PRIMARY KEY(fact_id, target, relation)
+);
+CREATE INDEX IF NOT EXISTS idx_fact_link_fact ON memory_fact_link(fact_id);
 `;
+
+// Старые базы не знают про новые колонки. Добавляем их точечно, без миграции
+// всей таблицы: ALTER дешёвый, а схема обязана подниматься на живой БД apk-52.
+const STAGED_COLS = [
+  ["kind", "TEXT NOT NULL DEFAULT 'doc'"],
+  ["topic_key", "TEXT NOT NULL DEFAULT ''"],
+  ["valid_from", "INTEGER"],
+  ["confidence", "REAL NOT NULL DEFAULT 0.5"],
+  ["reason", "TEXT NOT NULL DEFAULT ''"],
+  ["links", "TEXT NOT NULL DEFAULT '[]'"],
+];
+const schemaReady = new WeakSet();
+
+function ensureCols(DB, table, cols) {
+  try {
+    const info = DB.prepare("PRAGMA table_info(" + table + ")").all();
+    const have = new Set(info.map((r) => r.name));
+    for (const [name, ddl] of cols) {
+      if (!have.has(name)) DB.exec("ALTER TABLE " + table + " ADD COLUMN " + name + " " + ddl);
+    }
+  } catch { /* таблица ещё не создана — CORE_SCHEMA создаст её ниже */ }
+}
+
+export function ensureCoreSchema(DB) {
+  if (schemaReady.has(DB)) return;
+  DB.exec(CORE_SCHEMA);
+  ensureCols(DB, "memory_staged", STAGED_COLS);
+  ensureCols(DB, "graph", [["evidence", "TEXT NOT NULL DEFAULT ''"]]);
+  schemaReady.add(DB);
+}
+
+function parseLinks(raw) {
+  try {
+    const v = JSON.parse(String(raw || "[]"));
+    return Array.isArray(v) ? v : [];
+  } catch { return []; }
+}
 
 // Веса гибридной формулы (подогнаны под наше железо: 8 ядер, 15 ГБ, FTS5).
 // v3: усилили релевантность (text+anchor 0.78), снизили authority до 0.05 —
@@ -109,7 +161,7 @@ function queryFts(DB, table, query, limit) {
 
 // Главный поиск. Возвращает топ-чанки с весами и объяснением `why`.
 export function recallDocs(DB, query, opts = {}) {
-  DB.exec(CORE_SCHEMA);
+  ensureCoreSchema(DB);
   const now = Date.now();
   const limit = Math.max(1, Math.min(opts.limit || 10, 20));
   const a = analyze(query);
@@ -245,15 +297,27 @@ export function recallDocs(DB, query, opts = {}) {
 
 // Упаковка контекста в бюджет токенов по секциям. Главный инструмент агента.
 export function memoryPack(DB, query, opts = {}) {
+  ensureCoreSchema(DB);
   const budget = Math.max(256, Math.min(opts.budgetTokens || 2048, 8192));
   const want = Math.max(1, Math.min(opts.limit || 12, 20));
   // Пул кандидатов НЕ должен зависеть от того, сколько чанков мы потом уложим
   // в пак. Раньше recallDocs(limit=6) и recallDocs(limit=12) возвращали разные
   // наборы (FTS5 OR-запрос выбирает разный пул), из-за чего адаптивный пак
   // терял gold-источник при том же запросе. Берём стабильные 12 и режем потом.
-  const hits = recallDocs(DB, query, {
+  const docHits = recallDocs(DB, query, {
     limit: Math.max(want, 12), scope: opts.scope, as_of: opts.as_of,
   });
+  // Временны́е факты живут в отдельной таблице. Добавляем их в общий пул только
+  // при явном совпадении с запросом; на старых 40 gold фактов нет, поэтому их
+  // поведение не меняется. as_of честно переключает активное/архивное окно.
+  const factHits = opts.facts === false ? [] : recallFacts(DB, query, {
+    limit: Math.max(1, Math.min(want, 6)), as_of: opts.as_of,
+  }).map((f) => ({
+    id: f.id, source: f.id, heading: f.topic_key, kind: "fact",
+    line_from: f.valid_from, line_to: f.invalid_at || 0, text: f.content,
+    score: f.score, why: { ...f.why, fact: true },
+  }));
+  const hits = [...docHits, ...factHits].sort((a, b) => b.score - a.score);
   const sections = [
     ["rule", "ПРАВИЛА"], ["state", "СОСТОЯНИЕ"], ["journal", "ИСТОРИЯ"],
     ["path", "ПУТИ"], ["catalog", "КАТАЛОГ"], ["advice", "ДАННЫЕ/СОВЕТЫ"], ["doc", "ДОКУМЕНТЫ"],
@@ -349,48 +413,185 @@ export function ingest(DB, args, provenanceModule) {
   const prov = provenanceModule ? provenanceModule.normalizeProvenance(args.provenance) : String(args.provenance || "unknown");
   const id = args.id || `stage-${sha256(content).slice(0, 16)}`;
   const sha = sha256(content);
-  DB.exec(CORE_SCHEMA);
-  DB.prepare(`INSERT INTO memory_staged(id, content, sha, provenance, at) VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET content=excluded.content, sha=excluded.sha, provenance=excluded.provenance, at=excluded.at`)
-    .run(id, content, sha, prov, Date.now());
+  const kind = args.kind === "fact" ? "fact" : "doc";
+  const topicKey = String(args.topic_key || "").trim();
+  if (kind === "fact" && !topicKey) throw new Error("topic_key required for fact");
+  const validFrom = Number.isFinite(args.valid_from) ? Number(args.valid_from) : Date.now();
+  const confidence = clamp(Number.isFinite(args.confidence) ? Number(args.confidence) : 0.5);
+  const links = Array.isArray(args.links) ? args.links : [];
+  ensureCoreSchema(DB);
+  DB.prepare(`INSERT INTO memory_staged
+    (id, content, sha, provenance, at, kind, topic_key, valid_from, confidence, reason, links)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET content=excluded.content, sha=excluded.sha,
+      provenance=excluded.provenance, at=excluded.at, kind=excluded.kind,
+      topic_key=excluded.topic_key, valid_from=excluded.valid_from,
+      confidence=excluded.confidence, reason=excluded.reason, links=excluded.links`)
+    .run(id, content, sha, prov, Date.now(), kind, topicKey, validFrom, confidence,
+      String(args.reason || ""), JSON.stringify(links));
   const auto = provenanceModule ? provenanceModule.autoApplyable(prov) : false;
-  return { id, sha, provenance: prov, staged: true, auto_applyable: auto };
+  return { id, sha, provenance: prov, staged: true, auto_applyable: auto,
+    kind, topic_key: topicKey, links: links.length };
 }
 
 export function approve(DB, id, approvedBy = "operator", reason = "") {
-  DB.exec(CORE_SCHEMA);
+  ensureCoreSchema(DB);
   const row = DB.prepare("SELECT * FROM memory_staged WHERE id = ?").get(id);
   if (!row) throw new Error("staged memory not found: " + id);
   const auditId = `audit-${sha256(id + Date.now()).slice(0, 16)}`;
-  const payload = JSON.stringify(row);
+  const at = Date.now();
+  if (row.kind === "fact") {
+    let superseded = [];
+    DB.exec("BEGIN");
+    try {
+      superseded = DB.prepare(
+        "SELECT id FROM memory_fact WHERE topic_key=? AND invalid_at IS NULL ORDER BY valid_from DESC",
+      ).all(row.topic_key);
+      for (const old of superseded) {
+        DB.prepare("UPDATE memory_fact SET invalid_at=?, reason=? WHERE id=?")
+          .run(at, "superseded by " + id, old.id);
+      }
+      DB.prepare(`INSERT INTO memory_fact
+        (id, topic_key, content, sha, provenance, valid_from, invalid_at,
+         confidence, reason, created, approved_by, audit_id)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`)
+        .run(row.id, row.topic_key, row.content, row.sha, row.provenance,
+          row.valid_from || at, row.confidence, row.reason || reason, row.at, approvedBy, auditId);
+      for (const link of parseLinks(row.links)) {
+        const target = String(link.target || link.id || "");
+        const relation = String(link.relation || "related");
+        if (!target) continue;
+        const evidence = String(link.evidence || reason || "");
+        DB.prepare(`INSERT OR REPLACE INTO memory_fact_link
+          (fact_id, target, relation, evidence, at) VALUES (?, ?, ?, ?, ?)`)
+          .run(row.id, target, relation, evidence, at);
+        DB.prepare(`INSERT OR REPLACE INTO graph(source, target, relation, evidence)
+          VALUES (?, ?, ?, ?)`).run(row.id, target, relation, evidence);
+      }
+      DB.prepare(`INSERT INTO memory_audit(id, op, target_id, sha_before, sha_after, reason, at, approved_by)
+        VALUES (?, 'approve-fact', ?, '', ?, ?, ?, ?)`)
+        .run(auditId, id, row.sha, reason || row.reason, at, approvedBy);
+      DB.prepare("INSERT INTO memory_snapshot(audit_id, payload) VALUES (?, ?)")
+        .run(auditId, JSON.stringify({ staged: row, previous: superseded.map((x) => x.id) }));
+      DB.prepare("DELETE FROM memory_staged WHERE id = ?").run(id);
+      DB.exec("COMMIT");
+    } catch (e) {
+      DB.exec("ROLLBACK");
+      throw e;
+    }
+    return { approved: true, id, sha: row.sha, audit_id: auditId, kind: "fact",
+      topic_key: row.topic_key, superseded: superseded.length };
+  }
   DB.prepare(`INSERT INTO memory_audit(id, op, target_id, sha_before, sha_after, reason, at, approved_by)
     VALUES (?, 'approve', ?, '', ?, ?, ?, ?)`)
-    .run(auditId, id, row.sha, reason, Date.now(), approvedBy);
-  DB.prepare("INSERT INTO memory_snapshot(audit_id, payload) VALUES (?, ?)").run(auditId, payload);
+    .run(auditId, id, row.sha, reason, at, approvedBy);
+  DB.prepare("INSERT INTO memory_snapshot(audit_id, payload) VALUES (?, ?)")
+    .run(auditId, JSON.stringify(row));
   DB.prepare("DELETE FROM memory_staged WHERE id = ?").run(id);
-  return { approved: true, id, sha: row.sha, audit_id: auditId };
+  return { approved: true, id, sha: row.sha, audit_id: auditId, kind: "doc" };
 }
 
 export function rollback(DB, auditId) {
-  DB.exec(CORE_SCHEMA);
+  ensureCoreSchema(DB);
   const snap = DB.prepare("SELECT payload FROM memory_snapshot WHERE audit_id = ?").get(auditId);
   if (!snap) throw new Error("audit snapshot not found: " + auditId);
-  const row = JSON.parse(snap.payload);
+  const saved = JSON.parse(snap.payload);
+  const row = saved && saved.staged ? saved.staged : saved;
+  if (row.kind === "fact") {
+    DB.exec("BEGIN");
+    try {
+      DB.prepare("DELETE FROM memory_fact WHERE id = ?").run(row.id);
+      for (const prevId of saved.previous || []) {
+        DB.prepare("UPDATE memory_fact SET invalid_at=NULL, reason='' WHERE id=?").run(prevId);
+      }
+      DB.prepare("DELETE FROM memory_fact_link WHERE fact_id = ?").run(row.id);
+      DB.prepare("DELETE FROM graph WHERE source = ?").run(row.id);
+      DB.prepare(`INSERT INTO memory_staged
+        (id, content, sha, provenance, at, kind, topic_key, valid_from, confidence, reason, links)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET content=excluded.content, sha=excluded.sha,
+          provenance=excluded.provenance, at=excluded.at, kind=excluded.kind,
+          topic_key=excluded.topic_key, valid_from=excluded.valid_from,
+          confidence=excluded.confidence, reason=excluded.reason, links=excluded.links`)
+        .run(row.id, row.content, row.sha, row.provenance, row.at, row.kind,
+          row.topic_key, row.valid_from, row.confidence, row.reason, row.links);
+      DB.prepare("DELETE FROM memory_audit WHERE id = ?").run(auditId);
+      DB.prepare("DELETE FROM memory_snapshot WHERE audit_id = ?").run(auditId);
+      DB.exec("COMMIT");
+    } catch (e) {
+      DB.exec("ROLLBACK");
+      throw e;
+    }
+    return { rolled_back: true, audit_id: auditId, restored: row.id, sha: row.sha, kind: "fact" };
+  }
   DB.prepare(`INSERT INTO memory_staged(id, content, sha, provenance, at) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET content=excluded.content, sha=excluded.sha, provenance=excluded.provenance, at=excluded.at`)
     .run(row.id, row.content, row.sha, row.provenance, row.at);
   DB.prepare("DELETE FROM memory_audit WHERE id = ?").run(auditId);
   DB.prepare("DELETE FROM memory_snapshot WHERE audit_id = ?").run(auditId);
-  return { rolled_back: true, audit_id: auditId, restored: row.id, sha: row.sha };
+  return { rolled_back: true, audit_id: auditId, restored: row.id, sha: row.sha, kind: "doc" };
+}
+
+// Временны́е факты: детерминированный поиск по активным и архивным слотам.
+// Не трогает веса recallDocs — это отдельный слой с собственным объяснением.
+export function recallFacts(DB, query, opts = {}) {
+  ensureCoreSchema(DB);
+  const q = String(query || "").trim();
+  if (!q) return [];
+  const a = analyze(q);
+  const qTokens = new Set([...a.anchors, ...a.lemmas]
+    .map((x) => String(x).toLowerCase()).filter(Boolean));
+  const now = Date.now();
+  const asOf = Number.isFinite(opts.as_of) ? Number(opts.as_of) : now;
+  const limit = Math.max(1, Math.min(opts.limit || 8, 20));
+  const rows = opts.includeClosed
+    ? DB.prepare("SELECT * FROM memory_fact WHERE valid_from<=?").all(asOf)
+    : DB.prepare("SELECT * FROM memory_fact WHERE valid_from<=? AND (invalid_at IS NULL OR invalid_at>?)").all(asOf, asOf);
+  const needle = q.toLowerCase();
+  const scored = [];
+  for (const f of rows) {
+    const fa = analyze(f.content + " " + f.topic_key);
+    const fTokens = new Set([...fa.anchors, ...fa.lemmas]
+      .map((x) => String(x).toLowerCase()).filter(Boolean));
+    let inter = 0;
+    for (const t of qTokens) if (fTokens.has(t)) inter++;
+    const inText = f.content.toLowerCase().includes(needle)
+      || String(f.topic_key).toLowerCase().includes(needle);
+    if (!inter && !inText) continue;
+    const overlap = qTokens.size ? inter / qTokens.size : 0;
+    const conf = clamp(Number(f.confidence ?? 0.5));
+    const topicHit = String(f.topic_key).toLowerCase().includes(needle) ? 0.25 : 0;
+    const score = clamp(0.6 * overlap + 0.25 * conf + topicHit);
+    scored.push({
+      id: f.id, topic_key: f.topic_key, content: f.content,
+      valid_from: f.valid_from, invalid_at: f.invalid_at,
+      score: Math.round(score * 10000) / 10000,
+      why: {
+        overlap: Math.round(overlap * 1000) / 1000,
+        confidence: conf, topic_hit: topicHit > 0, as_of: asOf,
+      },
+    });
+  }
+  scored.sort((x, y) => y.score - x.score);
+  return scored.slice(0, limit);
+}
+
+export function factStats(DB) {
+  ensureCoreSchema(DB);
+  return {
+    facts: DB.prepare("SELECT count(*) n FROM memory_fact").get().n,
+    active_facts: DB.prepare("SELECT count(*) n FROM memory_fact WHERE invalid_at IS NULL").get().n,
+    fact_links: DB.prepare("SELECT count(*) n FROM memory_fact_link").get().n,
+  };
 }
 
 // ---- Бенчмарк ---------------------------------------------------------------
 
 export function runBench(DB, suite, gold, opts = {}) {
-  DB.exec(CORE_SCHEMA);
+  ensureCoreSchema(DB);
   let hit5 = 0, rr = 0, ndcg = 0;
   for (const g of gold) {
-    const hits = recallDocs(DB, g.query, { limit: 5, scope: opts.scope });
+    const hits = recallDocs(DB, g.query, { limit: 5, scope: opts.scope, as_of: g.as_of });
     const ids = hits.map((h) => h.source);
     const idx = ids.indexOf(g.expect_source);
     if (idx >= 0) { hit5++; rr += 1 / (idx + 1); ndcg += 1 / Math.log2(idx + 2); }
@@ -416,4 +617,21 @@ export function runBench(DB, suite, gold, opts = {}) {
   DB.prepare(`INSERT INTO bench_result(suite, recall5, mrr, ndcg, index_sha, at) VALUES (?, ?, ?, ?, ?, ?)`)
     .run(suite, result.recall5, result.mrr, result.ndcg, result.index_sha, result.at);
   return result;
+}
+
+// Отдельный раннер для временно́го набора: здесь проверяем именно pack, потому
+// что факт не является чанком документа и живёт в собственной таблице.
+export function runTemporalBench(DB, suite, gold, opts = {}) {
+  ensureCoreSchema(DB);
+  let hit5 = 0;
+  const misses = [];
+  for (const g of gold) {
+    const pack = memoryPack(DB, g.query, {
+      limit: opts.limit || 5, budgetTokens: opts.budgetTokens || 2048, as_of: g.as_of,
+    });
+    const idx = pack.sources.indexOf(g.expect_source);
+    if (idx >= 0) hit5++; else misses.push({ query: g.query, as_of: g.as_of || null });
+  }
+  const n = Math.max(1, gold.length);
+  return { suite, n, recall5: hit5 / n, hits: hit5, misses, at: Date.now() };
 }

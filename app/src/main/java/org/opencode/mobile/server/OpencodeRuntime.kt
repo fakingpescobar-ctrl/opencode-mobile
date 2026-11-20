@@ -1024,6 +1024,7 @@ object OpencodeRuntime {
             "mcp/memory-llm.js" to "memory-llm.js",
             "mcp/russian-stemmer.js" to "russian-stemmer.js",
             "mcp/memory-gold.jsonl" to "memory-gold.jsonl",
+            "mcp/gold-temporal.jsonl" to "gold-temporal.jsonl",
         )
     private const val YNISON_ASSET = "mcp/ynison.js"
     private const val YNISON_SCRIPT = "ynison.js"
