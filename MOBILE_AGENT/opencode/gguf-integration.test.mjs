@@ -180,6 +180,44 @@ section("7. Интерактивный граф связей");
   truthy(panel.includes("MemoryGraphView(edges)"), "граф внутри «Состояния ядра»");
 }
 
+// ---------------------------------------------------------------- 8. Резидентный LLM
+section("8. LLM-сопроцессор: резидентный старт и честный контракт");
+{
+  const src = readFileSync(join(ROOT, "opencode", "memory-core", "memory-llm.js"), "utf8");
+  const staged = readFileSync(join(ROOT, "tmp", "apk-integrate", "mcp", "memory-llm.js"));
+  eq(Buffer.compare(Buffer.from(src), Buffer.from(staged)), 0, "staging LLM = байт в байт");
+  truthy(src.includes("export function initLlm"), "LLM инициализируется как модуль ядра");
+  truthy(src.includes("sha256File(modelPath)"), "модель сверяется по sha256 перед загрузкой");
+  truthy(src.includes("DEFAULT_MAX_LATENCY_MS"), "есть бюджет латентности");
+  truthy(src.includes("fallbackResult"), "есть честный откат");
+  eq(/[\u4e00-\u9fff\uac00-\ud7af]/.test(src), false, "LLM-модуль без CJK-мусора");
+
+  const runtime = readFileSync(join(ROOT, "tmp", "OpencodeRuntime.kt"), "utf8");
+  truthy(runtime.includes('"mcp/memory-llm.js" to "memory-llm.js"'),
+    "рантайм копирует LLM-модуль рядом с memory.js");
+
+  const js = readFileSync(join(ROOT, "tmp", "memory.js"), "utf8");
+  truthy(js.includes('name: "memory_llm_status"'), "статус LLM зарегистрирован");
+  truthy(js.includes('name: "memory_llm_search"'), "поиск LLM зарегистрирован");
+  truthy(/\nbootLlm\(\);/.test(js), "LLM поднимается до приёма запросов");
+
+  const tools = readFileSync(join(ROOT, "tmp", "MemoryTools.kt"), "utf8");
+  truthy(tools.includes("fun llmStatus()"), "Kotlin запрашивает статус LLM");
+  truthy(tools.includes("fun llmSearch("), "Kotlin запускает точечный поиск");
+  truthy(tools.includes("LLM_TIMEOUT_MS"), "у LLM отдельный таймаут bridge");
+
+  const panel = read("MemoryCorePanel.kt");
+  truthy(panel.includes('DiagSection("LLM-сопроцессор"'), "в пульте есть секция LLM");
+  truthy(panel.includes("Проверить поиск (LLM + pack ядра)"), "кнопка замера «было/стало»");
+  truthy(panel.includes("LlmSection(refreshKey)"), "статус LLM живёт в карточке ядра");
+  eq(/[\u4e00-\u9fff\uac00-\ud7af]/.test(panel), false, "панель без CJK-мусора");
+
+  const wrapper = readFileSync(join(ROOT, "tools", "llama-bench", "llama-bench-wrapper.c"), "utf8");
+  truthy(wrapper.includes("lb_gen"), "C-обёртка экспортирует произвольный промпт");
+  truthy(wrapper.includes("llama_decode") || wrapper.includes("llama_eval"),
+    "обёртка реально декодирует токены");
+}
+
 console.log("\n" + "=".repeat(56));
 console.log("ГЕЙТ ЗАГРУЗЧИКА GGUF: OK=" + ok + " BAD=" + bad);
 if (bad) {

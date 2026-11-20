@@ -192,7 +192,14 @@ export function recallDocs(DB, query, opts = {}) {
 // Упаковка контекста в бюджет токенов по секциям. Главный инструмент агента.
 export function memoryPack(DB, query, opts = {}) {
   const budget = Math.max(256, Math.min(opts.budgetTokens || 2048, 8192));
-  const hits = recallDocs(DB, query, { limit: opts.limit || 12, scope: opts.scope, as_of: opts.as_of });
+  const want = Math.max(1, Math.min(opts.limit || 12, 20));
+  // Пул кандидатов НЕ должен зависеть от того, сколько чанков мы потом уложим
+  // в пак. Раньше recallDocs(limit=6) и recallDocs(limit=12) возвращали разные
+  // наборы (FTS5 OR-запрос выбирает разный пул), из-за чего адаптивный пак
+  // терял gold-источник при том же запросе. Берём стабильные 12 и режем потом.
+  const hits = recallDocs(DB, query, {
+    limit: Math.max(want, 12), scope: opts.scope, as_of: opts.as_of,
+  });
   const sections = [
     ["rule", "ПРАВИЛА"], ["state", "СОСТОЯНИЕ"], ["journal", "ИСТОРИЯ"],
     ["path", "ПУТИ"], ["catalog", "КАТАЛОГ"], ["advice", "ДАННЫЕ/СОВЕТЫ"], ["doc", "ДОКУМЕНТЫ"],
@@ -210,7 +217,7 @@ export function memoryPack(DB, query, opts = {}) {
   let curTitle = "";
   let buf = [];
   const flush = () => { if (buf.length > 1) out.push(buf.join("\n")); buf = []; };
-  for (const h of ordered) {
+  for (const h of ordered.slice(0, want)) {
     const est = Math.ceil((h.text.length + h.source.length + 40) / 4);
     if (used + est > budget) continue; // не break: следующий чанк может быть короче
     used += est;

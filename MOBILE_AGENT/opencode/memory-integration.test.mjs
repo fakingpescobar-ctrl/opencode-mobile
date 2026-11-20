@@ -36,7 +36,7 @@ function section(title) { console.log("\n=== " + title + " ==="); }
 
 const CORE_FILES = [
   "memory-core.js", "memory-adaptive.js", "memory-lemma.js",
-  "memory-index.mjs", "russian-stemmer.js",
+  "memory-index.mjs", "memory-llm.js", "russian-stemmer.js",
 ];
 
 // ---------------------------------------------------------------- 1. Ассеты
@@ -60,7 +60,7 @@ for (const f of CORE_FILES) {
 section("2. Живой memory.js: импорты, инструменты, диспатч");
 {
   const js = readFileSync(join(TMP, "memory.js"), "utf8");
-  for (const f of ["memory-core.js", "memory-index.mjs", "memory-adaptive.js"]) {
+  for (const f of ["memory-core.js", "memory-index.mjs", "memory-adaptive.js", "memory-llm.js"]) {
     truthy(js.includes('from "./' + f + '"'), "импорт " + f);
   }
   // lemma/stemmer приходят транзитивно через core/index/adaptive — это дешевле
@@ -69,11 +69,18 @@ section("2. Живой memory.js: импорты, инструменты, дис
     "транзитивные модули не импортируются дважды");
   truthy(js.includes("CORE_SCHEMA"), "схема ядра инициализируется");
   truthy(js.includes("MCP_DOCS_DIR"), "каталог памяти приходит через env");
+  truthy(js.includes("bootLlm();"), "LLM греется при старте MCP, а не по запросу");
+  truthy(js.includes("memoryPack(DB, q"), "fallback внутри memory_llm_search = pack ядра");
+  truthy(js.includes("Math.min(12, Number(a.limit) || 5)"), "коридор кандидатов 5–12, по умолчанию 5");
+  truthy(js.includes('conf.level === "high" || conf.level === "medium"'),
+    "LLM не вызывается при уверенном ответе ядра");
+  truthy(js.includes('a.force === true'), "force=true вызывает LLM принудительно");
 
   const tools = [
     "memory_pack", "memory_recall_doc", "memory_adaptive", "memory_feedback",
     "memory_thread", "memory_graph", "memory_bench", "memory_index_stats",
     "memory_ingest", "memory_approve", "memory_rollback",
+    "memory_llm_status", "memory_llm_search",
   ];
   for (const t of tools) {
     truthy(js.includes('name: "' + t + '"'), t + ": зарегистрирован");
@@ -133,6 +140,44 @@ section("4. Pack на staged-модулях (изолированная БД)");
   const ap = adaptive.adaptivePack(DB, "как агент пользоваться памятью", core.recallDocs, core.memoryPack);
   truthy(ap.adaptive && ap.adaptive.confidence, "adaptivePack вернул Confidence");
   DB.close();
+}
+
+// ---------------------------------------------------------------- 5. LLM-сопроцессор
+section("5. LLM-сопроцессор: коридор, структурированный ответ, фоллбэк");
+{
+  const llm = await import(pathToFileURL(STAGE + "memory-llm.js").href);
+  const many = Array.from({ length: 15 }, (_, i) => ({
+    id: "chunk-" + i, source: "s" + i, heading: "h" + i,
+    text: "текст " + i, score: 1 - i / 20, why: { text: 0.5, anchor: 0.2 },
+  }));
+  const prompt = llm.buildPrompt("где отчёт", many, "chatml");
+  truthy(prompt.includes("ID:") && prompt.includes("ПОИСК:") && prompt.includes("EVIDENCE:"),
+    "промпт требует структурированный ответ");
+  truthy(prompt.includes("[L]"), "коридор до буквы L включительно");
+  eq(prompt.includes("[M]"), false, "13-й кандидат в промпт не попал");
+  truthy(prompt.includes("(0.2)") && !prompt.includes("0.0"),
+    "в промпт входит только ненулевая цифра why ядра");
+  truthy(prompt.includes("/no_think") === false, "chatml без /no_think");
+  truthy(llm.buildPrompt("q", many, "qwen3").includes("/no_think"), "qwen гасит пустой think");
+
+  const parsed = llm.parseStructured(
+    "<think>\n\n</think>\nID: A, C\nПОИСК: отчёт; moltbook, плагин\n" +
+    "EVIDENCE: отчёт пишется в каталог плагина.", 12);
+  eq(parsed.letters, [0, 2], "Structured ID разобран");
+  truthy(parsed.reformulations.length >= 2, "синонимы для второго прохода ядра");
+  truthy(parsed.evidence.includes("каталог"), "evidence строго по кандидатам");
+  eq(llm.parseLetters("ID: B", 12), [1], "parseLetters обратно совместим");
+  eq(llm.parseStructured("ID: Z", 12).letters, [], "невалидная буква отсеяна");
+  eq(llm.parseStructured("ничего", 12).letters, [], "пустой ответ не выглядит выбором");
+
+  const fb = llm.fallbackResult("q", many, "тест");
+  eq(fb.fallback, true, "фоллбэк помечен");
+  eq(fb.selectedIds, ["chunk-0", "chunk-1", "chunk-2"], "фоллбэк = детерминированный топ");
+  eq(fb.reformulations, [], "у фоллбэка нет выдуманных синонимов");
+  const src = readFileSync(STAGE + "memory-llm.js", "utf8");
+  eq(/\bchild_process\b|\beval\s*\(|\bnew Function\s*\(/.test(src), false, "LLM-модуль без eval/child_process");
+  truthy(src.includes('from "bun:ffi"') && src.includes('from "node:crypto"'),
+    "только встроенные модули Bun/Node");
 }
 
 console.log("\n" + "=".repeat(56));

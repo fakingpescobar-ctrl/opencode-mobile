@@ -47,11 +47,15 @@ internal fun MemoryCorePanel(
         InfoRow(
             "Что это",
             "Самодостаточное ядро: SQLite + FTS5, гибридный поиск, адаптивные " +
-                "бюджеты, аудит и откат. LLM — только объяснения, чанки выбирает код.",
+                "бюджеты, аудит и откат. LLM резидентна с старта: селектор и " +
+                "переформулировщик, чанки выбирает код.",
         )
 
         DiagSection("Состояние ядра", DiagTone.IDLE) {
             CoreStatusSection(refreshKey)
+        }
+        DiagSection("LLM-сопроцессор", DiagTone.IDLE) {
+            LlmSection(refreshKey)
         }
         DiagSection("Инструменты и вызовы", DiagTone.IDLE) {
             CoreToolsSection(refreshKey)
@@ -96,6 +100,54 @@ private fun CoreStatusSection(refreshKey: Int) {
     graphNote?.let { InfoRow("Граф", "недоступен: $it", Color(0xFFFF6F5A)) }
     MemoryGraphView(edges)
     downloadButton("Обновить состояние") { reload() }
+}
+
+/**
+ * Резидентный LLM-сопроцессор: статус прогретой модели и ручная проверка
+ * точечного поиска. В ответе всегда лежит детерминированный pack ядра —
+ * это позволяет сравнить «было/стало» одним нажатием, не роняя агент.
+ */
+@Composable
+private fun LlmSection(refreshKey: Int) {
+    var status by remember { mutableStateOf("запрос…") }
+    var searchOut by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    fun reload() {
+        status = "запрос…"
+        scope.launch {
+            status =
+                withContext(Dispatchers.IO) {
+                    MemoryTools.llmStatus().fold(
+                        onSuccess = { compactJson(it) },
+                        onFailure = { "недоступно: ${it.message}" },
+                    )
+                }
+        }
+    }
+    LaunchedEffect(refreshKey) { reload() }
+
+    InfoRow("Модель", status)
+    InfoRow("Когда вызывается", "только при низкой уверенности ядра; у агента " +
+        "обычный путь — детерминированный pack за ~10 мс")
+    downloadButton("Обновить статус LLM") { reload() }
+    downloadButton("Проверить поиск (LLM + pack ядра)") {
+        if (busy) return@downloadButton
+        busy = true
+        searchOut = "считаю…"
+        scope.launch {
+            searchOut =
+                withContext(Dispatchers.IO) {
+                    MemoryTools.llmSearch("куда агент пишет отчёт и как устроена память").fold(
+                        onSuccess = { compactJson(it) },
+                        onFailure = { "ошибка: ${it.message}" },
+                    )
+                }
+            busy = false
+        }
+    }
+    searchOut?.let { InfoRow("Поиск", it.take(PREVIEW) + if (it.length > PREVIEW) "…" else "") }
 }
 
 /** Список инструментов приходит из `tools/list`, а не из константы в Kotlin. */
@@ -182,8 +234,9 @@ private fun GgufModelRows(
         }
     var selectedId by remember(refreshKey) { mutableStateOf(GgufStore.selectedId(context)) }
     var note by remember { mutableStateOf<String?>(null) }
-    InfoRow("Зачем", "Семантический сопроцессор ядра: объяснения и переформулировка. " +
-        "Чанки выбирает код, LLM ядро не заменяет и память не трогает.")
+    InfoRow("Зачем", "Семантический сопроцессор ядра: селектор точечного поиска и " +
+        "переформулировка синонимов. Грузится при старте; чанки выбирает код, " +
+        "LLM ядро не заменяет и память не трогает.")
     InfoRow("Каталог", "assets/llm/models.json (" + models.size + " моделей)")
     InfoRow("Источник", "Hugging Face · huggingface.co, точный URL и sha256 в манифесте")
     InfoRow("Рекомендована", GgufCatalog.preferred(), Color(0xFFFFC107))

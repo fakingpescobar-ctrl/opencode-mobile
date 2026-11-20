@@ -16,6 +16,9 @@ import { indexDocs } from "./memory-index.mjs";
 import {
   confidenceOf, conceptThread, learnFromFeedback, adaptivePack, runAdaptiveBench,
 } from "./memory-adaptive.js";
+// Локальная LLM как сопроцессор памяти: авто-старт, точечный поиск поверх
+// кандидатов ядра, честный откат на детерминированный топ. Никаких записей.
+import { initLlm, llmStatus, llmSearch } from "./memory-llm.js";
 // Правило доверия живёт отдельным файлом не для красоты: его обязано быть
 // видно целиком, без погружения в тысячу строк MCP, и оно обязано
 // тестироваться на ПК под node, а не только на устройстве под bun:sqlite.
@@ -57,6 +60,20 @@ function noteBoot(what) {
   } catch (_) {
     // boot.log недоступен - факт потерян, импорт обязан выжить
   }
+}
+
+// LLM поднимается вместе с MCP, но асинхронно: 400 МБ на диске и прогрев не
+// должны блокировать старт сервера. Первый вызов ждёт этот же promise, поэтому
+// состояние «ещё греется» никогда не выдаётся за «не работает».
+let llmBoot = null;
+function bootLlm() {
+  if (!llmBoot) {
+    llmBoot = initLlm().then((s) => {
+      noteBoot(`llm ${s.state}: ${s.model || s.reason}`);
+      return s;
+    });
+  }
+  return llmBoot;
 }
 
 const DB = new Database(join(DATA_DIR, "memory.sqlite"));
@@ -526,6 +543,14 @@ const memoryTools = [
       required: ["id", "approved_by"] } },
   { name: "memory_rollback", description: " Откатить approve по audit_id: восстановить staged-запись и удалить audit-запись. Ничего не исчезает молча.",
     inputSchema: { type: "object", properties: { audit_id: { type: "string" } }, required: ["audit_id"] } },
+  { name: "memory_llm_status", description: " Состояние резидентного LLM-сопроцессора: модель проверена и прогрета при старте MCP. Показывает corridor 5–12 кандидатов и бюджет латентности; при недоступности — причину.",
+    inputSchema: { type: "object", properties: {} } },
+  { name: "memory_llm_search", description: " Точечный поиск события/факта. Ядро даёт 5–12 кандидатов с why. При высокой уверенности ядра LLM НЕ вызывается (mode=core-only, ~10 мс); при низкой — LLM возвращает выбранные ID, синонимы для повторного быстрого поиска и evidence. force=true вызывает LLM принудительно (для проверки). Ответ НЕ пишется в память; детерминированный pack всегда внутри, при отказе — fallback=true.",
+    inputSchema: { type: "object", properties: {
+      query: { type: "string" }, limit: { type: "number" }, budgetTokens: { type: "number" },
+      maxTokens: { type: "number" }, maxLatencyMs: { type: "number" }, scope: { type: "string" },
+      force: { type: "boolean" } },
+      required: ["query"] } },
 ];
 
 const MOBILE_INSTALL_TOOLS = [
@@ -1565,6 +1590,58 @@ async function callTool(name, args) {
       return approve(DB, String(a.id || ""), String(a.approved_by), String(a.reason || ""));
     }
     case "memory_rollback": return rollback(DB, String((args || {}).audit_id || ""));
+    case "memory_llm_status": {
+      await bootLlm();
+      return llmStatus();
+    }
+    case "memory_llm_search": {
+      const a = args || {};
+      const q = String(a.query || "").trim();
+      if (!q) throw new Error("query required");
+      ensureCoreIndex();
+      await bootLlm();
+      // Жёсткий коридор 5–12: ядро ранжирует, LLM только выбирает из его топа.
+      const limit = Math.max(5, Math.min(12, Number(a.limit) || 5));
+      const hits = recallDocs(DB, q, { limit });
+      // Детерминированный pack всегда рядом: при пустом/невалидном ответе или
+      // таймауте агент получает ровно его, без паузы и без исключения.
+      const pack = memoryPack(DB, q, {
+        budgetTokens: a.budgetTokens, limit: a.limit, scope: a.scope, as_of: a.as_of,
+      });
+      // LLM НЕ стоит в обычном пути: замер показал ~7.5 с против 11 мс у ядра
+      // и 0.33 recall селектора. Дорогой вызов оправдан только когда ядро само
+      // не уверено (или человек явно нажал «проверить» в диагностике).
+      const conf = confidenceOf(hits);
+      const force = a.force === true || a.force === "true";
+      if (!force && (conf.level === "high" || conf.level === "medium")) {
+        return {
+          query: q, usedLlm: false, mode: "core-only", confidence: conf,
+          reason: `ядро уверено (${conf.level}), LLM не вызвана`,
+          selected: [], reformulations: [], secondPass: [],
+          deterministicTop: hits.slice(0, 3).map((h) => h.id),
+          fallback: false, latencyMs: 0, candidateCount: hits.length, pack,
+        };
+      }
+      const result = await llmSearch(q, hits, {
+        maxTokens: a.maxTokens, maxLatencyMs: a.maxLatencyMs,
+      });
+      result.usedLlm = true;
+      result.confidence = conf;
+      // Синонимы НЕ пишутся в память: они идут в повторный быстрый проход FTS5.
+      const seen = new Set(hits.map((h) => h.id));
+      const secondPass = [];
+      for (const term of (result.reformulations || []).slice(0, 3)) {
+        for (const h of recallDocs(DB, term, { limit: 3 })) {
+          if (seen.has(h.id)) continue;
+          seen.add(h.id);
+          secondPass.push({ id: h.id, source: h.source, heading: h.heading,
+            score: h.score, why: h.why });
+        }
+      }
+      result.secondPass = secondPass.slice(0, 6);
+      result.pack = pack;
+      return result;
+    }
     case "mobile_app_install": return mobileAppInstall(args || {});
     case "mobile_app_install_status": return mobileAppInstallStatus(args || {});
     case "mobile_list_apps": return mobileListApps(args || {});
@@ -1635,6 +1712,10 @@ function isMemoryRequestAuthorized(req, url) {
   const queryToken = url.searchParams.get("token") || "";
   return constantTimeEqual(bearer, MEMORY_TOKEN) || constantTimeEqual(queryToken, MEMORY_TOKEN);
 }
+
+// Поднимаем LLM до приёма запросов: статус уже истинен, а первый поиск не
+// повторяет крипто-хэш 400 МБ и не ждёт extra-времени старта.
+bootLlm();
 
 if (TCP_PORT > 0) {
   // Streamable HTTP MCP server: GET <route> = SSE stream, POST <route> = JSON-RPC

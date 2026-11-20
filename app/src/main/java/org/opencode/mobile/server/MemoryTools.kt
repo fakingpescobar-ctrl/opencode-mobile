@@ -22,6 +22,8 @@ internal object MemoryTools {
     const val LIST_LIMIT = 20
 
     private const val TIMEOUT_MS = 4_000
+    /** LLM ищет дольше обычного вызова ядра: генерация + повторный проход FTS5. */
+    private const val LLM_TIMEOUT_MS = 12_000
     private const val GRAPH_LIMIT = 200
     private const val HTTP_OK_MIN = 200
     private const val HTTP_OK_MAX = 299
@@ -52,6 +54,21 @@ internal object MemoryTools {
     /** Полный снимок графа для 3D-визуализации в диагностике. */
     fun coreGraph(limit: Int = GRAPH_LIMIT): Result<List<MemoryWire.Edge>> =
         call("memory_graph", JSONObject().put("limit", limit)).mapCatching(MemoryWire::edges)
+
+    // ---- Резидентный LLM-сопроцессор -----------------------------------------
+    /** Статус прогретой модели: что выбрал оператор и почему она доступна/нет. */
+    fun llmStatus(): Result<String> = call("memory_llm_status", JSONObject(), LLM_TIMEOUT_MS)
+
+    /**
+     * Точечный поиск: ядро даёт 5–12 кандидатов, LLM выбирает ID и синонимы.
+     * Возвращает JSON с полем pack — детерминированный ответ ядра всегда внутри.
+     */
+    fun llmSearch(query: String, limit: Int = 5, force: Boolean = true): Result<String> =
+        call(
+            "memory_llm_search",
+            JSONObject().put("query", query).put("limit", limit).put("force", force),
+            LLM_TIMEOUT_MS,
+        )
 
     /** Живой список инструментов ядра из `tools/list`, а не константа в Kotlin. */
     fun coreTools(): Result<List<String>> =
@@ -93,6 +110,7 @@ internal object MemoryTools {
     private fun call(
         name: String,
         args: JSONObject,
+        timeoutMs: Int = TIMEOUT_MS,
     ): Result<String> =
         runCatching {
             val authorization =
@@ -103,8 +121,8 @@ internal object MemoryTools {
                 (url.openConnection() as HttpURLConnection)
                     .apply {
                         requestMethod = "POST"
-                        connectTimeout = TIMEOUT_MS
-                        readTimeout = TIMEOUT_MS
+                        connectTimeout = timeoutMs
+                        readTimeout = timeoutMs
                         doOutput = true
                         setRequestProperty("Content-Type", "application/json")
                         setRequestProperty("Accept", "application/json")

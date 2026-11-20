@@ -1022,6 +1022,7 @@ object OpencodeRuntime {
             "mcp/memory-adaptive.js" to "memory-adaptive.js",
             "mcp/memory-lemma.js" to "memory-lemma.js",
             "mcp/memory-index.mjs" to "memory-index.mjs",
+            "mcp/memory-llm.js" to "memory-llm.js",
             "mcp/russian-stemmer.js" to "russian-stemmer.js",
             "mcp/memory-gold.jsonl" to "memory-gold.jsonl",
         )

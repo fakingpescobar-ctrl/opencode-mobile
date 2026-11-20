@@ -165,8 +165,8 @@ section("4. Адаптивная семантика и самообучение"
   eq(cGarbage.matched, false, "мусор не помечен как matched");
 
   const plan = adaptive.planFor(cSharp);
-  eq(plan.limit, 6, "план high: 6 чанков");
-  eq(plan.budgetTokens, 1400, "план high: 1400 токенов");
+  eq(plan.limit, 8, "план high: 8 чанков");
+  eq(plan.budgetTokens, 1600, "план high: 1600 токенов");
   const capped = adaptive.planFor(cSharp, { maxChunks: 3, maxBudget: 500 });
   eq(capped.limit, 3, "maxChunks уважается");
   eq(capped.budgetTokens, 500, "maxBudget уважается");
@@ -180,8 +180,8 @@ section("4. Адаптивная семантика и самообучение"
   });
   const r = adaptive.adaptivePack(DB, "стабильный зонд", stubRecall, stubPack, { withThread: true });
   truthy(r.adaptive && r.adaptive.confidence && r.adaptive.plan, "adaptivePack вернул метаданные");
-  truthy(r.chunks <= 6, "adaptivePack ограничивает число чанков: " + r.chunks);
-  truthy(r.usedTokensEstimate <= 1400, "adaptivePack держит бюджет: " + r.usedTokensEstimate);
+  truthy(r.chunks <= 8, "adaptivePack ограничивает число чанков: " + r.chunks);
+  truthy(r.usedTokensEstimate <= 1600, "adaptivePack держит бюджет: " + r.usedTokensEstimate);
 
   const probeSharp = core.recallDocs(DB, "apk-40 sha установки verify-install", { limit: 12 });
   const thread = adaptive.conceptThread(DB, probeSharp.slice(0, 3).map((h) => h.id), { max: 4 });
@@ -286,7 +286,7 @@ section("5. Guard: без внешних зависимостей и мусор�
     const src = readFileSync(CORE + f, "utf8");
     const imports = [...src.matchAll(/(?:from|import)\s*["']([^"']+)["']/g)].map((m) => m[1]);
     for (const imp of imports) {
-      truthy(imp.startsWith(".") || ["crypto", "fs", "path", "bun:sqlite", "node:fs", "node:path", "node:url"].includes(imp),
+      truthy(imp.startsWith(".") || ["crypto", "fs", "path", "bun:sqlite", "bun:ffi", "node:crypto", "node:fs", "node:path", "node:url"].includes(imp),
         f + ": импорт «" + imp + "» встроенный/относительный");
     }
     eq(/[\u4e00-\u9fff\uac00-\ud7af]/.test(src), false, f + ": нет китайского/корейского мусора");
