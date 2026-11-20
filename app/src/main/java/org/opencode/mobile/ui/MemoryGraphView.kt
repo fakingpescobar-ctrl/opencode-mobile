@@ -41,7 +41,9 @@ import kotlin.math.sin
  * «прыгает», а остаётся узнаваемой.
  */
 @Composable
-@Suppress("LongMethod")
+// Ветвления здесь — это состояния жеста, получения и выбора узла, а не бизнес-логика:
+// разносить их по функциям значит спрятать управление картой от того, кто её правит.
+@Suppress("LongMethod", "CyclomaticComplexMethod")
 internal fun MemoryGraphView(edges: List<MemoryWire.Edge>) {
     var rotX by remember { mutableStateOf(0.28f) }
     var rotY by remember { mutableStateOf(0f) }
@@ -83,15 +85,17 @@ internal fun MemoryGraphView(edges: List<MemoryWire.Edge>) {
         ) {
             if (size.width <= 0 || size.height <= 0) return@Canvas
             for (e in edges) {
-                val a = points.firstOrNull { it.id == e.from } ?: continue
-                val b = points.firstOrNull { it.id == e.to } ?: continue
-                drawLine(
-                    color = relationColor(e.relation),
-                    start = a.offset,
-                    end = b.offset,
-                    strokeWidth = 1.4.dp.toPx(),
-                    alpha = 0.55f,
-                )
+                val a = points.firstOrNull { it.id == e.from }
+                val b = points.firstOrNull { it.id == e.to }
+                if (a != null && b != null) {
+                    drawLine(
+                        color = relationColor(e.relation),
+                        start = a.offset,
+                        end = b.offset,
+                        strokeWidth = 1.4.dp.toPx(),
+                        alpha = 0.55f,
+                    )
+                }
             }
             for (p in points.sortedByDescending { it.depth }) {
                 val r = if (p.id == selected) SELECTED_RADIUS.dp.toPx() else NODE_RADIUS.dp.toPx()

@@ -220,7 +220,10 @@ private fun CoreToolsSection(refreshKey: Int) {
  * sha256 считается один раз — сразу после закачки.
  */
 @Composable
-@Suppress("LongMethod")
+// Каждая ветка ниже — отдельное видимое состояние карточки модели (готова,
+// выбрана, скачивается, ошибка). Разнести их — значит потерять цельную картину
+// рядом с текстом, который пользователь читает на экране.
+@Suppress("LongMethod", "CyclomaticComplexMethod")
 private fun GgufModelRows(
     context: Context,
     refreshKey: Int,

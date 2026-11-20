@@ -1417,14 +1417,11 @@ private fun historyText(history: List<RuntimeError>): String =
         }
 
 /** Человекочитаемый размер: МБ (1 десятичный знак) или ГБ; <0 — «недоступно». */
-internal fun fmtBytes(b: Long): String {
-    if (b < 0) return "недоступно"
-    if (b >= 1024L * 1024 * 1024) {
-        val gb = b.toDouble() / (1024.0 * 1024 * 1024)
-        return String.format(Locale.US, "%.2f ГБ", gb)
-    }
-    val mb = b.toDouble() / (1024.0 * 1024)
-    return String.format(Locale.US, "%.1f МБ", mb)
+internal fun fmtBytes(b: Long): String = when {
+    b < 0 -> "недоступно"
+    b >= 1024L * 1024 * 1024 ->
+        String.format(Locale.US, "%.2f ГБ", b.toDouble() / (1024.0 * 1024 * 1024))
+    else -> String.format(Locale.US, "%.1f МБ", b.toDouble() / (1024.0 * 1024))
 }
 
 private fun shareDump(

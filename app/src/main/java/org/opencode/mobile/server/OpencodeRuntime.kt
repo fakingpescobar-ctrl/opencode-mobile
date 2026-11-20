@@ -551,9 +551,8 @@ object OpencodeRuntime {
      * в этой подпапке, и отчёт в корне оказался бы вторым, бродящим экземпляром.
      */
     private fun moltbookReportDir(context: Context): String {
-        if (!Workspace.usingExternal(context)) return ""
-        val root = Workspace.externalRoot() ?: return ""
-        return File(root, MoltbookMcp.REPORT_DIR_NAME).absolutePath
+        val root = if (Workspace.usingExternal(context)) Workspace.externalRoot() else null
+        return root?.let { File(it, MoltbookMcp.REPORT_DIR_NAME).absolutePath }.orEmpty()
     }
 
     /**
