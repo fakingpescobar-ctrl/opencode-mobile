@@ -1,6 +1,6 @@
 // Обёртка вокруг llama.cpp (API b12554+) для замера реальной latency на железе.
 // Собирается в CI как libllama-bench.so (musl aarch64), грузится через bun:ffi + libldmusl.
-// Экспортирует функции: lb_bench, lb_gen, lb_gen_g, lb_score, lb_version.
+// Экспортирует функции: lb_bench, lb_gen, lb_gen_g, lb_code_ids, lb_score, lb_version.
 //
 // Методология (версия 3):
 //  - промпт без чат-спецтокенов, один и тот же набор байт для всех моделей;
@@ -259,6 +259,36 @@ int lb_gen_g(const char *model_path, const char *prompt, const char *grammar,
   return 0;
 }
 
+// Однотокенные id spellings кода варианта: "A", " A" и для noul "no", "No",
+// " no", " No". serving-код decision-модели использует именно такие алиасы.
+int lb_code_ids(const char *model_path, const char *code, int *ids, int max_ids) {
+  if (!model_path || !code || !ids || max_ids < 1 || strlen(code) > 60) return -1;
+  llama_log_set(quiet_log, NULL);
+  llama_backend_init();
+  struct llama_model_params mp = llama_model_default_params();
+  mp.n_gpu_layers = 0;
+  struct llama_model *model = llama_model_load_from_file(model_path, mp);
+  if (!model) { llama_backend_free(); return -1; }
+  const struct llama_vocab *vocab = llama_model_get_vocab(model);
+  char buf[64];
+  int n = 0;
+  for (int form = 0; form < 4; form++) {
+    snprintf(buf, sizeof(buf), "%s%s", (form & 1) ? " " : "", code);
+    char *p = buf + ((form & 1) ? 1 : 0);
+    if (form >= 2 && *p >= 'a' && *p <= 'z') *p = (char)(*p - 'a' + 'A');
+    llama_token tok[8];
+    int k = llama_tokenize(vocab, buf, (int)strlen(buf), tok, 8, false, false);
+    if (k != 1) continue;
+    int id = (int)tok[0];
+    int dup = 0;
+    for (int i = 0; i < n; i++) if (ids[i] == id) { dup = 1; break; }
+    if (!dup && n < max_ids) ids[n++] = id;
+  }
+  llama_model_free(model);
+  llama_backend_free();
+  return n;
+}
+
 // Decision-модели (hs-decide-1-flash) не генерируют текст: они читают вероятность
 // варианта в позиции двоеточия строки "Qn:". Это ровно та схема, которой пользуется
 // их serving-код: логиты считаются только в слотах ответа, по ним берутся коды
@@ -380,4 +410,4 @@ int lb_score(const char *model_path, const char *prompt,
   return 0;
 }
 
-const char *lb_version(void) { return "llama-bench-musl-7"; }
+const char *lb_version(void) { return "llama-bench-musl-8"; }
