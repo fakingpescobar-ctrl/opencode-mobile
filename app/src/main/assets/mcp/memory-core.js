@@ -4,7 +4,7 @@
 // ./provenance.js (уже лежит в assets/mcp).
 
 import { analyze } from "./memory-lemma.js";
-import { AUTHORITY, DOC_SCHEMA, sha256 } from "./memory-index.mjs";
+import { ANCHOR_FTS_V4, AUTHORITY, DOC_SCHEMA, rawIdentifiers, sha256 } from "./memory-index.mjs";
 
 export const CORE_SCHEMA = DOC_SCHEMA + `
 CREATE TABLE IF NOT EXISTS memory_audit (
@@ -20,6 +20,33 @@ CREATE TABLE IF NOT EXISTS bench_result (
   recall5 REAL NOT NULL, mrr REAL NOT NULL, ndcg REAL NOT NULL,
   index_sha TEXT NOT NULL, at INTEGER NOT NULL
 );
+-- v4: полезность чанка (non-parametric utility, analogue MemRL/MEMOIR).
+-- Q обновляется из внешнего reward, веса модели не трогаются.
+CREATE TABLE IF NOT EXISTS memory_utility (
+  chunk_id TEXT PRIMARY KEY, q REAL NOT NULL DEFAULT 0.5,
+  uses INTEGER NOT NULL DEFAULT 0, successes INTEGER NOT NULL DEFAULT 0,
+  failures INTEGER NOT NULL DEFAULT 0, last_used INTEGER NOT NULL DEFAULT 0
+);
+-- v4: credit/blame. Что именно попало в контекст и помогло ли исходу.
+CREATE TABLE IF NOT EXISTS memory_outcome (
+  id TEXT PRIMARY KEY, query_sha TEXT NOT NULL, chunk_ids TEXT NOT NULL,
+  outcome TEXT NOT NULL, reward REAL NOT NULL DEFAULT 0,
+  at INTEGER NOT NULL, note TEXT NOT NULL DEFAULT ''
+);
+-- v4: консолидированные наблюдения (Hindsight-like beliefs с proof count).
+CREATE TABLE IF NOT EXISTS memory_observation (
+  id TEXT PRIMARY KEY, topic_key TEXT NOT NULL, content TEXT NOT NULL,
+  sha TEXT NOT NULL, proof_count INTEGER NOT NULL DEFAULT 0,
+  source_ids TEXT NOT NULL DEFAULT '[]', confidence REAL NOT NULL DEFAULT 0.5,
+  valid_from INTEGER NOT NULL, invalid_at INTEGER,
+  provenance TEXT NOT NULL DEFAULT 'own-runtime', created INTEGER NOT NULL,
+  audit_id TEXT NOT NULL DEFAULT ''
+);
+-- v4: epoch для read-boundary validation. Любая запись инкрементирует счётчик.
+CREATE TABLE IF NOT EXISTS memory_epoch (
+  id INTEGER PRIMARY KEY CHECK (id = 1), value INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO memory_epoch(id, value) VALUES (1, 0);
 CREATE TABLE IF NOT EXISTS memory_staged (
   id TEXT PRIMARY KEY, content TEXT NOT NULL, sha TEXT NOT NULL,
   provenance TEXT NOT NULL DEFAULT 'unknown', at INTEGER NOT NULL
@@ -71,6 +98,20 @@ const STAGED_COLS = [
   ["confidence", "REAL NOT NULL DEFAULT 0.5"],
   ["reason", "TEXT NOT NULL DEFAULT ''"],
   ["links", "TEXT NOT NULL DEFAULT '[]'"],
+  ["agent_id", "TEXT NOT NULL DEFAULT ''"],
+];
+// v4-колонки для живых БД apk-59: добавляем точечно, старые строки получают
+// безопасные значения по умолчанию. Никакой пересборки таблиц.
+const FACT_COLS = [
+  ["recorded_at", "INTEGER"],
+  ["superseded_by", "TEXT NOT NULL DEFAULT ''"],
+  ["agent_id", "TEXT NOT NULL DEFAULT ''"],
+  ["epoch", "INTEGER NOT NULL DEFAULT 0"],
+  ["protected", "INTEGER NOT NULL DEFAULT 0"],
+];
+const AUDIT_COLS = [
+  ["chain_hash", "TEXT NOT NULL DEFAULT ''"],
+  ["seq", "INTEGER NOT NULL DEFAULT 0"],
 ];
 const schemaReady = new WeakSet();
 
@@ -88,6 +129,9 @@ export function ensureCoreSchema(DB) {
   if (schemaReady.has(DB)) return;
   DB.exec(CORE_SCHEMA);
   ensureCols(DB, "memory_staged", STAGED_COLS);
+  ensureCols(DB, "memory_fact", FACT_COLS);
+  ensureCols(DB, "memory_audit", AUDIT_COLS);
+  ensureCols(DB, "memory_proposal", [["agent_id", "TEXT NOT NULL DEFAULT ''"]]);
   ensureCols(DB, "graph", [["evidence", "TEXT NOT NULL DEFAULT ''"]]);
   schemaReady.add(DB);
 }
@@ -105,7 +149,93 @@ function parseLinks(raw) {
 const W = { bm25text: 0.45, bm25anchor: 0.33, graph: 0.10, authority: 0.05, recency: 0.07 };
 const HALF_LIFE_MS = 30 * 24 * 60 * 60 * 1000;
 
+// v4 включается явно: legacy остаётся работающим fallback и эталоном сравнения.
+// По умолчанию НИКАКИХ изменений ранжирования — только новые таблицы и тулы.
+export const MODES = ["legacy", "v4", "rrf"];
+export const DEFAULT_MODE = "legacy";
+const UTILITY_LAMBDA = 0.08;  // доля Q в формуле (1−λ)·sim + λ·Q
+const UTILITY_ALPHA = 0.20;   // скорость обновления Q из reward (Monte-Carlo)
+const EVIDENCE_BONUS = 0.03;  // дешёвый бонус за соседей из того же источника
+const OBSERVATION_BONUS = 0.05;
+const RRF_K = 60;
+
 function clamp(x, lo = 0, hi = 1) { return Math.max(lo, Math.min(hi, x)); }
+
+// --- v4: epoch, utility, hash-chain -----------------------------------------
+export function readEpoch(DB) {
+  try { return Number(DB.prepare("SELECT value FROM memory_epoch WHERE id=1").get()?.value || 0); }
+  catch { return 0; }
+}
+export function bumpEpoch(DB) {
+  try { DB.prepare("UPDATE memory_epoch SET value=value+1 WHERE id=1").run(); } catch { /* нет таблицы */ }
+}
+function withEpoch(DB, fn) {
+  const e0 = readEpoch(DB);
+  let out = fn();
+  // Read Boundaries: если между чтениями пришла запись — перечитаем один раз.
+  // Второй проход детерминирован и ограничен, чтобы не уйти в бесконечный цикл.
+  if (readEpoch(DB) !== e0) out = fn();
+  return out;
+}
+function utilityMap(DB) {
+  const out = new Map();
+  try {
+    // Холодный старт не должен двигать эталон: в карту попадают только чанки
+    // с реальным исходом (uses > 0). Остальные сохраняют legacy-скор.
+    for (const r of DB.prepare("SELECT chunk_id, q FROM memory_utility WHERE uses > 0").all()) out.set(r.chunk_id, r.q);
+  } catch { /* таблица есть, но БД старая — нормально */ }
+  return out;
+}
+function observationMap(DB, anchors) {
+  const out = new Map();
+  if (!anchors.length) return out;
+  try {
+    const rows = DB.prepare(
+      "SELECT topic_key, content, proof_count, confidence FROM memory_observation WHERE invalid_at IS NULL",
+    ).all();
+    for (const r of rows) {
+      const hay = String(r.topic_key + " " + r.content).toLowerCase();
+      if (anchors.some((a) => hay.includes(String(a).toLowerCase()))) {
+        out.set(r.topic_key, clamp(Number(r.confidence || 0.5)) * Math.min(1, Number(r.proof_count || 0) / 3));
+      }
+    }
+  } catch { /* нет таблицы */ }
+  return out;
+}
+function rrfRank(list) {
+  const out = new Map();
+  list.forEach((h, i) => out.set(h.chunk_id, 1 / (RRF_K + i + 1)));
+  return out;
+}
+function auditHash(DB, payload) {
+  const last = DB.prepare("SELECT chain_hash FROM memory_audit ORDER BY seq DESC, at DESC LIMIT 1").get();
+  const prev = String(last?.chain_hash || "");
+  return sha256(prev + "|" + payload).slice(0, 32);
+}
+function writeAudit(DB, auditId, op, targetId, shaAfter, reason, at, approvedBy) {
+  const seq = Number(DB.prepare("SELECT COALESCE(MAX(seq),0)+1 n FROM memory_audit").get().n);
+  const hash = auditHash(DB, [auditId, op, targetId, shaAfter, reason, at, approvedBy].join("|"));
+  DB.prepare(`INSERT INTO memory_audit(id, op, target_id, sha_before, sha_after, reason, at, approved_by, chain_hash, seq)
+    VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?)`)
+    .run(auditId, op, targetId, shaAfter, reason, at, approvedBy, hash, seq);
+  return hash;
+}
+
+// Проверка append-only цепочки. Старые записи до v4 имеют seq=0 и не
+// участвуют — новая цепочка начинается с первой записи с seq>0.
+export function verifyAuditChain(DB) {
+  const rows = DB.prepare(`SELECT id, op, target_id, sha_after, reason, at, approved_by,
+    chain_hash, seq FROM memory_audit WHERE seq > 0 ORDER BY seq, id`).all();
+  let prev = "";
+  let broken = 0;
+  rows.forEach((r, i) => {
+    const payload = [r.id, r.op, r.target_id, r.sha_after, r.reason, r.at, r.approved_by].join("|");
+    const expected = sha256(prev + "|" + payload).slice(0, 32);
+    if (r.chain_hash !== expected || r.seq !== i + 1) broken++;
+    prev = r.chain_hash;
+  });
+  return { ok: broken === 0, checked: rows.length, broken };
+}
 
 function normalizeBm25(raw) {
   // bm25 в SQLite отрицателен: чем ближе к нулю, тем лучше. Переводим в 0..1.
@@ -175,9 +305,18 @@ function queryFts(DB, table, query, limit) {
 
 // Главный поиск. Возвращает топ-чанки с весами и объяснением `why`.
 export function recallDocs(DB, query, opts = {}) {
+  // Read Boundaries: если во время чтения в БД пришла запись, пересчитываем
+  // результат один раз. v3/legacy поведение от этого не меняется (epoch есть
+  // и в старых БД, счётчик просто растёт).
+  return withEpoch(DB, () => recallDocsOnce(DB, query, opts));
+}
+
+function recallDocsOnce(DB, query, opts = {}) {
   ensureCoreSchema(DB);
   const now = Date.now();
   const limit = Math.max(1, Math.min(opts.limit || 10, 20));
+  const mode = MODES.includes(opts.mode) ? opts.mode : DEFAULT_MODE;
+  const v4 = mode !== "legacy";
   const a = analyze(query);
   const anchors = a.anchors;
   // Trigram-FTS по умолчанию связывает слова через AND: длинная фраза «как агент
@@ -187,7 +326,11 @@ export function recallDocs(DB, query, opts = {}) {
     .replace(/[^a-z0-9а-я\s]/gi, " ").split(/\s+/)
     .filter((w) => w.length >= 3);
   const trigramQuery = trigramWords.map((w) => `"${w}"`).join(" OR ");
-  const anchorQuery = anchors.length ? anchors.map((x) => `"${x}"`).join(" OR ") : "";
+  // Сырые идентификаторы — отдельная опция: на русском gold они ухудшали
+  // recall, поэтому v4 по умолчанию использует тот же якорный слой, что legacy.
+  const useRaw = v4 && opts.rawIds === true;
+  const qAnchors = useRaw ? [...new Set([...anchors, ...rawIdentifiers(query)])] : anchors;
+  const anchorQuery = qAnchors.length ? qAnchors.map((x) => `"${x}"`).join(" OR ") : "";
 
   // Фиксированный пул НЕ зависит от limit: раньше было limit*3, из-за чего
   // recallDocs(limit=5) и (limit=12) scoring-или разные наборы (разный состав
@@ -207,7 +350,8 @@ export function recallDocs(DB, query, opts = {}) {
   // трёх чанков с одного источника, затем добираем до ANCHOR_POOL.
   const ANCHOR_PER_SOURCE = 3;
   const textHits = queryFts(DB, "doc_fts", trigramQuery, FTS_POOL);
-  let anchorHits = anchorQuery ? queryFts(DB, "anchor_fts", anchorQuery, ANCHOR_POOL * 3) : [];
+  const anchorTable = useRaw ? ANCHOR_FTS_V4 : "anchor_fts";
+  let anchorHits = anchorQuery ? queryFts(DB, anchorTable, anchorQuery, ANCHOR_POOL * 3) : [];
   const getChunk = DB.prepare("SELECT * FROM doc_chunks WHERE id = ?");
   if (anchorHits.length) {
     const getSource = DB.prepare("SELECT source FROM doc_chunks WHERE id = ?");
@@ -250,6 +394,20 @@ export function recallDocs(DB, query, opts = {}) {
     }
   } catch { /* таблица ещё не создана — нормально */ }
 
+  // v4-слои. В legacy они даже не читаются — ноль накладных расходов и
+  // байтно прежний результат (гарантия fallback).
+  const utility = v4 ? utilityMap(DB) : new Map();
+  const observations = v4 ? observationMap(DB, qAnchors) : new Map();
+  const textRanks = mode === "rrf" ? rrfRank(textHits) : null;
+  const anchorRanks = mode === "rrf" ? rrfRank(anchorHits) : null;
+  const sourceCount = new Map();
+  if (v4) {
+    for (const item of byId.values()) {
+      const s = item.chunk.source;
+      sourceCount.set(s, (sourceCount.get(s) || 0) + 1);
+    }
+  }
+
   const results = [];
   for (const item of byId.values()) {
     const c = item.chunk;
@@ -264,12 +422,39 @@ export function recallDocs(DB, query, opts = {}) {
     const trust = trustMultiplier(c.source, c.source);
     const fb = feedback.get(c.id) || 0;
     const fbMul = 1 + 0.06 * Math.max(-0.5, Math.min(1, fb));
-    const score =
+    const sim =
       (W.bm25text * item.textScore +
        W.bm25anchor * item.anchorScore +
        W.graph * graph +
        W.authority * authority +
        W.recency * recency) * trust * fbMul;
+    let score = sim;
+    let q = 0.5;
+    if (mode === "rrf") {
+      // Reciprocal Rank Fusion: складываем ранги двух независимых списков,
+      // а не сырые bm25 (разные шкалы и плотность у trigram/unicode61).
+      const rrf = (textRanks.get(c.id) || 0) + (anchorRanks.get(c.id) || 0);
+      score = clamp(rrf * 30) * trust * fbMul;
+    } else if (v4 && utility.has(c.id)) {
+      q = clamp(Number(utility.get(c.id)));
+      // Non-parametric utility (MemRL/MEMOIR): (1−λ)·sim + λ·Q.
+      // Применяется ТОЛЬКО к чанкам с реальным исходом — холодный старт
+      // байтно совпадает с legacy.
+      score = (1 - UTILITY_LAMBDA) * sim + UTILITY_LAMBDA * q;
+    }
+    // Read-time evidence chain: по умолчанию информационная (why.evidence),
+    // а не скоринговая. Бонус включается явно — на gold он ухудшал recall.
+    if (v4) {
+      const siblings = Math.max(0, (sourceCount.get(c.source) || 1) - 1);
+      const evidenceW = Number.isFinite(opts.evidenceBonus) ? opts.evidenceBonus : 0;
+      score += evidenceW * clamp(siblings / 3);
+      for (const [topic, weight] of observations) {
+        if (c.text.toLowerCase().includes(topic.toLowerCase())) {
+          score += OBSERVATION_BONUS * weight;
+          break;
+        }
+      }
+    }
     results.push({
       id: c.id, source: c.source, heading: c.heading, kind: c.kind,
       line_from: c.line_from, line_to: c.line_to, text: c.text,
@@ -280,6 +465,9 @@ export function recallDocs(DB, query, opts = {}) {
         graph: Math.round(graph * 1000) / 1000,
         authority, recency: Math.round(recency * 1000) / 1000, trust, feedback: fb,
         anchors: anchors.filter((x) => c.anchors.split(" ").includes(x)),
+        sim: Math.round(sim * 10000) / 10000,
+        mode, utility: v4 ? Math.round(q * 1000) / 1000 : undefined,
+        evidence: v4 ? Math.max(0, (sourceCount.get(c.source) || 1) - 1) : undefined,
       },
     });
   }
@@ -319,7 +507,7 @@ export function memoryPack(DB, query, opts = {}) {
   // наборы (FTS5 OR-запрос выбирает разный пул), из-за чего адаптивный пак
   // терял gold-источник при том же запросе. Берём стабильные 12 и режем потом.
   const docHits = recallDocs(DB, query, {
-    limit: Math.max(want, 12), scope: opts.scope, as_of: opts.as_of,
+    limit: Math.max(want, 12), scope: opts.scope, as_of: opts.as_of, mode: opts.mode,
   });
   // Временны́е факты живут в отдельной таблице. Добавляем их в общий пул только
   // при явном совпадении с запросом; на старых 40 gold фактов нет, поэтому их
@@ -482,12 +670,11 @@ export function approve(DB, id, approvedBy = "operator", reason = "") {
         DB.prepare(`INSERT OR REPLACE INTO graph(source, target, relation, evidence)
           VALUES (?, ?, ?, ?)`).run(row.id, target, relation, evidence);
       }
-      DB.prepare(`INSERT INTO memory_audit(id, op, target_id, sha_before, sha_after, reason, at, approved_by)
-        VALUES (?, 'approve-fact', ?, '', ?, ?, ?, ?)`)
-        .run(auditId, id, row.sha, reason || row.reason, at, approvedBy);
+      writeAudit(DB, auditId, "approve-fact", id, row.sha, reason || row.reason, at, approvedBy);
       DB.prepare("INSERT INTO memory_snapshot(audit_id, payload) VALUES (?, ?)")
         .run(auditId, JSON.stringify({ staged: row, previous: superseded.map((x) => x.id) }));
       DB.prepare("DELETE FROM memory_staged WHERE id = ?").run(id);
+      bumpEpoch(DB);
       DB.exec("COMMIT");
     } catch (e) {
       DB.exec("ROLLBACK");
@@ -496,12 +683,11 @@ export function approve(DB, id, approvedBy = "operator", reason = "") {
     return { approved: true, id, sha: row.sha, audit_id: auditId, kind: "fact",
       topic_key: row.topic_key, superseded: superseded.length };
   }
-  DB.prepare(`INSERT INTO memory_audit(id, op, target_id, sha_before, sha_after, reason, at, approved_by)
-    VALUES (?, 'approve', ?, '', ?, ?, ?, ?)`)
-    .run(auditId, id, row.sha, reason, at, approvedBy);
+  writeAudit(DB, auditId, "approve", id, row.sha, reason, at, approvedBy);
   DB.prepare("INSERT INTO memory_snapshot(audit_id, payload) VALUES (?, ?)")
     .run(auditId, JSON.stringify(row));
   DB.prepare("DELETE FROM memory_staged WHERE id = ?").run(id);
+  bumpEpoch(DB);
   return { approved: true, id, sha: row.sha, audit_id: auditId, kind: "doc" };
 }
 
@@ -529,8 +715,11 @@ export function rollback(DB, auditId) {
           confidence=excluded.confidence, reason=excluded.reason, links=excluded.links`)
         .run(row.id, row.content, row.sha, row.provenance, row.at, row.kind,
           row.topic_key, row.valid_from, row.confidence, row.reason, row.links);
-      DB.prepare("DELETE FROM memory_audit WHERE id = ?").run(auditId);
-      DB.prepare("DELETE FROM memory_snapshot WHERE audit_id = ?").run(auditId);
+      // v4: аудит append-only. Вместо тихого удаления пишем компенсирующую
+      // запись — цепочка hash-chain остаётся непрерывной и проверяемой.
+      writeAudit(DB, `rollback-${auditId}`, "rollback", row.id, row.sha,
+        "compensating rollback of " + auditId, Date.now(), "system");
+      bumpEpoch(DB);
       DB.exec("COMMIT");
     } catch (e) {
       DB.exec("ROLLBACK");
@@ -541,8 +730,9 @@ export function rollback(DB, auditId) {
   DB.prepare(`INSERT INTO memory_staged(id, content, sha, provenance, at) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET content=excluded.content, sha=excluded.sha, provenance=excluded.provenance, at=excluded.at`)
     .run(row.id, row.content, row.sha, row.provenance, row.at);
-  DB.prepare("DELETE FROM memory_audit WHERE id = ?").run(auditId);
-  DB.prepare("DELETE FROM memory_snapshot WHERE audit_id = ?").run(auditId);
+  writeAudit(DB, `rollback-${auditId}`, "rollback", row.id, row.sha,
+    "compensating rollback of " + auditId, Date.now(), "system");
+  bumpEpoch(DB);
   return { rolled_back: true, audit_id: auditId, restored: row.id, sha: row.sha, kind: "doc" };
 }
 
@@ -742,10 +932,14 @@ export function rejectProposal(DB, id, approvedBy = "operator", reason = "") {
   const p = DB.prepare("SELECT * FROM memory_proposal WHERE id = ?").get(id);
   if (!p) throw new Error("proposal not found: " + id);
   if (p.status === "rejected") return { reused: true, id, status: "rejected" };
+  const at = Date.now();
   DB.prepare(`UPDATE memory_proposal
     SET status='rejected', decided_by=?, reason=?, seen_at=? WHERE id=?`)
-    .run(approvedBy, reason, Date.now(), id);
-  return { rejected: true, id, status: "rejected" };
+    .run(approvedBy, reason, at, id);
+  const auditId = `reject-${sha256(id + at).slice(0, 16)}`;
+  writeAudit(DB, auditId, "reject-proposal", id, p.sha || "", reason, at, approvedBy);
+  bumpEpoch(DB);
+  return { rejected: true, id, status: "rejected", audit_id: auditId };
 }
 
 export function rollbackProposal(DB, id) {
@@ -757,6 +951,111 @@ export function rollbackProposal(DB, id) {
   DB.prepare("UPDATE memory_proposal SET status='rolled_back', reason=?, seen_at=? WHERE id=?")
     .run(`rolled back to ${undone.restored || ""}`, Date.now(), id);
   return { ...undone, proposal: id, status: "rolled_back" };
+}
+
+// ---- v4: credit/blame и офлайн-консолидация --------------------------------
+
+// Credit/blame: что именно попало в контекст и к чему привело. Q обновляется
+// из внешнего reward — веса модели и legacy-ранжирование не трогаются.
+export function learnOutcome(DB, query, chunkIds, outcome = "success", reward = 1, note = "") {
+  ensureCoreSchema(DB);
+  const ids = [...new Set((chunkIds || []).map(String))].slice(0, 32);
+  const r = clamp(Number.isFinite(reward) ? reward : (outcome === "success" ? 1 : outcome === "failure" ? -1 : 0), -1, 1);
+  const qsha = sha256(String(query || "").toLowerCase().trim()).slice(0, 16);
+  const id = `out-${sha256(qsha + "|" + ids.join(",") + "|" + r + "|" + Date.now()).slice(0, 16)}`;
+  const at = Date.now();
+  const tx = DB.transaction(() => {
+    DB.prepare(`INSERT INTO memory_outcome(id, query_sha, chunk_ids, outcome, reward, at, note)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, qsha, JSON.stringify(ids), String(outcome), r, at, String(note || ""));
+    const get = DB.prepare("SELECT q, uses, successes, failures FROM memory_utility WHERE chunk_id=?");
+    const put = DB.prepare(`INSERT INTO memory_utility(chunk_id, q, uses, successes, failures, last_used)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(chunk_id) DO UPDATE SET q=excluded.q, uses=excluded.uses,
+        successes=excluded.successes, failures=excluded.failures, last_used=excluded.last_used`);
+    for (const cid of ids) {
+      const cur = get.get(cid) || { q: 0.5, uses: 0, successes: 0, failures: 0 };
+      const q = clamp(Number(cur.q) + UTILITY_ALPHA * (clamp((r + 1) / 2) - Number(cur.q)));
+      put.run(cid, q, Number(cur.uses) + 1,
+        Number(cur.successes) + (r > 0 ? 1 : 0), Number(cur.failures) + (r < 0 ? 1 : 0), at);
+    }
+    bumpEpoch(DB);
+  });
+  tx();
+  return { id, query_sha: qsha, chunks: ids.length, reward: r, outcome: String(outcome) };
+}
+
+// «Dreaming»: дешёвая офлайн-сверка фактов в наблюдения с proof count
+// (по Hindsight). Не сжимает и не удаляет исходники — только надстройка.
+export function runDreamPass(DB, opts = {}) {
+  ensureCoreSchema(DB);
+  const at = Number.isFinite(opts.at) ? Number(opts.at) : Date.now();
+  // В proof count входят и архивные факты: они всё равно независимые
+  // подтверждения темы, просто старше. Иначе слот с supersedes никогда не
+  // даст observation с proof_count > 1.
+  const groups = DB.prepare(`SELECT topic_key, count(*) n, avg(confidence) conf, min(valid_from) vf
+    FROM memory_fact WHERE topic_key <> '' AND topic_key <> 'staged'
+    GROUP BY topic_key HAVING count(*) > 1 ORDER BY topic_key`).all();
+  let created = 0, updated = 0, invalidated = 0;
+  const tx = DB.transaction(() => {
+    const live = new Set();
+    for (const g of groups) {
+      const rows = DB.prepare(`SELECT id, content, sha FROM memory_fact
+        WHERE topic_key=? ORDER BY id`).all(g.topic_key);
+      const ids = rows.map((x) => x.id);
+      const proof = sha256(ids.join("|") + "|" + g.topic_key).slice(0, 16);
+      const oid = `obs-${proof}`;
+      live.add(oid);
+      const exists = DB.prepare("SELECT proof_count, sha FROM memory_observation WHERE id=?").get(oid);
+      const confidence = clamp(Number(g.conf) || 0.5);
+      if (exists) {
+        DB.prepare(`UPDATE memory_observation SET proof_count=?, confidence=?, source_ids=?, sha=? WHERE id=?`)
+          .run(ids.length, confidence, JSON.stringify(ids), proof, oid);
+        updated++;
+      } else {
+        DB.prepare(`INSERT INTO memory_observation
+          (id, topic_key, content, sha, proof_count, source_ids, confidence, valid_from, provenance, created, audit_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'own-runtime', ?, '')`)
+          .run(oid, g.topic_key, rows.map((x) => x.content).join(" | ").slice(0, 800),
+            proof, ids.length, JSON.stringify(ids), confidence, Number(g.vf) || at, at);
+        created++;
+      }
+    }
+    // Наблюдение, у которого больше нет живых исходников, закрывается, а не
+    // удаляется — та же append-only логика, что и у аудита.
+    for (const o of DB.prepare("SELECT id FROM memory_observation WHERE invalid_at IS NULL").all()) {
+      if (!live.has(o.id)) {
+        DB.prepare("UPDATE memory_observation SET invalid_at=? WHERE id=?").run(at, o.id);
+        invalidated++;
+      }
+    }
+    bumpEpoch(DB);
+  });
+  tx();
+  return { created, updated, invalidated, groups: groups.length };
+}
+
+// Held-out gate: детерминированная fifth-подвыборка gold, которой не касались
+// правки весов. При регрессе >maxDrop можно явно включить авто-откат по audit_id.
+export function runHeldoutGate(DB, suite, gold, opts = {}) {
+  ensureCoreSchema(DB);
+  const held = gold.filter((g) => sha256(String(g.query)).charCodeAt(0) % 5 === 0);
+  const evalGold = held.length ? held : gold;
+  const metric = runBench(DB, String(suite || "core") + "-holdout", evalGold, opts);
+  const baseline = Number.isFinite(opts.baseline) ? Number(opts.baseline) : null;
+  const maxDrop = Number.isFinite(opts.maxDrop) ? Number(opts.maxDrop) : 0.02;
+  const delta = baseline == null ? 0 : metric.recall5 - baseline;
+  const pass = baseline == null || delta >= -maxDrop;
+  let rolledBack = false;
+  if (!pass && opts.autoRollback === true && opts.audit_id) {
+    rollback(DB, String(opts.audit_id));
+    rolledBack = true;
+  }
+  return {
+    suite: String(suite || "core"), heldout: evalGold.length, total: gold.length,
+    recall5: metric.recall5, baseline, delta: Math.round(delta * 1000) / 1000,
+    maxDrop, status: pass ? "pass" : "FAIL", rolled_back: rolledBack, at: Date.now(),
+  };
 }
 
 // ---- Бенчмарк ---------------------------------------------------------------
