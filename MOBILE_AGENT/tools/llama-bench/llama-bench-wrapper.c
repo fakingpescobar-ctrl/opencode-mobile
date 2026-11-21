@@ -1,6 +1,6 @@
 // Обёртка вокруг llama.cpp (API b12554+) для замера реальной latency на железе.
 // Собирается в CI как libllama-bench.so (musl aarch64), грузится через bun:ffi + libldmusl.
-// Экспортирует функции: lb_bench, lb_version.
+// Экспортирует функции: lb_bench, lb_gen, lb_gen_g, lb_score, lb_version.
 //
 // Методология (версия 3):
 //  - промпт без чат-спецтокенов, один и тот же набор байт для всех моделей;
@@ -11,6 +11,7 @@
 #include "llama.h"
 #include "ggml.h"
 #include <stdint.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -258,4 +259,117 @@ int lb_gen_g(const char *model_path, const char *prompt, const char *grammar,
   return 0;
 }
 
-const char *lb_version(void) { return "llama-bench-musl-5"; }
+// Decision-модели (hs-decide-1-flash) не генерируют текст: они читают вероятность
+// варианта в позиции двоеточия строки "Qn:". Это ровно та схема, которой пользуется
+// их serving-код: логиты считаются только в слотах ответа, по ним берутся коды
+// вариантов, и softmax идёт по всем вариантам вопроса одним forward pass.
+//
+// slots:    n_slots индексов токенов-двоеточий (0-based, как в llama_get_logits_ith);
+// groups:   плоский массив n_slots*n_options*aliases id токенов, -1 = пустой алиас;
+// probs:    out n_slots*n_options вероятностей (сумма по строке = 1);
+// metrics[4]: [0]=prefill мс, [1]=всего мс, [2]=токенов промпта, [3]=размер словаря.
+int lb_score(const char *model_path, const char *prompt,
+             const int *slots, int n_slots,
+             const int *groups, int n_options, int aliases,
+             double *probs, double *metrics) {
+  if (!model_path || !prompt || !slots || !groups || !probs || !metrics ||
+      n_slots < 1 || n_options < 1 || aliases < 1) return -1;
+  const size_t total = (size_t)n_slots * (size_t)n_options * (size_t)aliases;
+  if (total > 1000000) return -1;
+
+  llama_log_set(quiet_log, NULL);
+  llama_backend_init();
+  struct llama_model_params mp = llama_model_default_params();
+  mp.n_gpu_layers = 0;  // Android без root: только CPU, как и в lb_bench
+  struct llama_model *model = llama_model_load_from_file(model_path, mp);
+  if (!model) { llama_backend_free(); return -1; }
+  const struct llama_vocab *vocab = llama_model_get_vocab(model);
+
+  struct llama_context_params cp = llama_context_default_params();
+  cp.n_ctx = 4096;
+  cp.n_batch = 4096;
+  cp.n_threads = 8;
+  cp.n_threads_batch = 8;
+  struct llama_context *ctx = llama_init_from_model(model, cp);
+  if (!ctx) { llama_model_free(model); llama_backend_free(); return -1; }
+
+  llama_token *ptok = (llama_token *)malloc(sizeof(llama_token) * 4096);
+  if (!ptok) { llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1; }
+  // special=1: ChatML-маркеры из промпта становятся токенами; add_special=0: BOS не добавляем.
+  int ntok = llama_tokenize(vocab, prompt, (int)strlen(prompt), ptok, 4096, false, true);
+  if (ntok <= 0) {
+    free(ptok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
+  }
+  for (int s = 0; s < n_slots; s++) {
+    if (slots[s] < 0 || slots[s] >= ntok) {
+      free(ptok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
+    }
+  }
+  metrics[2] = (double)ntok;
+  metrics[3] = (double)llama_vocab_n_tokens(vocab);
+
+  struct llama_batch batch = llama_batch_init(ntok, 0, 1);
+  for (int i = 0; i < ntok; i++) {
+    batch.token[i] = ptok[i];
+    batch.pos[i] = i;
+    batch.n_seq_id[i] = 1;
+    batch.seq_id[i][0] = 0;
+    batch.logits[i] = 0;
+  }
+  for (int s = 0; s < n_slots; s++) batch.logits[slots[s]] = 1;
+  batch.n_tokens = ntok;
+
+  double t0 = now_s();
+  int rc = llama_decode(ctx, batch);
+  double t1 = now_s();
+  if (rc != 0) {
+    llama_batch_free(batch); free(ptok);
+    llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
+  }
+  metrics[0] = (t1 - t0) * 1000.0;
+  metrics[1] = metrics[0];
+
+  double *sums = (double *)malloc((size_t)n_options * sizeof(double));
+  if (!sums) {
+    llama_batch_free(batch); free(ptok);
+    llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
+  }
+  for (int s = 0; s < n_slots; s++) {
+    const float *logits = llama_get_logits_ith(ctx, slots[s]);
+    if (!logits) {
+      free(sums); llama_batch_free(batch); free(ptok);
+      llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
+    }
+    double best = -1e30;
+    int nvocab = (int)metrics[3];
+    for (int o = 0; o < n_options; o++) {
+      double mx = -1e30;
+      for (int a = 0; a < aliases; a++) {
+        int id = groups[((size_t)s * n_options + o) * aliases + a];
+        if (id < 0 || id >= nvocab) continue;
+        float v = logits[id];
+        if ((double)v > mx) mx = v;
+      }
+      sums[o] = mx;
+      if (mx > best) best = mx;
+    }
+    double denom = 0.0;
+    for (int o = 0; o < n_options; o++) {
+      sums[o] = (sums[o] <= -1e29) ? 0.0 : exp(sums[o] - best);
+      denom += sums[o];
+    }
+    for (int o = 0; o < n_options; o++) {
+      probs[(size_t)s * n_options + o] = denom > 0.0 ? sums[o] / denom : 0.0;
+    }
+  }
+
+  free(sums);
+  llama_batch_free(batch);
+  free(ptok);
+  llama_free(ctx);
+  llama_model_free(model);
+  llama_backend_free();
+  return 0;
+}
+
+const char *lb_version(void) { return "llama-bench-musl-6"; }
