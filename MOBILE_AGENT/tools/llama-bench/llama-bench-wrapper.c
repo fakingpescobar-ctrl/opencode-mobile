@@ -1,6 +1,7 @@
 // Обёртка вокруг llama.cpp (API b12554+) для замера реальной latency на железе.
 // Собирается в CI как libllama-bench.so (musl aarch64), грузится через bun:ffi + libldmusl.
-// Экспортирует функции: lb_bench, lb_gen, lb_gen_g, lb_code_ids, lb_score, lb_version.
+// Экспортирует функции: lb_bench, lb_gen, lb_gen_g, lb_code_ids, lb_score,
+// lb_quantize, lb_version.
 //
 // Методология (версия 3):
 //  - промпт без чат-спецтокенов, один и тот же набор байт для всех моделей;
@@ -410,4 +411,15 @@ int lb_score(const char *model_path, const char *prompt,
   return 0;
 }
 
-const char *lb_version(void) { return "llama-bench-musl-8"; }
+// Квантовать GGUF в другой файл тем же llama.cpp, без внешних бинарников.
+// ftype — llama_ftype: 7 = Q8_0, 15 = Q4_K_M. 0 = успех.
+int lb_quantize(const char *src, const char *dst, int ftype) {
+  if (!src || !dst) return -1;
+  llama_log_set(quiet_log, NULL);
+  struct llama_model_quantize_params p = llama_model_quantize_default_params();
+  p.nthread = 4;
+  p.ftype = (enum llama_ftype)ftype;
+  return llama_model_quantize(src, dst, &p) == 0 ? 0 : -1;
+}
+
+const char *lb_version(void) { return "llama-bench-musl-9"; }
