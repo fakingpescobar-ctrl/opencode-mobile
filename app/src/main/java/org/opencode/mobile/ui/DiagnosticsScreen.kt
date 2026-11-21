@@ -15,7 +15,6 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -29,6 +28,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -79,7 +79,6 @@ import org.opencode.mobile.BuildConfig
 import org.opencode.mobile.OpencodeApp
 import org.opencode.mobile.engine.Engine
 import org.opencode.mobile.engine.EngineStore
-import org.opencode.mobile.engine.GgufCatalog
 import org.opencode.mobile.engine.GgufModel
 import org.opencode.mobile.engine.GgufStore
 import org.opencode.mobile.installer.InstalledAppController
@@ -730,7 +729,12 @@ fun DiagnosticsScreen(
                                 val next = raw.take(CRASH_NAME_MAX)
                                 reporterName = next
                                 reportPrefs.edit()
-                                    .putString(CRASH_NAME_KEY, next.trim().ifEmpty { CRASH_NAME_DEFAULT })
+                                    .putString(
+                                        CRASH_NAME_KEY,
+                                        next
+                                            .trim()
+                                            .ifEmpty { CRASH_NAME_DEFAULT },
+                                    )
                                     .apply()
                             },
                             singleLine = true,
