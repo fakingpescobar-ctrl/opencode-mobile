@@ -11,7 +11,9 @@ import { dirname, join } from "path";
 import {
   CORE_SCHEMA, recallDocs, memoryPack, indexSha,
   followThread, graphSnapshot, factStats, runTemporalBench,
-  proposalStats, runProposalPass,
+  proposalStats, runProposalPass, acceptProposal, rejectProposal, rollbackProposal,
+  learnOutcome, runDreamPass, verifyAuditChain, runHeldoutGate, readEpoch, bumpEpoch,
+  MODES, DEFAULT_MODE,
   ingest, approve, rollback, runBench,
 } from "./memory-core.js";
 import { indexDocs } from "./memory-index.mjs";
@@ -385,7 +387,7 @@ function corePack(args) {
   if (a.refresh) ensureCoreIndex(true); else ensureCoreIndex();
   return memoryPack(DB, coreQuery(a), {
     budgetTokens: a.budgetTokens, limit: a.limit, scope: a.scope,
-    as_of: a.as_of, facts: a.facts,
+    as_of: a.as_of, facts: a.facts, mode: a.mode,
   });
 }
 
@@ -394,7 +396,7 @@ function coreRecallDoc(args) {
   if (a.refresh) ensureCoreIndex(true); else ensureCoreIndex();
   return {
     query: coreQuery(a),
-    hits: recallDocs(DB, a.query, { limit: a.limit || 10, scope: a.scope, as_of: a.as_of }),
+    hits: recallDocs(DB, a.query, { limit: a.limit || 10, scope: a.scope, as_of: a.as_of, mode: a.mode }),
   };
 }
 
@@ -512,12 +514,14 @@ const memoryTools = [
     inputSchema: { type: "object", properties: {
       query: { type: "string" }, budgetTokens: { type: "number" }, limit: { type: "number" },
       scope: { type: ["string", "array"], items: { type: "string" } },
-      as_of: { type: "number" }, facts: { type: "boolean" }, refresh: { type: "boolean" } }, required: ["query"] } },
+      as_of: { type: "number" }, facts: { type: "boolean" }, refresh: { type: "boolean" },
+      mode: { type: "string", enum: ["legacy", "v4", "rrf"], description: "legacy — эталонный fallback; v4 — utility+evidence; rrf — fused ranks" } }, required: ["query"] } },
   { name: "memory_recall_doc", description: " Топ чанков рабочей памяти с полными весами и пояснением why. Без LLM, без эмбеддингов, на FTS5 + леммах + графе. scope ограничивает kind (rule/state/journal/path/catalog/advice/doc).",
     inputSchema: { type: "object", properties: {
       query: { type: "string" }, limit: { type: "number" },
       scope: { type: ["string", "array"], items: { type: "string" } },
-      as_of: { type: "number" }, refresh: { type: "boolean" } }, required: ["query"] } },
+      as_of: { type: "number" }, refresh: { type: "boolean" },
+      mode: { type: "string", enum: ["legacy", "v4", "rrf"] } }, required: ["query"] } },
   { name: "memory_adaptive", description: " Адаптивный доступ: confidence по peak=top1−медиана, бюджет по уверенности, концептуальная нить. explain=true возвращает только оценку уверенности без упаковки.",
     inputSchema: { type: "object", properties: {
       query: { type: "string" }, scope: { type: ["string", "array"], items: { type: "string" } },
@@ -551,8 +555,33 @@ const memoryTools = [
     inputSchema: { type: "object", properties: {
       id: { type: "string" }, approved_by: { type: "string" }, reason: { type: "string" } },
       required: ["id", "approved_by"] } },
-  { name: "memory_rollback", description: " Откатить approve по audit_id: восстановить staged-запись и удалить audit-запись. Ничего не исчезает молча.",
+  { name: "memory_rollback", description: " Откатить approve по audit_id: восстановить staged-запись и дописать компенсирующую аудит-запись. Исходный аудит НЕ удаляется — цепочка остаётся проверяемой.",
     inputSchema: { type: "object", properties: { audit_id: { type: "string" } }, required: ["audit_id"] } },
+  { name: "memory_proposal_accept", description: " Принять предложение ночного прохода: staged→fact с аудитом. Человек в контуре, без автоматического применения.",
+    inputSchema: { type: "object", properties: {
+      id: { type: "string" }, approved_by: { type: "string" }, reason: { type: "string" } },
+      required: ["id", "approved_by"] } },
+  { name: "memory_proposal_reject", description: " Отклонить предложение с аудитом rejection (append-only).",
+    inputSchema: { type: "object", properties: {
+      id: { type: "string" }, approved_by: { type: "string" }, reason: { type: "string" } },
+      required: ["id", "approved_by"] } },
+  { name: "memory_proposal_rollback", description: " Откатить принятое предложение, сохранив аудит и пометив статус rolled_back.",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+  { name: "memory_outcome", description: " Credit/blame: записать, какие chunk_id реально помогли (или помешали), и обновить непараметрическую полезность Q. legacy-ранжирование не меняется.",
+    inputSchema: { type: "object", properties: {
+      query: { type: "string" }, chunk_ids: { type: "array", items: { type: "string" } },
+      outcome: { type: "string", enum: ["success", "failure", "neutral"] },
+      reward: { type: "number" }, note: { type: "string" } },
+      required: ["query", "chunk_ids"] } },
+  { name: "memory_dream", description: " Офлайн-сверка «dreaming»: собрать факты с общим topic_key в наблюдения с proof count. Ничего не удаляет, идемпотентно.",
+    inputSchema: { type: "object", properties: {} } },
+  { name: "memory_audit_verify", description: " Проверить hash-chain аудита: непрерывность seq и отсутствие подмен. Возвращает ok/checked/broken и текущий epoch.",
+    inputSchema: { type: "object", properties: {} } },
+  { name: "memory_gate", description: " Held-out gate: детерминированная подвыборка gold, сравнение с baseline и опциональный авто-откат по audit_id при регрессе >maxDrop.",
+    inputSchema: { type: "object", properties: {
+      suite: { type: "string" }, baseline: { type: "number" }, maxDrop: { type: "number" },
+      autoRollback: { type: "boolean" }, audit_id: { type: "string" },
+      gold_path: { type: "string" } } } },
   { name: "memory_llm_status", description: " Состояние резидентного LLM-сопроцессора: модель проверена и прогрета при старте MCP. Показывает corridor 5–12 кандидатов и бюджет латентности; при недоступности — причину.",
     inputSchema: { type: "object", properties: {} } },
   { name: "memory_llm_search", description: " Точечный поиск события/факта. Ядро даёт 5–12 кандидатов с why. При высокой уверенности ядра LLM НЕ вызывается (mode=core-only, ~10 мс); при низкой — LLM возвращает выбранные ID, синонимы для повторного быстрого поиска и evidence. force=true вызывает LLM принудительно (для проверки). Ответ НЕ пишется в память; детерминированный pack всегда внутри, при отказе — fallback=true.",
@@ -1603,6 +1632,32 @@ async function callTool(name, args) {
       return approve(DB, String(a.id || ""), String(a.approved_by), String(a.reason || ""));
     }
     case "memory_rollback": return rollback(DB, String((args || {}).audit_id || ""));
+    case "memory_proposal_accept": {
+      const a = args || {};
+      if (!String(a.approved_by || "").trim()) throw new Error("approved_by required");
+      return acceptProposal(DB, String(a.id || ""), String(a.approved_by), String(a.reason || ""));
+    }
+    case "memory_proposal_reject": {
+      const a = args || {};
+      if (!String(a.approved_by || "").trim()) throw new Error("approved_by required");
+      return rejectProposal(DB, String(a.id || ""), String(a.approved_by), String(a.reason || ""));
+    }
+    case "memory_proposal_rollback": return rollbackProposal(DB, String((args || {}).id || ""));
+    case "memory_outcome": {
+      const a = args || {};
+      return learnOutcome(DB, String(a.query || ""), a.chunk_ids || [],
+        String(a.outcome || "success"), Number.isFinite(a.reward) ? a.reward : undefined,
+        String(a.note || ""));
+    }
+    case "memory_dream": return runDreamPass(DB);
+    case "memory_audit_verify": {
+      const chain = verifyAuditChain(DB);
+      return { ...chain, epoch: readEpoch(DB), modes: MODES, default_mode: DEFAULT_MODE };
+    }
+    case "memory_gate": {
+      const a = args || {};
+      return runHeldoutGate(DB, a.suite || "core", coreGold(a), a);
+    }
     case "memory_llm_status": {
       await bootLlm();
       return llmStatus();
