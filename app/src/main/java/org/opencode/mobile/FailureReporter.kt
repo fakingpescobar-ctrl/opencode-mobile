@@ -30,6 +30,9 @@ object FailureReporter {
     private const val KEY_LAST_SENT = "last_sent_at"
     private const val KEY_LAST_FP = "last_fingerprint"
     private const val KEY_INSTALL_ID = "install_id"
+    private const val KEY_REPORTER_NAME = "reporter_name"
+    private const val DEFAULT_REPORTER_NAME = "USER"
+    private const val MAX_NAME_LEN = 60
     private const val RATE_LIMIT_MS = 60L * 60 * 1000
     private const val DEDUP_MS = 24L * 60 * 60 * 1000
     private const val MAX_TEXT = 3500
@@ -42,7 +45,10 @@ object FailureReporter {
     private const val BYTES_PER_MB = 1024L * 1024L
 
     @Synchronized
-    fun report(context: Context, state: OpencodeServerService.ServerState) {
+    fun report(
+        context: Context,
+        state: OpencodeServerService.ServerState,
+    ) {
         val report = buildReport(context, state)
         val prefs = prefs(context)
         val fp = report.optString("fingerprint")
@@ -60,8 +66,9 @@ object FailureReporter {
     fun flush(context: Context): Boolean {
         val token = BuildConfig.TELEGRAM_BOT_TOKEN
         val chat = BuildConfig.TELEGRAM_CHAT_ID
-        val pending = File(context.filesDir, "failures")
-            .listFiles { f -> f.name.endsWith(".json") }
+        val pending =
+            File(context.filesDir, "failures")
+                .listFiles { f -> f.name.endsWith(".json") }
         return when {
             token.isBlank() || chat.isBlank() -> false
             pending.isNullOrEmpty() -> false
@@ -69,7 +76,11 @@ object FailureReporter {
         }
     }
 
-    private fun flushPending(token: String, chat: String, pending: List<File>): Boolean {
+    private fun flushPending(
+        token: String,
+        chat: String,
+        pending: List<File>,
+    ): Boolean {
         var sent = false
         for (file in pending) {
             val text = readText(file)
@@ -89,21 +100,30 @@ object FailureReporter {
     private fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    private fun allowed(prefs: SharedPreferences, fingerprint: String): Boolean {
+    private fun allowed(
+        prefs: SharedPreferences,
+        fingerprint: String,
+    ): Boolean {
         val now = System.currentTimeMillis()
         val last = prefs.getLong(KEY_LAST_SENT, 0L)
         if (prefs.getString(KEY_LAST_FP, "") == fingerprint && now - last < DEDUP_MS) return false
         return now - last >= RATE_LIMIT_MS
     }
 
-    private fun markSent(prefs: SharedPreferences, fingerprint: String) {
+    private fun markSent(
+        prefs: SharedPreferences,
+        fingerprint: String,
+    ) {
         prefs.edit()
             .putLong(KEY_LAST_SENT, System.currentTimeMillis())
             .putString(KEY_LAST_FP, fingerprint)
             .apply()
     }
 
-    private fun persist(context: Context, report: JSONObject) {
+    private fun persist(
+        context: Context,
+        report: JSONObject,
+    ) {
         val dir = File(context.filesDir, "failures")
         if (!dir.exists() && !dir.mkdirs()) return
         val file = File(dir, "${System.currentTimeMillis()}-${UUID.randomUUID()}.json")
@@ -111,11 +131,15 @@ object FailureReporter {
             .onFailure { Log.w(TAG, "не записал отчёт: ${it.message}") }
     }
 
-    private fun readText(file: File): String? = runCatching {
-        JSONObject(file.readText()).optString("text").takeIf { it.isNotBlank() }
-    }.getOrNull()
+    private fun readText(file: File): String? =
+        runCatching {
+            JSONObject(file.readText()).optString("text").takeIf { it.isNotBlank() }
+        }.getOrNull()
 
-    private fun buildReport(context: Context, state: OpencodeServerService.ServerState): JSONObject {
+    private fun buildReport(
+        context: Context,
+        state: OpencodeServerService.ServerState,
+    ): JSONObject {
         val err = state.lastError
         val code = err?.code?.name ?: "UNKNOWN"
         val stage = err?.stage?.name ?: state.stage?.name ?: "UNKNOWN"
@@ -123,15 +147,17 @@ object FailureReporter {
         val lines = ArrayList<String>()
         lines.add("OpenCode Mobile crash report")
         lines.add("build: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) ${BuildConfig.GIT_SHA}")
+        lines.add("from: ${reporterName(context)}")
         lines.add("reporter: ${installId(context)}")
         lines.add("role: ${deviceRole()}")
         lines.add("stage: $stage")
         lines.add("code: $code (recoverable=${err?.recoverable ?: false})")
         lines.add("message: ${sanitize(err?.message ?: "no lastError")}")
         if (state.errorHistory.isNotEmpty()) {
-            val tail = state.errorHistory.takeLast(HISTORY_LIMIT).joinToString("; ") {
-                "${it.code}: ${sanitize(it.message)}"
-            }
+            val tail =
+                state.errorHistory.takeLast(HISTORY_LIMIT).joinToString("; ") {
+                    "${it.code}: ${sanitize(it.message)}"
+                }
             lines.add("history: $tail")
         }
         lines.add(deviceLine(context))
@@ -142,11 +168,12 @@ object FailureReporter {
     }
 
     /** Наш рабочий девайс помечаем как DEV/ADMIN, остальные — USER. */
-    private fun deviceRole(): String = if (Build.FINGERPRINT == BuildConfig.DEV_DEVICE_FINGERPRINT) {
-        "DEV/ADMIN"
-    } else {
-        "USER"
-    }
+    private fun deviceRole(): String =
+        if (Build.FINGERPRINT == BuildConfig.DEV_DEVICE_FINGERPRINT) {
+            "DEV/ADMIN"
+        } else {
+            "USER"
+        }
 
     /**
      * Стабильный ID установки. Не IMEI и не ANDROID_ID: случайный UUID в
@@ -161,6 +188,13 @@ object FailureReporter {
         return fresh
     }
 
+    /** Имя, которое юзер задал в диагностике, или USER по умолчанию. */
+    private fun reporterName(context: Context): String =
+        prefs(context).getString(KEY_REPORTER_NAME, DEFAULT_REPORTER_NAME)
+            ?.takeIf { it.isNotBlank() }
+            ?.take(MAX_NAME_LEN)
+            ?: DEFAULT_REPORTER_NAME
+
     private fun deviceLine(context: Context): String {
         val mi = android.app.ActivityManager.MemoryInfo()
         runCatching {
@@ -174,16 +208,20 @@ object FailureReporter {
 
     private fun mb(bytes: Long): String = "${bytes / BYTES_PER_MB}MB"
 
-    private fun stamp(): String =
-        SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+    private fun stamp(): String = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
 
     /** Вырезаем пути и длинные токены: в отчёт уходит только суть сбоя. */
-    private fun sanitize(raw: String): String = raw
-        .replace(Regex("(/storage|/data|/sdcard)/[^\\s]+"), "<path>")
-        .replace(Regex("[A-Za-z0-9_-]{32,}"), "<redacted>")
-        .take(MAX_SANITIZED)
+    private fun sanitize(raw: String): String =
+        raw
+            .replace(Regex("(/storage|/data|/sdcard)/[^\\s]+"), "<path>")
+            .replace(Regex("[A-Za-z0-9_-]{32,}"), "<redacted>")
+            .take(MAX_SANITIZED)
 
-    private fun send(token: String, chat: String, text: String): Boolean {
+    private fun send(
+        token: String,
+        chat: String,
+        text: String,
+    ): Boolean {
         var conn: HttpURLConnection? = null
         return try {
             val url = URL("https://api.telegram.org/bot$token/sendMessage")
@@ -192,10 +230,14 @@ object FailureReporter {
             conn.connectTimeout = CONNECT_TIMEOUT_MS
             conn.readTimeout = READ_TIMEOUT_MS
             conn.doOutput = true
-            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-            val body = "chat_id=${URLEncoder.encode(chat, "UTF-8")}" +
-                "&text=${URLEncoder.encode(text, "UTF-8")}" +
-                "&disable_web_page_preview=true"
+            conn.setRequestProperty(
+                "Content-Type",
+                "application/x-www-form-urlencoded; charset=UTF-8",
+            )
+            val body =
+                "chat_id=${URLEncoder.encode(chat, "UTF-8")}" +
+                    "&text=${URLEncoder.encode(text, "UTF-8")}" +
+                    "&disable_web_page_preview=true"
             conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
             conn.responseCode in HTTP_OK_MIN..HTTP_OK_MAX
         } catch (e: java.io.IOException) {
