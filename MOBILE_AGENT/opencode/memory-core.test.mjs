@@ -24,6 +24,16 @@ const idx = await import(CORE + "memory-index.mjs");
 const core = await import(CORE + "memory-core.js");
 const adaptive = await import(CORE + "memory-adaptive.js");
 
+// Движковые регрессы не должны падать от правки наших же рабочих доков:
+// СОСТОЯНИЕ.md/ЖУРНАЛ.md постоянно меняются и вместо эталона попадают в
+// якорный пул. Фиксируем эталонный corpus только для таких проверок.
+const ENGINE_DOCS = [
+  "ПРАВИЛА.md", "ХАРНЕС.md", "АРХИТЕКТУРА_ПАМЯТИ.md",
+  "КАТАЛОГ_ПЕРЕДЕЛОК.md", "БЕНЧМАРК_СОПРОЦЕССОРА.md",
+  "docs/agent-rules.md", "docs/MOLTBOOK_ADVICE.md",
+];
+const indexEngineDocs = (D) => idx.indexDocs(D, DOCS, { whitelist: ENGINE_DOCS });
+
 let ok = 0;
 let bad = 0;
 const failures = [];
@@ -394,7 +404,7 @@ section("4c. Дедупликация выбирает эталон, а не sta
 section("4d. Якорный пул включает эталон по точному идентификатору");
 {
   const D = new Database(":memory:");
-  idx.indexDocs(D, DOCS);
+  indexEngineDocs(D);
   for (const [q, expect] of [
     ["версия sdk android 17 device CPH2747", "АРХИТЕКТУРА_ПАМЯТИ.md"],
     ["git CLI на телефоне нет API скрипты", "ХАРНЕС.md"],
@@ -409,7 +419,7 @@ section("4d. Якорный пул включает эталон по точно
 section("4e. Якорный пул не монополизирован одним источником");
 {
   const D = new Database(":memory:");
-  idx.indexDocs(D, DOCS);
+  indexEngineDocs(D);
   for (const [q, expect] of [
     ["git CLI на телефоне нет API скрипты", "ХАРНЕС.md"],
     ["ports memory mcp /mcp /mobile MemoryMcp", "АРХИТЕКТУРА_ПАМЯТИ.md"],
@@ -932,6 +942,85 @@ section("9. approve с gate: baseline до коммита и откат по aud
   truthy(DB.prepare("SELECT id FROM memory_staged WHERE id=?").get("gate-nogold"),
     "без gold запись осталась staged");
   DB.close();
+}
+
+// ----------------------- 10. Bench gate: сравнение в рамках suite и индекса
+section("10. Bench gate: baseline только для того же suite и index_sha");
+{
+  const D = new Database(":memory:");
+  core.ensureCoreSchema(D);
+  idx.indexDocs(D, DOCS);
+  const sha = core.indexSha(D);
+  const suite = "gate-scope-test";
+  // Заведомо пропущенный источник: recall5 = 0, тогда baseline 1 даёт delta −1.
+  const mini = [{ query: "правило память", expect_source: "нет-такого-источника.md" }];
+  const put = (s, recall, index) => D.prepare(
+    "INSERT INTO bench_result(suite,recall5,mrr,ndcg,index_sha,at) VALUES (?,?,?,?,?,?)"
+  ).run(s, recall, 1, 1, index, Date.now());
+
+  // Чужой suite с завышенным recall не становится baseline.
+  D.exec("DELETE FROM bench_result");
+  put("other-suite", 1, sha);
+  let r = core.runBench(D, suite, mini);
+  eq(r.gate.status, "no-baseline", "чужой suite не baseline");
+
+  // Тот же suite, но другая сигнатура индекса — тоже не baseline.
+  D.exec("DELETE FROM bench_result");
+  put(suite, 1, "other-index");
+  r = core.runBench(D, suite, mini);
+  eq(r.gate.status, "no-baseline", "другой индекс не baseline");
+
+  // Свой suite на своём индексе честно ловит регресс.
+  D.exec("DELETE FROM bench_result");
+  put(suite, 1, sha);
+  r = core.runBench(D, suite, mini);
+  eq(r.gate.status, "FAIL", "свой baseline ловит регресс");
+  truthy(r.gate.delta < 0, "delta отрицательный: " + r.gate.delta);
+  eq(r.gate.maxDrop, 0.02, "порог по умолчанию 0.02");
+
+  D.exec("DELETE FROM bench_result");
+  put(suite, 1, sha);
+  r = core.runBench(D, suite, mini, { maxDrop: 2 });
+  eq(r.gate.status, "pass", "явный maxDrop смягчает gate");
+  D.close();
+}
+
+// ------------------------------- 11. Закрытый контейнер источников памяти
+section("11. Манифест источников: закрытый контейнер вместо обхода дерева");
+{
+  const dir = mkdtempSync(join(tmpdir(), "mem-manifest-"));
+  writeFileSync(join(dir, "a.md"), "# эталон\n\nправило 51 память\n");
+  writeFileSync(join(dir, "b.md"), "# мусор\n\nслучайная заметка\n");
+  mkdirSync(join(dir, "memory"));
+  const writeManifest = (sha) => writeFileSync(join(dir, "memory", "sources.json"),
+    JSON.stringify({ version: 1, sources: [{ path: "a.md", sha }] }));
+  writeManifest(idx.sha256(readFileSync(join(dir, "a.md"), "utf8")));
+
+  const D = new Database(":memory:");
+  let r = idx.indexDocs(D, dir, {});
+  eq(r.files, 1, "по манифесту индексируется один источник");
+  eq(idx.manifestStatus(dir).accepted, 1, "манифест принял эталон");
+
+  // Правка файла без обновления манифеста: источник исчезает, а не подменяется.
+  writeFileSync(join(dir, "a.md"), "# эталон\n\nправило 51 память\nдобавлено молча\n");
+  r = idx.indexDocs(D, dir, {});
+  eq(r.files, 0, "несовпадение sha исключает источник");
+  eq(idx.manifestStatus(dir).rejected.length, 1, "несовпадение видно в статусе");
+  writeManifest(idx.sha256(readFileSync(join(dir, "a.md"), "utf8")));
+
+  // Автономный старт: ядро само загружается из своего контейнера.
+  const B = new Database(":memory:");
+  const boot = idx.bootContainer(B, dir);
+  eq(boot.status, "ok", "контейнер стартует по манифесту");
+  eq(boot.files, 1, "старт индексирует один источник");
+  eq(boot.index_sha.length, 16, "контейнер несёт сигнатуру");
+  B.close();
+
+  // Явные override'ы не конфликтуют с манифестом.
+  eq(idx.indexDocs(D, dir, { whitelist: ["b.md"] }).files, 1, "whitelist перекрывает манифест");
+  eq(idx.indexDocs(D, dir, { manifest: false }).files, 2, "manifest:false возвращает обход дерева");
+  D.close();
+  rmSync(dir, { recursive: true, force: true });
 }
 
 // ---------------------------------------------------------------- итог
