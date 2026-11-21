@@ -15,6 +15,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -113,6 +114,12 @@ import java.util.Locale
 /** Сколько последних сбоев показываем в UI и дампе (кольцо хранит до MAX_ERROR_HISTORY). */
 private const val HISTORY_SHOWN = 5
 private const val PERCENT_MAX = 100
+
+/** Подпись автора автоотчёта о сбое: те же ключи, что использует FailureReporter. */
+private const val CRASH_NAME_PREFS = "failure_reporter"
+private const val CRASH_NAME_KEY = "reporter_name"
+private const val CRASH_NAME_DEFAULT = "USER"
+private const val CRASH_NAME_MAX = 60
 
 /** Сколько строк вывода retention показывать на экране (хвост, не дамп). */
 private const val RETENTION_OUTPUT_TAIL_LINES = 12
@@ -238,6 +245,10 @@ fun DiagnosticsScreen(
     val context = LocalContext.current
     val serverState by OpencodeServerService.state.collectAsState()
     val prefs = remember { context.getSharedPreferences("chat_overlay", Context.MODE_PRIVATE) }
+    val reportPrefs = remember { context.getSharedPreferences(CRASH_NAME_PREFS, Context.MODE_PRIVATE) }
+    var reporterName by remember {
+        mutableStateOf(reportPrefs.getString(CRASH_NAME_KEY, CRASH_NAME_DEFAULT) ?: CRASH_NAME_DEFAULT)
+    }
     val scope = rememberCoroutineScope()
     // Системный Back закрывает оверлей, как и иконка ✕ (иначе Back ушёл бы
     // из Activity, оставив оверлей на экране — UX-ловушка).
@@ -702,6 +713,38 @@ fun DiagnosticsScreen(
                             )
                         }
                     }
+                }
+
+                DiagSection("Отчёты о сбоях", DiagTone.IDLE) {
+                    Text("Имя для отчётов о сбоях", color = MoltIdle, fontSize = TINY, lineHeight = TINY_LINE)
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 2.dp)
+                            .background(MoltChipOff, RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 5.dp),
+                    ) {
+                        BasicTextField(
+                            value = reporterName,
+                            onValueChange = { raw ->
+                                val next = raw.take(CRASH_NAME_MAX)
+                                reporterName = next
+                                reportPrefs.edit()
+                                    .putString(CRASH_NAME_KEY, next.trim().ifEmpty { CRASH_NAME_DEFAULT })
+                                    .apply()
+                            },
+                            singleLine = true,
+                            textStyle = TextStyle(color = MoltValue, fontSize = SMALL, lineHeight = SMALL_LINE),
+                            modifier = Modifier.fillMaxWidth(),
+                            decorationBox = { inner ->
+                                if (reporterName.isEmpty()) {
+                                    Text(CRASH_NAME_DEFAULT, color = MoltIdle, fontSize = SMALL, lineHeight = SMALL_LINE)
+                                }
+                                inner()
+                            },
+                        )
+                    }
+                    InfoRow("В отчёте", reporterName.trim().ifEmpty { CRASH_NAME_DEFAULT })
                 }
 
                 // Права собраны в одной секции, потому что чинятся они одинаково —
