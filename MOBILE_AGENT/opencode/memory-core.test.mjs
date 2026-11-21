@@ -482,6 +482,76 @@ section("4g. Инкрементальная переиндексация вос�
   D.close();
 }
 
+// ------------------------------- 4h. Near-duplicate вместо точного sha текста
+section("4h. Near-duplicate: регистр, ё и пунктуация не создают дубль");
+{
+  eq(core.nearDuplicateKey("Память — читать самому; без напоминания!"),
+    core.nearDuplicateKey("память читать самому без напоминания"),
+    "near-duplicate ключ совпадает при разной вёрстке");
+  truthy(core.nearDuplicateKey("память читать самому") !==
+    core.nearDuplicateKey("память писать самому"),
+    "разные слова не сливаются в дубль");
+
+  const D = new Database(":memory:");
+  idx.indexDocs(D, DOCS);
+  const seed = core.recallDocs(D, "правило 51 память", { limit: 10 })
+    .find((h) => h.source === "ПРАВИЛА.md");
+  truthy(!!seed, "в выдаче есть чанк ПРАВИЛ для near-duplicate теста");
+  const base = D.prepare("SELECT * FROM doc_chunks WHERE id=?").get(seed.id);
+  const nearText = base.text.toLowerCase().replace(/ё/g, "е").replace(/[.,!?;:()]/g, " ");
+  const nearId = "near-dup-test:1";
+  D.prepare(`INSERT INTO doc_chunks
+    (id, source, heading, line_from, line_to, kind, text, trigram, anchors, lemmas, sha, created, ord)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(nearId, "docs/stale-copy.md", base.heading, 1, 2, base.kind,
+      nearText, base.trigram, base.anchors, base.lemmas, "near-sha", Date.now(), 9999);
+  D.prepare("INSERT INTO doc_fts(chunk_id,text) VALUES (?,?)").run(nearId, nearText);
+  D.prepare("INSERT INTO anchor_fts(chunk_id,anchors) VALUES (?,?)").run(nearId, base.anchors);
+  D.prepare("INSERT INTO anchor_fts_v4(chunk_id,anchors) VALUES (?,?)").run(nearId, base.anchors);
+  const hits = core.recallDocs(D, "правило 51 память", { limit: 10 });
+  truthy(hits.some((h) => h.id === base.id), "канонический чанк остался");
+  truthy(!hits.some((h) => h.id === nearId), "near-дубль выброшен из выдачи");
+  D.close();
+}
+
+// ------------------------------- 4i. Настоящий обход графа вместо proxy-запроса
+section("4i. Графовый обход: связь через узел поднимает чанк");
+{
+  // Минимальная БД: без 641 реального чанка целевой узел гарантированно
+  // остаётся в пуле, а тест проверяет именно обход, а не ранжирование.
+  const D = new Database(":memory:");
+  core.ensureCoreSchema(D);
+  const now = Date.now();
+  const mk = (id, text, anchors) => {
+    D.prepare(`INSERT INTO doc_chunks
+      (id, source, heading, line_from, line_to, kind, text, trigram, anchors, lemmas, sha, created, ord)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, "graph-test.md", "тест", 1, 2, "doc", text, text, anchors, "", id, now, 1);
+    D.prepare("INSERT INTO doc_fts(chunk_id,text) VALUES (?,?)").run(id, text);
+    D.prepare("INSERT INTO anchor_fts(chunk_id,anchors) VALUES (?,?)").run(id, anchors);
+    D.prepare("INSERT INTO anchor_fts_v4(chunk_id,anchors) VALUES (?,?)").run(id, anchors);
+  };
+  mk("graph-a:1", "советы молтбук графовый зонд левый", "advice");
+  // Уникальное слово «квантовый» выводит чанк в текстовый пул, но не в якорный —
+  // иначе он стал бы стартовым узлом и обход не дал бы ему глубину 2.
+  mk("graph-b:1", "квантовый зонд правый советы молтбук", "");
+  D.prepare("INSERT INTO graph(source,target,relation) VALUES (?,?,?)")
+    .run("graph-a:1", "bridge", "related");
+  D.prepare("INSERT INTO graph(source,target,relation) VALUES (?,?,?)")
+    .run("bridge", "graph-b:1", "related");
+
+  const withEdges = core.recallDocs(D, "советы молтбук квантовый", { limit: 10 });
+  const b0 = withEdges.find((h) => h.id === "graph-b:1");
+  truthy(!!b0, "целевой чанк попал в выдачу");
+  eq(b0 && b0.why.graph, 0.3, "два перехода дают graph=0.3");
+
+  D.prepare("DELETE FROM graph").run();
+  const noEdges = core.recallDocs(D, "советы молтбук квантовый", { limit: 10 });
+  const b1 = noEdges.find((h) => h.id === "graph-b:1");
+  eq(b1 && b1.why.graph, 0, "без рёбер обход даёт 0");
+  D.close();
+}
+
 // ---------------------------------------------------------------- 5. Guard
 section("5. Guard: без внешних зависимостей и мусорных вкраплений");
 {
