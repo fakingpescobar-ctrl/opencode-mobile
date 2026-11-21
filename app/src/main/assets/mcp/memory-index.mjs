@@ -158,7 +158,12 @@ export function collectSources(docsDir, opts = {}) {
     }
   };
   walk(docsDir);
-  return files;
+  // Канонический порядок: сначала авторитетные источники, затем путь.
+  // ord = fileIdx*100000 + chunkIdx, поэтому порядок обхода не может зависеть
+  // от readdirSync — иначе пересборка FTS меняет топ ядра (/apk-53/).
+  return files.sort((a, b) =>
+    (AUTHORITY[kindOf(b.rel)] ?? 0.6) - (AUTHORITY[kindOf(a.rel)] ?? 0.6) ||
+    (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
 }
 
 function statsOf(DB) {
