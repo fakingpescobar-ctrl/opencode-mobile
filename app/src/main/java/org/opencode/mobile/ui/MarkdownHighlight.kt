@@ -2,7 +2,9 @@ package org.opencode.mobile.ui
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -19,6 +21,9 @@ private const val RULE_ARGB = 0xFF6B7280
 private const val TABLE_ARGB = 0xFFFFD479
 private const val CODE_BG_ARGB = 0x18FFFFFF
 
+private val linkStyle =
+    SpanStyle(color = Color(LINK_ARGB), textDecoration = TextDecoration.Underline)
+
 /**
  * Окрашивает markdown в ответе модели: заголовки, код, ссылки и т.д.
  * Передаётся ровно тот [base], который человек выбрал в настройках цвета —
@@ -34,7 +39,20 @@ internal fun highlightMarkdown(
         .Builder(text)
         .apply {
             addStyle(SpanStyle(color = base), 0, text.length)
-            for (span in spans) addStyle(styleFor(span.kind), span.start, span.end)
+            for (span in spans) {
+                addStyle(styleFor(span.kind), span.start, span.end)
+                val target = span.link
+                if (target != null) {
+                    addLink(
+                        LinkAnnotation.Url(
+                            url = target.url,
+                            styles = TextLinkStyles(style = linkStyle),
+                        ),
+                        target.start,
+                        target.end,
+                    )
+                }
+            }
         }.toAnnotatedString()
 }
 
@@ -48,7 +66,7 @@ private fun styleFor(kind: MarkKind): SpanStyle =
             fontFamily = FontFamily.Monospace,
             background = Color(CODE_BG_ARGB),
         )
-        MarkKind.LINK -> SpanStyle(color = Color(LINK_ARGB), textDecoration = TextDecoration.Underline)
+        MarkKind.LINK -> linkStyle
         MarkKind.QUOTE -> SpanStyle(color = Color(QUOTE_ARGB), fontStyle = FontStyle.Italic)
         MarkKind.LIST -> SpanStyle(color = Color(LIST_ARGB), fontWeight = FontWeight.Bold)
         MarkKind.RULE -> SpanStyle(color = Color(RULE_ARGB))
