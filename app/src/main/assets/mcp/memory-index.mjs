@@ -161,28 +161,110 @@ export function chunkMarkdown(text, source, kind, maxLen = 800, overlap = 80) {
   }));
 }
 
+// Закрытый контейнер источников. Приоритет без конфликтов:
+//   opts.whitelist  — явный override для тестов (манифест не читается);
+//   opts.manifest===false — явный открытый режим;
+//   манифест есть   — индексируем только перечисленные в нём файлы;
+//   манифеста нет   — старый обход дерева (обратная совместимость).
+// sha256 в манифесте — не «версия контента», а замок: несовпадение исключает
+// источник, чтобы правка рабочей памяти не меняла индекс молча.
+const MANIFEST_REL = "memory/sources.json";
+
+function readSourceManifest(docsDir, opts) {
+  if (opts.whitelist || opts.manifest === false) return null;
+  try {
+    const m = JSON.parse(readFileSync(join(docsDir, MANIFEST_REL), "utf8"));
+    return Array.isArray(m && m.sources) ? m : null;
+  } catch { return null; }
+}
+
+export function manifestStatus(docsDir) {
+  const m = readSourceManifest(docsDir, {});
+  if (!m) return { enabled: false, accepted: 0, rejected: [], total: 0 };
+  const rejected = [];
+  let accepted = 0;
+  for (const s of m.sources) {
+    const rel = String(s && s.path || "");
+    try {
+      const full = join(docsDir, rel);
+      if (relative(docsDir, full).startsWith("..") || !statSync(full).isFile()) {
+        rejected.push(rel);
+      } else if (s.sha && sha256(readFileSync(full, "utf8")) !== String(s.sha).toLowerCase()) {
+        rejected.push(rel);
+      } else accepted++;
+    } catch { rejected.push(rel); }
+  }
+  return { enabled: true, accepted, rejected, total: m.sources.length };
+}
+
+// Точка автономного старта: ядро само читает свой контейнер, сверяет замки
+// и индексирует только доверенные источники. Без манифеста считаем, что
+// контейнер не сформирован (при requireManifest:false — явный открытый режим
+// для миграции/тестов, с честным статусом "open").
+export function bootContainer(DB, root, opts = {}) {
+  const status = manifestStatus(root);
+  if (!status.enabled) {
+    if (opts.requireManifest === false) {
+      const r = indexDocs(DB, root, { ...opts, manifest: false });
+      return { status: "open", root, files: r.files, accepted: r.files,
+        rejected: [], total: r.files, index_sha: containerSha(DB) };
+    }
+    return { status: "no-manifest", root, files: 0, ...status, index_sha: containerSha(DB) };
+  }
+  const r = indexDocs(DB, root, opts);
+  return {
+    status: status.rejected.length ? "partial" : "ok",
+    root, files: r.files, ...status, index_sha: containerSha(DB),
+  };
+}
+
+export function containerSha(DB) {
+  try {
+    const rows = DB.prepare("SELECT path, sha FROM doc_sources ORDER BY path").all();
+    return createHash("sha256").update(JSON.stringify(rows)).digest("hex").slice(0, 16);
+  } catch { return ""; }
+}
+
 // Собрать список .md-файлов: корень MOBILE_AGENT + docs/, без tmp/ и архивов/.
 export function collectSources(docsDir, opts = {}) {
   const files = [];
   const whitelist = opts.whitelist || null;
-  const walk = (dir, prefix = "") => {
-    let entries;
-    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    for (const ent of entries) {
-      if (ent.name === "tmp" || ent.name === "архивы" || ent.name === "opencode" || ent.name === "tools") continue;
-      if (ent.name.startsWith(".")) continue;
-      const full = join(dir, ent.name);
-      const rel = prefix ? `${prefix}/${ent.name}` : ent.name;
-      if (ent.isDirectory()) {
-        if (prefix === "" && ent.name !== "docs") continue; // только docs/ вложенностью
-        walk(full, rel);
-      } else if (ent.isFile() && ent.name.endsWith(".md")) {
-        if (whitelist && !whitelist.includes(rel)) continue;
-        files.push({ full, rel });
-      }
+  const manifest = readSourceManifest(docsDir, opts);
+  if (manifest) {
+    const seen = new Set();
+    for (const s of manifest.sources) {
+      const rel = String(s && s.path || "");
+      if (!rel || seen.has(rel)) continue;
+      const full = join(docsDir, rel);
+      // Запрет выхода за каталог памяти: манифест не может сослаться на /etc.
+      if (relative(docsDir, full).startsWith("..")) continue;
+      try {
+        if (!statSync(full).isFile()) continue;
+        if (s.sha && sha256(readFileSync(full, "utf8")) !== String(s.sha).toLowerCase()) continue;
+      } catch { continue; }
+      seen.add(rel);
+      files.push({ full, rel });
     }
-  };
-  walk(docsDir);
+  } else {
+    const walk = (dir, prefix = "") => {
+      let entries;
+      try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const ent of entries) {
+        if (ent.name === "tmp" || ent.name === "архивы" || ent.name === "opencode" || ent.name === "tools") continue;
+        if (ent.name.startsWith(".")) continue;
+        const full = join(dir, ent.name);
+        const rel = prefix ? `${prefix}/${ent.name}` : ent.name;
+        if (ent.isDirectory()) {
+          if (prefix === "" && ent.name !== "docs") continue; // только docs/ вложенностью
+          walk(full, rel);
+        } else if (ent.isFile() && ent.name.endsWith(".md")) {
+          if (whitelist && !whitelist.includes(rel)) continue;
+          files.push({ full, rel });
+        }
+      }
+    };
+    walk(docsDir);
+  }
   // Канонический порядок: сначала авторитетные источники, затем путь.
   // ord = fileIdx*100000 + chunkIdx, поэтому порядок обхода не может зависеть
   // от readdirSync — иначе пересборка FTS меняет топ ядра (/apk-53/).
