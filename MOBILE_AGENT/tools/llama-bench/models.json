@@ -5,7 +5,13 @@
     "file": "SmolLM2-135M-Instruct-Q4_K_M.gguf",
     "size": 105454432,
     "sha256": "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d",
-    "url": "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf?download=true"
+    "url": "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf?download=true",
+    "purpose": "Резерв: быстрые короткие объяснения",
+    "ttftMs": 270,
+    "decodeTs": 37.2,
+    "total24Ms": 889,
+    "license": "apache-2.0",
+    "quality": "Слабее ядра: 6% recall на gold"
   },
   {
     "id": "qwen3-0.6b-q2k",
@@ -13,7 +19,13 @@
     "file": "Qwen3-0.6B-Q2_K.gguf",
     "size": 296238784,
     "sha256": "26d035ea15c4a2853e8d20ffc56a76f6164e17dbb6c9e532c5766700c404519d",
-    "url": "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q2_K.gguf?download=true"
+    "url": "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q2_K.gguf?download=true",
+    "purpose": "Компактный режим при нехватке места",
+    "ttftMs": 591,
+    "decodeTs": 21.5,
+    "total24Ms": 1665,
+    "license": "apache-2.0",
+    "quality": "Та же модель, ниже квант"
   },
   {
     "id": "qwen3-0.6b-q4km",
@@ -21,7 +33,13 @@
     "file": "Qwen3-0.6B-Q4_K_M.gguf",
     "size": 396705472,
     "sha256": "ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a",
-    "url": "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf?download=true"
+    "url": "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf?download=true",
+    "purpose": "Основная: объяснения и переформулировка",
+    "ttftMs": 433,
+    "decodeTs": 27,
+    "total24Ms": 1286,
+    "license": "apache-2.0",
+    "quality": "Лучший разбор ответов (60%), но 24% recall"
   },
   {
     "id": "gemma3-270m-q4km",
@@ -29,7 +47,13 @@
     "file": "gemma-3-270m-it-Q4_K_M.gguf",
     "size": 253115424,
     "sha256": "b1baabd6b729e4041822220d3e648e00d99cac5df86b10dffb77bcccf0688e39",
-    "url": "https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-Q4_K_M.gguf?download=true"
+    "url": "https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-Q4_K_M.gguf?download=true",
+    "purpose": "Самый быстрый опытный режим",
+    "ttftMs": 169,
+    "decodeTs": 37,
+    "total24Ms": 795,
+    "license": "gemma (ограниченная)",
+    "quality": "0% разбора, отсеяна"
   },
   {
     "id": "lfm2.5-350m-q4km",
@@ -37,7 +61,13 @@
     "file": "LFM2.5-350M-Q4_K_M.gguf",
     "size": 229312224,
     "sha256": "7e6f72643caafc9a68256686638c4d7916f2cec76d1df478d4c3ddcd95a6aed4",
-    "url": "https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF/resolve/main/LFM2.5-350M-Q4_K_M.gguf?download=true"
+    "url": "https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF/resolve/main/LFM2.5-350M-Q4_K_M.gguf?download=true",
+    "purpose": "Эксперимент: быстрая маленькая модель",
+    "ttftMs": 257,
+    "decodeTs": 37.2,
+    "total24Ms": 875,
+    "license": "lfm1.0 (other)",
+    "quality": "Не проходила quality-gate"
   },
   {
     "id": "lfm2.5-1.2b-q4km",
@@ -45,7 +75,13 @@
     "file": "LFM2.5-1.2B-Instruct-Q4_K_M.gguf",
     "size": 730895168,
     "sha256": "b1b3de114215d9507409a662a501a631095a479a419584e8a2ded6304b19b4f5",
-    "url": "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-Q4_K_M.gguf?download=true"
+    "url": "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-Q4_K_M.gguf?download=true",
+    "purpose": "Эксперимент: средняя модель",
+    "ttftMs": 749,
+    "decodeTs": 21.9,
+    "total24Ms": 1798,
+    "license": "lfm1.0",
+    "quality": "Не проходила quality-gate"
   },
   {
     "id": "lfm3-1.7b-q4km",
@@ -53,6 +89,23 @@
     "file": "LFM3-1.7B-Q4_K_M.gguf",
     "size": 1099627808,
     "sha256": "3793e1e6e2266919d6e015287221b41100175a98eddaba92e111aed3b05c93c4",
-    "url": "https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/main/LFM3-1.7B-Q4_K_M.gguf?download=true"
+    "url": "https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/main/LFM3-1.7B-Q4_K_M.gguf?download=true",
+    "purpose": "Эксперимент: крупная модель, медленная",
+    "ttftMs": 1080,
+    "decodeTs": 17.4,
+    "total24Ms": 2408,
+    "license": "lfm1.0",
+    "quality": "Не проходила quality-gate"
+  },
+  {
+    "id": "hs-decide-1-flash-bf16",
+    "repo": "hindsight-ai/hs-decide-1-flash",
+    "file": "hs-decide-1-flash-bf16.gguf",
+    "size": 1516744960,
+    "sha256": "1fd78a125d9e6347d3c90030c7fe2d4ef3990ff8faa2be08264e18d3b037e312",
+    "url": "https://huggingface.co/nanoandrew4/hs-decide-1-flash-GGUF/resolve/main/hs-decide-1-flash-bf16.gguf",
+    "purpose": "Исследование роли ядра памяти: choice/score/noul одним forward pass, без генерации",
+    "license": "apache-2.0",
+    "quality": "Замер в decision-bench.json; в рабочий контур по умолчанию не включается"
   }
 ]
