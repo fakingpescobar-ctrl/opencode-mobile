@@ -96,16 +96,5 @@
     "total24Ms": 2408,
     "license": "lfm1.0",
     "quality": "Не проходила quality-gate"
-  },
-  {
-    "id": "hs-decide-1-flash-bf16",
-    "repo": "hindsight-ai/hs-decide-1-flash",
-    "file": "hs-decide-1-flash-bf16.gguf",
-    "size": 1516744960,
-    "sha256": "1fd78a125d9e6347d3c90030c7fe2d4ef3990ff8faa2be08264e18d3b037e312",
-    "url": "https://huggingface.co/nanoandrew4/hs-decide-1-flash-GGUF/resolve/main/hs-decide-1-flash-bf16.gguf",
-    "purpose": "Исследование роли ядра памяти: choice/score/noul одним forward pass, без генерации",
-    "license": "apache-2.0",
-    "quality": "Замер в decision-bench.json; в рабочий контур по умолчанию не включается"
   }
 ]
