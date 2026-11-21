@@ -811,6 +811,59 @@ section("8. v4: legacy-fallback, utility, dreaming, аудит-цепь");
   DB.close();
 }
 
+// ------------------------------- 9. approve -> held-out gate -> auto-rollback
+section("9. approve с gate: baseline до коммита и откат по audit_id");
+{
+  const DB = new Database(":memory:");
+  idx.indexDocs(DB, DOCS);
+
+  const subset = core.heldoutSubset(gold);
+  truthy(subset.length > 0 && subset.length < gold.length,
+    "heldoutSubset — детерминированная часть gold: " + subset.length + "/" + gold.length);
+  eq(JSON.stringify(subset), JSON.stringify(core.heldoutSubset(gold)),
+    "heldoutSubset детерминированна");
+
+  // Дефолтный путь не меняет форму ответа: поля gate нет.
+  const s0 = core.ingest(DB, { content: "док проверки формы ответа", id: "shape-doc",
+    provenance: "own-test" }, null);
+  const a0 = core.approve(DB, s0.id, "operator", "shape");
+  truthy(a0.approved === true && a0.kind === "doc", "дефолтный approve применяет doc");
+  eq(Object.prototype.hasOwnProperty.call(a0, "gate"), false, "дефолтный approve не добавляет gate");
+
+  // Чистый approve с gate: baseline и замер меряют одну fifth-подвыборку.
+  const s1 = core.ingest(DB, { content: "док под нормальный gate", id: "gate-pass-doc",
+    provenance: "own-test" }, null);
+  const a1 = core.approve(DB, s1.id, "operator", "gate-pass", { gate: true, gold });
+  eq(a1.gate.status, "pass", "approve с gate и обычным gold проходит");
+  eq(a1.gate.rolled_back, false, "при pass отката нет");
+  truthy(!DB.prepare("SELECT id FROM memory_staged WHERE id=?").get("gate-pass-doc"),
+    "чистый approve убрал запись из staged");
+  eq(a1.gate.heldout, subset.length, "gate меряет ту же подвыборку, что baseline");
+
+  // Завышенный baseline + autoRollback: FAIL, запись возвращается в staged.
+  const s2 = core.ingest(DB, { content: "док под плохой gate", id: "gate-fail-doc",
+    provenance: "own-test" }, null);
+  const a2 = core.approve(DB, s2.id, "operator", "gate-fail", {
+    gate: true, gold, baseline: 1.5, autoRollback: true,
+  });
+  eq(a2.gate.status, "FAIL", "approve ловит регресс против завышенного baseline");
+  eq(a2.gate.rolled_back, true, "approve откатывает при FAIL");
+  truthy(DB.prepare("SELECT id FROM memory_staged WHERE id=?").get("gate-fail-doc"),
+    "FAIL вернул запись в staged");
+  eq(core.verifyAuditChain(DB).ok, true, "hash-chain валидна после gate-отката");
+
+  // gate без gold не должен применяться молча.
+  const s3 = core.ingest(DB, { content: "док без gold", id: "gate-nogold",
+    provenance: "own-test" }, null);
+  let threw = false;
+  try { core.approve(DB, s3.id, "operator", "", { gate: true }); }
+  catch (e) { threw = /gold required/.test(String((e && e.message) || e)); }
+  eq(threw, true, "approve gate без gold требует gold");
+  truthy(DB.prepare("SELECT id FROM memory_staged WHERE id=?").get("gate-nogold"),
+    "без gold запись осталась staged");
+  DB.close();
+}
+
 // ---------------------------------------------------------------- итог
 console.log("\n" + "=".repeat(56));
 console.log("ТЕСТЫ ЯДРА ПАМЯТИ: OK=" + ok + " BAD=" + bad);
