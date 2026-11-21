@@ -20,6 +20,10 @@ import { indexDocs } from "./memory-index.mjs";
 import {
   confidenceOf, conceptThread, learnFromFeedback, adaptivePack, runAdaptiveBench,
 } from "./memory-adaptive.js";
+// Движок v2: карта памяти, self-supervised закономерности и meta-learning.
+import {
+  buildMemoryMap, mapText, minePatterns, suggestSources, observeSignal, signalPolicy,
+} from "./memory-map.js";
 // Локальная LLM как сопроцессор памяти: авто-старт, точечный поиск поверх
 // кандидатов ядра, честный откат на детерминированный топ. Никаких записей.
 import { initLlm, llmStatus, llmSearch } from "./memory-llm.js";
@@ -551,15 +555,21 @@ const memoryTools = [
       kind: { type: "string", enum: ["doc", "fact"] }, topic_key: { type: "string" },
       valid_from: { type: "number" }, confidence: { type: "number" },
       reason: { type: "string" }, links: { type: "array" } }, required: ["content"] } },
-  { name: "memory_approve", description: " Применить staged-запись: создать audit-запись и снимок для отката. approved_by обязателен — approve без подписи запрещён.",
+  { name: "memory_approve", description: " Применить staged-запись: создать audit-запись и снимок для отката. approved_by обязателен — approve без подписи запрещён. gate=true гоняет held-out gate сразу после approve и при регрессе >maxDrop с autoRollback=true откатывает по audit_id.",
     inputSchema: { type: "object", properties: {
-      id: { type: "string" }, approved_by: { type: "string" }, reason: { type: "string" } },
+      id: { type: "string" }, approved_by: { type: "string" }, reason: { type: "string" },
+      gate: { type: "boolean" }, suite: { type: "string" }, baseline: { type: "number" },
+      maxDrop: { type: "number" }, autoRollback: { type: "boolean" }, scope: { type: "string" },
+      gold_path: { type: "string" }, gold: { type: "array", items: { type: "object" } } },
       required: ["id", "approved_by"] } },
   { name: "memory_rollback", description: " Откатить approve по audit_id: восстановить staged-запись и дописать компенсирующую аудит-запись. Исходный аудит НЕ удаляется — цепочка остаётся проверяемой.",
     inputSchema: { type: "object", properties: { audit_id: { type: "string" } }, required: ["audit_id"] } },
-  { name: "memory_proposal_accept", description: " Принять предложение ночного прохода: staged→fact с аудитом. Человек в контуре, без автоматического применения.",
+  { name: "memory_proposal_accept", description: " Принять предложение ночного прохода: staged→fact с аудитом. Человек в контуре, без автоматического применения. gate=true включает held-out gate с авто-откатом после принятия.",
     inputSchema: { type: "object", properties: {
-      id: { type: "string" }, approved_by: { type: "string" }, reason: { type: "string" } },
+      id: { type: "string" }, approved_by: { type: "string" }, reason: { type: "string" },
+      gate: { type: "boolean" }, suite: { type: "string" }, baseline: { type: "number" },
+      maxDrop: { type: "number" }, autoRollback: { type: "boolean" }, scope: { type: "string" },
+      gold_path: { type: "string" }, gold: { type: "array", items: { type: "object" } } },
       required: ["id", "approved_by"] } },
   { name: "memory_proposal_reject", description: " Отклонить предложение с аудитом rejection (append-only).",
     inputSchema: { type: "object", properties: {
@@ -590,6 +600,17 @@ const memoryTools = [
       maxTokens: { type: "number" }, maxLatencyMs: { type: "number" }, scope: { type: "string" },
       force: { type: "boolean" } },
       required: ["query"] } },
+  { name: "memory_map", description: " Карта памяти v2: компактный обзор источников и выученных закономерностей одной строкой на источник — агент знает, о чём речь, без полного обхода. mine=true пересчитывает закономерности из корпуса (self-supervised). text=true возвращает компактный текст вместо JSON.",
+    inputSchema: { type: "object", properties: {
+      mine: { type: "boolean" }, text: { type: "boolean" }, limit: { type: "number" },
+      keys: { type: "number" }, minCount: { type: "number" }, top: { type: "number" } } } },
+  { name: "memory_suggest", description: " Подсказка источников по выученным закономерностям (термин -> источник). Opt-in: на ранжирование ядра не влияет.",
+    inputSchema: { type: "object", properties: {
+      query: { type: "string" }, limit: { type: "number" } }, required: ["query"] } },
+  { name: "memory_signal", description: " Meta-learning: отметить, помог или помешал сигнал (anchor/graph/kind/authority) для типа запроса. Возвращает политику доверия по сигналам.",
+    inputSchema: { type: "object", properties: {
+      query_kind: { type: "string" }, signal: { type: "string" },
+      success: { type: "boolean" } }, required: ["query_kind", "signal"] } },
 ];
 
 const MOBILE_INSTALL_TOOLS = [
@@ -1629,13 +1650,21 @@ async function callTool(name, args) {
     case "memory_approve": {
       const a = args || {};
       if (!String(a.approved_by || "").trim()) throw new Error("approved_by required");
-      return approve(DB, String(a.id || ""), String(a.approved_by), String(a.reason || ""));
+      const opts = a.gate === true ? {
+        gate: true, gold: coreGold(a), suite: a.suite, scope: a.scope,
+        baseline: a.baseline, maxDrop: a.maxDrop, autoRollback: a.autoRollback === true,
+      } : {};
+      return approve(DB, String(a.id || ""), String(a.approved_by), String(a.reason || ""), opts);
     }
     case "memory_rollback": return rollback(DB, String((args || {}).audit_id || ""));
     case "memory_proposal_accept": {
       const a = args || {};
       if (!String(a.approved_by || "").trim()) throw new Error("approved_by required");
-      return acceptProposal(DB, String(a.id || ""), String(a.approved_by), String(a.reason || ""));
+      const opts = a.gate === true ? {
+        gate: true, gold: coreGold(a), suite: a.suite, scope: a.scope,
+        baseline: a.baseline, maxDrop: a.maxDrop, autoRollback: a.autoRollback === true,
+      } : {};
+      return acceptProposal(DB, String(a.id || ""), String(a.approved_by), String(a.reason || ""), opts);
     }
     case "memory_proposal_reject": {
       const a = args || {};
@@ -1657,6 +1686,22 @@ async function callTool(name, args) {
     case "memory_gate": {
       const a = args || {};
       return runHeldoutGate(DB, a.suite || "core", coreGold(a), a);
+    }
+    case "memory_map": {
+      const a = args || {};
+      const mined = a.mine === true ? minePatterns(DB, a) : null;
+      const map = buildMemoryMap(DB, a);
+      if (a.text === true) return { text: mapText(map, a), sha: map.sha, mined };
+      return { ...map, mined };
+    }
+    case "memory_suggest": {
+      const a = args || {};
+      return { sources: suggestSources(DB, a.query || "", a) };
+    }
+    case "memory_signal": {
+      const a = args || {};
+      observeSignal(DB, a.query_kind || "any", a.signal || "unknown", a.success === true);
+      return { policy: signalPolicy(DB, a.query_kind || "any") };
     }
     case "memory_llm_status": {
       await bootLlm();
