@@ -263,6 +263,8 @@ android {
         // кроме отправки в эту группу, лимит 1 отчёт/час и дедуп 24 часа.
         buildConfigField("String", "TELEGRAM_BOT_TOKEN", "\"9203913886:AAHuJHoOtqFe943xWxb5mUwuwymgERJxjAM\"")
         buildConfigField("String", "TELEGRAM_CHAT_ID", "\"-1004452013884\"")
+        // Наш рабочий девайс: его отчёты в чате помечаются DEV/ADMIN.
+        buildConfigField("String", "DEV_DEVICE_FINGERPRINT", "\"OnePlus/CPH2747/OP611FL1:17/CP2A.260605.016/B.R4T3.55357f5-2eb9868-2eda512:user/release-keys\"")
     }
 
     signingConfigs {
