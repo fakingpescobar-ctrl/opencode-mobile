@@ -11,15 +11,21 @@ import { createHash } from "node:crypto";
 
 const ROOT = "/storage/emulated/0/Documents/OpencodeTerminal/MOBILE_AGENT";
 const SO = "/data/user/0/org.opencode.mobile.debug/files/musl/libllama-bench.so";
-const MODEL = ROOT + "/models/hs-decide-1-flash-bf16.gguf";
-const SIZE = 1516744960;
-const SHA = "1fd78a125d9e6347d3c90030c7fe2d4ef3990ff8faa2be08264e18d3b037e312";
+// Вызов: decision-bench.mjs [model.gguf] [sha|any] [out.json]
+// Без аргументов — эталонный bf16 с жёсткой sha-проверкой; для квантов ша
+// передаётся явно (или "any"), чтобы протокол оставался воспроизводимым.
+const MODEL = process.argv[2]
+  ? (process.argv[2].startsWith("/") ? process.argv[2] : ROOT + "/models/" + process.argv[2])
+  : ROOT + "/models/hs-decide-1-flash-bf16.gguf";
+const SIZE = process.argv[2] ? 0 : 1516744960;
+const SHA = process.argv[3] || "1fd78a125d9e6347d3c90030c7fe2d4ef3990ff8faa2be08264e18d3b037e312";
+const OUT = process.argv[4] || "decision-bench.json";
 const CORE = ROOT + "/opencode/memory-core/";
 const idx = await import(CORE + "memory-index.mjs");
 const core = await import(CORE + "memory-core.js");
 
 const modelSize = statSync(MODEL).size;
-if (modelSize !== SIZE) {
+if (SIZE && modelSize !== SIZE) {
   console.error(`размер GGUF ${modelSize}, ожидался ${SIZE}`);
   process.exit(2);
 }
@@ -33,7 +39,7 @@ for (;;) {
 }
 await fd.close();
 const gotSha = h.digest("hex");
-if (gotSha !== SHA) {
+if (SHA !== "any" && gotSha !== SHA) {
   console.error(`sha GGUF не совпал: ${gotSha}`);
   process.exit(2);
 }
@@ -51,8 +57,9 @@ const lib = dlopen(SO, {
   },
 });
 const runtime = lib.symbols.lb_version();
-if (!runtime.includes("musl-8")) {
-  console.error(`нужна обёртка llama-bench-musl-8 с lb_score/lb_code_ids, сейчас ${runtime}`);
+const rtNum = Number(String(runtime).split("musl-")[1] || 0);
+if (!(rtNum >= 8)) {
+  console.error(`нужна обёртка musl-8+ с lb_score/lb_code_ids, сейчас ${runtime}`);
   process.exit(2);
 }
 
@@ -125,7 +132,10 @@ for (const g of gold) {
 
 const n = rows.length || 1;
 const out = {
-  model: "hindsight-ai/hs-decide-1-flash (GGUF bf16)",
+  model: "hindsight-ai/hs-decide-1-flash",
+  file: MODEL.split("/").pop(),
+  sha256: gotSha,
+  bytes: modelSize,
   runtime,
   role: "choice над 5 кандидатами ядра, один forward pass",
   n: rows.length,
@@ -136,7 +146,7 @@ const out = {
   avg_ms: Math.round(totalMs / n),
   rows,
 };
-writeFileSync(ROOT + "/tools/llama-bench/decision-bench.json", JSON.stringify(out, null, 2) + "\n");
+writeFileSync(ROOT + "/tools/llama-bench/" + OUT, JSON.stringify(out, null, 2) + "\n");
 console.log(`\nИТОГ: модель top1 ${(modelTop1 / n).toFixed(3)}, top3 ${(modelTop3 / n).toFixed(3)}; ` +
   `ядро top1 ${(coreTop1 / n).toFixed(3)}, top3 ${(coreTop3 / n).toFixed(3)}; ` +
   `${Math.round(totalMs / n)} мс/запрос`);
