@@ -37,6 +37,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,6 +50,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.opencode.mobile.account.YandexAccountController
 import org.opencode.mobile.account.YandexOAuth
 import org.opencode.mobile.server.OpencodeServerService
@@ -191,6 +194,17 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun TerminalScreen() {
     val state by OpencodeServerService.state.collectAsState()
+    val context = LocalContext.current
+
+    // Досылаем отложенные отчёты при каждом запуске и фиксируем новый сбой.
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) { FailureReporter.flush(context) }
+    }
+    LaunchedEffect(state.status) {
+        if (state.status == OpencodeServerService.ServerStatus.ERROR) {
+            withContext(Dispatchers.IO) { FailureReporter.report(context, state) }
+        }
+    }
 
     // Сервер уже запущен в onCreate() (OpencodeServerService.start(this)).
     // Здесь НЕ дублируем второй start: служба идемпотентна (guard
