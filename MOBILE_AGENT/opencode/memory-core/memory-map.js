@@ -76,6 +76,10 @@ export function minePatterns(DB, opts = {}) {
 // Карта памяти: один компактный объект вместо полного обхода(doc_chunks).
 export function buildMemoryMap(DB, opts = {}) {
   ensureMapSchema(DB);
+  // Автономность: на свежей БД закономерностей ещё нет. Выучиваем их из корпуса
+  // при первом обращении к карте, чтобы агенту не приходилось помнить про mine.
+  const have = DB.prepare("SELECT COUNT(*) n FROM memory_pattern").get().n;
+  if (!have) minePatterns(DB, { minCount: opts.minCount, top: opts.top });
   const sources = DB.prepare(
     "SELECT path, kind, chunks FROM doc_sources ORDER BY path").all();
   const pats = DB.prepare(
