@@ -9,7 +9,11 @@ import { createHash } from "node:crypto";
 
 const ROOT = "/storage/emulated/0/Documents/OpencodeTerminal/MOBILE_AGENT";
 const SO = "/data/user/0/org.opencode.mobile.debug/files/musl/libllama-bench.so";
-const MODEL = ROOT + "/models/hs-decide-1-flash-bf16.gguf";
+// Вызов: decision-bias-check.mjs [model.gguf] [out.json]
+const MODEL = process.argv[2]
+  ? (process.argv[2].startsWith("/") ? process.argv[2] : ROOT + "/models/" + process.argv[2])
+  : ROOT + "/models/hs-decide-1-flash-bf16.gguf";
+const OUT = process.argv[3] || "decision-bias.json";
 const idx = await import(ROOT + "/opencode/memory-core/memory-index.mjs");
 const core = await import(ROOT + "/opencode/memory-core/memory-core.js");
 const lib = dlopen(SO, {
@@ -18,7 +22,8 @@ const lib = dlopen(SO, {
   lb_score: { args: [FFIType.cstring, FFIType.cstring, FFIType.ptr, FFIType.i32,
     FFIType.ptr, FFIType.i32, FFIType.i32, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
 });
-if (!lib.symbols.lb_version().includes("musl-8")) process.exit(2);
+const rtNum = Number(String(lib.symbols.lb_version()).split("musl-")[1] || 0);
+if (!(rtNum >= 8)) process.exit(2);
 
 const L = "ABCDE";
 const A = 4;
@@ -60,5 +65,5 @@ for (const g of gold) {
   rows.push(row);
   console.log(`${g.id}: ${row.pick} -> ${row.pick_source} ${row.hit ? "OK" : "MISS"} (${row.ms} мс)`);
 }
-writeFileSync(ROOT + "/tools/llama-bench/decision-bias.json", JSON.stringify({ rows }, null, 2) + "\n");
+writeFileSync(ROOT + "/tools/llama-bench/" + OUT, JSON.stringify({ model: MODEL.split("/").pop(), rows }, null, 2) + "\n");
 console.log(`ИТОГ сдвинутых кандидатов: ${rows.filter((r) => r.hit).length}/${rows.length}`);
