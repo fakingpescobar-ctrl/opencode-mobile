@@ -10,7 +10,7 @@
 // Живой плагин memory.js в этом наборе не участвует.
 
 import { Database } from "bun:sqlite";
-import { readFileSync, readdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -124,6 +124,53 @@ section("2b. created не обновляется у неизменившихся
   eq(fresh.length, 1, "новый чанк добавлен");
   truthy(fresh[0].created > 1000, "новый чанк получил свежее время");
   DB.close();
+  rmSync(tmp, { recursive: true, force: true });
+}
+
+// ------------------------------------------- 2c. anchor_fts_v4 и сохранность v3
+section("2c. anchor_fts_v4: идентификаторы и неизменное поведение v3");
+{
+  const tmp = mkdtempSync(join(tmpdir(), "mem-v4-"));
+  writeFileSync(join(tmp, "id.md"),
+    "# Идентификаторы\nПакет org.opencode.mobile.debug, хеш sha256, метка apk-53.\n");
+  const D = new Database(":memory:");
+  idx.indexDocs(D, tmp);
+
+  eq(idx.ANCHOR_FTS_V4, "anchor_fts_v4", "имя v4-таблицы зафиксировано константой");
+  const t = D.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?")
+    .get(idx.ANCHOR_FTS_V4);
+  truthy(t && t.name === idx.ANCHOR_FTS_V4, "anchor_fts_v4 создаётся схемой");
+
+  // v4 пишется тем же набором строк, что и v3, и в том же порядке.
+  const nChunks = D.prepare("SELECT count(*) n FROM doc_chunks").get().n;
+  eq(D.prepare("SELECT count(*) n FROM anchor_fts").get().n, nChunks, "v3 индексирует все чанки");
+  eq(D.prepare(`SELECT count(*) n FROM ${idx.ANCHOR_FTS_V4}`).get().n, nChunks,
+    "v4 индексирует те же чанки");
+  const idsV3 = D.prepare("SELECT chunk_id FROM anchor_fts ORDER BY rowid").all().map((r) => r.chunk_id);
+  const idsV4 = D.prepare(`SELECT chunk_id FROM ${idx.ANCHOR_FTS_V4} ORDER BY rowid`).all().map((r) => r.chunk_id);
+  eq(idsV4, idsV3, "v4 содержит тот же порядок chunk_id, что и v3");
+
+  // Токенайзер v4 держит идентификатор с точкой/дефисом одним токеном.
+  // analyze() отдаёт только канонические якоря, поэтому проверяем саму
+  // таблицу на строке с идентификатором — так же, как её будет читать ядро v4.
+  D.prepare(`INSERT INTO doc_chunks(id,source,heading,line_from,line_to,kind,text,trigram,anchors,lemmas,sha,created,ord)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run("v4-probe", "id.md", "тест", 1, 1, "doc", "org.opencode.mobile.debug",
+      "org opencode mobile debug", "org.opencode.mobile.debug apk-53", "", "x", 1, 0);
+  D.prepare(`INSERT INTO ${idx.ANCHOR_FTS_V4}(chunk_id, anchors) VALUES(?, ?)`)
+    .run("v4-probe", "org.opencode.mobile.debug apk-53");
+  const v4Dot = D.prepare(`SELECT count(*) n FROM ${idx.ANCHOR_FTS_V4} WHERE ${idx.ANCHOR_FTS_V4} MATCH ?`)
+    .get('"org.opencode.mobile.debug"');
+  truthy(v4Dot.n > 0, "v4 находит пакетное имя с точками");
+  const v4Dash = D.prepare(`SELECT count(*) n FROM ${idx.ANCHOR_FTS_V4} WHERE ${idx.ANCHOR_FTS_V4} MATCH ?`)
+    .get('"apk-53"');
+  truthy(v4Dash.n > 0, "v4 находит идентификатор с дефисом");
+
+  // Старая таблица продолжает работать: v3 не задет новым токенайзером.
+  const v3Hit = D.prepare("SELECT count(*) n FROM anchor_fts WHERE anchor_fts MATCH ?").get('"apk"');
+  truthy(v3Hit.n > 0, "anchor_fts по-прежнему ищет по якорю");
+
+  D.close();
   rmSync(tmp, { recursive: true, force: true });
 }
 
@@ -259,6 +306,22 @@ section("4b. Негативные случаи и крайности");
   const sources = idx.collectSources(DOCS).map((f) => f.rel);
   truthy(!sources.some((s) => s.startsWith("tmp/") || s.startsWith("архивы/") || s.startsWith("opencode/")),
     "индексатор исключает служебные каталоги");
+
+  // Регресс FTS-инцидента: ord = fileIdx*100000 + chunkIdx, поэтому порядок
+  // collectSources обязан быть каноническим и не зависеть от readdirSync.
+  {
+    const tmp = mkdtempSync(join(tmpdir(), "mem-order-"));
+    for (const n of ["z.md", "m.md", "a.md"]) writeFileSync(join(tmp, n), n);
+    mkdirSync(join(tmp, "docs"));
+    writeFileSync(join(tmp, "docs", "middle.md"), "middle");
+    const rels = idx.collectSources(tmp).map((f) => f.rel);
+    eq(rels, ["a.md", "docs/middle.md", "m.md", "z.md"], "collectSources сортирует rel детерминированно");
+    rmSync(tmp, { recursive: true, force: true });
+
+    const real = idx.collectSources(DOCS).map((f) => f.rel);
+    truthy(real.indexOf("АРХИТЕКТУРА_ПАМЯТИ.md") < real.indexOf("ЖУРНАЛ.md"),
+      "collectSources ставит rule-source раньше journal-source");
+  }
 
   // graphSnapshot отдаёт весь граф, а не только окрестность одного узла.
   {
@@ -498,8 +561,11 @@ section("6. Временны́е факты, слоты и связи");
     eq(active.length, 1, "после отката активен ровно один факт");
     eq(active[0].id, "fact-report-v1", "прежний факт снова активен");
     eq(core.factStats(DB).active_facts, 1, "активных фактов снова 1");
-    const audit = DB.prepare("SELECT id FROM memory_audit WHERE id = ?").get(second.audit_id);
-    eq(audit, null, "аудит отказанной записи удалён");
+    const audit = DB.prepare("SELECT id, chain_hash FROM memory_audit WHERE id = ?").get(second.audit_id);
+    truthy(audit && audit.chain_hash, "исходный аудит сохранён (append-only)");
+    const rbAudit = DB.prepare("SELECT op FROM memory_audit WHERE id = ?").get("rollback-" + second.audit_id);
+    eq(rbAudit && rbAudit.op, "rollback", "есть компенсирующая запись отката");
+    eq(core.verifyAuditChain(DB).ok, true, "hash-chain аудита непрерывна");
     DB.close();
   }
 
@@ -635,7 +701,9 @@ section("7. Ночной проход предложений");
     eq(undone.status, "rolled_back", "откат через существующий rollback прошёл");
     eq(JSON.stringify(snapshotFacts(DB)), JSON.stringify(baseline), "все факты вернулись в исходное состояние");
     const audit = DB.prepare("SELECT id FROM memory_audit WHERE id = ?").get(accepted.audit_id);
-    eq(audit, null, "аудит откатанной записи удалён честно, без тишины");
+    truthy(audit, "аудит откатанной записи сохранён — тишины нет");
+    truthy(DB.prepare("SELECT id FROM memory_audit WHERE id = ?").get("rollback-" + accepted.audit_id),
+      "компенсирующая запись отката присутствует");
     stats = core.proposalStats(DB);
     eq(stats.rolled_back, 1, "счётчик откатов = 1");
     eq(stats.silent_deletions, 0, "после отката тихих удалений нет");
@@ -654,6 +722,93 @@ section("7. Ночной проход предложений");
     eq(pass.found, 0, "на пустой базе проход ничего не нашёл");
     DB.close();
   }
+}
+
+// ------------------------------------------- 8. v4: fallback и сравнение режимов
+section("8. v4: legacy-fallback, utility, dreaming, аудит-цепь");
+{
+  eq(core.DEFAULT_MODE, "legacy", "по умолчанию legacy — старая модель главная");
+  truthy(core.MODES.includes("legacy") && core.MODES.includes("v4") && core.MODES.includes("rrf"),
+    "MODES объявляет legacy/v4/rrf");
+
+  const DB = new Database(":memory:");
+  idx.indexDocs(DB, DOCS);
+
+  // Явный legacy и вызов без mode обязаны давать байтно одинаковый результат.
+  const q = "как агент пользоваться памятью apk-59";
+  const implicit = core.recallDocs(DB, q, { limit: 6 });
+  const explicit = core.recallDocs(DB, q, { limit: 6, mode: "legacy" });
+  eq(JSON.stringify(implicit), JSON.stringify(explicit), "legacy без mode = legacy явно");
+
+  const v4 = core.recallDocs(DB, q, { limit: 6, mode: "v4" });
+  const rrf = core.recallDocs(DB, q, { limit: 6, mode: "rrf" });
+  eq(v4.length, implicit.length, "v4 возвращает то же число чанков");
+  truthy(v4.every((h) => h.why.mode === "v4" && Number.isFinite(h.why.sim)),
+    "v4 несёт why.sim и метку режима");
+  truthy(rrf.length > 0 && rrf.every((h) => h.why.mode === "rrf"), "rrf режим рабочий");
+  truthy(implicit.every((h) => h.why.utility === undefined), "legacy не тащит v4-поля");
+
+  // Сырые идентификаторы живут в v4-таблице и не портят v3.
+  const raw = core.rawIdentifiers ? core.rawIdentifiers(q) : idx.rawIdentifiers(q);
+  truthy(raw.some((x) => x.includes("apk-59")), "rawIdentifiers держит apk-59");
+  const inV4 = DB.prepare(`SELECT count(*) n FROM ${idx.ANCHOR_FTS_V4} WHERE ${idx.ANCHOR_FTS_V4} MATCH ?`)
+    .get('"apk-59"').n;
+  truthy(inV4 > 0, "apk-59 находится в anchor_fts_v4: " + inV4);
+
+  // Credit/blame: выученный чанк поднимается только в v4, legacy не двигается.
+  const beforeV4 = core.recallDocs(DB, q, { limit: 6, mode: "v4" });
+  const seed = beforeV4[0].id;
+  const beforeLegacy = core.recallDocs(DB, q, { limit: 6, mode: "legacy" });
+  const out = core.learnOutcome(DB, q, [seed], "success", 1, "тест credit");
+  eq(out.chunks, 1, "learnOutcome записал исход");
+  const qrow = DB.prepare("SELECT q, uses, successes FROM memory_utility WHERE chunk_id=?").get(seed);
+  truthy(qrow.q > 0.5 && qrow.uses === 1 && qrow.successes === 1, "Q вырос: " + JSON.stringify(qrow));
+  const afterV4 = core.recallDocs(DB, q, { limit: 6, mode: "v4" });
+  eq(afterV4[0].id, seed, "вознаграждённый чанк остался первым в v4");
+  const afterLegacy = core.recallDocs(DB, q, { limit: 6, mode: "legacy" });
+  eq(JSON.stringify(afterLegacy), JSON.stringify(beforeLegacy), "legacy не изменился после обучения");
+
+  // Dreaming: сводим дубли фактов по topic_key в наблюдение с proof count.
+  const mk = (fid, content, vf) => {
+    const s = core.ingest(DB, { content, id: fid, provenance: "own-test", kind: "fact",
+      topic_key: "runtime/v4-proof", valid_from: vf, confidence: 0.8 }, null);
+    return core.approve(DB, s.id, "operator", "dream-test");
+  };
+  mk("df-1", "наблюдение один", 1000);
+  mk("df-2", "наблюдение два", 2000);
+  const dream = core.runDreamPass(DB);
+  eq(dream.groups, 1, "dreaming нашёл одну группу");
+  eq(dream.created, 1, "создано одно наблюдение");
+  const obs = DB.prepare("SELECT proof_count FROM memory_observation WHERE invalid_at IS NULL").get();
+  eq(obs && obs.proof_count, 2, "proof count = числу независимых фактов");
+  const dream2 = core.runDreamPass(DB);
+  eq(dream2.created, 0, "повторный проход идемпотентен");
+  eq(dream2.updated, 1, "повтор обновил наблюдение");
+
+  // Read Boundaries: счётчик_epoch растёт на каждой записи.
+  const e0 = core.readEpoch(DB);
+  core.bumpEpoch(DB);
+  eq(core.readEpoch(DB), e0 + 1, "epoch инкрементируется");
+  const gate = core.runHeldoutGate(DB, "v4", gold, { baseline: 0 });
+  truthy(gate.heldout > 0 && gate.heldout < gold.length,
+    "held-out подвыборка детерминированна: " + gate.heldout + "/" + gold.length);
+  eq(gate.status, "pass", "held-out gate с нулевым baseline проходит");
+  const gateAudit = core.ingest(DB, { content: "gate rollback probe", id: "gate-probe",
+    provenance: "own-test" }, null);
+  const gateApproved = core.approve(DB, gateAudit.id, "operator", "gate");
+  const bad = core.runHeldoutGate(DB, "v4", gold, {
+    baseline: 1.5, autoRollback: true, audit_id: gateApproved.audit_id,
+  });
+  eq(bad.status, "FAIL", "gate ловит регресс");
+  eq(bad.rolled_back, true, "авто-откат сработал");
+  truthy(DB.prepare("SELECT id FROM memory_staged WHERE id=?").get("gate-probe"),
+    "откат вернул запись в staged");
+
+  const chain = core.verifyAuditChain(DB);
+  eq(chain.ok, true, "hash-chain валидна: " + JSON.stringify(chain));
+  DB.prepare("UPDATE memory_audit SET reason='подмена' WHERE seq = (SELECT MIN(seq) FROM memory_audit WHERE seq>0)").run();
+  eq(core.verifyAuditChain(DB).ok, false, "подмена аудита ловится цепочкой");
+  DB.close();
 }
 
 // ---------------------------------------------------------------- итог
