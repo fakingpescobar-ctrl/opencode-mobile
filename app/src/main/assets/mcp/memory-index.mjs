@@ -29,7 +29,28 @@ CREATE VIRTUAL TABLE IF NOT EXISTS doc_fts USING fts5(
 CREATE VIRTUAL TABLE IF NOT EXISTS anchor_fts USING fts5(
   chunk_id UNINDEXED, anchors, tokenize='unicode61 remove_diacritics 2'
 );
+-- v4: тот же набор строк, но токенайзер держит технические идентификаторы
+-- (UUID, пакетные имена, пути с точками/дефисами) одним токеном. v3 читает
+-- anchor_fts и не меняется; v4-ядро подключается к anchor_fts_v4.
+CREATE VIRTUAL TABLE IF NOT EXISTS anchor_fts_v4 USING fts5(
+  chunk_id UNINDEXED, anchors, tokenize='unicode61 remove_diacritics 2 tokenchars ''-_.'''
+);
 `;
+
+// Имя v4-таблицы якорей — единственный контракт, который нужно ядру v4.
+export const ANCHOR_FTS_V4 = "anchor_fts_v4";
+
+// v4: сырые технические идентификаторы (org.opencode.mobile.debug, apk-53,
+// sha256-строки, пути) не попадают в канонические якоря analyze(). Добавляем
+// их ТОЛЬКО в v4-таблицу — v3-колонка anchors остаётся байтно прежней.
+export function rawIdentifiers(text, limit = 16) {
+  const seen = new Set();
+  for (const m of String(text || "").matchAll(/[a-z0-9][a-z0-9_.-]{2,}/gi)) {
+    const s = m[0];
+    if (/[.-]/.test(s) && /[a-z]/i.test(s) && !seen.has(s.toLowerCase())) seen.add(s.toLowerCase());
+  }
+  return [...seen].slice(0, limit);
+}
 
 // Классификацияkind по имени файла — вес авторитетности берётся отсюда же.
 export const KIND_BY_FILE = {
@@ -42,8 +63,12 @@ export const KIND_BY_FILE = {
   "АРХИВ_СОСТОЯНИЯ.md": "journal",
   "agent-rules.md": "rule",
   "MOLTBOOK_ADVICE.md": "advice",
+  // Отчёт разового исследования — справочный артефакт, не рабочее правило.
+  // Классифицируем ниже advice, чтобы его массив чанков не сдвигал ord
+  // канонических источников в FTS (иначе падал gold recall по якорю advice).
+  "ИССЛЕДОВАНИЕ_ПАМЯТИ_АГЕНТОВ.md": "report",
 };
-export const AUTHORITY = { rule: 1.0, state: 0.95, path: 0.9, catalog: 0.8, journal: 0.7, advice: 0.5, doc: 0.6 };
+export const AUTHORITY = { rule: 1.0, state: 0.95, path: 0.9, catalog: 0.8, journal: 0.7, doc: 0.6, advice: 0.5, report: 0.4 };
 export function kindOf(relPath) {
   const base = basename(relPath);
   return KIND_BY_FILE[base] || "doc";
@@ -184,6 +209,8 @@ export function indexFiles(DB, files, opts = {}) {
   const delChunks = DB.prepare("DELETE FROM doc_chunks WHERE source = ?");
   const delFtsDoc = DB.prepare("DELETE FROM doc_fts WHERE chunk_id IN (SELECT id FROM doc_chunks WHERE source = ?)");
   const delFtsAnchor = DB.prepare("DELETE FROM anchor_fts WHERE chunk_id IN (SELECT id FROM doc_chunks WHERE source = ?)");
+  // v4 чистится и наполняется тем же набором строк, что и v3, в том же порядке.
+  const delFtsAnchorV4 = DB.prepare(`DELETE FROM ${ANCHOR_FTS_V4} WHERE chunk_id IN (SELECT id FROM doc_chunks WHERE source = ?)`);
   const insSource = DB.prepare(`INSERT INTO doc_sources(path, sha, mtime, chunks, kind, indexed_at)
     VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET
     sha=excluded.sha, mtime=excluded.mtime, chunks=excluded.chunks, kind=excluded.kind, indexed_at=excluded.indexed_at`);
@@ -191,6 +218,7 @@ export function indexFiles(DB, files, opts = {}) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const insFtsDoc = DB.prepare("INSERT INTO doc_fts(chunk_id, text) VALUES (?, ?)");
   const insFtsAnchor = DB.prepare("INSERT INTO anchor_fts(chunk_id, anchors) VALUES (?, ?)");
+  const insFtsAnchorV4 = DB.prepare(`INSERT INTO ${ANCHOR_FTS_V4}(chunk_id, anchors) VALUES (?, ?)`);
 
   const run = DB.transaction(() => {
     for (let fileIdx = 0; fileIdx < files.length; fileIdx++) {
@@ -223,6 +251,7 @@ export function indexFiles(DB, files, opts = {}) {
       if (prev) {
         delFtsDoc.run(rel);
         delFtsAnchor.run(rel);
+        delFtsAnchorV4.run(rel);
         delChunks.run(rel);
       }
       let ci = 0;
@@ -256,11 +285,13 @@ export function indexFiles(DB, files, opts = {}) {
     // bm25 почти нулевой во всех строках, и ORDER BY score возвращает их в
     // порядке rowid — эталон выпадал из якорного пула (инцидент g11, apk-53).
     // Теперь порядок строк FTS детерминирован содержимым и не зависит от истории.
-    DB.exec("DELETE FROM doc_fts; DELETE FROM anchor_fts;");
+    DB.exec("DELETE FROM doc_fts; DELETE FROM anchor_fts; DELETE FROM " + ANCHOR_FTS_V4 + ";");
     const all = DB.prepare("SELECT id, text, anchors FROM doc_chunks ORDER BY ord, id").all();
     for (const c of all) {
       insFtsDoc.run(c.id, c.text);
       insFtsAnchor.run(c.id, c.anchors);
+      // v4: канонические якоря + сырые идентификаторы. v3-строка не меняется.
+      insFtsAnchorV4.run(c.id, (c.anchors + " " + rawIdentifiers(c.text).join(" ")).trim());
     }
   });
   run();
