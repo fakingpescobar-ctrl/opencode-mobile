@@ -13,6 +13,7 @@ import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 /**
  * Автоматическая обратная связь по сбоям сервера.
@@ -28,6 +29,7 @@ object FailureReporter {
     private const val PREFS = "failure_reporter"
     private const val KEY_LAST_SENT = "last_sent_at"
     private const val KEY_LAST_FP = "last_fingerprint"
+    private const val KEY_INSTALL_ID = "install_id"
     private const val RATE_LIMIT_MS = 60L * 60 * 1000
     private const val DEDUP_MS = 24L * 60 * 60 * 1000
     private const val MAX_TEXT = 3500
@@ -108,6 +110,7 @@ object FailureReporter {
         val lines = ArrayList<String>()
         lines.add("OpenCode Mobile crash report")
         lines.add("build: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) ${BuildConfig.GIT_SHA}")
+        lines.add("reporter: ${installId(context)}")
         lines.add("stage: $stage")
         lines.add("code: $code (recoverable=${err?.recoverable ?: false})")
         lines.add("message: ${sanitize(err?.message ?: "no lastError")}")
@@ -124,6 +127,19 @@ object FailureReporter {
             .put("text", lines.joinToString("\n").take(MAX_TEXT))
     }
 
+    /**
+     * Стабильный ID установки. Не IMEI и не ANDROID_ID: случайный UUID в
+     * SharedPreferences — не требует разрешений, живет до переустановки APK
+     * и позволяет понять в чате, от какого именно девайса пришел отчёт.
+     */
+    private fun installId(context: Context): String {
+        val saved = prefs(context).getString(KEY_INSTALL_ID, "")
+        if (!saved.isNullOrBlank()) return saved
+        val fresh = UUID.randomUUID().toString()
+        prefs(context).edit().putString(KEY_INSTALL_ID, fresh).apply()
+        return fresh
+    }
+
     private fun deviceLine(context: Context): String {
         val mi = android.app.ActivityManager.MemoryInfo()
         runCatching {
@@ -132,7 +148,7 @@ object FailureReporter {
         }
         val ram = if (mi.totalMem > 0L) "${mb(mi.availMem)}/${mb(mi.totalMem)}" else "?"
         val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "?"
-        return "device: API ${Build.VERSION.SDK_INT} $abi RAM $ram"
+        return "device: ${Build.BRAND} ${Build.MODEL} API ${Build.VERSION.SDK_INT} $abi RAM $ram"
     }
 
     private fun mb(bytes: Long): String = "${bytes / BYTES_PER_MB}MB"
