@@ -36,7 +36,7 @@ function section(title) { console.log("\n=== " + title + " ==="); }
 
 const CORE_FILES = [
   "memory-core.js", "memory-adaptive.js", "memory-lemma.js",
-  "memory-index.mjs", "memory-llm.js", "russian-stemmer.js",
+  "memory-index.mjs", "memory-llm.js", "memory-map.js", "russian-stemmer.js",
 ];
 
 // ---------------------------------------------------------------- 1. Ассеты
@@ -87,6 +87,7 @@ section("2. Живой memory.js: импорты, инструменты, дис
     "memory_proposal_accept", "memory_proposal_reject", "memory_proposal_rollback",
     "memory_outcome", "memory_dream", "memory_audit_verify", "memory_gate",
     "memory_llm_status", "memory_llm_search",
+    "memory_map", "memory_suggest", "memory_signal",
   ];
   for (const t of tools) {
     truthy(js.includes('name: "' + t + '"'), t + ": зарегистрирован");
