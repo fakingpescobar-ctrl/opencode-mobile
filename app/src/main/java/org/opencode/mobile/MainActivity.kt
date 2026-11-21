@@ -24,6 +24,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -44,6 +45,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -217,7 +219,50 @@ fun TerminalScreen() {
                     CenteredStatus("Starting OpenCode server…")
                 }
                 state.status == OpencodeServerService.ServerStatus.ERROR -> {
-                    CenteredStatus("Server failed. See logcat")
+                    // Раньше тут был только CenteredStatus — юзер видел белый экран
+                    // без причины и не мог зайти в диагностику (в этой ветке нет
+                    // ControlBar). lastError уже есть в ServerState: показываем
+                    // код/сообщение прямо здесь, чтобы причину можно было
+                    // переписать со скрина даже без adb и без входа в UI.
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(
+                            "Server failed. See logcat",
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        val err = state.lastError
+                        if (err != null) {
+                            Text(
+                                text = "${err.stage} / ${err.code} (recoverable=${err.recoverable})\n${err.message}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(top = 12.dp, start = 16.dp, end = 16.dp),
+                            )
+                            val history = state.errorHistory
+                            if (history.isNotEmpty()) {
+                                Text(
+                                    text = history.takeLast(3).joinToString("\n") {
+                                        "${it.code}: ${it.message}"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(top = 8.dp, start = 16.dp, end = 16.dp),
+                                )
+                            }
+                        } else {
+                            Text(
+                                text = "Причина неизвестна: lastError пуст",
+                                style = MaterialTheme.typography.bodySmall,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(top = 12.dp),
+                            )
+                        }
+                    }
                 }
                 else -> {
                     CenteredStatus("Server stopped")
