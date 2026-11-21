@@ -23,6 +23,7 @@ const lemma = await import(CORE + "memory-lemma.js");
 const idx = await import(CORE + "memory-index.mjs");
 const core = await import(CORE + "memory-core.js");
 const adaptive = await import(CORE + "memory-adaptive.js");
+const mmap = await import(CORE + "memory-map.js");
 
 // Движковые регрессы не должны падать от правки наших же рабочих доков:
 // СОСТОЯНИЕ.md/ЖУРНАЛ.md постоянно меняются и вместо эталона попадают в
@@ -1021,6 +1022,46 @@ section("11. Манифест источников: закрытый конте�
   eq(idx.indexDocs(D, dir, { manifest: false }).files, 2, "manifest:false возвращает обход дерева");
   D.close();
   rmSync(dir, { recursive: true, force: true });
+}
+
+// ---------------------- 12. Движок v2: карта памяти и самообучение
+section("12. Карта памяти, self-supervised mining и meta-learning сигналов");
+{
+  const D = new Database(":memory:");
+  idx.indexDocs(D, DOCS);
+  const st = mmap.minePatterns(D, { minCount: 2, top: 8 });
+  truthy(st.patterns > 0, "выучено закономерностей: " + st.patterns);
+  truthy(st.sources > 0, "источники с закономерностями: " + st.sources);
+
+  // Повторный mining детерминирован: тот же набор, тот же sha карты.
+  const first = mmap.buildMemoryMap(D, { keys: 5 });
+  const firstSha = first.sha;
+  mmap.minePatterns(D, { minCount: 2, top: 8 });
+  const second = mmap.buildMemoryMap(D, { keys: 5 });
+  eq(second.sha, firstSha, "mining детерминирован");
+  eq(first.totalSources, second.totalSources, "число источников стабильно");
+  truthy(first.totalChunks > 0, "карта считает чанки");
+
+  const text = mmap.mapText(first, { limit: 3 });
+  truthy(text.startsWith("КАРТА ПАМЯТИ:"), "карта рендерится компактно");
+  truthy(text.split("\n").length <= 4, "карта ограничена лимитом строк");
+  truthy(first.sources.some((s) => s.keys.length > 0), "источники несут ключи");
+
+  const sug = mmap.suggestSources(D, " Старое правило память", { limit: 3 });
+  truthy(Array.isArray(sug), "подсказка источников — массив");
+  truthy(sug.length <= 3, "подсказка ограничена лимитом");
+
+  // Meta-learning: успех усиливает сигнал, провал ослабляет.
+  mmap.observeSignal(D, "rule", "anchor", true);
+  mmap.observeSignal(D, "rule", "anchor", true);
+  mmap.observeSignal(D, "rule", "graph", false);
+  const pol = mmap.signalPolicy(D, "rule");
+  eq(pol.length, 2, "политика знает оба сигнала");
+  truthy(pol[0].signal === "anchor", "anchor заслуженно выше: " + JSON.stringify(pol));
+  truthy(pol[0].score > pol[1].score, "score отражает историю исходов");
+  eq(pol[0].n, 2, "счётчик исходов корректен");
+  eq(mmap.signalPolicy(D, "unknown-kind").length, 0, "типы запросов изолированы");
+  D.close();
 }
 
 // ---------------------------------------------------------------- итог
