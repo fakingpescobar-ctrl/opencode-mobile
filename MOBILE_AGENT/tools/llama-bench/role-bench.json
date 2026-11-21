@@ -1,0 +1,152 @@
+{
+  "runtime": "llama-bench-musl-5",
+  "results": [
+    {
+      "id": "qwen3-0.6b-q4km",
+      "file": "Qwen3-0.6B-Q4_K_M.gguf",
+      "family": "qwen3",
+      "role": "выбранная (объяснения)",
+      "runtime": "llama-bench-musl-5",
+      "n": 12,
+      "whyFormat": 1,
+      "whyGrounded": 0.4166666666666667,
+      "rwFormat": 1,
+      "rwOk": 1,
+      "avgMs": 7583.729628170356,
+      "rows": [
+        {
+          "q": "g01",
+          "whyFormat": true,
+          "whyGrounded": false,
+          "whyMs": 21423.029055004008,
+          "whyRaw": "<think>\n\nФрагмент подходит для запроса, потому что он описывает, как plugin пишет отчёт moltbook, включая ключевые параметры и детали.",
+          "rwFormat": true,
+          "rwOk": true,
+          "rwMs": 1485.3796870156657,
+          "rwRaw": "<think>\n\n</think>\n\nПосмотрите на отчёт, который создает plugin."
+        },
+        {
+          "q": "g02",
+          "whyFormat": true,
+          "whyGrounded": false,
+          "whyMs": 4298.5588000155985,
+          "whyRaw": "<think>\n\nФрагмент подходит для запроса, потому что он описывает порядок и правила для читания памяти в процессе разработки.",
+          "rwFormat": true,
+          "rwOk": true,
+          "rwMs": 1760.6998429982923,
+          "rwRaw": "<think>\n\n</think>\n\nПравило 51 — читать самому без использования напоминания."
+        },
+        {
+          "q": "g03",
+          "whyFormat": true,
+          "whyGrounded": true,
+          "whyMs": 4211.6393739997875,
+          "whyRaw": "<think>\n\nФрагмент подходит для запроса, потому что он содержит ключевые параметры установки, такие как SHA-256, размер, путь и установка.",
+          "rwFormat": true,
+          "rwOk": true,
+          "rwMs": 1522.3003640130628,
+          "rwRaw": "<think>\n\n</think>\n\nПроверка установки APK-40 с SHA-1."
+        },
+        {
+          "q": "g04",
+          "whyFormat": true,
+          "whyGrounded": true,
+          "whyMs": 3675.176509015728,
+          "whyRaw": "<think>\n\n</think>\n\nЭтот фрагмент подходит для запроса, так как он описывает правила агента, которые он применяет сам, без упоминания инструкций.",
+          "rwFormat": true,
+          "rwOk": true,
+          "rwMs": 1541.5098950034007,
+          "rwRaw": "<think>\n\n</think>\n\nПредложить молтбук внешний — совет."
+        },
+        {
+          "q": "g05",
+          "whyFormat": true,
+          "whyGrounded": false,
+          "whyMs": 5424.349268985679,
+          "whyRaw": "<think>\n\n## Фрагмент подходит для запроса, потому что он описывает основные действия приложения в виде плагина, включая изменение исходника и создание сопоставительных файлов.",
+          "rwFormat": true,
+          "rwOk": true,
+          "rwMs": 1609.0518220153172,
+          "rwRaw": "<think>\n\n</think>\n\nПереформулируй запрос: \"Приложение с env MCP_MOLTBOOK_REPORT_DIR\""
+        },
+        {
+          "q": "g06",
+          "whyFormat": true,
+          "whyGrounded": true,
+          "whyMs": 3831.550362985581,
+          "whyRaw": "<think>\n\n</think>\n\nФрагмент подходит для запроса, так как он описывает процесс запуска и проверки `plugin_sha_match` в `moltbook` с использованием `gitx.sh`, перезапуска MCP и живого `moltbook_report`.",
+          "rwFormat": true,
+          "rwOk": true,
+          "rwMs": 2186.5089049970265,
+          "rwRaw": "<think>\n\n</think>\n\nПереформулированный запрос: \"Плагин plugin_sha256 для opencode moltbook в plugin_sha_match\"."
+        },
+        {
+          "q": "g07",
+          "whyFormat": true,
+          "whyGrounded": false,
+          "whyMs": 4666.611561027821,
+          "whyRaw": "<think>\n\n</think>\n\nФрагмент подходит для запроса, так как он описывает основные функции и особенности GitHub-пользовательских репозиториев, связанных с сборкой, скачиванием и установкой модулей.",
+          "rwFormat": true,
+          "rwOk": true,
+          "rwMs": 1680.0810410059057,
+          "rwRaw": "<think>\n\n</think>\n\nПорядок правки: сборка, скачивание, установка."
+        },
+        {
+          "q": "g08",
+          "whyFormat": true,
+          "whyGrounded": true,
+          "whyMs": 4717.816091986606,
+          "whyRaw": "<think>\n\n</think>\n\nФрагмент подходит для запроса, так как он описывает логику и workflow для выполнения тестов musl + bun:ffi.",
+          "rwFormat": true,
+          "rwOk": true,
+          "rwMs": 2125.325675995555,
+          "rwRaw": "<think>\n\n</think>\n\nМожно переформулировать запрос так: \"Тесты на libmusl и libbun-musl.\""
+        },
+        {
+          "q": "g09",
+          "whyFormat": true,
+          "whyGrounded": false,
+          "whyMs": 2358.762187010143,
+          "whyRaw": "<think>\n\n</think>\n\nФрагмент подходит для запроса, так как он указывает на перенос отчёта в архив.",
+          "rwFormat": true,
+          "rwOk": true,
+          "rwMs": 1827.636874979362,
+          "rwRaw": "<think>\n\n</think>\n\nДедупликация отчёта APK-39 и APK-40."
+        },
+        {
+          "q": "g10",
+          "whyFormat": true,
+          "whyGrounded": true,
+          "whyMs": 4550.536820985144,
+          "whyRaw": "<think>\n\n</think>\n\nФрагмент подходит для запроса, так как он описывает правила, которые должны быть сохранены в файле `MOBILE_AGENT/docs/agent-rules.md`, а не публиковать его на GitHub.",
+          "rwFormat": true,
+          "rwOk": true,
+          "rwMs": 2314.475519990083,
+          "rwRaw": "<think>\n\n</think>\n\nПереформулированный запрос: \"Не публиковать файл ghtoken_mobile_agent.txt\"."
+        },
+        {
+          "q": "g11",
+          "whyFormat": true,
+          "whyGrounded": false,
+          "whyMs": 3304.537393996725,
+          "whyRaw": "<think>\n\n</think>\n\nФрагмент подходит для запроса, потому что он описывает изменение в версии Android-апп, связанной с устройством CPH2747.",
+          "rwFormat": true,
+          "rwOk": true,
+          "rwMs": 2357.580362993758,
+          "rwRaw": "<think>\n\n</think>\n\nПереформулированный запрос: \"SDK Android 17, устройство CPH2747\""
+        },
+        {
+          "q": "g12",
+          "whyFormat": true,
+          "whyGrounded": false,
+          "whyMs": 6319.16968501173,
+          "whyRaw": "<think>\n\n</think>\n\nФрагмент подходит для запроса, так как он описывает ключевые моменты работы с FTS-таблицами, их структуру и функционал, а также включает данные о количестве и типах телеграмм-таблиц.",
+          "rwFormat": true,
+          "rwOk": true,
+          "rwMs": 1812.468437012285,
+          "rwRaw": "<think>\n\n</think>\n\nFTS5 trigram Unicode 61 SQLite 3.53"
+        }
+      ]
+    }
+  ]
+}
