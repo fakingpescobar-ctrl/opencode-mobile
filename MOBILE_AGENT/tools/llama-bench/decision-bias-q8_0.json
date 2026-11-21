@@ -1,0 +1,50 @@
+{
+  "model": "hs-decide-1-flash-q8_0.gguf",
+  "rows": [
+    {
+      "id": "g02",
+      "expect": "ПРАВИЛА.md",
+      "pick": "C",
+      "pick_source": "ПРАВИЛА.md",
+      "hit": true,
+      "original_position": 0,
+      "ms": 9912
+    },
+    {
+      "id": "g05",
+      "expect": "ХАРНЕС.md",
+      "pick": "E",
+      "pick_source": "ХАРНЕС.md",
+      "hit": true,
+      "original_position": 0,
+      "ms": 6269
+    },
+    {
+      "id": "g06",
+      "expect": "ПРАВИЛА.md",
+      "pick": "C",
+      "pick_source": "ПРАВИЛА.md",
+      "hit": true,
+      "original_position": 1,
+      "ms": 5883
+    },
+    {
+      "id": "g15",
+      "expect": "ЖУРНАЛ.md",
+      "pick": "B",
+      "pick_source": "СОСТОЯНИЕ.md",
+      "hit": false,
+      "original_position": 4,
+      "ms": 6680
+    },
+    {
+      "id": "g20",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "pick": "D",
+      "pick_source": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "hit": true,
+      "original_position": 0,
+      "ms": 7004
+    }
+  ]
+}
