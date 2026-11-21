@@ -20,6 +20,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import org.opencode.mobile.FailureReporter
 import org.opencode.mobile.MainActivity
 import org.opencode.mobile.OpencodeApp
 import org.opencode.mobile.R
@@ -204,7 +205,7 @@ class OpencodeServerService : Service() {
             RuntimeStage.CRASHED, RuntimeStage.FAILED_PERMANENTLY -> CoreUpdater.noteServerDown(this)
             else -> Unit
         }
-        _state.value =
+        val state =
             ServerState(
                 status = rt.stage.toServerStatus(),
                 port = rt.port,
@@ -219,6 +220,12 @@ class OpencodeServerService : Service() {
                 lastMemoryFailureAt = rt.lastMemoryFailureAt,
                 lastRecoveredAt = rt.lastRecoveredAt,
             )
+        _state.value = state
+        if (rt.stage == RuntimeStage.CRASHED || rt.stage == RuntimeStage.FAILED_PERMANENTLY) {
+            scope.launch(Dispatchers.IO) {
+                FailureReporter.report(this@OpencodeServerService, state)
+            }
+        }
         updateNotification(rt.stage.toNotificationText())
     }
 
