@@ -422,9 +422,14 @@ function recallDocsOnce(DB, query, opts = {}) {
     const trust = trustMultiplier(c.source, c.source);
     const fb = feedback.get(c.id) || 0;
     const fbMul = 1 + 0.06 * Math.max(-0.5, Math.min(1, fb));
+    // Явный kind-якорь ("советы" -> advice, "правило" -> rule) — это более
+    // сильный сигнал, чем случайное упоминание того же слова в другом источнике.
+    // Без порога каталог/бенчмарк перебивают сам MOLTBOOK_ADVICE.md: gold g04/g14
+    // выпадали из топ-5. Порог поднимает MRR 0.520 -> 0.553 при том же recall@5.
+    const anchorScore = Math.max(item.anchorScore, anchors.includes(c.kind) ? 0.85 : 0);
     const sim =
       (W.bm25text * item.textScore +
-       W.bm25anchor * item.anchorScore +
+       W.bm25anchor * anchorScore +
        W.graph * graph +
        W.authority * authority +
        W.recency * recency) * trust * fbMul;
@@ -461,7 +466,7 @@ function recallDocsOnce(DB, query, opts = {}) {
       score: Math.round(score * 10000) / 10000,
       why: {
         text: Math.round(item.textScore * 1000) / 1000,
-        anchor: Math.round(item.anchorScore * 1000) / 1000,
+        anchor: Math.round(anchorScore * 1000) / 1000,
         graph: Math.round(graph * 1000) / 1000,
         authority, recency: Math.round(recency * 1000) / 1000, trust, feedback: fb,
         anchors: anchors.filter((x) => c.anchors.split(" ").includes(x)),
@@ -636,10 +641,22 @@ export function ingest(DB, args, provenanceModule) {
     kind, topic_key: topicKey, links: links.length };
 }
 
-export function approve(DB, id, approvedBy = "operator", reason = "") {
+export function approve(DB, id, approvedBy = "operator", reason = "", opts = {}) {
   ensureCoreSchema(DB);
   const row = DB.prepare("SELECT * FROM memory_staged WHERE id = ?").get(id);
   if (!row) throw new Error("staged memory not found: " + id);
+
+  // Необязательный held-out gate: baseline меряем ДО коммита, иначе rollback
+  // нечего сравнивать. По умолчанию opts.gate !== true — путь байтно прежний.
+  const gateOn = opts && opts.gate === true;
+  const gateSuite = String((opts && opts.suite) || "core");
+  const gateGold = gateOn ? (Array.isArray(opts.gold) ? opts.gold : []) : [];
+  if (gateOn && !gateGold.length) throw new Error("approve gate: gold required");
+  const gateBaseline = gateOn
+    ? (Number.isFinite(opts.baseline) ? Number(opts.baseline)
+      : runBench(DB, gateSuite + "-pre", heldoutSubset(gateGold), { scope: opts.scope }).recall5)
+    : null;
+
   const auditId = `audit-${sha256(id + Date.now()).slice(0, 16)}`;
   const at = Date.now();
   if (row.kind === "fact") {
@@ -680,15 +697,31 @@ export function approve(DB, id, approvedBy = "operator", reason = "") {
       DB.exec("ROLLBACK");
       throw e;
     }
-    return { approved: true, id, sha: row.sha, audit_id: auditId, kind: "fact",
+    const applied = { approved: true, id, sha: row.sha, audit_id: auditId, kind: "fact",
       topic_key: row.topic_key, superseded: superseded.length };
+    return withApproveGate(DB, applied, gateOn, gateSuite, gateGold, gateBaseline, opts);
   }
   writeAudit(DB, auditId, "approve", id, row.sha, reason, at, approvedBy);
   DB.prepare("INSERT INTO memory_snapshot(audit_id, payload) VALUES (?, ?)")
     .run(auditId, JSON.stringify(row));
   DB.prepare("DELETE FROM memory_staged WHERE id = ?").run(id);
   bumpEpoch(DB);
-  return { approved: true, id, sha: row.sha, audit_id: auditId, kind: "doc" };
+  const applied = { approved: true, id, sha: row.sha, audit_id: auditId, kind: "doc" };
+  return withApproveGate(DB, applied, gateOn, gateSuite, gateGold, gateBaseline, opts);
+}
+
+// Добавочная обёртка: gate не меняет форму ответа без opts.gate.
+function withApproveGate(DB, applied, gateOn, suite, gold, baseline, opts) {
+  if (!gateOn) return applied;
+  const maxDrop = Number.isFinite(opts.maxDrop) ? Number(opts.maxDrop) : 0.02;
+  const gate = runHeldoutGate(DB, suite, gold, {
+    scope: opts.scope,
+    baseline,
+    maxDrop,
+    autoRollback: opts.autoRollback === true,
+    audit_id: applied.audit_id,
+  });
+  return { ...applied, gate };
 }
 
 export function rollback(DB, auditId) {
@@ -727,12 +760,20 @@ export function rollback(DB, auditId) {
     }
     return { rolled_back: true, audit_id: auditId, restored: row.id, sha: row.sha, kind: "fact" };
   }
-  DB.prepare(`INSERT INTO memory_staged(id, content, sha, provenance, at) VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET content=excluded.content, sha=excluded.sha, provenance=excluded.provenance, at=excluded.at`)
-    .run(row.id, row.content, row.sha, row.provenance, row.at);
-  writeAudit(DB, `rollback-${auditId}`, "rollback", row.id, row.sha,
-    "compensating rollback of " + auditId, Date.now(), "system");
-  bumpEpoch(DB);
+  DB.exec("BEGIN");
+  try {
+    DB.prepare(`INSERT INTO memory_staged(id, content, sha, provenance, at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET content=excluded.content, sha=excluded.sha,
+        provenance=excluded.provenance, at=excluded.at`)
+      .run(row.id, row.content, row.sha, row.provenance, row.at);
+    writeAudit(DB, `rollback-${auditId}`, "rollback", row.id, row.sha,
+      "compensating rollback of " + auditId, Date.now(), "system");
+    bumpEpoch(DB);
+    DB.exec("COMMIT");
+  } catch (e) {
+    DB.exec("ROLLBACK");
+    throw e;
+  }
   return { rolled_back: true, audit_id: auditId, restored: row.id, sha: row.sha, kind: "doc" };
 }
 
@@ -902,7 +943,7 @@ export function runProposalPass(DB, opts = {}) {
   };
 }
 
-export function acceptProposal(DB, id, approvedBy = "operator", reason = "") {
+export function acceptProposal(DB, id, approvedBy = "operator", reason = "", opts = {}) {
   ensureCoreSchema(DB);
   const p = DB.prepare("SELECT * FROM memory_proposal WHERE id = ?").get(id);
   if (!p) throw new Error("proposal not found: " + id);
@@ -920,7 +961,7 @@ export function acceptProposal(DB, id, approvedBy = "operator", reason = "") {
       evidence: p.proof || p.evidence,
     }] : [],
   }, null);
-  const applied = approve(DB, stagedId, approvedBy, reason || `proposal ${p.kind}`);
+  const applied = approve(DB, stagedId, approvedBy, reason || `proposal ${p.kind}`, opts);
   DB.prepare(`UPDATE memory_proposal
     SET status='accepted', audit_id=?, decided_by=?, reason=?, seen_at=? WHERE id=?`)
     .run(applied.audit_id, approvedBy, reason || "", Date.now(), id);
@@ -1035,12 +1076,19 @@ export function runDreamPass(DB, opts = {}) {
   return { created, updated, invalidated, groups: groups.length };
 }
 
+// Детерминированная fifth-подвыборка gold, общей для baseline и gate:
+// baseline и пост-коммитный замер обязаны мерить один и тот же набор.
+export function heldoutSubset(gold) {
+  const all = Array.isArray(gold) ? gold : [];
+  const held = all.filter((g) => sha256(String(g.query)).charCodeAt(0) % 5 === 0);
+  return held.length ? held : all;
+}
+
 // Held-out gate: детерминированная fifth-подвыборка gold, которой не касались
 // правки весов. При регрессе >maxDrop можно явно включить авто-откат по audit_id.
 export function runHeldoutGate(DB, suite, gold, opts = {}) {
   ensureCoreSchema(DB);
-  const held = gold.filter((g) => sha256(String(g.query)).charCodeAt(0) % 5 === 0);
-  const evalGold = held.length ? held : gold;
+  const evalGold = heldoutSubset(gold);
   const metric = runBench(DB, String(suite || "core") + "-holdout", evalGold, opts);
   const baseline = Number.isFinite(opts.baseline) ? Number(opts.baseline) : null;
   const maxDrop = Number.isFinite(opts.maxDrop) ? Number(opts.maxDrop) : 0.02;
