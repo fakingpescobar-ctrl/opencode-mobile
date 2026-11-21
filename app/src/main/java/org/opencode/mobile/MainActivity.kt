@@ -196,14 +196,10 @@ fun TerminalScreen() {
     val state by OpencodeServerService.state.collectAsState()
     val context = LocalContext.current
 
-    // Досылаем отложенные отчёты при каждом запуске и фиксируем новый сбой.
+    // Отчёт о новом сбое шлёт сервис (onRuntimeState); UI здесь только досылает
+    // накопленную очередь отложенных отчётов при каждом запуске.
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) { FailureReporter.flush(context) }
-    }
-    LaunchedEffect(state.status) {
-        if (state.status == OpencodeServerService.ServerStatus.ERROR) {
-            withContext(Dispatchers.IO) { FailureReporter.report(context, state) }
-        }
     }
 
     // Сервер уже запущен в onCreate() (OpencodeServerService.start(this)).
