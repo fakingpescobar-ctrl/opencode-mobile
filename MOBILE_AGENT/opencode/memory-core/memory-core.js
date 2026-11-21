@@ -282,18 +282,45 @@ function effectiveAuthority(kind, anchors) {
   return AUTHORITY[kind] ?? 0.6;
 }
 
-// Графовая близость: сколько рёбер/grap-связей ведут от якорей запроса к чанку.
-// Дешёвый proxy без обхода графа: используем счётчик общих якорей с соседними
-// чанками. Полный follow_thread ниже делает настоящий обход по graph-таблице.
-function graphProximity(DB, anchors, chunkId) {
-  if (!anchors.length) return 0;
-  try {
-    const row = DB.prepare(`SELECT count(*) n FROM graph
-      WHERE source IN (${anchors.map(() => "?").join(",")})
-        AND target IN (SELECT id FROM doc_chunks WHERE source = ?)`)
-      .get(...anchors, chunkId.split(":")[0]);
-    return clamp((row?.n || 0) / 4);
-  } catch { return 0; }
+// Настоящий графовый обход в скоринге: от якорей запроса и чанков якорного
+// пула за 2 перехода по graph-таблице. Раньше здесь был дешёвый proxy — один
+// SQL на каждый чанк и только прямое попадание в исходник. Обход считается
+// один раз на запрос; при пустом графе (холодный индекс без фактов) он
+// детерминированно даёт 0 и не влияет на gold.
+function graphReach(DB, anchors, chunkIds, depth = 2) {
+  const reach = new Map();
+  let frontier = [...new Set([...(Array.isArray(anchors) ? anchors : []),
+    ...(Array.isArray(chunkIds) ? chunkIds : [])])].filter(Boolean);
+  // Стартовые узлы — не графовая связь: в reach не кладём, иначе все чанки
+  // якорного пула получили бы graph=1.0 и сдвинули скоринг при пустом графе.
+  const seen = new Set(frontier);
+  for (let d = 1; d <= Math.min(depth, 3) && frontier.length; d++) {
+    const marks = frontier.map(() => "?").join(",");
+    let rows;
+    try {
+      rows = DB.prepare(`SELECT source, target FROM graph
+        WHERE source IN (${marks}) OR target IN (${marks})
+        ORDER BY source, target LIMIT 200`).all(...frontier, ...frontier);
+    } catch { break; }
+    const next = [];
+    for (const e of rows) {
+      const s = String(e.source || ""), t = String(e.target || "");
+      const other = seen.has(s) && !seen.has(t) ? t : (seen.has(t) && !seen.has(s) ? s : "");
+      if (!other || seen.has(other)) continue;
+      seen.add(other);
+      reach.set(other, d);
+      next.push(other);
+    }
+    frontier = next;
+  }
+  return reach;
+}
+
+// Первый переход даёт 0.65, второй 0.3, третий 0. Стартовые узлы не считаются.
+function graphProximity(reach, chunkId) {
+  const d = reach && reach.get(chunkId);
+  if (d == null) return 0;
+  return clamp(1 - d * 0.35);
 }
 
 function queryFts(DB, table, query, limit) {
@@ -301,6 +328,16 @@ function queryFts(DB, table, query, limit) {
     return DB.prepare(`SELECT chunk_id, bm25(${table}) AS score FROM ${table}
       WHERE ${table} MATCH ? ORDER BY score LIMIT ?`).all(query, limit);
   } catch { return []; }
+}
+
+// Near-duplicate: те же слова в том же порядке, но с другой пунктуацией,
+// регистром или ё/е. Раньше дедуп бил только по точному sha текста, поэтому
+// stale-копия с переформатированием занимала отдельное место в топе. Ключ
+// консервативный — разные тексты не сливаются: порядок слов сохраняется.
+export function nearDuplicateKey(text) {
+  const norm = String(text || "").toLowerCase().replace(/ё/g, "е")
+    .replace(/[^a-z0-9а-я\s]/gi, " ").replace(/\s+/g, " ").trim();
+  return sha256(norm).slice(0, 16);
 }
 
 // Главный поиск. Возвращает топ-чанки с весами и объяснением `why`.
@@ -368,6 +405,8 @@ function recallDocsOnce(DB, query, opts = {}) {
     }
     anchorHits = picked;
   }
+  // Обход графа один раз на запрос, а не SQL на каждый кандидат.
+  const graphReached = graphReach(DB, anchors, anchorHits.map((h) => h.chunk_id));
   const byId = new Map();
   for (const h of textHits) {
     const c = getChunk.get(h.chunk_id);
@@ -417,7 +456,7 @@ function recallDocsOnce(DB, query, opts = {}) {
     }
     if (opts.as_of != null && c.created > opts.as_of) continue;
     const authority = effectiveAuthority(c.kind, anchors);
-    const graph = graphProximity(DB, anchors, c.id);
+    const graph = graphProximity(graphReached, c.id);
     const recency = recencyOf(c.created, now);
     const trust = trustMultiplier(c.source, c.source);
     const fb = feedback.get(c.id) || 0;
@@ -486,7 +525,7 @@ function recallDocsOnce(DB, query, opts = {}) {
   const seenText = new Map();
   const dedup = [];
   for (const r of results) {
-    const key = sha256(r.text).slice(0, 16);
+    const key = nearDuplicateKey(r.text);
     const at = seenText.get(key);
     if (at === undefined) {
       seenText.set(key, dedup.length);
