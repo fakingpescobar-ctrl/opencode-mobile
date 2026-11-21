@@ -35,8 +35,7 @@ internal fun highlightMarkdown(
         .apply {
             addStyle(SpanStyle(color = base), 0, text.length)
             for (span in spans) addStyle(styleFor(span.kind), span.start, span.end)
-        }
-        .toAnnotatedString()
+        }.toAnnotatedString()
 }
 
 private fun styleFor(kind: MarkKind): SpanStyle =
