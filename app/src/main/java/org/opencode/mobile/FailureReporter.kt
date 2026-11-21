@@ -54,15 +54,22 @@ object FailureReporter {
     fun flush(context: Context): Boolean {
         val token = BuildConfig.TELEGRAM_BOT_TOKEN
         val chat = BuildConfig.TELEGRAM_CHAT_ID
-        if (token.isBlank() || chat.isBlank()) return false
-        val dir = File(context.filesDir, "failures")
-        val pending = dir.listFiles { f -> f.name.endsWith(".json") }
-            ?.sortedBy { it.name }
-            ?: return false
+        val pending = File(context.filesDir, "failures")
+            .listFiles { f -> f.name.endsWith(".json") }
+        return when {
+            token.isBlank() || chat.isBlank() -> false
+            pending.isNullOrEmpty() -> false
+            else -> flushPending(token, chat, pending.sortedBy { it.name })
+        }
+    }
+
+    private fun flushPending(token: String, chat: String, pending: List<File>): Boolean {
         var sent = false
         for (file in pending) {
-            val text = readText(file) ?: run { file.delete(); continue }
-            if (send(token, chat, text)) {
+            val text = readText(file)
+            if (text == null) {
+                file.delete()
+            } else if (send(token, chat, text)) {
                 file.delete()
                 sent = true
             } else {
@@ -185,7 +192,7 @@ object FailureReporter {
                 "&disable_web_page_preview=true"
             conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
             conn.responseCode in HTTP_OK_MIN..HTTP_OK_MAX
-        } catch (e: Exception) {
+        } catch (e: java.io.IOException) {
             Log.w(TAG, "отправка не удалась: ${e.message}")
             false
         } finally {
