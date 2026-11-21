@@ -74,8 +74,9 @@ jobs:
             -Wl,--whole-archive $STATIC_LIBS -Wl,--no-whole-archive \
             -static-libstdc++ -static-libgcc -lm -lpthread
           file libllama-bench.so
-          readelf -Ws libllama-bench.so | grep -E 'lb_bench|lb_gen|lb_score|lb_version'
+          readelf -Ws libllama-bench.so | grep -E 'lb_bench|lb_gen|lb_code_ids|lb_score|lb_version'
           readelf -Ws libllama-bench.so | grep -q 'lb_score' || { echo "нет lb_score"; exit 1; }
+          readelf -Ws libllama-bench.so | grep -q 'lb_code_ids' || { echo "нет lb_code_ids"; exit 1; }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
