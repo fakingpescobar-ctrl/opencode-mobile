@@ -89,11 +89,22 @@ class McpAssetImportContractTest {
                 "./memory-index.mjs",
                 "./memory-adaptive.js",
                 "./memory-llm.js",
+                "./memory-map.js",
             )
         val unknown = relativeImportsOf(File(mcpDir, "memory.js")).filterNot { it in allowed }
         assertTrue(
             "memory.js тянет непредусмотренные модули: $unknown",
             unknown.isEmpty(),
+        )
+        // Движок v2: карта памяти обязана быть и в assets, и в импортах —
+        // иначе новый тул memory_map молча станет недоступным на устройстве.
+        assertTrue(
+            "memory-map.js должен лежать в assets/mcp",
+            File(mcpDir, "memory-map.js").isFile,
+        )
+        assertTrue(
+            "memory.js не импортирует ./memory-map.js — карта памяти не подключена",
+            File(mcpDir, "memory.js").readText().contains("./memory-map.js"),
         )
     }
 
