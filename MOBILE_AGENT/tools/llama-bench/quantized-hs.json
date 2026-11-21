@@ -1,0 +1,22 @@
+{
+  "runtime": "llama-bench-musl-9",
+  "source": "hs-decide-1-flash-bf16.gguf",
+  "rows": [
+    {
+      "name": "Q8_0",
+      "ftype": 7,
+      "file": "hs-decide-1-flash-q8_0.gguf",
+      "bytes": 811843840,
+      "sha256": "9847b9dc0e8ea0a11d98c93574e47ec783e5c1ce0e21b5125ea2be79d57bd82b",
+      "ms": 6656
+    },
+    {
+      "name": "Q4_K_M",
+      "ftype": 15,
+      "file": "hs-decide-1-flash-q4_k_m.gguf",
+      "bytes": 529297664,
+      "sha256": "e303f95a485a89a62d1f8778f59716b8eb0d83b73873a146fafe78cd06a4743b",
+      "ms": 19270
+    }
+  ]
+}
