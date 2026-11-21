@@ -736,8 +736,7 @@ fun DiagnosticsScreen(
                                         next
                                             .trim()
                                             .ifEmpty { CRASH_NAME_DEFAULT },
-                                    )
-                                    .apply()
+                                    ).apply()
                             },
                             singleLine = true,
                             textStyle = TextStyle(color = MoltValue, fontSize = SMALL, lineHeight = SMALL_LINE),
