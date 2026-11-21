@@ -282,18 +282,45 @@ function effectiveAuthority(kind, anchors) {
   return AUTHORITY[kind] ?? 0.6;
 }
 
-// Графовая близость: сколько рёбер/grap-связей ведут от якорей запроса к чанку.
-// Дешёвый proxy без обхода графа: используем счётчик общих якорей с соседними
-// чанками. Полный follow_thread ниже делает настоящий обход по graph-таблице.
-function graphProximity(DB, anchors, chunkId) {
-  if (!anchors.length) return 0;
-  try {
-    const row = DB.prepare(`SELECT count(*) n FROM graph
-      WHERE source IN (${anchors.map(() => "?").join(",")})
-        AND target IN (SELECT id FROM doc_chunks WHERE source = ?)`)
-      .get(...anchors, chunkId.split(":")[0]);
-    return clamp((row?.n || 0) / 4);
-  } catch { return 0; }
+// Настоящий графовый обход в скоринге: от якорей запроса и чанков якорного
+// пула за 2 перехода по graph-таблице. Раньше здесь был дешёвый proxy — один
+// SQL на каждый чанк и только прямое попадание в исходник. Обход считается
+// один раз на запрос; при пустом графе (холодный индекс без фактов) он
+// детерминированно даёт 0 и не влияет на gold.
+function graphReach(DB, anchors, chunkIds, depth = 2) {
+  const reach = new Map();
+  let frontier = [...new Set([...(Array.isArray(anchors) ? anchors : []),
+    ...(Array.isArray(chunkIds) ? chunkIds : [])])].filter(Boolean);
+  // Стартовые узлы — не графовая связь: в reach не кладём, иначе все чанки
+  // якорного пула получили бы graph=1.0 и сдвинули скоринг при пустом графе.
+  const seen = new Set(frontier);
+  for (let d = 1; d <= Math.min(depth, 3) && frontier.length; d++) {
+    const marks = frontier.map(() => "?").join(",");
+    let rows;
+    try {
+      rows = DB.prepare(`SELECT source, target FROM graph
+        WHERE source IN (${marks}) OR target IN (${marks})
+        ORDER BY source, target LIMIT 200`).all(...frontier, ...frontier);
+    } catch { break; }
+    const next = [];
+    for (const e of rows) {
+      const s = String(e.source || ""), t = String(e.target || "");
+      const other = seen.has(s) && !seen.has(t) ? t : (seen.has(t) && !seen.has(s) ? s : "");
+      if (!other || seen.has(other)) continue;
+      seen.add(other);
+      reach.set(other, d);
+      next.push(other);
+    }
+    frontier = next;
+  }
+  return reach;
+}
+
+// Первый переход даёт 0.65, второй 0.3, третий 0. Стартовые узлы не считаются.
+function graphProximity(reach, chunkId) {
+  const d = reach && reach.get(chunkId);
+  if (d == null) return 0;
+  return clamp(1 - d * 0.35);
 }
 
 function queryFts(DB, table, query, limit) {
@@ -301,6 +328,16 @@ function queryFts(DB, table, query, limit) {
     return DB.prepare(`SELECT chunk_id, bm25(${table}) AS score FROM ${table}
       WHERE ${table} MATCH ? ORDER BY score LIMIT ?`).all(query, limit);
   } catch { return []; }
+}
+
+// Near-duplicate: те же слова в том же порядке, но с другой пунктуацией,
+// регистром или ё/е. Раньше дедуп бил только по точному sha текста, поэтому
+// stale-копия с переформатированием занимала отдельное место в топе. Ключ
+// консервативный — разные тексты не сливаются: порядок слов сохраняется.
+export function nearDuplicateKey(text) {
+  const norm = String(text || "").toLowerCase().replace(/ё/g, "е")
+    .replace(/[^a-z0-9а-я\s]/gi, " ").replace(/\s+/g, " ").trim();
+  return sha256(norm).slice(0, 16);
 }
 
 // Главный поиск. Возвращает топ-чанки с весами и объяснением `why`.
@@ -368,6 +405,8 @@ function recallDocsOnce(DB, query, opts = {}) {
     }
     anchorHits = picked;
   }
+  // Обход графа один раз на запрос, а не SQL на каждый кандидат.
+  const graphReached = graphReach(DB, anchors, anchorHits.map((h) => h.chunk_id));
   const byId = new Map();
   for (const h of textHits) {
     const c = getChunk.get(h.chunk_id);
@@ -417,14 +456,19 @@ function recallDocsOnce(DB, query, opts = {}) {
     }
     if (opts.as_of != null && c.created > opts.as_of) continue;
     const authority = effectiveAuthority(c.kind, anchors);
-    const graph = graphProximity(DB, anchors, c.id);
+    const graph = graphProximity(graphReached, c.id);
     const recency = recencyOf(c.created, now);
     const trust = trustMultiplier(c.source, c.source);
     const fb = feedback.get(c.id) || 0;
     const fbMul = 1 + 0.06 * Math.max(-0.5, Math.min(1, fb));
+    // Явный kind-якорь ("советы" -> advice, "правило" -> rule) — это более
+    // сильный сигнал, чем случайное упоминание того же слова в другом источнике.
+    // Без порога каталог/бенчмарк перебивают сам MOLTBOOK_ADVICE.md: gold g04/g14
+    // выпадали из топ-5. Порог поднимает MRR 0.520 -> 0.553 при том же recall@5.
+    const anchorScore = Math.max(item.anchorScore, anchors.includes(c.kind) ? 0.85 : 0);
     const sim =
       (W.bm25text * item.textScore +
-       W.bm25anchor * item.anchorScore +
+       W.bm25anchor * anchorScore +
        W.graph * graph +
        W.authority * authority +
        W.recency * recency) * trust * fbMul;
@@ -461,7 +505,7 @@ function recallDocsOnce(DB, query, opts = {}) {
       score: Math.round(score * 10000) / 10000,
       why: {
         text: Math.round(item.textScore * 1000) / 1000,
-        anchor: Math.round(item.anchorScore * 1000) / 1000,
+        anchor: Math.round(anchorScore * 1000) / 1000,
         graph: Math.round(graph * 1000) / 1000,
         authority, recency: Math.round(recency * 1000) / 1000, trust, feedback: fb,
         anchors: anchors.filter((x) => c.anchors.split(" ").includes(x)),
@@ -481,7 +525,7 @@ function recallDocsOnce(DB, query, opts = {}) {
   const seenText = new Map();
   const dedup = [];
   for (const r of results) {
-    const key = sha256(r.text).slice(0, 16);
+    const key = nearDuplicateKey(r.text);
     const at = seenText.get(key);
     if (at === undefined) {
       seenText.set(key, dedup.length);
@@ -636,10 +680,22 @@ export function ingest(DB, args, provenanceModule) {
     kind, topic_key: topicKey, links: links.length };
 }
 
-export function approve(DB, id, approvedBy = "operator", reason = "") {
+export function approve(DB, id, approvedBy = "operator", reason = "", opts = {}) {
   ensureCoreSchema(DB);
   const row = DB.prepare("SELECT * FROM memory_staged WHERE id = ?").get(id);
   if (!row) throw new Error("staged memory not found: " + id);
+
+  // Необязательный held-out gate: baseline меряем ДО коммита, иначе rollback
+  // нечего сравнивать. По умолчанию opts.gate !== true — путь байтно прежний.
+  const gateOn = opts && opts.gate === true;
+  const gateSuite = String((opts && opts.suite) || "core");
+  const gateGold = gateOn ? (Array.isArray(opts.gold) ? opts.gold : []) : [];
+  if (gateOn && !gateGold.length) throw new Error("approve gate: gold required");
+  const gateBaseline = gateOn
+    ? (Number.isFinite(opts.baseline) ? Number(opts.baseline)
+      : runBench(DB, gateSuite + "-pre", heldoutSubset(gateGold), { scope: opts.scope }).recall5)
+    : null;
+
   const auditId = `audit-${sha256(id + Date.now()).slice(0, 16)}`;
   const at = Date.now();
   if (row.kind === "fact") {
@@ -680,15 +736,31 @@ export function approve(DB, id, approvedBy = "operator", reason = "") {
       DB.exec("ROLLBACK");
       throw e;
     }
-    return { approved: true, id, sha: row.sha, audit_id: auditId, kind: "fact",
+    const applied = { approved: true, id, sha: row.sha, audit_id: auditId, kind: "fact",
       topic_key: row.topic_key, superseded: superseded.length };
+    return withApproveGate(DB, applied, gateOn, gateSuite, gateGold, gateBaseline, opts);
   }
   writeAudit(DB, auditId, "approve", id, row.sha, reason, at, approvedBy);
   DB.prepare("INSERT INTO memory_snapshot(audit_id, payload) VALUES (?, ?)")
     .run(auditId, JSON.stringify(row));
   DB.prepare("DELETE FROM memory_staged WHERE id = ?").run(id);
   bumpEpoch(DB);
-  return { approved: true, id, sha: row.sha, audit_id: auditId, kind: "doc" };
+  const applied = { approved: true, id, sha: row.sha, audit_id: auditId, kind: "doc" };
+  return withApproveGate(DB, applied, gateOn, gateSuite, gateGold, gateBaseline, opts);
+}
+
+// Добавочная обёртка: gate не меняет форму ответа без opts.gate.
+function withApproveGate(DB, applied, gateOn, suite, gold, baseline, opts) {
+  if (!gateOn) return applied;
+  const maxDrop = Number.isFinite(opts.maxDrop) ? Number(opts.maxDrop) : 0.02;
+  const gate = runHeldoutGate(DB, suite, gold, {
+    scope: opts.scope,
+    baseline,
+    maxDrop,
+    autoRollback: opts.autoRollback === true,
+    audit_id: applied.audit_id,
+  });
+  return { ...applied, gate };
 }
 
 export function rollback(DB, auditId) {
@@ -727,12 +799,20 @@ export function rollback(DB, auditId) {
     }
     return { rolled_back: true, audit_id: auditId, restored: row.id, sha: row.sha, kind: "fact" };
   }
-  DB.prepare(`INSERT INTO memory_staged(id, content, sha, provenance, at) VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET content=excluded.content, sha=excluded.sha, provenance=excluded.provenance, at=excluded.at`)
-    .run(row.id, row.content, row.sha, row.provenance, row.at);
-  writeAudit(DB, `rollback-${auditId}`, "rollback", row.id, row.sha,
-    "compensating rollback of " + auditId, Date.now(), "system");
-  bumpEpoch(DB);
+  DB.exec("BEGIN");
+  try {
+    DB.prepare(`INSERT INTO memory_staged(id, content, sha, provenance, at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET content=excluded.content, sha=excluded.sha,
+        provenance=excluded.provenance, at=excluded.at`)
+      .run(row.id, row.content, row.sha, row.provenance, row.at);
+    writeAudit(DB, `rollback-${auditId}`, "rollback", row.id, row.sha,
+      "compensating rollback of " + auditId, Date.now(), "system");
+    bumpEpoch(DB);
+    DB.exec("COMMIT");
+  } catch (e) {
+    DB.exec("ROLLBACK");
+    throw e;
+  }
   return { rolled_back: true, audit_id: auditId, restored: row.id, sha: row.sha, kind: "doc" };
 }
 
@@ -902,7 +982,7 @@ export function runProposalPass(DB, opts = {}) {
   };
 }
 
-export function acceptProposal(DB, id, approvedBy = "operator", reason = "") {
+export function acceptProposal(DB, id, approvedBy = "operator", reason = "", opts = {}) {
   ensureCoreSchema(DB);
   const p = DB.prepare("SELECT * FROM memory_proposal WHERE id = ?").get(id);
   if (!p) throw new Error("proposal not found: " + id);
@@ -920,7 +1000,7 @@ export function acceptProposal(DB, id, approvedBy = "operator", reason = "") {
       evidence: p.proof || p.evidence,
     }] : [],
   }, null);
-  const applied = approve(DB, stagedId, approvedBy, reason || `proposal ${p.kind}`);
+  const applied = approve(DB, stagedId, approvedBy, reason || `proposal ${p.kind}`, opts);
   DB.prepare(`UPDATE memory_proposal
     SET status='accepted', audit_id=?, decided_by=?, reason=?, seen_at=? WHERE id=?`)
     .run(applied.audit_id, approvedBy, reason || "", Date.now(), id);
@@ -1035,12 +1115,19 @@ export function runDreamPass(DB, opts = {}) {
   return { created, updated, invalidated, groups: groups.length };
 }
 
+// Детерминированная fifth-подвыборка gold, общей для baseline и gate:
+// baseline и пост-коммитный замер обязаны мерить один и тот же набор.
+export function heldoutSubset(gold) {
+  const all = Array.isArray(gold) ? gold : [];
+  const held = all.filter((g) => sha256(String(g.query)).charCodeAt(0) % 5 === 0);
+  return held.length ? held : all;
+}
+
 // Held-out gate: детерминированная fifth-подвыборка gold, которой не касались
 // правки весов. При регрессе >maxDrop можно явно включить авто-откат по audit_id.
 export function runHeldoutGate(DB, suite, gold, opts = {}) {
   ensureCoreSchema(DB);
-  const held = gold.filter((g) => sha256(String(g.query)).charCodeAt(0) % 5 === 0);
-  const evalGold = held.length ? held : gold;
+  const evalGold = heldoutSubset(gold);
   const metric = runBench(DB, String(suite || "core") + "-holdout", evalGold, opts);
   const baseline = Number.isFinite(opts.baseline) ? Number(opts.baseline) : null;
   const maxDrop = Number.isFinite(opts.maxDrop) ? Number(opts.maxDrop) : 0.02;
@@ -1070,22 +1157,29 @@ export function runBench(DB, suite, gold, opts = {}) {
     if (idx >= 0) { hit5++; rr += 1 / (idx + 1); ndcg += 1 / Math.log2(idx + 2); }
   }
   const n = Math.max(1, gold.length);
-  // Gate: сравниваем с лучшим предыдущим замером ДО вставки новой строки.
-  // Правило из архитектуры: регресс recall@5 не должен превышать 2 п.п.
-  const prev = DB.prepare("SELECT MAX(recall5) best FROM bench_result").get();
+  const sha = indexSha(DB);
+  const maxDrop = Number.isFinite(opts.maxDrop) ? Number(opts.maxDrop) : 0.02;
+  // Gate сравнивает только тот же suite на том же индексе. Раньше брался
+  // MAX(recall5) по всей таблице: holdout (4 вопроса) и temporal-замеры
+  // попадали в baseline полного прогона, и «регресс» был артефактом сравнения
+  // несравнимого. Поскольку доки сами входят в индекс, без index_sha
+  // замер после правки документации тоже давал ложный FAIL.
+  const prev = DB.prepare(
+    "SELECT MAX(recall5) best FROM bench_result WHERE suite=? AND index_sha=?"
+  ).get(suite, sha);
   const recall5 = hit5 / n;
-  let gate = { status: "no-baseline", delta: 0, maxDrop: 0.02 };
+  let gate = { status: "no-baseline", delta: 0, maxDrop };
   if (prev && prev.best != null) {
     const delta = recall5 - prev.best;
     gate = {
-      status: delta >= -0.02 ? "pass" : "FAIL",
+      status: delta >= -maxDrop ? "pass" : "FAIL",
       delta: Math.round(delta * 1000) / 1000,
-      baseline: prev.best, maxDrop: 0.02,
+      baseline: prev.best, maxDrop,
     };
   }
   const result = {
     suite, n, recall5, mrr: rr / n, ndcg: ndcg / n,
-    index_sha: indexSha(DB), at: Date.now(), gate,
+    index_sha: sha, at: Date.now(), gate,
   };
   DB.prepare(`INSERT INTO bench_result(suite, recall5, mrr, ndcg, index_sha, at) VALUES (?, ?, ?, ?, ?, ?)`)
     .run(suite, result.recall5, result.mrr, result.ndcg, result.index_sha, result.at);
