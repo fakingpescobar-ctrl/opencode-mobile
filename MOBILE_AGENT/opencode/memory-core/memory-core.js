@@ -1157,22 +1157,29 @@ export function runBench(DB, suite, gold, opts = {}) {
     if (idx >= 0) { hit5++; rr += 1 / (idx + 1); ndcg += 1 / Math.log2(idx + 2); }
   }
   const n = Math.max(1, gold.length);
-  // Gate: сравниваем с лучшим предыдущим замером ДО вставки новой строки.
-  // Правило из архитектуры: регресс recall@5 не должен превышать 2 п.п.
-  const prev = DB.prepare("SELECT MAX(recall5) best FROM bench_result").get();
+  const sha = indexSha(DB);
+  const maxDrop = Number.isFinite(opts.maxDrop) ? Number(opts.maxDrop) : 0.02;
+  // Gate сравнивает только тот же suite на том же индексе. Раньше брался
+  // MAX(recall5) по всей таблице: holdout (4 вопроса) и temporal-замеры
+  // попадали в baseline полного прогона, и «регресс» был артефактом сравнения
+  // несравнимого. Поскольку доки сами входят в индекс, без index_sha
+  // замер после правки документации тоже давал ложный FAIL.
+  const prev = DB.prepare(
+    "SELECT MAX(recall5) best FROM bench_result WHERE suite=? AND index_sha=?"
+  ).get(suite, sha);
   const recall5 = hit5 / n;
-  let gate = { status: "no-baseline", delta: 0, maxDrop: 0.02 };
+  let gate = { status: "no-baseline", delta: 0, maxDrop };
   if (prev && prev.best != null) {
     const delta = recall5 - prev.best;
     gate = {
-      status: delta >= -0.02 ? "pass" : "FAIL",
+      status: delta >= -maxDrop ? "pass" : "FAIL",
       delta: Math.round(delta * 1000) / 1000,
-      baseline: prev.best, maxDrop: 0.02,
+      baseline: prev.best, maxDrop,
     };
   }
   const result = {
     suite, n, recall5, mrr: rr / n, ndcg: ndcg / n,
-    index_sha: indexSha(DB), at: Date.now(), gate,
+    index_sha: sha, at: Date.now(), gate,
   };
   DB.prepare(`INSERT INTO bench_result(suite, recall5, mrr, ndcg, index_sha, at) VALUES (?, ?, ?, ?, ?, ?)`)
     .run(suite, result.recall5, result.mrr, result.ndcg, result.index_sha, result.at);
