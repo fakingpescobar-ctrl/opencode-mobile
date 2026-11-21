@@ -113,7 +113,8 @@ object FailureReporter {
         prefs: SharedPreferences,
         fingerprint: String,
     ) {
-        prefs.edit()
+        prefs
+            .edit()
             .putLong(KEY_LAST_SENT, System.currentTimeMillis())
             .putString(KEY_LAST_FP, fingerprint)
             .apply()
@@ -133,8 +134,7 @@ object FailureReporter {
     private fun readText(file: File): String? =
         runCatching {
             JSONObject(file.readText()).optString("text").takeIf { it.isNotBlank() }
-        }
-            .getOrNull()
+        }.getOrNull()
 
     private fun buildReport(
         context: Context,
