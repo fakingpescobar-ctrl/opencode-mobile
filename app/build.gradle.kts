@@ -258,6 +258,11 @@ android {
         // положить в jniLibs не тот бинарь, приложение обязано показать
         // расхождение, а не молча врать. Живой источник правды - GET /api/info.
         buildConfigField("String", "OPENCODE_VERSION", "\"$opencodeBinaryVersion\"")
+        // Автоотчёты о сбоях сервера улетают в приватную телеграм-группу.
+        // Токен бота публичен по устройству (лежит в APK): у бота нет прав
+        // кроме отправки в эту группу, лимит 1 отчёт/час и дедуп 24 часа.
+        buildConfigField("String", "TELEGRAM_BOT_TOKEN", "\"9203913886:AAHuJHoOtqFe943xWxb5mUwuwymgERJxjAM\"")
+        buildConfigField("String", "TELEGRAM_CHAT_ID", "\"-1004452013884\"")
     }
 
     signingConfigs {
