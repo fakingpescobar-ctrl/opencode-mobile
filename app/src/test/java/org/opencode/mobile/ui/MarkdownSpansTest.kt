@@ -53,4 +53,26 @@ class MarkdownSpansTest {
         for (i in 1 until spans.size) assertTrue(spans[i - 1].end <= spans[i].start)
         assertTrue(spans.all { it.start in 0..it.end && it.end <= text.length })
     }
+
+    @Test
+    fun `markdown ссылка хранит адрес и диапазон клика`() {
+        val text = "см [пример](https://example.com/docs)"
+        val span = markdownSpans(text).single { it.kind == MarkKind.LINK }
+        val target = span.link
+        assertEquals("https://example.com/docs", target?.url)
+        assertEquals(text.indexOf("пример"), target?.start)
+        assertEquals(text.indexOf("пример") + "пример".length, target?.end)
+        assertEquals(text.indexOf('['), span.start)
+        assertEquals(text.indexOf(')') + 1, span.end)
+    }
+
+    @Test
+    fun `голый адрес тоже становится кликабельной ссылкой`() {
+        val text = "зайди https://example.com/docs."
+        val span = markdownSpans(text).single { it.kind == MarkKind.LINK }
+        assertEquals("https://example.com/docs", span.link?.url)
+        assertEquals(text.indexOf("https"), span.link?.start)
+        assertEquals(text.lastIndexOf('.'), span.link?.end)
+        assertEquals(span.link?.end, span.end)
+    }
 }
