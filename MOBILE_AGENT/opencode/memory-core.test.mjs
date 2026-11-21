@@ -1029,6 +1029,10 @@ section("12. Карта памяти, self-supervised mining и meta-learning с
 {
   const D = new Database(":memory:");
   idx.indexDocs(D, DOCS);
+  // На свежей БД карта сама выучивает закономерности без явного mine=true.
+  const boot = mmap.buildMemoryMap(D, { keys: 5 });
+  truthy(boot.totalPatterns > 0, "карта само-bootstraps: " + boot.totalPatterns);
+  truthy(boot.sources.some((s) => s.keys.length > 0), "ключи доступны сразу");
   const st = mmap.minePatterns(D, { minCount: 2, top: 8 });
   truthy(st.patterns > 0, "выучено закономерностей: " + st.patterns);
   truthy(st.sources > 0, "источники с закономерностями: " + st.sources);
