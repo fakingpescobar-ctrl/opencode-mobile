@@ -97,8 +97,7 @@ object FailureReporter {
         return sent
     }
 
-    private fun prefs(context: Context): SharedPreferences =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private fun prefs(context: Context): SharedPreferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     private fun allowed(
         prefs: SharedPreferences,
@@ -134,7 +133,8 @@ object FailureReporter {
     private fun readText(file: File): String? =
         runCatching {
             JSONObject(file.readText()).optString("text").takeIf { it.isNotBlank() }
-        }.getOrNull()
+        }
+            .getOrNull()
 
     private fun buildReport(
         context: Context,
@@ -190,7 +190,8 @@ object FailureReporter {
 
     /** Имя, которое юзер задал в диагностике, или USER по умолчанию. */
     private fun reporterName(context: Context): String =
-        prefs(context).getString(KEY_REPORTER_NAME, DEFAULT_REPORTER_NAME)
+        prefs(context)
+            .getString(KEY_REPORTER_NAME, DEFAULT_REPORTER_NAME)
             ?.takeIf { it.isNotBlank() }
             ?.take(MAX_NAME_LEN)
             ?: DEFAULT_REPORTER_NAME
