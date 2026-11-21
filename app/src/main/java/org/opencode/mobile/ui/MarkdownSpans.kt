@@ -20,16 +20,25 @@ internal enum class MarkKind {
     TABLE_HEADER,
 }
 
+/** Адрес и диапазон подписи, по которому надо кликать. */
+internal data class LinkTarget(
+    val url: String,
+    val start: Int,
+    val end: Int,
+)
+
 internal data class MarkSpan(
     val start: Int,
     val end: Int,
     val kind: MarkKind,
+    val link: LinkTarget? = null,
 )
 
 private val HEADING_RE = Regex("^#{1,6}\\s+")
 private val LIST_RE = Regex("^\\s*(?:[-*+]|\\d+\\.)\\s+")
 private val RULE_RE = Regex("^\\s*(?:-{3,}|\\*{3,}|_{3,})\\s*$")
 private val TABLE_SEP_RE = Regex("^\\s*\\|?[\\s:|-]+\\|?\\s*$")
+private val BARE_URL_RE = Regex("""https?://[^\s<>\[\]()"']+""")
 
 /** Диапазоны markdown в исходном тексте. Символы не удаляются — копирование остаётся точным. */
 internal fun markdownSpans(text: String): List<MarkSpan> {
@@ -101,6 +110,7 @@ private fun nextInline(
         rest.startsWith("`") -> between(line, i, "`", MarkKind.INLINE_CODE, offset)
         rest.startsWith("**") -> between(line, i, "**", MarkKind.BOLD, offset)
         rest.startsWith("[") -> link(line, i, offset)
+        rest.startsWith("http://") || rest.startsWith("https://") -> bareLink(line, i, offset)
         rest.startsWith("*") -> between(line, i, "*", MarkKind.ITALIC, offset)
         rest.startsWith("_") -> between(line, i, "_", MarkKind.ITALIC, offset)
         else -> null
@@ -126,12 +136,34 @@ private fun link(
     offset: Int,
 ): Pair<MarkSpan, Int>? {
     val close = line.indexOf("]", i + 1)
-    val paren = if (close > i) line.indexOf("(", close + 1) else -1
+    if (close <= i + 1) return null
+    val paren = line.indexOf("(", close + 1)
     val end = if (paren > close) line.indexOf(")", paren + 1) else -1
-    return if (end > paren) {
+    val url = if (end > paren) line.substring(paren + 1, end).trim() else ""
+    return if (url.isNotEmpty()) {
         val spanEnd = end + 1
-        MarkSpan(offset + i, offset + spanEnd, MarkKind.LINK) to spanEnd
+        val target = LinkTarget(url, offset + i + 1, offset + close)
+        MarkSpan(offset + i, offset + spanEnd, MarkKind.LINK, target) to spanEnd
     } else {
         null
     }
+}
+
+/** Адрес без markdown-обвязки тоже делаем ссылкой, чтобы тыкать было можно. */
+private fun bareLink(
+    line: String,
+    i: Int,
+    offset: Int,
+): Pair<MarkSpan, Int>? {
+    val match = BARE_URL_RE.find(line, i)
+    if (match != null && match.range.first == i) {
+        // Точка/запятая в конце предложения не должны уезжать в адрес.
+        val url = match.value.trimEnd('.', ',', ';', ':', '!', '?')
+        if (url.isNotEmpty()) {
+            val end = i + url.length
+            val target = LinkTarget(url, offset + i, offset + end)
+            return MarkSpan(offset + i, offset + end, MarkKind.LINK, target) to end
+        }
+    }
+    return null
 }
