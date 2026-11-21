@@ -84,6 +84,8 @@ section("2. Живой memory.js: импорты, инструменты, дис
     "memory_pack", "memory_recall_doc", "memory_adaptive", "memory_feedback",
     "memory_thread", "memory_graph", "memory_bench", "memory_index_stats",
     "memory_ingest", "memory_approve", "memory_rollback",
+    "memory_proposal_accept", "memory_proposal_reject", "memory_proposal_rollback",
+    "memory_outcome", "memory_dream", "memory_audit_verify", "memory_gate",
     "memory_llm_status", "memory_llm_search",
   ];
   for (const t of tools) {
