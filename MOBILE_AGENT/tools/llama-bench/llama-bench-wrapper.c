@@ -264,7 +264,8 @@ int lb_gen_g(const char *model_path, const char *prompt, const char *grammar,
 // их serving-код: логиты считаются только в слотах ответа, по ним берутся коды
 // вариантов, и softmax идёт по всем вариантам вопроса одним forward pass.
 //
-// slots:    n_slots индексов токенов-двоеточий (0-based, как в llama_get_logits_ith);
+// slots:    n_slots индексов токенов-двоеточий (0-based); отрицательное число —
+//           offset от конца промпта (-2 = предпоследний токен, наше "Q1:\n");
 // groups:   плоский массив n_slots*n_options*aliases id токенов, -1 = пустой алиас;
 // probs:    out n_slots*n_options вероятностей (сумма по строке = 1);
 // metrics[4]: [0]=prefill мс, [1]=всего мс, [2]=токенов промпта, [3]=размер словаря.
@@ -300,9 +301,15 @@ int lb_score(const char *model_path, const char *prompt,
   if (ntok <= 0) {
     free(ptok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
   }
+  int *rslots = (int *)malloc((size_t)n_slots * sizeof(int));
+  if (!rslots) {
+    free(ptok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
+  }
   for (int s = 0; s < n_slots; s++) {
-    if (slots[s] < 0 || slots[s] >= ntok) {
-      free(ptok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
+    rslots[s] = slots[s] < 0 ? ntok + slots[s] : slots[s];
+    if (rslots[s] < 0 || rslots[s] >= ntok) {
+      free(rslots); free(ptok);
+      llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
     }
   }
   metrics[2] = (double)ntok;
@@ -316,14 +323,14 @@ int lb_score(const char *model_path, const char *prompt,
     batch.seq_id[i][0] = 0;
     batch.logits[i] = 0;
   }
-  for (int s = 0; s < n_slots; s++) batch.logits[slots[s]] = 1;
+  for (int s = 0; s < n_slots; s++) batch.logits[rslots[s]] = 1;
   batch.n_tokens = ntok;
 
   double t0 = now_s();
   int rc = llama_decode(ctx, batch);
   double t1 = now_s();
   if (rc != 0) {
-    llama_batch_free(batch); free(ptok);
+    free(rslots); llama_batch_free(batch); free(ptok);
     llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
   }
   metrics[0] = (t1 - t0) * 1000.0;
@@ -331,13 +338,13 @@ int lb_score(const char *model_path, const char *prompt,
 
   double *sums = (double *)malloc((size_t)n_options * sizeof(double));
   if (!sums) {
-    llama_batch_free(batch); free(ptok);
+    free(rslots); llama_batch_free(batch); free(ptok);
     llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
   }
   for (int s = 0; s < n_slots; s++) {
-    const float *logits = llama_get_logits_ith(ctx, slots[s]);
+    const float *logits = llama_get_logits_ith(ctx, rslots[s]);
     if (!logits) {
-      free(sums); llama_batch_free(batch); free(ptok);
+      free(sums); free(rslots); llama_batch_free(batch); free(ptok);
       llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
     }
     double best = -1e30;
@@ -364,6 +371,7 @@ int lb_score(const char *model_path, const char *prompt,
   }
 
   free(sums);
+  free(rslots);
   llama_batch_free(batch);
   free(ptok);
   llama_free(ctx);
@@ -372,4 +380,4 @@ int lb_score(const char *model_path, const char *prompt,
   return 0;
 }
 
-const char *lb_version(void) { return "llama-bench-musl-6"; }
+const char *lb_version(void) { return "llama-bench-musl-7"; }
