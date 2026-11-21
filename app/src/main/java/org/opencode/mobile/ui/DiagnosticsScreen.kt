@@ -729,7 +729,8 @@ fun DiagnosticsScreen(
                             onValueChange = { raw ->
                                 val next = raw.take(CRASH_NAME_MAX)
                                 reporterName = next
-                                reportPrefs.edit()
+                                reportPrefs
+                                    .edit()
                                     .putString(
                                         CRASH_NAME_KEY,
                                         next
