@@ -111,6 +111,7 @@ object FailureReporter {
         lines.add("OpenCode Mobile crash report")
         lines.add("build: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) ${BuildConfig.GIT_SHA}")
         lines.add("reporter: ${installId(context)}")
+        lines.add("role: ${deviceRole()}")
         lines.add("stage: $stage")
         lines.add("code: $code (recoverable=${err?.recoverable ?: false})")
         lines.add("message: ${sanitize(err?.message ?: "no lastError")}")
@@ -125,6 +126,13 @@ object FailureReporter {
         return JSONObject()
             .put("fingerprint", fingerprint)
             .put("text", lines.joinToString("\n").take(MAX_TEXT))
+    }
+
+    /** Наш рабочий девайс помечаем как DEV/ADMIN, остальные — USER. */
+    private fun deviceRole(): String = if (Build.FINGERPRINT == BuildConfig.DEV_DEVICE_FINGERPRINT) {
+        "DEV/ADMIN"
+    } else {
+        "USER"
     }
 
     /**
