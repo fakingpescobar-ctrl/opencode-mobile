@@ -41,16 +41,22 @@ object FailureReporter {
     private const val HTTP_OK_MAX = 299
     private const val BYTES_PER_MB = 1024L * 1024L
 
+    @Synchronized
     fun report(context: Context, state: OpencodeServerService.ServerState) {
         val report = buildReport(context, state)
         val prefs = prefs(context)
         val fp = report.optString("fingerprint")
         if (!allowed(prefs, fp)) return
         persist(context, report)
-        if (flush(context)) markSent(prefs, fp)
+        // Отмечаем время сразу при записи в очередь: без сети отправка не
+        // состоится, но лимит 1/час и дедуп 24ч должны работать уже сейчас,
+        // иначе следующий сбой создаст ещё одну копию того же отчёта.
+        markSent(prefs, fp)
+        flush(context)
     }
 
     /** Досылка очереди. Возвращает true, если хотя бы одно сообщение ушло. */
+    @Synchronized
     fun flush(context: Context): Boolean {
         val token = BuildConfig.TELEGRAM_BOT_TOKEN
         val chat = BuildConfig.TELEGRAM_CHAT_ID
@@ -100,7 +106,7 @@ object FailureReporter {
     private fun persist(context: Context, report: JSONObject) {
         val dir = File(context.filesDir, "failures")
         if (!dir.exists() && !dir.mkdirs()) return
-        val file = File(dir, "${System.currentTimeMillis()}.json")
+        val file = File(dir, "${System.currentTimeMillis()}-${UUID.randomUUID()}.json")
         runCatching { file.writeText(report.toString()) }
             .onFailure { Log.w(TAG, "не записал отчёт: ${it.message}") }
     }
