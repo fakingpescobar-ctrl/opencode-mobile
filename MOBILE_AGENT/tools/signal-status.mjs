@@ -18,7 +18,10 @@ const arg = (name, fallback) => {
   const hit = process.argv.find((a) => a.startsWith("--" + name + "="));
   return hit ? hit.slice(name.length + 3) : fallback;
 };
-const DIR = arg("dir", process.env.MEMORY_ADAPTIVE_DIR || process.cwd());
+// Живой MCP поднимается с MCP_MEMORY_DIR (сейчас общий воркспейс opencode-home),
+// поэтому пульс должен видеть тот же буфер без ручного --dir. Явный --dir и
+// MEMORY_ADAPTIVE_DIR по-прежнему переопределяют путь (тесты/смок).
+const DIR = arg("dir", process.env.MEMORY_ADAPTIVE_DIR || process.env.MCP_MEMORY_DIR || process.cwd());
 const STAGE = process.argv.includes("--stage");
 const PRINT = process.argv.includes("--run");
 
