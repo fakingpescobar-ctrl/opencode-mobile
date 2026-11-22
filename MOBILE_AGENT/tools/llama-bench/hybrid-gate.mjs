@@ -11,7 +11,7 @@
 //   4. Дефолт ядра и legacy fallback не трогаются — это opt-in research.
 //
 // Запуск: bun hybrid-gate.mjs [rerank-bench.json]
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { confidenceOf } from "../../opencode/memory-core/memory-adaptive.js";
 
 const ROOT = "/storage/emulated/0/Documents/OpencodeTerminal/MOBILE_AGENT";
@@ -100,7 +100,24 @@ const qm = (p) => quantile(margins, p);
 const qc = (p) => quantile(confs, p);
 const conf25 = quantile(tops, 0.25);
 
-console.log(`протокол: ${PROTO.split("/").pop()} | index_sha ${j.index_sha}`);
+// Пара хэшей обязательна. Старые протоколы без gold_sha больше не годятся:
+// сравнение гипотез вне пары (index_sha, gold_sha) размывает границы снимка.
+if (typeof j.gold_sha !== "string" || !/^[0-9a-f]{64}$/.test(j.gold_sha)) {
+  console.error("в протоколе нет gold_sha — перезапусти бенч после backfill'а gold");
+  process.exit(2);
+}
+const BASELINES = ROOT + "/tools/llama-bench/baselines.json";
+if (existsSync(BASELINES)) {
+  const b = JSON.parse(readFileSync(BASELINES, "utf8"));
+  const entries = b.baselines || {};
+  if (Object.keys(entries).length &&
+      !entries[j.index_sha + "|" + j.gold_sha]) {
+    console.error(`нет базового прогона для пары ${j.index_sha}|${j.gold_sha} — сначала bun tools/baseline.mjs`);
+    process.exit(2);
+  }
+}
+
+console.log(`протокол: ${PROTO.split("/").pop()} | index_sha ${j.index_sha} | gold_sha ${j.gold_sha}`);
 console.log(`train ${train.length}, held-out ${held.length}`);
 console.log(`отрыв margin: min ${margins[0].toFixed(4)} | q25 ${qm(0.25).toFixed(4)} | q30 ${qm(0.30).toFixed(4)} | q50 ${qm(0.50).toFixed(4)} | max ${margins.at(-1).toFixed(4)}`);
 console.log(`confidence ядра: min ${confs[0].toFixed(4)} | q25 ${qc(0.25).toFixed(4)} | q30 ${qc(0.30).toFixed(4)} | max ${confs.at(-1).toFixed(4)}`);
@@ -146,7 +163,7 @@ console.log(`средняя цена: ~${Math.round((heldHybrid.calls / held.len
 console.log("онлайн-контур: delta cap 10% за цикл, кулдаун 20 уникальных запросов, maxDrop=0.02");
 
 writeFileSync(ROOT + "/tools/llama-bench/hybrid-gate.json", JSON.stringify({
-  protocol: PROTO.split("/").pop(), index_sha: j.index_sha,
+  protocol: PROTO.split("/").pop(), index_sha: j.index_sha, gold_sha: j.gold_sha,
   train: { n: train.length, core_top1: trainCore.top1, chosen: best, q30: qm(0.30), qc30: qc(0.30), conf25 },
   heldout: { n: held.length, core_top1: heldCore.top1, hybrid_top1: heldHybrid.top1,
              core_top3: heldCore.top3, hybrid_top3: heldHybrid.top3, calls: heldHybrid.calls },
