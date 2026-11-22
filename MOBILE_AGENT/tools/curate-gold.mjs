@@ -52,13 +52,22 @@ if (!raw.length) {
 }
 const deduped = gc.dedupCandidates(raw, goldBefore);
 const aliases = deduped.filter((c) => c.alias_of);
-const fresh = deduped.filter((c) => !c.alias_of);
-const quota = gc.quotaSelect(fresh.map((c) => ({
+// dup_reason бывает не только у семантических алиасов: norm_hash-совпадение
+// с уже существующим gold тоже дубль, и в батч его пускать нельзя.
+const fresh = deduped.filter((c) => !c.dup_reason);
+const misses = fresh.filter((c) => c.origin !== "control");
+const controls = fresh.filter((c) => c.origin === "control");
+// 2–3 обычных запроса на батч: без контроля эталон вырождается в сборник
+// одних тяжёлых промахов, и регресс на простых вопросах становится невидимым.
+const CONTROL_TARGET = 3;
+const picked = misses.concat(controls.slice(0, CONTROL_TARGET));
+const quota = gc.quotaSelect(picked.map((c) => ({
   ...c,
   expect_source: c.expect_source || "unknown",
 })), { target: store.SIGNAL_LIMITS.batchTarget, maxShare: gc.DEFAULT_MAX_SHARE });
 
-console.log(`Кандидатов: ${raw.length} | алиасов: ${aliases.length} | новых: ${fresh.length}`);
+console.log(`Кандидатов: ${raw.length} | алиасов: ${aliases.length} | дублей: ${deduped.length - fresh.length}`);
+console.log(`Промахов: ${misses.length} | контроля в батче: ${Math.min(controls.length, CONTROL_TARGET)}`);
 console.log(`В батч отобрано: ${quota.selected.length} | в очереди: ${quota.pending.length}`);
 console.log(`Снимок: index_sha ${indexSha} | gold_sha ${goldShaBefore}`);
 
@@ -143,6 +152,14 @@ const report = {
   gold_sha_after: shaAfter,
   candidates: raw.length,
   aliases: aliases.length,
+  // Алиас не добавляется в эталон молча: он карантинируется со статусом alias.
+  // Здесь список — чтобы человек видел, кого именно Jaccard склеил, и мог
+  // вернуть запись в raw ручной правкой буфера, если это разные намерения.
+  alias_candidates: aliases.map((c) => ({
+    id: c.id, query: c.query, alias_of: c.alias_of, score: c.alias_score,
+  })),
+  duplicates: deduped.length - fresh.length,
+  control_in_batch: quota.selected.filter((c) => c.origin === "control").length,
   selected: quota.selected.length,
   added: added.length,
   rejected,
