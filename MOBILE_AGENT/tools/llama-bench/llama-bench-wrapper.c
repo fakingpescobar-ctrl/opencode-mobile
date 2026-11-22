@@ -533,6 +533,90 @@ int lb_embed(const char *model_path, const char *prompt,
   return n_embd;
 }
 
+// Persistent-контур для ModernBERT: модель и контекст грузятся один раз,
+// дальше score/embed считаются на одном и том же ctx. Старый lb_classify /
+// lb_embed оставляем для совместимости — они грузят модель на каждый вызов.
+struct lb_state {
+  struct llama_model *model;
+  struct llama_context *ctx;
+  const struct llama_vocab *vocab;
+  llama_token *ptok;
+  int n_embd;
+  int n_cls;
+};
+
+struct lb_state * lb_state_init(const char *model_path) {
+  if (!model_path) return NULL;
+  set_logging();
+  llama_backend_init();
+  struct llama_model_params mp = llama_model_default_params();
+  mp.n_gpu_layers = 0;
+  struct llama_model *model = llama_model_load_from_file(model_path, mp);
+  if (!model) { llama_backend_free(); return NULL; }
+  struct llama_context_params cp = llama_context_default_params();
+  cp.n_ctx = 1024;
+  cp.n_batch = 1024;
+  cp.n_threads = 8;
+  cp.n_threads_batch = 8;
+  struct llama_context *ctx = llama_init_from_model(model, cp);
+  if (!ctx) { llama_model_free(model); llama_backend_free(); return NULL; }
+  llama_token *ptok = (llama_token *)malloc(sizeof(llama_token) * 1024);
+  if (!ptok) { llama_free(ctx); llama_model_free(model); llama_backend_free(); return NULL; }
+  struct lb_state *st = (struct lb_state *)calloc(1, sizeof(struct lb_state));
+  if (!st) { free(ptok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return NULL; }
+  st->model = model; st->ctx = ctx; st->vocab = llama_model_get_vocab(model);
+  st->ptok = ptok;
+  st->n_embd = (int)llama_model_n_embd(model);
+  st->n_cls = (int)llama_model_n_cls_out(model);
+  return st;
+}
+
+static int lb_state_encode(struct lb_state *st, const char *prompt, double *metrics) {
+  if (!st || !prompt || !metrics) return -1;
+  llama_memory_clear(llama_get_memory(st->ctx), true);
+  int ntok = llama_tokenize(st->vocab, prompt, (int)strlen(prompt), st->ptok, 1024, true, true);
+  if (ntok <= 0) return -1;
+  metrics[1] = (double)ntok;
+  metrics[2] = (double)st->n_cls;
+  metrics[3] = (double)st->n_embd;
+  struct llama_batch batch = llama_batch_get_one(st->ptok, ntok);
+  double t0 = now_s();
+  int rc = llama_decode(st->ctx, batch);
+  metrics[0] = (now_s() - t0) * 1000.0;
+  return rc == 0 ? ntok : -1;
+}
+
+// metrics[4] = [decode мс, токенов, n_cls_out, n_embd]
+int lb_cls_score(struct lb_state *st, const char *prompt, double *score, double *metrics) {
+  if (!st || !score) return -1;
+  int ntok = lb_state_encode(st, prompt, metrics);
+  if (ntok <= 0) return -1;
+  const float *logits = llama_get_logits_ith(st->ctx, ntok - 1);
+  if (!logits) return -1;
+  *score = (double)logits[0];
+  return 0;
+}
+
+// Возвращает n_embd или -1. metrics тот же, что у lb_state_encode.
+int lb_emb_run(struct lb_state *st, const char *prompt, float *out, int out_cap, double *metrics) {
+  if (!st || !out || out_cap < st->n_embd) return -1;
+  int ntok = lb_state_encode(st, prompt, metrics);
+  if (ntok <= 0) return -1;
+  const float *embd = llama_get_embeddings_seq(st->ctx, 0);
+  if (!embd) return -1;
+  memcpy(out, embd, (size_t)st->n_embd * sizeof(float));
+  return st->n_embd;
+}
+
+void lb_state_free(struct lb_state *st) {
+  if (!st) return;
+  free(st->ptok);
+  llama_free(st->ctx);
+  llama_model_free(st->model);
+  llama_backend_free();
+  free(st);
+}
+
 // Квантовать GGUF в другой файл тем же llama.cpp, без внешних бинарников.
 // ftype — llama_ftype: 7 = Q8_0, 15 = Q4_K_M. 0 = успех.
 int lb_quantize(const char *src, const char *dst, int ftype) {
@@ -544,4 +628,4 @@ int lb_quantize(const char *src, const char *dst, int ftype) {
   return llama_model_quantize(src, dst, &p) == 0 ? 0 : -1;
 }
 
-const char *lb_version(void) { return "llama-bench-musl-12"; }
+const char *lb_version(void) { return "llama-bench-musl-13"; }
