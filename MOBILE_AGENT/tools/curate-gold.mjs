@@ -30,7 +30,8 @@ const arg = (name, fallback) => {
 };
 const has = (name) => process.argv.includes("--" + name);
 
-const DIR = arg("dir", process.env.MEMORY_ADAPTIVE_DIR || process.cwd());
+// тот же каталог, что у живого MCP: --dir > MEMORY_ADAPTIVE_DIR > MCP_MEMORY_DIR > cwd.
+const DIR = arg("dir", process.env.MEMORY_ADAPTIVE_DIR || process.env.MCP_MEMORY_DIR || process.cwd());
 const GOLD = arg("gold", ROOT + "/memory/gold.jsonl");
 const DECISIONS = arg("decisions", "");
 const DRY = has("dry-run");
