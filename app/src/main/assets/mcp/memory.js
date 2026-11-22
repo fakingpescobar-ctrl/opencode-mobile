@@ -20,6 +20,9 @@ import { indexDocs } from "./memory-index.mjs";
 import {
   confidenceOf, conceptThread, learnFromFeedback, adaptivePack, runAdaptiveBench,
 } from "./memory-adaptive.js";
+// Data-plane саморастущего корпуса: сырые сигналы пишутся в отдельный
+// запечатанный файл рядом с memory-adaptive.json. В код/дефолт ядра не лезет.
+import { recordSignalCandidate, goldSha } from "./memory-adaptive-store.js";
 // Движок v2: карта памяти, self-supervised закономерности и meta-learning.
 import {
   buildMemoryMap, mapText, minePatterns, suggestSources, observeSignal, signalPolicy,
@@ -1701,7 +1704,38 @@ async function callTool(name, args) {
     case "memory_signal": {
       const a = args || {};
       observeSignal(DB, a.query_kind || "any", a.signal || "unknown", a.success === true);
-      return { policy: signalPolicy(DB, a.query_kind || "any") };
+      // Старый meta-learning оставили как есть. Рядом пишем кандидата в
+      // саморастущий корпус: имя тула не меняем, только добавляем поля.
+      // success=true — обычный удачный запрос (control), остальное — miss.
+      // Явный a.origin всё переопределяет.
+      let candidate = null;
+      const query = String(a.query || "").trim();
+      if (query) {
+        try {
+          const stat = ensureCoreIndex();
+          const idxSha = String((stat && stat.index_sha) || indexSha(DB));
+          let gSha = "";
+          try { gSha = goldSha(coreGold({})); } catch (_) {}
+          candidate = recordSignalCandidate(DATA_DIR, {
+            query,
+            index_sha: idxSha,
+            gold_sha: gSha,
+            candidate_chunk_ids: a.candidate_chunk_ids,
+            expected_chunk_id: a.expected_chunk_id,
+            expect_source: a.expect_source,
+            expect_kind: a.expect_kind,
+            origin: a.origin === "miss" || a.origin === "control"
+              ? a.origin : (a.success === true ? "control" : "miss"),
+          });
+        } catch (e) {
+          // Буфер не должен ронять MCP: он data-plane, а не ядро.
+          noteBoot("recordSignalCandidate: " + ((e && e.message) || e));
+        }
+      }
+      return {
+        policy: signalPolicy(DB, a.query_kind || "any"),
+        ...(candidate ? { candidate } : {}),
+      };
     }
     case "memory_llm_status": {
       await bootLlm();
