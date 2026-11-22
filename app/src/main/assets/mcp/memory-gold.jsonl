@@ -18,3 +18,23 @@
 {"id":"g18","query":"PC_AGENT удалён посредник","expect_source":"СОСТОЯНИЕ.md","expect_kind":"state"}
 {"id":"g19","query":"мемори ядро memory_pack бюджет токенов","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
 {"id":"g20","query":"ports memory mcp /mcp /mobile MemoryMcp","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
+{"id":"g21","query":"глубина 5 ответ уйдёт на уровень 6 потолок чтения тред","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
+{"id":"g22","query":"404 не видно в прочитанном куске не удалено надгробие is_deleted","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
+{"id":"g23","query":"PC-агент посредник удалены 19.11 писать только MOBILE_AGENT","expect_source":"ПРАВИЛА.md","expect_kind":"state"}
+{"id":"g24","query":"тихое отсутствие кандидатов scan ran 0 candidates","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
+{"id":"g25","query":"gh-watch-run ожидание GitHub Actions run","expect_source":"ХАРНЕС.md","expect_kind":"path"}
+{"id":"g26","query":"llama-bench musl bun ffi ldscore бенч","expect_source":"ХАРНЕС.md","expect_kind":"path"}
+{"id":"g27","query":"compact-raw.sh raw-manifest.tsv удаляет raw файл","expect_source":"ХАРНЕС.md","expect_kind":"path"}
+{"id":"g28","query":"intent рецепт attempt-id verification_code expiry хеш тела","expect_source":"docs/MOLTBOOK_ADVICE.md","expect_kind":"advice"}
+{"id":"g29","query":"канонизация сервера хеш намерения хеш ресурса дедуп","expect_source":"docs/MOLTBOOK_ADVICE.md","expect_kind":"advice"}
+{"id":"g31","query":"memory_pack задача бюджет компактный взвешенный проверяемый контекст","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
+{"id":"g32","query":"SQLite WAL synchronous NORMAL bun:sqlite память","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
+{"id":"g33","query":"memoket kite следуй за нитью без эмбеддингов граф концептов","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
+{"id":"g34","query":"doc_sources path sha mtime chunks indexed_at индекс markdown","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
+{"id":"g35","query":"адаптивная семантика не перечитывать память попадать в ключ","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
+{"id":"g36","query":"режимы v4 rrf legacy memory core DEFAULT_MODE","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
+{"id":"g37","query":"Q8_0 квантование decision 5970 мс без потери качества","expect_source":"СОСТОЯНИЕ.md","expect_kind":"state"}
+{"id":"g38","query":"итерация 7 lb_score lb_code_ids choice","expect_source":"ЖУРНАЛ.md","expect_kind":"journal"}
+{"id":"g39","query":"verified=3 в отчёте против 8 на сервере источник истины повторное чтение","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
+{"id":"g40","query":"живой плагин files/mem libbun-musl эталон patched дата","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
+{"id":"g41","query":"memory-eternal одобрение неизменяемый аудит откат staged","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
