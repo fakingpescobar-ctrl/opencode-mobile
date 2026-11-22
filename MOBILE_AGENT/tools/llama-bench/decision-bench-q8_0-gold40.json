@@ -5,14 +5,14 @@
   "bytes": 811843840,
   "runtime": "llama-bench-musl-16",
   "role": "choice над 5 кандидатами ядра, один forward pass",
-  "index_sha": "fe065c8efc2b730c",
+  "index_sha": "be957de13b39dddc",
   "gold_sha": "61925934feae090013bbd5b67457cfa51c4d71e8e77f2811c25b0078886631e1",
   "n": 40,
   "model_top1": 0.575,
-  "model_top3": 0.875,
+  "model_top3": 0.9,
   "core_top1": 0.525,
   "core_top3": 0.85,
-  "avg_ms": 3290,
+  "avg_ms": 3576,
   "rows": [
     {
       "id": "g01",
@@ -51,7 +51,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": false,
-      "ms": 3415,
+      "ms": 3543,
       "prompt_tokens": 579
     },
     {
@@ -91,7 +91,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3312,
+      "ms": 3718,
       "prompt_tokens": 582
     },
     {
@@ -131,7 +131,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": false,
-      "ms": 3711,
+      "ms": 4030,
       "prompt_tokens": 679
     },
     {
@@ -142,36 +142,36 @@
         "ПРАВИЛА.md",
         "docs/MOLTBOOK_ADVICE.md",
         "АРХИТЕКТУРА_ПАМЯТИ.md",
-        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
-        "АРХИТЕКТУРА_ПАМЯТИ.md"
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md"
       ],
       "choice_order": [
         {
           "letter": "A",
-          "p": 0.536
+          "p": 0.54
         },
         {
           "letter": "B",
-          "p": 0.337
-        },
-        {
-          "letter": "D",
-          "p": 0.099
+          "p": 0.354
         },
         {
           "letter": "E",
-          "p": 0.018
+          "p": 0.086
         },
         {
           "letter": "C",
           "p": 0.011
+        },
+        {
+          "letter": "D",
+          "p": 0.01
         }
       ],
       "model_top1": false,
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3051,
+      "ms": 6066,
       "prompt_tokens": 566
     },
     {
@@ -211,7 +211,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3038,
+      "ms": 9641,
       "prompt_tokens": 563
     },
     {
@@ -251,7 +251,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3096,
+      "ms": 4931,
       "prompt_tokens": 562
     },
     {
@@ -291,7 +291,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 2988,
+      "ms": 3193,
       "prompt_tokens": 555
     },
     {
@@ -331,7 +331,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 2944,
+      "ms": 3135,
       "prompt_tokens": 549
     },
     {
@@ -371,7 +371,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": true,
-      "ms": 2637,
+      "ms": 2786,
       "prompt_tokens": 495
     },
     {
@@ -379,39 +379,39 @@
       "query": "ghtoken_mobile_agent.txt не публиковать",
       "expect": "ПРАВИЛА.md",
       "core_top": [
-        "ПРАВИЛА.md",
         "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "ПРАВИЛА.md",
         "СОСТОЯНИЕ.md",
         "ПРАВИЛА.md",
         "ХАРНЕС.md"
       ],
       "choice_order": [
         {
-          "letter": "A",
-          "p": 0.638
+          "letter": "B",
+          "p": 0.645
         },
         {
           "letter": "E",
-          "p": 0.167
+          "p": 0.156
         },
         {
           "letter": "C",
-          "p": 0.11
+          "p": 0.089
         },
         {
-          "letter": "B",
-          "p": 0.053
+          "letter": "A",
+          "p": 0.089
         },
         {
           "letter": "D",
-          "p": 0.032
+          "p": 0.021
         }
       ],
       "model_top1": true,
       "model_top3": true,
-      "core_top1": true,
+      "core_top1": false,
       "core_top3": true,
-      "ms": 3116,
+      "ms": 3305,
       "prompt_tokens": 576
     },
     {
@@ -451,7 +451,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 2952,
+      "ms": 3392,
       "prompt_tokens": 553
     },
     {
@@ -491,7 +491,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3307,
+      "ms": 3528,
       "prompt_tokens": 611
     },
     {
@@ -531,7 +531,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": false,
-      "ms": 3015,
+      "ms": 3227,
       "prompt_tokens": 561
     },
     {
@@ -542,36 +542,36 @@
         "КАТАЛОГ_ПЕРЕДЕЛОК.md",
         "АРХИВ_СОСТОЯНИЯ.md",
         "docs/MOLTBOOK_ADVICE.md",
-        "АРХИВ_СОСТОЯНИЯ.md",
-        "КАТАЛОГ_ПЕРЕДЕЛОК.md"
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
+        "АРХИВ_СОСТОЯНИЯ.md"
       ],
       "choice_order": [
         {
           "letter": "C",
-          "p": 0.825
-        },
-        {
-          "letter": "D",
-          "p": 0.107
-        },
-        {
-          "letter": "B",
-          "p": 0.041
+          "p": 0.826
         },
         {
           "letter": "E",
-          "p": 0.015
+          "p": 0.104
+        },
+        {
+          "letter": "B",
+          "p": 0.045
         },
         {
           "letter": "A",
-          "p": 0.011
+          "p": 0.013
+        },
+        {
+          "letter": "D",
+          "p": 0.013
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 2936,
+      "ms": 3114,
       "prompt_tokens": 548
     },
     {
@@ -611,7 +611,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": false,
-      "ms": 3232,
+      "ms": 3445,
       "prompt_tokens": 602
     },
     {
@@ -651,7 +651,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3266,
+      "ms": 3310,
       "prompt_tokens": 594
     },
     {
@@ -691,7 +691,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": false,
-      "ms": 3130,
+      "ms": 3209,
       "prompt_tokens": 578
     },
     {
@@ -702,36 +702,36 @@
         "АРХИВ_СОСТОЯНИЯ.md",
         "БЕНЧМАРК_СОПРОЦЕССОРА.md",
         "СОСТОЯНИЕ.md",
-        "ХАРНЕС.md",
-        "ЖУРНАЛ.md"
+        "ЖУРНАЛ.md",
+        "ХАРНЕС.md"
       ],
       "choice_order": [
         {
           "letter": "C",
-          "p": 0.844
+          "p": 0.852
         },
         {
           "letter": "A",
-          "p": 0.088
+          "p": 0.084
         },
         {
           "letter": "B",
-          "p": 0.046
+          "p": 0.042
         },
         {
           "letter": "E",
-          "p": 0.015
+          "p": 0.012
         },
         {
           "letter": "D",
-          "p": 0.006
+          "p": 0.011
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3206,
+      "ms": 3414,
       "prompt_tokens": 594
     },
     {
@@ -771,7 +771,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 2902,
+      "ms": 2986,
       "prompt_tokens": 536
     },
     {
@@ -779,40 +779,40 @@
       "query": "ports memory mcp /mcp /mobile MemoryMcp",
       "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
       "core_top": [
-        "ПРАВИЛА.md",
         "АРХИТЕКТУРА_ПАМЯТИ.md",
-        "СОСТОЯНИЕ.md",
-        "СОСТОЯНИЕ.md",
-        "ХАРНЕС.md"
+        "docs/agent-rules.md",
+        "docs/agent-rules.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md"
       ],
       "choice_order": [
         {
-          "letter": "B",
-          "p": 0.334
+          "letter": "A",
+          "p": 0.972
         },
         {
           "letter": "E",
-          "p": 0.258
-        },
-        {
-          "letter": "C",
-          "p": 0.245
+          "p": 0.013
         },
         {
           "letter": "D",
-          "p": 0.135
+          "p": 0.01
         },
         {
-          "letter": "A",
-          "p": 0.028
+          "letter": "C",
+          "p": 0.004
+        },
+        {
+          "letter": "B",
+          "p": 0.001
         }
       ],
       "model_top1": true,
       "model_top3": true,
-      "core_top1": false,
+      "core_top1": true,
       "core_top3": true,
-      "ms": 3254,
-      "prompt_tokens": 603
+      "ms": 3353,
+      "prompt_tokens": 596
     },
     {
       "id": "g21",
@@ -851,7 +851,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3205,
+      "ms": 3337,
       "prompt_tokens": 590
     },
     {
@@ -891,7 +891,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3195,
+      "ms": 3379,
       "prompt_tokens": 588
     },
     {
@@ -931,7 +931,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3142,
+      "ms": 3298,
       "prompt_tokens": 585
     },
     {
@@ -971,7 +971,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3380,
+      "ms": 3559,
       "prompt_tokens": 604
     },
     {
@@ -1011,7 +1011,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3390,
+      "ms": 3444,
       "prompt_tokens": 599
     },
     {
@@ -1051,7 +1051,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3392,
+      "ms": 3576,
       "prompt_tokens": 621
     },
     {
@@ -1091,7 +1091,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 2723,
+      "ms": 2872,
       "prompt_tokens": 514
     },
     {
@@ -1131,7 +1131,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3098,
+      "ms": 3258,
       "prompt_tokens": 564
     },
     {
@@ -1141,38 +1141,38 @@
       "core_top": [
         "docs/MOLTBOOK_ADVICE.md",
         "docs/MOLTBOOK_ADVICE.md",
-        "ЖУРНАЛ.md",
         "ПРАВИЛА.md",
+        "СОСТОЯНИЕ.md",
         "АРХИВ_СОСТОЯНИЯ.md"
       ],
       "choice_order": [
         {
           "letter": "B",
-          "p": 0.972
+          "p": 0.976
         },
         {
           "letter": "A",
-          "p": 0.019
-        },
-        {
-          "letter": "C",
-          "p": 0.005
+          "p": 0.02
         },
         {
           "letter": "E",
           "p": 0.002
         },
         {
-          "letter": "D",
+          "letter": "C",
           "p": 0.001
+        },
+        {
+          "letter": "D",
+          "p": 0
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3235,
-      "prompt_tokens": 586
+      "ms": 3378,
+      "prompt_tokens": 601
     },
     {
       "id": "g31",
@@ -1211,7 +1211,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 2914,
+      "ms": 3095,
       "prompt_tokens": 540
     },
     {
@@ -1251,7 +1251,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 2927,
+      "ms": 3301,
       "prompt_tokens": 533
     },
     {
@@ -1291,7 +1291,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3023,
+      "ms": 3264,
       "prompt_tokens": 561
     },
     {
@@ -1331,7 +1331,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 2533,
+      "ms": 2646,
       "prompt_tokens": 480
     },
     {
@@ -1371,7 +1371,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 2865,
+      "ms": 2924,
       "prompt_tokens": 526
     },
     {
@@ -1411,7 +1411,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3756,
+      "ms": 3055,
       "prompt_tokens": 537
     },
     {
@@ -1451,7 +1451,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 4615,
+      "ms": 3579,
       "prompt_tokens": 623
     },
     {
@@ -1462,25 +1462,25 @@
         "СОСТОЯНИЕ.md",
         "АРХИТЕКТУРА_ПАМЯТИ.md",
         "СОСТОЯНИЕ.md",
-        "ЖУРНАЛ.md",
-        "СОСТОЯНИЕ.md"
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md"
       ],
       "choice_order": [
         {
           "letter": "A",
-          "p": 0.924
-        },
-        {
-          "letter": "E",
-          "p": 0.06
-        },
-        {
-          "letter": "C",
-          "p": 0.009
+          "p": 0.907
         },
         {
           "letter": "D",
-          "p": 0.005
+          "p": 0.062
+        },
+        {
+          "letter": "E",
+          "p": 0.02
+        },
+        {
+          "letter": "C",
+          "p": 0.008
         },
         {
           "letter": "B",
@@ -1488,11 +1488,11 @@
         }
       ],
       "model_top1": false,
-      "model_top3": false,
+      "model_top3": true,
       "core_top1": false,
       "core_top3": false,
-      "ms": 4793,
-      "prompt_tokens": 696
+      "ms": 3687,
+      "prompt_tokens": 657
     },
     {
       "id": "g39",
@@ -1531,7 +1531,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 4094,
+      "ms": 3291,
       "prompt_tokens": 585
     },
     {
@@ -1571,7 +1571,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 4342,
+      "ms": 3194,
       "prompt_tokens": 569
     },
     {
@@ -1611,7 +1611,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 4461,
+      "ms": 3586,
       "prompt_tokens": 637
     }
   ]
