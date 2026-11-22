@@ -48,8 +48,8 @@ const lib = dlopen(SO, {
 });
 const runtime = lib.symbols.lb_version();
 const rtNum = Number(String(runtime).split("musl-")[1] || 0);
-if (!(rtNum >= 13)) {
-  console.error(`нужна обёртка musl-13+ с persistent lb_state, сейчас ${runtime}`);
+if (!(rtNum >= 15)) {
+  console.error(`нужна обёртка musl-15+ с rank из embeddings_seq, сейчас ${runtime}`);
   process.exit(2);
 }
 const st = lib.symbols.lb_state_init(MODEL);
