@@ -1,0 +1,150 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1120" viewBox="0 0 1400 1120" font-family="'Segoe UI','Roboto','Helvetica Neue',Arial,sans-serif">
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#35d0c0"/>
+      <stop offset="55%" stop-color="#7c8cf8"/>
+      <stop offset="100%" stop-color="#f0a63c"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#121c34"/>
+      <stop offset="100%" stop-color="#0e1629"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1400" height="1120" fill="#0b1020"/>
+  <rect x="0" y="0" width="1400" height="6" fill="url(#accent)"/>
+
+  <text x="60" y="66" font-size="34" font-weight="700" fill="#eaf4ff">ЛОКАЛЬНЫЕ LLM В ЯДРЕ ПАМЯТИ</text>
+  <text x="60" y="102" font-size="16" fill="#93aacb">Одна пара хэшей · 40 gold / 9 held-out · runtime llama-bench-musl-16 · модели не меняют дефолт ядра</text>
+  <rect x="60" y="120" width="250" height="26" rx="13" fill="#16233e" stroke="#2b4266"/>
+  <text x="74" y="138" font-size="12" fill="#8fe3da">index_sha  f993a67a6dc417ce</text>
+  <rect x="322" y="120" width="290" height="26" rx="13" fill="#16233e" stroke="#2b4266"/>
+  <text x="336" y="138" font-size="12" fill="#bdaffb">gold_sha  61925934…5b0078886631e1</text>
+
+  <!-- ============ PANEL 1: accuracy ============ -->
+  <rect x="50" y="170" width="1300" height="390" rx="16" fill="url(#panel)" stroke="#233457"/>
+  <text x="80" y="206" font-size="22" font-weight="700" fill="#35d0c0">TOP-1 ТОЧНОСТЬ: МОДЕЛЬ ПРОТИВ ДЕТЕРМИНИРОВАННОГО ЯДРА</text>
+
+  <!-- left chart grid -->
+  <text x="130" y="245" font-size="13" font-weight="600" fill="#9fb6d8">TRAIN · n=40 (RRF gate: n=31)</text>
+  <line x1="110" y1="260" x2="670" y2="260" stroke="#2b3d5c"/>
+  <line x1="110" y1="322" x2="670" y2="322" stroke="#1e2c45"/>
+  <line x1="110" y1="385" x2="670" y2="385" stroke="#1e2c45"/>
+  <line x1="110" y1="447" x2="670" y2="447" stroke="#1e2c45"/>
+  <line x1="110" y1="510" x2="670" y2="510" stroke="#2b3d5c"/>
+  <text x="76" y="264" font-size="11" fill="#7d93b5">1.00</text>
+  <text x="76" y="326" font-size="11" fill="#7d93b5">0.75</text>
+  <text x="76" y="389" font-size="11" fill="#7d93b5">0.50</text>
+  <text x="76" y="451" font-size="11" fill="#7d93b5">0.25</text>
+  <text x="76" y="514" font-size="11" fill="#7d93b5">0.00</text>
+
+  <!-- left bars: core, rerank, embed, decision, rrf -->
+  <rect x="130" y="391" width="72" height="119" rx="5" fill="#35d0c0"/>
+  <text x="166" y="383" font-size="14" font-weight="700" fill="#dffdf8" text-anchor="middle">0.475</text>
+  <rect x="232" y="391" width="72" height="119" rx="5" fill="#7c8cf8"/>
+  <text x="268" y="383" font-size="14" font-weight="700" fill="#e8e5ff" text-anchor="middle">0.475</text>
+  <rect x="334" y="391" width="72" height="119" rx="5" fill="#7c8cf8"/>
+  <text x="370" y="383" font-size="14" font-weight="700" fill="#e8e5ff" text-anchor="middle">0.475</text>
+  <rect x="436" y="354" width="72" height="156" rx="5" fill="#f0a63c"/>
+  <text x="472" y="346" font-size="14" font-weight="700" fill="#fff0d4" text-anchor="middle">0.625</text>
+  <rect x="538" y="389" width="72" height="121" rx="5" fill="#5fd38a"/>
+  <text x="574" y="381" font-size="14" font-weight="700" fill="#dcffe9" text-anchor="middle">0.484</text>
+  <text x="166" y="532" font-size="12" fill="#a9bcd8" text-anchor="middle">ядро</text>
+  <text x="268" y="532" font-size="12" fill="#a9bcd8" text-anchor="middle">rerank</text>
+  <text x="370" y="532" font-size="12" fill="#a9bcd8" text-anchor="middle">embed</text>
+  <text x="472" y="532" font-size="12" fill="#f5c477" text-anchor="middle">decision</text>
+  <text x="574" y="532" font-size="12" fill="#8ae0ad" text-anchor="middle">RRF</text>
+
+  <!-- right chart grid -->
+  <text x="770" y="245" font-size="13" font-weight="600" fill="#9fb6d8">HELD-OUT · n=9 (не участвовал в выборе порогов)</text>
+  <line x1="750" y1="260" x2="1310" y2="260" stroke="#2b3d5c"/>
+  <line x1="750" y1="322" x2="1310" y2="322" stroke="#1e2c45"/>
+  <line x1="750" y1="385" x2="1310" y2="385" stroke="#1e2c45"/>
+  <line x1="750" y1="447" x2="1310" y2="447" stroke="#1e2c45"/>
+  <line x1="750" y1="510" x2="1310" y2="510" stroke="#2b3d5c"/>
+  <text x="716" y="264" font-size="11" fill="#7d93b5">1.00</text>
+  <text x="716" y="326" font-size="11" fill="#7d93b5">0.75</text>
+  <text x="716" y="389" font-size="11" fill="#7d93b5">0.50</text>
+  <text x="716" y="451" font-size="11" fill="#7d93b5">0.25</text>
+  <text x="716" y="514" font-size="11" fill="#7d93b5">0.00</text>
+
+  <!-- right bars -->
+  <rect x="770" y="371" width="72" height="139" rx="5" fill="#35d0c0"/>
+  <text x="806" y="363" font-size="14" font-weight="700" fill="#dffdf8" text-anchor="middle">0.556</text>
+  <rect x="872" y="343" width="72" height="167" rx="5" fill="#7c8cf8"/>
+  <text x="908" y="335" font-size="14" font-weight="700" fill="#e8e5ff" text-anchor="middle">0.667</text>
+  <rect x="974" y="371" width="72" height="139" rx="5" fill="#7c8cf8"/>
+  <text x="1010" y="363" font-size="14" font-weight="700" fill="#e8e5ff" text-anchor="middle">0.556</text>
+  <rect x="1076" y="316" width="72" height="194" rx="5" fill="#f0a63c"/>
+  <text x="1112" y="308" font-size="14" font-weight="700" fill="#fff0d4" text-anchor="middle">0.778</text>
+  <rect x="1178" y="371" width="72" height="139" rx="5" fill="#5fd38a"/>
+  <text x="1214" y="363" font-size="14" font-weight="700" fill="#dcffe9" text-anchor="middle">0.556</text>
+  <text x="806" y="532" font-size="12" fill="#a9bcd8" text-anchor="middle">ядро</text>
+  <text x="908" y="532" font-size="12" fill="#a9bcd8" text-anchor="middle">rerank</text>
+  <text x="1010" y="532" font-size="12" fill="#a9bcd8" text-anchor="middle">embed</text>
+  <text x="1112" y="532" font-size="12" fill="#f5c477" text-anchor="middle">decision</text>
+  <text x="1214" y="532" font-size="12" fill="#8ae0ad" text-anchor="middle">RRF</text>
+
+  <!-- ============ PANEL 2: latency ============ -->
+  <rect x="50" y="585" width="1300" height="250" rx="16" fill="url(#panel)" stroke="#233457"/>
+  <text x="80" y="620" font-size="20" font-weight="700" fill="#7c8cf8">ЛАТЕНТНОСТЬ НА ЗАПРОС · ЛОГАРИФМИЧЕСКАЯ ШКАЛА</text>
+
+  <line x1="340" y1="646" x2="340" y2="790" stroke="#2b3d5c"/>
+  <line x1="643" y1="646" x2="643" y2="790" stroke="#1e2c45"/>
+  <line x1="947" y1="646" x2="947" y2="790" stroke="#1e2c45"/>
+  <line x1="1250" y1="646" x2="1250" y2="790" stroke="#1e2c45"/>
+  <text x="340" y="810" font-size="11" fill="#7d93b5" text-anchor="middle">10 мс</text>
+  <text x="643" y="810" font-size="11" fill="#7d93b5" text-anchor="middle">100 мс</text>
+  <text x="947" y="810" font-size="11" fill="#7d93b5" text-anchor="middle">1 с</text>
+  <text x="1250" y="810" font-size="11" fill="#7d93b5" text-anchor="middle">10 с</text>
+
+  <text x="330" y="672" font-size="13" fill="#a9bcd8" text-anchor="end">ядро FTS5</text>
+  <rect x="340" y="660" width="7" height="18" rx="3" fill="#35d0c0"/>
+  <text x="357" y="674" font-size="12" font-weight="700" fill="#8fe3da">~10 мс</text>
+
+  <text x="330" y="704" font-size="13" fill="#a9bcd8" text-anchor="end">rerank · 5 pass</text>
+  <rect x="340" y="692" width="736" height="18" rx="4" fill="#7c8cf8"/>
+  <text x="1086" y="706" font-size="12" font-weight="700" fill="#e8e5ff">2674 мс</text>
+
+  <text x="330" y="736" font-size="13" fill="#a9bcd8" text-anchor="end">embed · 6 pass</text>
+  <rect x="340" y="724" width="761" height="18" rx="4" fill="#7c8cf8"/>
+  <text x="1111" y="738" font-size="12" font-weight="700" fill="#e8e5ff">3239 мс</text>
+
+  <text x="330" y="768" font-size="13" fill="#a9bcd8" text-anchor="end">qwen3 · синонимы</text>
+  <rect x="340" y="756" width="870" height="18" rx="4" fill="#4f77c9"/>
+  <text x="1220" y="770" font-size="12" font-weight="700" fill="#dbecff">7400 мс</text>
+
+  <text x="330" y="794" font-size="13" fill="#a9bcd8" text-anchor="end">decision Q8_0</text>
+  <rect x="340" y="782" width="892" height="18" rx="4" fill="#f0a63c"/>
+  <text x="1242" y="796" font-size="12" font-weight="700" fill="#fff0d4">8750 мс</text>
+
+  <!-- ============ PANEL 3: roles ============ -->
+  <rect x="50" y="860" width="1300" height="210" rx="16" fill="url(#panel)" stroke="#233457"/>
+  <text x="80" y="895" font-size="20" font-weight="700" fill="#5fd38a">РОЛЬ В ЯДРЕ И ВЕРДИКТ</text>
+
+  <rect x="80" y="915" width="290" height="105" rx="10" fill="#16213b" stroke="#2a3c60"/>
+  <text x="98" y="940" font-size="14" font-weight="700" fill="#7c8cf8">RERANK</text>
+  <text x="98" y="963" font-size="12" fill="#c3d3ec">5 кандидатов → top3 0.875</text>
+  <text x="98" y="982" font-size="12" fill="#c3d3ec">heldout top1 0.667 &gt; ядро 0.556</text>
+  <text x="98" y="1002" font-size="12" fill="#8fe3da">роль: research, не default</text>
+
+  <rect x="395" y="915" width="290" height="105" rx="10" fill="#16213b" stroke="#2a3c60"/>
+  <text x="413" y="940" font-size="14" font-weight="700" fill="#7c8cf8">EMBED</text>
+  <text x="413" y="963" font-size="12" fill="#c3d3ec">косинус 384-dim, 6 pass</text>
+  <text x="413" y="982" font-size="12" fill="#c3d3ec">top3 0.850 &lt; ядро 0.875</text>
+  <text x="413" y="1002" font-size="12" fill="#f5c477">роль: выигрыша не дал</text>
+
+  <rect x="710" y="915" width="290" height="105" rx="10" fill="#16213b" stroke="#2a3c60"/>
+  <text x="728" y="940" font-size="14" font-weight="700" fill="#f0a63c">DECISION Q8_0</text>
+  <text x="728" y="963" font-size="12" fill="#c3d3ec">top1 0.778 на heldout</text>
+  <text x="728" y="982" font-size="12" fill="#c3d3ec">но 8750 мс на запрос</text>
+  <text x="728" y="1002" font-size="12" fill="#f5c477">роль: слишком дорого</text>
+
+  <rect x="1025" y="915" width="290" height="105" rx="10" fill="#16213b" stroke="#2a3c60"/>
+  <text x="1043" y="940" font-size="14" font-weight="700" fill="#5fd38a">HYBRID RRF</text>
+  <text x="1043" y="963" font-size="12" fill="#c3d3ec">train 0.484 &gt; 0.452</text>
+  <text x="1043" y="982" font-size="12" fill="#c3d3ec">heldout 0.556 = 0.556</text>
+  <text x="1043" y="1002" font-size="12" fill="#f5c477">роль: не подтверждён</text>
+
+  <text x="80" y="1050" font-size="14" font-weight="600" fill="#9fd8ff">ИТОГ: DEFAULT_MODE="legacy" · Tier 3 закрыт · гейт 100+ gold / 25+ held-out до перетюнинга · сырые данные: tools/llama-bench/*bench*.json</text>
+</svg>
