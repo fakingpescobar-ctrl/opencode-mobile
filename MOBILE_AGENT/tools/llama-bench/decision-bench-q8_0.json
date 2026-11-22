@@ -5,14 +5,14 @@
   "bytes": 811843840,
   "runtime": "llama-bench-musl-16",
   "role": "choice над 5 кандидатами ядра, один forward pass",
-  "index_sha": "9acbaa1af0ec784e",
+  "index_sha": "ddc420457378ab0b",
   "gold_sha": "61925934feae090013bbd5b67457cfa51c4d71e8e77f2811c25b0078886631e1",
   "n": 40,
   "model_top1": 0.575,
   "model_top3": 0.9,
   "core_top1": 0.55,
   "core_top3": 0.85,
-  "avg_ms": 3585,
+  "avg_ms": 3173,
   "rows": [
     {
       "id": "g01",
@@ -51,7 +51,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": false,
-      "ms": 3578,
+      "ms": 3189,
       "prompt_tokens": 579
     },
     {
@@ -91,7 +91,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3530,
+      "ms": 3288,
       "prompt_tokens": 582
     },
     {
@@ -131,7 +131,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": false,
-      "ms": 3959,
+      "ms": 3514,
       "prompt_tokens": 648
     },
     {
@@ -171,7 +171,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3516,
+      "ms": 3119,
       "prompt_tokens": 566
     },
     {
@@ -211,7 +211,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3653,
+      "ms": 3154,
       "prompt_tokens": 563
     },
     {
@@ -251,7 +251,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3470,
+      "ms": 3306,
       "prompt_tokens": 562
     },
     {
@@ -291,7 +291,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3444,
+      "ms": 2982,
       "prompt_tokens": 555
     },
     {
@@ -331,7 +331,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3328,
+      "ms": 2981,
       "prompt_tokens": 549
     },
     {
@@ -371,7 +371,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": true,
-      "ms": 2963,
+      "ms": 2625,
       "prompt_tokens": 495
     },
     {
@@ -411,7 +411,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 5302,
+      "ms": 3280,
       "prompt_tokens": 576
     },
     {
@@ -451,7 +451,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3559,
+      "ms": 3036,
       "prompt_tokens": 546
     },
     {
@@ -491,7 +491,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3737,
+      "ms": 3536,
       "prompt_tokens": 611
     },
     {
@@ -531,7 +531,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": false,
-      "ms": 3436,
+      "ms": 3085,
       "prompt_tokens": 561
     },
     {
@@ -542,36 +542,36 @@
         "КАТАЛОГ_ПЕРЕДЕЛОК.md",
         "АРХИВ_СОСТОЯНИЯ.md",
         "docs/MOLTBOOK_ADVICE.md",
-        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
-        "АРХИВ_СОСТОЯНИЯ.md"
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md"
       ],
       "choice_order": [
         {
           "letter": "C",
-          "p": 0.826
-        },
-        {
-          "letter": "E",
-          "p": 0.104
-        },
-        {
-          "letter": "B",
-          "p": 0.045
-        },
-        {
-          "letter": "A",
-          "p": 0.013
+          "p": 0.825
         },
         {
           "letter": "D",
-          "p": 0.013
+          "p": 0.107
+        },
+        {
+          "letter": "B",
+          "p": 0.041
+        },
+        {
+          "letter": "E",
+          "p": 0.015
+        },
+        {
+          "letter": "A",
+          "p": 0.011
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3386,
+      "ms": 2962,
       "prompt_tokens": 548
     },
     {
@@ -611,7 +611,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": false,
-      "ms": 3639,
+      "ms": 3199,
       "prompt_tokens": 602
     },
     {
@@ -651,7 +651,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3595,
+      "ms": 3275,
       "prompt_tokens": 594
     },
     {
@@ -691,7 +691,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": false,
-      "ms": 3566,
+      "ms": 3210,
       "prompt_tokens": 578
     },
     {
@@ -731,7 +731,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3661,
+      "ms": 3195,
       "prompt_tokens": 594
     },
     {
@@ -771,7 +771,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3328,
+      "ms": 2875,
       "prompt_tokens": 536
     },
     {
@@ -811,7 +811,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3630,
+      "ms": 3230,
       "prompt_tokens": 596
     },
     {
@@ -851,7 +851,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3635,
+      "ms": 3250,
       "prompt_tokens": 590
     },
     {
@@ -891,7 +891,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3599,
+      "ms": 3284,
       "prompt_tokens": 588
     },
     {
@@ -931,7 +931,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3764,
+      "ms": 3206,
       "prompt_tokens": 585
     },
     {
@@ -971,7 +971,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3703,
+      "ms": 3303,
       "prompt_tokens": 604
     },
     {
@@ -1011,7 +1011,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3692,
+      "ms": 3331,
       "prompt_tokens": 599
     },
     {
@@ -1051,7 +1051,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3794,
+      "ms": 3399,
       "prompt_tokens": 621
     },
     {
@@ -1091,7 +1091,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3194,
+      "ms": 2881,
       "prompt_tokens": 521
     },
     {
@@ -1131,7 +1131,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3408,
+      "ms": 3141,
       "prompt_tokens": 564
     },
     {
@@ -1171,7 +1171,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3711,
+      "ms": 3388,
       "prompt_tokens": 601
     },
     {
@@ -1211,7 +1211,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3262,
+      "ms": 2912,
       "prompt_tokens": 540
     },
     {
@@ -1251,7 +1251,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3299,
+      "ms": 3256,
       "prompt_tokens": 533
     },
     {
@@ -1291,7 +1291,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3394,
+      "ms": 3159,
       "prompt_tokens": 561
     },
     {
@@ -1331,7 +1331,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3168,
+      "ms": 2593,
       "prompt_tokens": 480
     },
     {
@@ -1371,7 +1371,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3207,
+      "ms": 2939,
       "prompt_tokens": 526
     },
     {
@@ -1411,7 +1411,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3257,
+      "ms": 2881,
       "prompt_tokens": 537
     },
     {
@@ -1451,7 +1451,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3884,
+      "ms": 3510,
       "prompt_tokens": 623
     },
     {
@@ -1468,7 +1468,7 @@
       "choice_order": [
         {
           "letter": "A",
-          "p": 0.938
+          "p": 0.941
         },
         {
           "letter": "E",
@@ -1476,7 +1476,7 @@
         },
         {
           "letter": "D",
-          "p": 0.021
+          "p": 0.019
         },
         {
           "letter": "C",
@@ -1484,15 +1484,15 @@
         },
         {
           "letter": "B",
-          "p": 0.003
+          "p": 0.002
         }
       ],
       "model_top1": false,
       "model_top3": true,
       "core_top1": false,
       "core_top3": false,
-      "ms": 4025,
-      "prompt_tokens": 655
+      "ms": 3543,
+      "prompt_tokens": 657
     },
     {
       "id": "g39",
@@ -1531,7 +1531,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3614,
+      "ms": 3215,
       "prompt_tokens": 585
     },
     {
@@ -1571,7 +1571,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3549,
+      "ms": 3174,
       "prompt_tokens": 569
     },
     {
@@ -1611,7 +1611,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3948,
+      "ms": 3534,
       "prompt_tokens": 649
     }
   ]
