@@ -6,7 +6,7 @@
   "runtime": "llama-bench-musl-16",
   "role": "переранжирование 5 кандидатов ядра, 5 forward pass на запрос",
   "note": "classifier_activation=gelu_pytorch_tanh удалён при конвертации: llama.cpp b12554 использует GELU_ERF",
-  "index_sha": "de89f9c736958831",
+  "index_sha": "9acbaa1af0ec784e",
   "gold_sha": "61925934feae090013bbd5b67457cfa51c4d71e8e77f2811c25b0078886631e1",
   "n": 40,
   "pairs": 200,
@@ -19,8 +19,8 @@
     "model_top1": 0.7777777777777778,
     "core_top1": 0.6666666666666666
   },
-  "avg_ms_per_pair": 55,
-  "avg_ms_per_query": 276,
+  "avg_ms_per_pair": 66,
+  "avg_ms_per_query": 331,
   "rows": [
     {
       "id": "g01",
@@ -39,38 +39,38 @@
           "i": 0,
           "source": "АРХИВ_СОСТОЯНИЯ.md",
           "score": 4.919941,
-          "core": 0.5913
+          "core": 0.5916
         },
         {
           "i": 2,
           "source": "ХАРНЕС.md",
           "score": 1.962999,
-          "core": 0.3909
+          "core": 0.3908
         },
         {
           "i": 1,
           "source": "ПРАВИЛА.md",
           "score": 1.840274,
-          "core": 0.3953
+          "core": 0.3957
         },
         {
           "i": 3,
           "source": "ПРАВИЛА.md",
           "score": 1.171177,
-          "core": 0.3896
+          "core": 0.39
         },
         {
           "i": 4,
           "source": "СОСТОЯНИЕ.md",
           "score": -5.032094,
-          "core": 0.3873
+          "core": 0.3878
         }
       ],
       "model_top1": false,
       "model_top3": false,
       "core_top1": false,
       "core_top3": false,
-      "ms": 282
+      "ms": 477
     },
     {
       "id": "g02",
@@ -89,19 +89,19 @@
           "i": 4,
           "source": "ПРАВИЛА.md",
           "score": 4.892365,
-          "core": 0.561
+          "core": 0.5609
         },
         {
           "i": 1,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": 3.68036,
-          "core": 0.6743
+          "core": 0.6742
         },
         {
           "i": 2,
           "source": "ПРАВИЛА.md",
           "score": -1.145349,
-          "core": 0.6462
+          "core": 0.6461
         },
         {
           "i": 3,
@@ -113,14 +113,14 @@
           "i": 0,
           "source": "ПРАВИЛА.md",
           "score": -5.981355,
-          "core": 0.6839
+          "core": 0.6838
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 264
+      "ms": 297
     },
     {
       "id": "g03",
@@ -139,38 +139,38 @@
           "i": 0,
           "source": "ПРИЁМКА_APK47.md",
           "score": 3.190106,
-          "core": 0.6698
+          "core": 0.6694
         },
         {
           "i": 4,
           "source": "ХАРНЕС.md",
           "score": -5.140228,
-          "core": 0.432
+          "core": 0.4317
         },
         {
           "i": 2,
           "source": "СОСТОЯНИЕ.md",
           "score": -6.345198,
-          "core": 0.4345
+          "core": 0.4342
         },
         {
           "i": 1,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -8.073967,
-          "core": 0.4388
+          "core": 0.4385
         },
         {
           "i": 3,
           "source": "СОСТОЯНИЕ.md",
           "score": -8.260592,
-          "core": 0.4344
+          "core": 0.434
         }
       ],
       "model_top1": false,
       "model_top3": true,
       "core_top1": false,
       "core_top3": false,
-      "ms": 202
+      "ms": 241
     },
     {
       "id": "g04",
@@ -207,7 +207,7 @@
           "i": 3,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -7.03289,
-          "core": 0.6656
+          "core": 0.6655
         },
         {
           "i": 2,
@@ -220,7 +220,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 239
+      "ms": 211
     },
     {
       "id": "g05",
@@ -239,38 +239,38 @@
           "i": 4,
           "source": "ХАРНЕС.md",
           "score": 5.346638,
-          "core": 0.3279
+          "core": 0.328
         },
         {
           "i": 1,
           "source": "ХАРНЕС.md",
           "score": 2.886084,
-          "core": 0.3513
+          "core": 0.3514
         },
         {
           "i": 0,
           "source": "ХАРНЕС.md",
           "score": 1.006659,
-          "core": 0.354
+          "core": 0.3542
         },
         {
           "i": 3,
           "source": "КАТАЛОГ_ПЕРЕДЕЛОК.md",
           "score": -0.860978,
-          "core": 0.3289
+          "core": 0.329
         },
         {
           "i": 2,
           "source": "ЖУРНАЛ.md",
           "score": -4.744133,
-          "core": 0.3432
+          "core": 0.3433
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 285
+      "ms": 313
     },
     {
       "id": "g06",
@@ -289,38 +289,38 @@
           "i": 0,
           "source": "ЖУРНАЛ.md",
           "score": 3.649714,
-          "core": 0.5637
+          "core": 0.5636
         },
         {
           "i": 4,
           "source": "ХАРНЕС.md",
           "score": 0.072179,
-          "core": 0.4024
+          "core": 0.4023
         },
         {
           "i": 3,
           "source": "СОСТОЯНИЕ.md",
           "score": -1.130897,
-          "core": 0.4049
+          "core": 0.4048
         },
         {
           "i": 2,
           "source": "ПРАВИЛА.md",
           "score": -1.247086,
-          "core": 0.4074
+          "core": 0.4073
         },
         {
           "i": 1,
           "source": "ПРАВИЛА.md",
           "score": -5.354261,
-          "core": 0.4074
+          "core": 0.4073
         }
       ],
       "model_top1": false,
       "model_top3": false,
       "core_top1": false,
       "core_top3": true,
-      "ms": 225
+      "ms": 282
     },
     {
       "id": "g07",
@@ -339,19 +339,19 @@
           "i": 0,
           "source": "ХАРНЕС.md",
           "score": -3.098528,
-          "core": 0.671
+          "core": 0.6709
         },
         {
           "i": 3,
           "source": "СОСТОЯНИЕ.md",
           "score": -3.122258,
-          "core": 0.4157
+          "core": 0.4155
         },
         {
           "i": 1,
           "source": "ПРАВИЛА.md",
           "score": -3.393195,
-          "core": 0.4182
+          "core": 0.418
         },
         {
           "i": 4,
@@ -370,7 +370,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 330
+      "ms": 349
     },
     {
       "id": "g08",
@@ -389,13 +389,13 @@
           "i": 3,
           "source": "ПРАВИЛА.md",
           "score": 6.687293,
-          "core": 0.5219
+          "core": 0.522
         },
         {
           "i": 4,
           "source": "СОСТОЯНИЕ.md",
           "score": 5.628064,
-          "core": 0.5092
+          "core": 0.5093
         },
         {
           "i": 2,
@@ -407,20 +407,20 @@
           "i": 1,
           "source": "ХАРНЕС.md",
           "score": -0.088304,
-          "core": 0.5908
+          "core": 0.5909
         },
         {
           "i": 0,
           "source": "ХАРНЕС.md",
           "score": -0.388211,
-          "core": 0.6124
+          "core": 0.6123
         }
       ],
       "model_top1": false,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 301
+      "ms": 331
     },
     {
       "id": "g09",
@@ -439,38 +439,38 @@
           "i": 1,
           "source": "ПРИЁМКА_APK49.md",
           "score": -2.453654,
-          "core": 0.7592
+          "core": 0.7589
         },
         {
           "i": 0,
           "source": "ПРИЁМКА_APK48.md",
           "score": -2.740404,
-          "core": 0.7592
+          "core": 0.7589
         },
         {
           "i": 4,
           "source": "КАТАЛОГ_ПЕРЕДЕЛОК.md",
           "score": -3.134283,
-          "core": 0.5099
+          "core": 0.5096
         },
         {
           "i": 3,
           "source": "КАТАЛОГ_ПЕРЕДЕЛОК.md",
           "score": -3.866275,
-          "core": 0.5107
+          "core": 0.5104
         },
         {
           "i": 2,
           "source": "СОСТОЯНИЕ.md",
           "score": -3.993985,
-          "core": 0.5208
+          "core": 0.5205
         }
       ],
       "model_top1": false,
       "model_top3": false,
       "core_top1": false,
       "core_top3": true,
-      "ms": 222
+      "ms": 333
     },
     {
       "id": "g10",
@@ -495,19 +495,19 @@
           "i": 0,
           "source": "ПРАВИЛА.md",
           "score": -1.267405,
-          "core": 0.4237
+          "core": 0.4236
         },
         {
           "i": 2,
           "source": "СОСТОЯНИЕ.md",
           "score": -2.221779,
-          "core": 0.4232
+          "core": 0.4231
         },
         {
           "i": 4,
           "source": "ХАРНЕС.md",
           "score": -2.420227,
-          "core": 0.4197
+          "core": 0.4196
         },
         {
           "i": 3,
@@ -520,7 +520,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 280
+      "ms": 358
     },
     {
       "id": "g11",
@@ -539,38 +539,38 @@
           "i": 2,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": 5.075992,
-          "core": 0.6602
+          "core": 0.6601
         },
         {
           "i": 3,
           "source": "ПРАВИЛА.md",
           "score": -5.804572,
-          "core": 0.4479
+          "core": 0.4478
         },
         {
           "i": 0,
           "source": "КАТАЛОГ_ПЕРЕДЕЛОК.md",
           "score": -6.078338,
-          "core": 0.7405
+          "core": 0.7404
         },
         {
           "i": 4,
           "source": "СОСТОЯНИЕ.md",
           "score": -7.155215,
-          "core": 0.445
+          "core": 0.4449
         },
         {
           "i": 1,
           "source": "ИССЛЕДОВАНИЕ_МОБИЛЬНЫХ_ЛЛМ.md",
           "score": -8.189939,
-          "core": 0.7193
+          "core": 0.7191
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 274
+      "ms": 320
     },
     {
       "id": "g12",
@@ -607,7 +607,7 @@
           "i": 1,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -4.416427,
-          "core": 0.4376
+          "core": 0.4375
         },
         {
           "i": 3,
@@ -620,7 +620,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 310
+      "ms": 312
     },
     {
       "id": "g13",
@@ -645,7 +645,7 @@
           "i": 1,
           "source": "КАТАЛОГ_ПЕРЕДЕЛОК.md",
           "score": -5.139231,
-          "core": 0.5913
+          "core": 0.5912
         },
         {
           "i": 2,
@@ -670,7 +670,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": false,
-      "ms": 262
+      "ms": 201
     },
     {
       "id": "g14",
@@ -681,30 +681,30 @@
         "КАТАЛОГ_ПЕРЕДЕЛОК.md",
         "АРХИВ_СОСТОЯНИЯ.md",
         "docs/MOLTBOOK_ADVICE.md",
-        "АРХИВ_СОСТОЯНИЯ.md",
-        "КАТАЛОГ_ПЕРЕДЕЛОК.md"
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
+        "АРХИВ_СОСТОЯНИЯ.md"
       ],
       "rerank_order": [
         {
           "i": 2,
           "source": "docs/MOLTBOOK_ADVICE.md",
           "score": 0.740303,
-          "core": 0.404
+          "core": 0.4039
         },
         {
           "i": 1,
           "source": "АРХИВ_СОСТОЯНИЯ.md",
           "score": 0.519547,
-          "core": 0.4046
-        },
-        {
-          "i": 3,
-          "source": "АРХИВ_СОСТОЯНИЯ.md",
-          "score": -0.570639,
-          "core": 0.4016
+          "core": 0.4045
         },
         {
           "i": 4,
+          "source": "АРХИВ_СОСТОЯНИЯ.md",
+          "score": -0.570639,
+          "core": 0.4015
+        },
+        {
+          "i": 3,
           "source": "КАТАЛОГ_ПЕРЕДЕЛОК.md",
           "score": -2.885433,
           "core": 0.4015
@@ -713,14 +713,14 @@
           "i": 0,
           "source": "КАТАЛОГ_ПЕРЕДЕЛОК.md",
           "score": -3.93443,
-          "core": 0.4065
+          "core": 0.4064
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 248
+      "ms": 261
     },
     {
       "id": "g15",
@@ -739,13 +739,13 @@
           "i": 0,
           "source": "СОСТОЯНИЕ.md",
           "score": 4.771484,
-          "core": 0.3782
+          "core": 0.3781
         },
         {
           "i": 3,
           "source": "СОСТОЯНИЕ.md",
           "score": 2.395152,
-          "core": 0.3641
+          "core": 0.364
         },
         {
           "i": 2,
@@ -763,14 +763,14 @@
           "i": 1,
           "source": "ХАРНЕС.md",
           "score": -6.094821,
-          "core": 0.3751
+          "core": 0.375
         }
       ],
       "model_top1": false,
       "model_top3": false,
       "core_top1": false,
       "core_top3": false,
-      "ms": 296
+      "ms": 255
     },
     {
       "id": "g16",
@@ -789,7 +789,7 @@
           "i": 1,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": 0.812322,
-          "core": 0.4405
+          "core": 0.4404
         },
         {
           "i": 0,
@@ -807,20 +807,20 @@
           "i": 3,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -4.644727,
-          "core": 0.4363
+          "core": 0.4362
         },
         {
           "i": 4,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -8.314201,
-          "core": 0.4363
+          "core": 0.4362
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 257
+      "ms": 341
     },
     {
       "id": "g17",
@@ -845,13 +845,13 @@
           "i": 1,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -8.41337,
-          "core": 0.4197
+          "core": 0.4196
         },
         {
           "i": 2,
           "source": "СОСТОЯНИЕ.md",
           "score": -9.57341,
-          "core": 0.4172
+          "core": 0.4171
         },
         {
           "i": 4,
@@ -863,14 +863,14 @@
           "i": 0,
           "source": "ПРАВИЛА.md",
           "score": -9.626276,
-          "core": 0.4197
+          "core": 0.4196
         }
       ],
       "model_top1": false,
       "model_top3": false,
       "core_top1": false,
       "core_top3": false,
-      "ms": 290
+      "ms": 449
     },
     {
       "id": "g18",
@@ -889,13 +889,13 @@
           "i": 0,
           "source": "АРХИВ_СОСТОЯНИЯ.md",
           "score": 1.708775,
-          "core": 0.4352
+          "core": 0.4351
         },
         {
           "i": 2,
           "source": "СОСТОЯНИЕ.md",
           "score": 0.353105,
-          "core": 0.4254
+          "core": 0.4253
         },
         {
           "i": 4,
@@ -907,7 +907,7 @@
           "i": 3,
           "source": "ЖУРНАЛ.md",
           "score": -2.688224,
-          "core": 0.4245
+          "core": 0.4244
         },
         {
           "i": 1,
@@ -920,7 +920,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 278
+      "ms": 344
     },
     {
       "id": "g19",
@@ -939,38 +939,38 @@
           "i": 4,
           "source": "СОСТОЯНИЕ.md",
           "score": 0.559815,
-          "core": 0.4338
+          "core": 0.4337
         },
         {
           "i": 2,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -3.571602,
-          "core": 0.4363
+          "core": 0.4362
         },
         {
           "i": 0,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -4.231362,
-          "core": 0.4363
+          "core": 0.4362
         },
         {
           "i": 3,
           "source": "СОСТОЯНИЕ.md",
           "score": -5.369158,
-          "core": 0.4338
+          "core": 0.4337
         },
         {
           "i": 1,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -7.403565,
-          "core": 0.4363
+          "core": 0.4362
         }
       ],
       "model_top1": false,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 223
+      "ms": 283
     },
     {
       "id": "g20",
@@ -989,38 +989,38 @@
           "i": 0,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": 3.118473,
-          "core": 0.6094
+          "core": 0.6092
         },
         {
           "i": 3,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -6.439931,
-          "core": 0.4212
+          "core": 0.4211
         },
         {
           "i": 4,
           "source": "СОСТОЯНИЕ.md",
           "score": -6.969536,
-          "core": 0.4187
+          "core": 0.4186
         },
         {
           "i": 1,
           "source": "docs/agent-rules.md",
           "score": -8.714088,
-          "core": 0.4242
+          "core": 0.4241
         },
         {
           "i": 2,
           "source": "docs/agent-rules.md",
           "score": -8.927963,
-          "core": 0.4242
+          "core": 0.4241
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 288
+      "ms": 453
     },
     {
       "id": "g21",
@@ -1051,7 +1051,7 @@
           "i": 4,
           "source": "docs/MOLTBOOK_ADVICE.md",
           "score": -4.419775,
-          "core": 0.3683
+          "core": 0.3682
         },
         {
           "i": 3,
@@ -1063,14 +1063,14 @@
           "i": 0,
           "source": "MOLTBOOK_REPORT.md",
           "score": -5.29968,
-          "core": 0.3862
+          "core": 0.3861
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 257
+      "ms": 305
     },
     {
       "id": "g22",
@@ -1120,7 +1120,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 315
+      "ms": 355
     },
     {
       "id": "g23",
@@ -1139,38 +1139,38 @@
           "i": 2,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": 4.109889,
-          "core": 0.3745
+          "core": 0.3744
         },
         {
           "i": 0,
           "source": "ПРАВИЛА.md",
           "score": 1.462312,
-          "core": 0.3895
+          "core": 0.3894
         },
         {
           "i": 4,
           "source": "ХАРНЕС.md",
           "score": 0.904548,
-          "core": 0.3513
+          "core": 0.3512
         },
         {
           "i": 1,
           "source": "АРХИВ_СОСТОЯНИЯ.md",
           "score": -3.554944,
-          "core": 0.3786
+          "core": 0.3785
         },
         {
           "i": 3,
           "source": "docs/MOLTBOOK_ADVICE.md",
           "score": -4.568357,
-          "core": 0.3654
+          "core": 0.3653
         }
       ],
       "model_top1": false,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 279
+      "ms": 236
     },
     {
       "id": "g24",
@@ -1189,7 +1189,7 @@
           "i": 4,
           "source": "ЖУРНАЛ.md",
           "score": -4.201639,
-          "core": 0.4017
+          "core": 0.4016
         },
         {
           "i": 2,
@@ -1213,14 +1213,14 @@
           "i": 1,
           "source": "КАТАЛОГ_ПЕРЕДЕЛОК.md",
           "score": -6.257787,
-          "core": 0.4137
+          "core": 0.4136
         }
       ],
       "model_top1": false,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 333
+      "ms": 335
     },
     {
       "id": "g25",
@@ -1245,13 +1245,13 @@
           "i": 1,
           "source": "ХАРНЕС.md",
           "score": -5.945285,
-          "core": 0.389
+          "core": 0.3889
         },
         {
           "i": 0,
           "source": "СОСТОЯНИЕ.md",
           "score": -6.413187,
-          "core": 0.4023
+          "core": 0.4022
         },
         {
           "i": 2,
@@ -1270,7 +1270,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 299
+      "ms": 403
     },
     {
       "id": "g26",
@@ -1289,38 +1289,38 @@
           "i": 2,
           "source": "СОСТОЯНИЕ.md",
           "score": 2.193283,
-          "core": 0.3337
+          "core": 0.334
         },
         {
           "i": 3,
           "source": "ХАРНЕС.md",
           "score": 1.612702,
-          "core": 0.3307
+          "core": 0.3312
         },
         {
           "i": 1,
           "source": "ХАРНЕС.md",
           "score": 1.611969,
-          "core": 0.3382
+          "core": 0.3387
         },
         {
           "i": 0,
           "source": "ХАРНЕС.md",
           "score": 0.514219,
-          "core": 0.343
+          "core": 0.3429
         },
         {
           "i": 4,
           "source": "ЖУРНАЛ.md",
           "score": -0.288064,
-          "core": 0.3299
+          "core": 0.3302
         }
       ],
       "model_top1": false,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 278
+      "ms": 301
     },
     {
       "id": "g27",
@@ -1363,14 +1363,14 @@
           "i": 4,
           "source": "ХАРНЕС.md",
           "score": -7.016407,
-          "core": 0.4189
+          "core": 0.4188
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 199
+      "ms": 262
     },
     {
       "id": "g28",
@@ -1389,38 +1389,38 @@
           "i": 1,
           "source": "docs/MOLTBOOK_ADVICE.md",
           "score": 6.969602,
-          "core": 0.5098
+          "core": 0.5095
         },
         {
           "i": 0,
           "source": "docs/MOLTBOOK_ADVICE.md",
           "score": -0.045022,
-          "core": 0.5856
+          "core": 0.5853
         },
         {
           "i": 3,
           "source": "СОСТОЯНИЕ.md",
           "score": -7.166789,
-          "core": 0.4363
+          "core": 0.436
         },
         {
           "i": 2,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -7.197923,
-          "core": 0.4388
+          "core": 0.4385
         },
         {
           "i": 4,
           "source": "СОСТОЯНИЕ.md",
           "score": -7.569254,
-          "core": 0.4363
+          "core": 0.436
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 267
+      "ms": 223
     },
     {
       "id": "g29",
@@ -1439,13 +1439,13 @@
           "i": 1,
           "source": "docs/MOLTBOOK_ADVICE.md",
           "score": 8.790216,
-          "core": 0.4732
+          "core": 0.4729
         },
         {
           "i": 0,
           "source": "docs/MOLTBOOK_ADVICE.md",
           "score": 0.466094,
-          "core": 0.6184
+          "core": 0.6181
         },
         {
           "i": 4,
@@ -1463,14 +1463,14 @@
           "i": 3,
           "source": "СОСТОЯНИЕ.md",
           "score": -5.122426,
-          "core": 0.4192
+          "core": 0.4189
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 286
+      "ms": 383
     },
     {
       "id": "g31",
@@ -1489,38 +1489,38 @@
           "i": 4,
           "source": "СОСТОЯНИЕ.md",
           "score": -3.494267,
-          "core": 0.4338
+          "core": 0.4337
         },
         {
           "i": 0,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -3.580257,
-          "core": 0.7216
+          "core": 0.7215
         },
         {
           "i": 3,
           "source": "СОСТОЯНИЕ.md",
           "score": -5.213379,
-          "core": 0.4338
+          "core": 0.4337
         },
         {
           "i": 1,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -5.6161,
-          "core": 0.4363
+          "core": 0.4362
         },
         {
           "i": 2,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -6.1545,
-          "core": 0.4363
+          "core": 0.4362
         }
       ],
       "model_top1": false,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 238
+      "ms": 300
     },
     {
       "id": "g32",
@@ -1539,38 +1539,38 @@
           "i": 0,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": 0.701238,
-          "core": 0.5994
+          "core": 0.5993
         },
         {
           "i": 3,
           "source": "СОСТОЯНИЕ.md",
           "score": -7.839311,
-          "core": 0.4338
+          "core": 0.4337
         },
         {
           "i": 1,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -9.258272,
-          "core": 0.4363
+          "core": 0.4362
         },
         {
           "i": 2,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -9.30248,
-          "core": 0.4363
+          "core": 0.4362
         },
         {
           "i": 4,
           "source": "СОСТОЯНИЕ.md",
           "score": -10.002011,
-          "core": 0.4338
+          "core": 0.4337
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 210
+      "ms": 255
     },
     {
       "id": "g33",
@@ -1607,7 +1607,7 @@
           "i": 4,
           "source": "ЖУРНАЛ.md",
           "score": -3.549351,
-          "core": 0.4229
+          "core": 0.4228
         },
         {
           "i": 2,
@@ -1620,7 +1620,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 449
+      "ms": 411
     },
     {
       "id": "g34",
@@ -1639,38 +1639,38 @@
           "i": 0,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": 5.348533,
-          "core": 0.5418
+          "core": 0.5416
         },
         {
           "i": 2,
           "source": "КАТАЛОГ_ПЕРЕДЕЛОК.md",
           "score": -6.097774,
-          "core": 0.4089
+          "core": 0.4088
         },
         {
           "i": 3,
           "source": "КАТАЛОГ_ПЕРЕДЕЛОК.md",
           "score": -6.723677,
-          "core": 0.4078
+          "core": 0.4075
         },
         {
           "i": 4,
           "source": "АРХИВ_СОСТОЯНИЯ.md",
           "score": -7.978023,
-          "core": 0.4039
+          "core": 0.4038
         },
         {
           "i": 1,
           "source": "ХАРНЕС.md",
           "score": -8.609923,
-          "core": 0.4189
+          "core": 0.4188
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 253
+      "ms": 323
     },
     {
       "id": "g35",
@@ -1701,26 +1701,26 @@
           "i": 2,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": 4.091496,
-          "core": 0.6131
+          "core": 0.613
         },
         {
           "i": 1,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": 0.092611,
-          "core": 0.6306
+          "core": 0.6305
         },
         {
           "i": 0,
           "source": "СОСТОЯНИЕ.md",
           "score": -0.868236,
-          "core": 0.7095
+          "core": 0.7093
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 250
+      "ms": 386
     },
     {
       "id": "g36",
@@ -1739,38 +1739,38 @@
           "i": 0,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -3.572351,
-          "core": 0.4363
+          "core": 0.4362
         },
         {
           "i": 4,
           "source": "СОСТОЯНИЕ.md",
           "score": -5.960129,
-          "core": 0.4338
+          "core": 0.4337
         },
         {
           "i": 3,
           "source": "СОСТОЯНИЕ.md",
           "score": -5.984459,
-          "core": 0.4338
+          "core": 0.4337
         },
         {
           "i": 2,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -6.896671,
-          "core": 0.4363
+          "core": 0.4362
         },
         {
           "i": 1,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -7.364244,
-          "core": 0.4363
+          "core": 0.4362
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 226
+      "ms": 290
     },
     {
       "id": "g37",
@@ -1813,14 +1813,14 @@
           "i": 0,
           "source": "СОСТОЯНИЕ.md",
           "score": -4.848233,
-          "core": 0.4275
+          "core": 0.4274
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 423
+      "ms": 389
     },
     {
       "id": "g38",
@@ -1863,14 +1863,14 @@
           "i": 2,
           "source": "СОСТОЯНИЕ.md",
           "score": -5.697394,
-          "core": 0.4309
+          "core": 0.4308
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": false,
       "core_top3": false,
-      "ms": 320
+      "ms": 470
     },
     {
       "id": "g39",
@@ -1895,7 +1895,7 @@
           "i": 3,
           "source": "СОСТОЯНИЕ.md",
           "score": -1.13479,
-          "core": 0.4033
+          "core": 0.4032
         },
         {
           "i": 0,
@@ -1907,7 +1907,7 @@
           "i": 2,
           "source": "docs/agent-rules.md",
           "score": -4.247149,
-          "core": 0.407
+          "core": 0.4069
         },
         {
           "i": 4,
@@ -1920,7 +1920,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 286
+      "ms": 436
     },
     {
       "id": "g40",
@@ -1939,38 +1939,38 @@
           "i": 2,
           "source": "ХАРНЕС.md",
           "score": 3.25436,
-          "core": 0.3994
+          "core": 0.3993
         },
         {
           "i": 0,
           "source": "ПРАВИЛА.md",
           "score": -0.387539,
-          "core": 0.4021
+          "core": 0.402
         },
         {
           "i": 1,
           "source": "СОСТОЯНИЕ.md",
           "score": -1.194807,
-          "core": 0.4019
+          "core": 0.4018
         },
         {
           "i": 3,
           "source": "СОСТОЯНИЕ.md",
           "score": -4.62021,
-          "core": 0.3928
+          "core": 0.3927
         },
         {
           "i": 4,
           "source": "КАТАЛОГ_ПЕРЕДЕЛОК.md",
           "score": -5.98483,
-          "core": 0.3921
+          "core": 0.392
         }
       ],
       "model_top1": false,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 197
+      "ms": 373
     },
     {
       "id": "g41",
@@ -1989,38 +1989,38 @@
           "i": 0,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -0.58122,
-          "core": 0.717
+          "core": 0.7166
         },
         {
           "i": 3,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -2.083374,
-          "core": 0.4305
+          "core": 0.4302
         },
         {
           "i": 4,
           "source": "СОСТОЯНИЕ.md",
           "score": -2.858705,
-          "core": 0.43
+          "core": 0.4298
         },
         {
           "i": 2,
           "source": "АРХИТЕКТУРА_ПАМЯТИ.md",
           "score": -6.372559,
-          "core": 0.4325
+          "core": 0.4323
         },
         {
           "i": 1,
           "source": "ПРАВИЛА.md",
           "score": -6.669244,
-          "core": 0.4325
+          "core": 0.4323
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 320
+      "ms": 387
     }
   ]
 }
