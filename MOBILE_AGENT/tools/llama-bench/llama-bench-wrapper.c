@@ -439,6 +439,8 @@ int lb_classify(const char *model_path, const char *prompt,
   cp.n_batch = 1024;
   cp.n_threads = 8;
   cp.n_threads_batch = 8;
+  // Без embeddings граф пулинга не строится и llama_get_embeddings_seq() = NULL.
+  cp.embeddings = true;
   struct llama_context *ctx = llama_init_from_model(model, cp);
   if (!ctx) { llama_model_free(model); llama_backend_free(); return -1; }
 
@@ -462,11 +464,13 @@ int lb_classify(const char *model_path, const char *prompt,
   metrics[0] = (t1 - t0) * 1000.0;
   metrics[1] = metrics[0];
 
-  const float *logits = llama_get_logits_ith(ctx, ntok - 1);
-  if (!logits) {
+  // POOLING_TYPE_RANK: llama_get_embeddings_seq() возвращает float[n_cls_out],
+  // а llama_get_logits_ith() для классификатора не содержит ранг.
+  const float *rank = llama_get_embeddings_seq(ctx, 0);
+  if (!rank) {
     free(ptok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
   }
-  *score = (double)logits[0];
+  *score = (double)rank[0];
 
   free(ptok);
   llama_free(ctx);
@@ -498,6 +502,7 @@ int lb_embed(const char *model_path, const char *prompt,
   cp.n_batch = 1024;
   cp.n_threads = 8;
   cp.n_threads_batch = 8;
+  cp.embeddings = true;
   struct llama_context *ctx = llama_init_from_model(model, cp);
   if (!ctx) { llama_model_free(model); llama_backend_free(); return -1; }
 
@@ -558,6 +563,7 @@ struct lb_state * lb_state_init(const char *model_path) {
   cp.n_batch = 1024;
   cp.n_threads = 8;
   cp.n_threads_batch = 8;
+  cp.embeddings = true;  // без этого граф пулинга не строится
   struct llama_context *ctx = llama_init_from_model(model, cp);
   if (!ctx) { llama_model_free(model); llama_backend_free(); return NULL; }
   llama_token *ptok = (llama_token *)malloc(sizeof(llama_token) * 1024);
@@ -586,18 +592,13 @@ static int lb_state_encode(struct lb_state *st, const char *prompt, double *metr
   return rc == 0 ? ntok : -1;
 }
 
-// Диагностика: первые 8 логитов с каждого из первых/последнего токена.
-int lb_logits_dump(struct lb_state *st, const char *prompt, double *out) {
+// Диагностика: первые 8 значений ранга (POOLING_TYPE_RANK).
+int lb_rank_dump(struct lb_state *st, const char *prompt, double *out) {
   if (!st || !out) return -1;
   int ntok = lb_state_encode(st, prompt, out + 8);
   if (ntok <= 0) return -1;
-  for (int k = 0; k < 8; k++) out[k] = 0.0;
-  const float *first = llama_get_logits_ith(st->ctx, 0);
-  const float *last = llama_get_logits_ith(st->ctx, ntok - 1);
-  for (int k = 0; k < 4; k++) {
-    out[k] = first ? first[k] : -999.0;
-    out[k + 4] = last ? last[k] : -999.0;
-  }
+  const float *rank = llama_get_embeddings_seq(st->ctx, 0);
+  for (int k = 0; k < 8; k++) out[k] = rank ? rank[k] : -999.0;
   return ntok;
 }
 
@@ -606,9 +607,9 @@ int lb_cls_score(struct lb_state *st, const char *prompt, double *score, double 
   if (!st || !score) return -1;
   int ntok = lb_state_encode(st, prompt, metrics);
   if (ntok <= 0) return -1;
-  const float *logits = llama_get_logits_ith(st->ctx, ntok - 1);
-  if (!logits) return -1;
-  *score = (double)logits[0];
+  const float *rank = llama_get_embeddings_seq(st->ctx, 0);
+  if (!rank) return -1;
+  *score = (double)rank[0];
   return 0;
 }
 
@@ -643,4 +644,4 @@ int lb_quantize(const char *src, const char *dst, int ftype) {
   return llama_model_quantize(src, dst, &p) == 0 ? 0 : -1;
 }
 
-const char *lb_version(void) { return "llama-bench-musl-14"; }
+const char *lb_version(void) { return "llama-bench-musl-15"; }
