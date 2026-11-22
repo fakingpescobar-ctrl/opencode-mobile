@@ -1,0 +1,36 @@
+{
+  "protocol": "rerank-bench.json",
+  "index_sha": "96a5fe57b07e9269",
+  "train": {
+    "n": 31,
+    "core_top1": 0.4838709677419355,
+    "chosen": {
+      "mode": "conf",
+      "fusion": "rrf",
+      "w": 0.5,
+      "p": 0.2,
+      "useMinConf": false,
+      "minConf": 0.4272,
+      "cut": 0.158,
+      "top1": 0.5161290322580645,
+      "top3": 0.8387096774193549,
+      "calls": 6
+    },
+    "q30": 0.005667636210301048,
+    "qc30": 0.168,
+    "conf25": 0.4272
+  },
+  "heldout": {
+    "n": 9,
+    "core_top1": 0.6666666666666666,
+    "hybrid_top1": 0.6666666666666666,
+    "core_top3": 0.8888888888888888,
+    "hybrid_top3": 0.8888888888888888,
+    "calls": 2
+  },
+  "online": {
+    "delta_cap": 0.1,
+    "cooldown_unique_queries": 20,
+    "max_drop": 0.02
+  }
+}
