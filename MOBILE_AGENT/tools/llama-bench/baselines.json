@@ -120,6 +120,30 @@
       "heldout_recall5": 1,
       "heldout_mrr": 0.7444444444444445,
       "at": 1795366120358
+    },
+    "52c5472f8550628e|61925934feae090013bbd5b67457cfa51c4d71e8e77f2811c25b0078886631e1": {
+      "index_sha": "52c5472f8550628e",
+      "gold_sha": "61925934feae090013bbd5b67457cfa51c4d71e8e77f2811c25b0078886631e1",
+      "gold_n": 40,
+      "heldout_n": 9,
+      "recall5": 0.8,
+      "mrr": 0.5475,
+      "ndcg": 0.6113018349153051,
+      "heldout_recall5": 0.7777777777777778,
+      "heldout_mrr": 0.5555555555555556,
+      "at": 1795369186455
+    },
+    "f993a67a6dc417ce|61925934feae090013bbd5b67457cfa51c4d71e8e77f2811c25b0078886631e1": {
+      "index_sha": "f993a67a6dc417ce",
+      "gold_sha": "61925934feae090013bbd5b67457cfa51c4d71e8e77f2811c25b0078886631e1",
+      "gold_n": 40,
+      "heldout_n": 9,
+      "recall5": 0.95,
+      "mrr": 0.6733333333333333,
+      "ndcg": 0.7432928866140279,
+      "heldout_recall5": 1,
+      "heldout_mrr": 0.7444444444444445,
+      "at": 1795369593925
     }
   }
 }
