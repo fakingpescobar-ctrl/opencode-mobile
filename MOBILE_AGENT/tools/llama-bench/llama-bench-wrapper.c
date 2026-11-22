@@ -28,6 +28,13 @@ static void quiet_log(enum ggml_log_level level, const char *text, void *user_da
   (void)level; (void)text; (void)user_data;
 }
 
+// LLAMA_VERBOSE=1 в окружении включает штатный логгер llama.cpp — нужно, чтобы
+// видеть причину отказа загрузки сконвертированных GGUF без пересборки обёртки.
+static void set_logging(void) {
+  if (getenv("LLAMA_VERBOSE")) llama_log_set(NULL, NULL);
+  else set_logging();
+}
+
 // Возвращает out[7]:
 // [0]=decode tok/s, [1]=prefill ms, [2]=TTFT ms (от начала промпта),
 // [3]=всего ms, [4]=сгенерировано токенов, [5]=токенов в промпте,
@@ -35,7 +42,7 @@ static void quiet_log(enum ggml_log_level level, const char *text, void *user_da
 int lb_bench(const char *model_path, int n_ctx, int n_predict, double *out) {
   if (!model_path || !out || n_ctx < 64 || n_predict < 1) return -1;
 
-  llama_log_set(quiet_log, NULL);
+  set_logging();
   llama_backend_init();
   struct llama_model_params mp = llama_model_default_params();
   mp.n_gpu_layers = 0;  // только CPU: сравниваем честно, без GPU-поблачек
@@ -111,7 +118,7 @@ int lb_gen(const char *model_path, const char *prompt, int n_ctx, int n_predict,
   if (!model_path || !prompt || !out_text || out_len < 16 || !metrics ||
       n_ctx < 64 || n_predict < 1) return -1;
 
-  llama_log_set(quiet_log, NULL);
+  set_logging();
   llama_backend_init();
   struct llama_model_params mp = llama_model_default_params();
   mp.n_gpu_layers = 0;
@@ -186,7 +193,7 @@ int lb_gen_g(const char *model_path, const char *prompt, const char *grammar,
   if (!model_path || !prompt || !grammar || !out_text || out_len < 16 || !metrics ||
       n_ctx < 64 || n_predict < 1) return -1;
 
-  llama_log_set(quiet_log, NULL);
+  set_logging();
   llama_backend_init();
   struct llama_model_params mp = llama_model_default_params();
   mp.n_gpu_layers = 0;
@@ -264,7 +271,7 @@ int lb_gen_g(const char *model_path, const char *prompt, const char *grammar,
 // " no", " No". serving-код decision-модели использует именно такие алиасы.
 int lb_code_ids(const char *model_path, const char *code, int *ids, int max_ids) {
   if (!model_path || !code || !ids || max_ids < 1 || strlen(code) > 60) return -1;
-  llama_log_set(quiet_log, NULL);
+  set_logging();
   llama_backend_init();
   struct llama_model_params mp = llama_model_default_params();
   mp.n_gpu_layers = 0;
@@ -309,7 +316,7 @@ int lb_score(const char *model_path, const char *prompt,
   const size_t total = (size_t)n_slots * (size_t)n_options * (size_t)aliases;
   if (total > 1000000) return -1;
 
-  llama_log_set(quiet_log, NULL);
+  set_logging();
   llama_backend_init();
   struct llama_model_params mp = llama_model_default_params();
   mp.n_gpu_layers = 0;  // Android без root: только CPU, как и в lb_bench
@@ -417,7 +424,7 @@ int lb_classify(const char *model_path, const char *prompt,
                 double *score, double *metrics) {
   if (!model_path || !prompt || !score || !metrics) return -1;
 
-  llama_log_set(quiet_log, NULL);
+  set_logging();
   llama_backend_init();
   struct llama_model_params mp = llama_model_default_params();
   mp.n_gpu_layers = 0;
@@ -472,7 +479,7 @@ int lb_embed(const char *model_path, const char *prompt,
              float *out, int out_cap, double *metrics) {
   if (!model_path || !prompt || !out || !metrics || out_cap < 1) return -1;
 
-  llama_log_set(quiet_log, NULL);
+  set_logging();
   llama_backend_init();
   struct llama_model_params mp = llama_model_default_params();
   mp.n_gpu_layers = 0;
@@ -528,11 +535,11 @@ int lb_embed(const char *model_path, const char *prompt,
 // ftype — llama_ftype: 7 = Q8_0, 15 = Q4_K_M. 0 = успех.
 int lb_quantize(const char *src, const char *dst, int ftype) {
   if (!src || !dst) return -1;
-  llama_log_set(quiet_log, NULL);
+  set_logging();
   struct llama_model_quantize_params p = llama_model_quantize_default_params();
   p.nthread = 4;
   p.ftype = (enum llama_ftype)ftype;
   return llama_model_quantize(src, dst, &p) == 0 ? 0 : -1;
 }
 
-const char *lb_version(void) { return "llama-bench-musl-10"; }
+const char *lb_version(void) { return "llama-bench-musl-11"; }
