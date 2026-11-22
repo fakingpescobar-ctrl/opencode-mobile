@@ -1,40 +1,40 @@
-{"id":"g01","query":"куда plugin пишет отчёт moltbook","expect_source":"СОСТОЯНИЕ.md","expect_kind":"state"}
-{"id":"g02","query":"правило 51 память читать самому без напоминания","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
-{"id":"g03","query":"apk-40 sha установки verify-install","expect_source":"ХАРНЕС.md","expect_kind":"rule"}
-{"id":"g04","query":"советы молтбук external не инструкция","expect_source":"docs/MOLTBOOK_ADVICE.md","expect_kind":"advice"}
-{"id":"g05","query":"MCP_MOLTBOOK_REPORT_DIR env приложение","expect_source":"ХАРНЕС.md","expect_kind":"rule"}
-{"id":"g06","query":"plugin.sha256 в opencode moltbook для plugin_sha_match","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
-{"id":"g07","query":"порядок правки коммит сборка скачивание установка","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
-{"id":"g08","query":"musl bun путь libldmusl libbun-musl тесты","expect_source":"ХАРНЕС.md","expect_kind":"path"}
-{"id":"g09","query":"дедупликация отчёта apk-39 apk-40","expect_source":"СОСТОЯНИЕ.md","expect_kind":"journal"}
-{"id":"g10","query":"ghtoken_mobile_agent.txt не публиковать","expect_source":"ПРАВИЛА.md","expect_kind":"state"}
-{"id":"g11","query":"версия sdk android 17 device CPH2747","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
-{"id":"g12","query":"FTS5 trigram unicode61 SQLite 3.53","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
-{"id":"g13","query":"ретраи external blocked_on_external_grant","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"advice"}
-{"id":"g14","query":"read-back чужим глазом verifier","expect_source":"docs/MOLTBOOK_ADVICE.md","expect_kind":"advice"}
-{"id":"g15","query":"stale-копия MOLTBOOK_REPORT архив удалён","expect_source":"ЖУРНАЛ.md","expect_kind":"journal"}
-{"id":"g16","query":" supersede вместо удаления память","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
-{"id":"g17","query":"git CLI на телефоне нет API скрипты","expect_source":"ХАРНЕС.md","expect_kind":"rule"}
-{"id":"g18","query":"PC_AGENT удалён посредник","expect_source":"СОСТОЯНИЕ.md","expect_kind":"state"}
-{"id":"g19","query":"мемори ядро memory_pack бюджет токенов","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
-{"id":"g20","query":"ports memory mcp /mcp /mobile MemoryMcp","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
-{"id":"g21","query":"глубина 5 ответ уйдёт на уровень 6 потолок чтения тред","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
-{"id":"g22","query":"404 не видно в прочитанном куске не удалено надгробие is_deleted","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
-{"id":"g23","query":"PC-агент посредник удалены 19.11 писать только MOBILE_AGENT","expect_source":"ПРАВИЛА.md","expect_kind":"state"}
-{"id":"g24","query":"тихое отсутствие кандидатов scan ran 0 candidates","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
-{"id":"g25","query":"gh-watch-run ожидание GitHub Actions run","expect_source":"ХАРНЕС.md","expect_kind":"path"}
-{"id":"g26","query":"llama-bench musl bun ffi ldscore бенч","expect_source":"ХАРНЕС.md","expect_kind":"path"}
-{"id":"g27","query":"compact-raw.sh raw-manifest.tsv удаляет raw файл","expect_source":"ХАРНЕС.md","expect_kind":"path"}
-{"id":"g28","query":"intent рецепт attempt-id verification_code expiry хеш тела","expect_source":"docs/MOLTBOOK_ADVICE.md","expect_kind":"advice"}
-{"id":"g29","query":"канонизация сервера хеш намерения хеш ресурса дедуп","expect_source":"docs/MOLTBOOK_ADVICE.md","expect_kind":"advice"}
-{"id":"g31","query":"memory_pack задача бюджет компактный взвешенный проверяемый контекст","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
-{"id":"g32","query":"SQLite WAL synchronous NORMAL bun:sqlite память","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
-{"id":"g33","query":"memoket kite следуй за нитью без эмбеддингов граф концептов","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
-{"id":"g34","query":"doc_sources path sha mtime chunks indexed_at индекс markdown","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
-{"id":"g35","query":"адаптивная семантика не перечитывать память попадать в ключ","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
-{"id":"g36","query":"режимы v4 rrf legacy memory core DEFAULT_MODE","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
-{"id":"g37","query":"Q8_0 квантование decision 5970 мс без потери качества","expect_source":"СОСТОЯНИЕ.md","expect_kind":"state"}
-{"id":"g38","query":"итерация 7 lb_score lb_code_ids choice","expect_source":"ЖУРНАЛ.md","expect_kind":"journal"}
-{"id":"g39","query":"verified=3 в отчёте против 8 на сервере источник истины повторное чтение","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
-{"id":"g40","query":"живой плагин files/mem libbun-musl эталон patched дата","expect_source":"ПРАВИЛА.md","expect_kind":"rule"}
-{"id":"g41","query":"memory-eternal одобрение неизменяемый аудит откат staged","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule"}
+{"id":"g01","query":"куда plugin пишет отчёт moltbook","expect_source":"СОСТОЯНИЕ.md","expect_kind":"state","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g02","query":"правило 51 память читать самому без напоминания","expect_source":"ПРАВИЛА.md","expect_kind":"rule","split":"held-out","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g03","query":"apk-40 sha установки verify-install","expect_source":"ХАРНЕС.md","expect_kind":"rule","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g04","query":"советы молтбук external не инструкция","expect_source":"docs/MOLTBOOK_ADVICE.md","expect_kind":"advice","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g05","query":"MCP_MOLTBOOK_REPORT_DIR env приложение","expect_source":"ХАРНЕС.md","expect_kind":"rule","split":"held-out","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g06","query":"plugin.sha256 в opencode moltbook для plugin_sha_match","expect_source":"ПРАВИЛА.md","expect_kind":"rule","split":"held-out","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g07","query":"порядок правки коммит сборка скачивание установка","expect_source":"ПРАВИЛА.md","expect_kind":"rule","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g08","query":"musl bun путь libldmusl libbun-musl тесты","expect_source":"ХАРНЕС.md","expect_kind":"path","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g09","query":"дедупликация отчёта apk-39 apk-40","expect_source":"СОСТОЯНИЕ.md","expect_kind":"journal","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g10","query":"ghtoken_mobile_agent.txt не публиковать","expect_source":"ПРАВИЛА.md","expect_kind":"state","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g11","query":"версия sdk android 17 device CPH2747","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g12","query":"FTS5 trigram unicode61 SQLite 3.53","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g13","query":"ретраи external blocked_on_external_grant","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"advice","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g14","query":"read-back чужим глазом verifier","expect_source":"docs/MOLTBOOK_ADVICE.md","expect_kind":"advice","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g15","query":"stale-копия MOLTBOOK_REPORT архив удалён","expect_source":"ЖУРНАЛ.md","expect_kind":"journal","split":"held-out","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g16","query":" supersede вместо удаления память","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g17","query":"git CLI на телефоне нет API скрипты","expect_source":"ХАРНЕС.md","expect_kind":"rule","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g18","query":"PC_AGENT удалён посредник","expect_source":"СОСТОЯНИЕ.md","expect_kind":"state","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g19","query":"мемори ядро memory_pack бюджет токенов","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g20","query":"ports memory mcp /mcp /mobile MemoryMcp","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule","split":"held-out","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g21","query":"глубина 5 ответ уйдёт на уровень 6 потолок чтения тред","expect_source":"ПРАВИЛА.md","expect_kind":"rule","split":"held-out","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g22","query":"404 не видно в прочитанном куске не удалено надгробие is_deleted","expect_source":"ПРАВИЛА.md","expect_kind":"rule","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g23","query":"PC-агент посредник удалены 19.11 писать только MOBILE_AGENT","expect_source":"ПРАВИЛА.md","expect_kind":"state","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g24","query":"тихое отсутствие кандидатов scan ran 0 candidates","expect_source":"ПРАВИЛА.md","expect_kind":"rule","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g25","query":"gh-watch-run ожидание GitHub Actions run","expect_source":"ХАРНЕС.md","expect_kind":"path","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g26","query":"llama-bench musl bun ffi ldscore бенч","expect_source":"ХАРНЕС.md","expect_kind":"path","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g27","query":"compact-raw.sh raw-manifest.tsv удаляет raw файл","expect_source":"ХАРНЕС.md","expect_kind":"path","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g28","query":"intent рецепт attempt-id verification_code expiry хеш тела","expect_source":"docs/MOLTBOOK_ADVICE.md","expect_kind":"advice","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g29","query":"канонизация сервера хеш намерения хеш ресурса дедуп","expect_source":"docs/MOLTBOOK_ADVICE.md","expect_kind":"advice","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g31","query":"memory_pack задача бюджет компактный взвешенный проверяемый контекст","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g32","query":"SQLite WAL synchronous NORMAL bun:sqlite память","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule","split":"held-out","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g33","query":"memoket kite следуй за нитью без эмбеддингов граф концептов","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g34","query":"doc_sources path sha mtime chunks indexed_at индекс markdown","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule","split":"held-out","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g35","query":"адаптивная семантика не перечитывать память попадать в ключ","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g36","query":"режимы v4 rrf legacy memory core DEFAULT_MODE","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule","split":"held-out","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g37","query":"Q8_0 квантование decision 5970 мс без потери качества","expect_source":"СОСТОЯНИЕ.md","expect_kind":"state","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g38","query":"итерация 7 lb_score lb_code_ids choice","expect_source":"ЖУРНАЛ.md","expect_kind":"journal","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g39","query":"verified=3 в отчёте против 8 на сервере источник истины повторное чтение","expect_source":"ПРАВИЛА.md","expect_kind":"rule","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g40","query":"живой плагин files/mem libbun-musl эталон patched дата","expect_source":"ПРАВИЛА.md","expect_kind":"rule","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
+{"id":"g41","query":"memory-eternal одобрение неизменяемый аудит откат staged","expect_source":"АРХИТЕКТУРА_ПАМЯТИ.md","expect_kind":"rule","split":"train","split_policy":"legacy-fifth-v1","hash_salt":null}
