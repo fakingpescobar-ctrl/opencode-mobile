@@ -1,7 +1,7 @@
 // Обёртка вокруг llama.cpp (API b12554+) для замера реальной latency на железе.
 // Собирается в CI как libllama-bench.so (musl aarch64), грузится через bun:ffi + libldmusl.
 // Экспортирует функции: lb_bench, lb_gen, lb_gen_g, lb_code_ids, lb_score,
-// lb_quantize, lb_version.
+// lb_classify, lb_embed, lb_quantize, lb_version.
 //
 // Методология (версия 3):
 //  - промпт без чат-спецтокенов, один и тот же набор байт для всех моделей;
@@ -411,6 +411,119 @@ int lb_score(const char *model_path, const char *prompt,
   return 0;
 }
 
+// Rerank (ModernBertForSequenceClassification): сырой score классификатора для
+// одной пары query+document. metrics[3] = [prefill мс, всего мс, токенов, n_cls_out].
+int lb_classify(const char *model_path, const char *prompt,
+                double *score, double *metrics) {
+  if (!model_path || !prompt || !score || !metrics) return -1;
+
+  llama_log_set(quiet_log, NULL);
+  llama_backend_init();
+  struct llama_model_params mp = llama_model_default_params();
+  mp.n_gpu_layers = 0;
+  struct llama_model *model = llama_model_load_from_file(model_path, mp);
+  if (!model) { llama_backend_free(); return -1; }
+  const struct llama_vocab *vocab = llama_model_get_vocab(model);
+
+  struct llama_context_params cp = llama_context_default_params();
+  cp.n_ctx = 8192;
+  cp.n_batch = 8192;
+  cp.n_threads = 8;
+  cp.n_threads_batch = 8;
+  struct llama_context *ctx = llama_init_from_model(model, cp);
+  if (!ctx) { llama_model_free(model); llama_backend_free(); return -1; }
+
+  llama_token *ptok = (llama_token *)malloc(sizeof(llama_token) * 8192);
+  if (!ptok) { llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1; }
+  // BERT-токенизатор сам добавляет [CLS]/[SEP] при special=1.
+  int ntok = llama_tokenize(vocab, prompt, (int)strlen(prompt), ptok, 8192, true, true);
+  if (ntok <= 0) {
+    free(ptok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
+  }
+  metrics[2] = (double)ntok;
+  metrics[3] = (double)llama_model_n_cls_out(model);
+
+  struct llama_batch batch = llama_batch_get_one(ptok, ntok);
+  double t0 = now_s();
+  int rc = llama_decode(ctx, batch);
+  double t1 = now_s();
+  if (rc != 0) {
+    free(ptok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
+  }
+  metrics[0] = (t1 - t0) * 1000.0;
+  metrics[1] = metrics[0];
+
+  const float *logits = llama_get_logits_ith(ctx, ntok - 1);
+  if (!logits) {
+    free(ptok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
+  }
+  *score = (double)logits[0];
+
+  free(ptok);
+  llama_free(ctx);
+  llama_model_free(model);
+  llama_backend_free();
+  return 0;
+}
+
+// Embeddings (ModernBertModel + MEAN/CLS pooling): pooled вектор [n_embd].
+// Возвращает n_embd или -1. metrics[3] = [всего мс, токенов, pooling, n_embd].
+int lb_embed(const char *model_path, const char *prompt,
+             float *out, int out_cap, double *metrics) {
+  if (!model_path || !prompt || !out || !metrics || out_cap < 1) return -1;
+
+  llama_log_set(quiet_log, NULL);
+  llama_backend_init();
+  struct llama_model_params mp = llama_model_default_params();
+  mp.n_gpu_layers = 0;
+  struct llama_model *model = llama_model_load_from_file(model_path, mp);
+  if (!model) { llama_backend_free(); return -1; }
+  const struct llama_vocab *vocab = llama_model_get_vocab(model);
+  const int n_embd = (int)llama_model_n_embd(model);
+  if (n_embd < 1 || n_embd > out_cap) {
+    llama_model_free(model); llama_backend_free(); return -1;
+  }
+
+  struct llama_context_params cp = llama_context_default_params();
+  cp.n_ctx = 8192;
+  cp.n_batch = 8192;
+  cp.n_threads = 8;
+  cp.n_threads_batch = 8;
+  struct llama_context *ctx = llama_init_from_model(model, cp);
+  if (!ctx) { llama_model_free(model); llama_backend_free(); return -1; }
+
+  llama_token *ptok = (llama_token *)malloc(sizeof(llama_token) * 8192);
+  if (!ptok) { llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1; }
+  int ntok = llama_tokenize(vocab, prompt, (int)strlen(prompt), ptok, 8192, true, true);
+  if (ntok <= 0) {
+    free(ptok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
+  }
+  metrics[1] = (double)ntok;
+  metrics[2] = (double)llama_pooling_type(ctx);
+  metrics[3] = (double)n_embd;
+
+  struct llama_batch batch = llama_batch_get_one(ptok, ntok);
+  double t0 = now_s();
+  int rc = llama_decode(ctx, batch);
+  double t1 = now_s();
+  if (rc != 0) {
+    free(ptok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
+  }
+  metrics[0] = (t1 - t0) * 1000.0;
+
+  const float *embd = llama_get_embeddings_seq(ctx, 0);
+  if (!embd) {
+    free(ptok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
+  }
+  memcpy(out, embd, (size_t)n_embd * sizeof(float));
+
+  free(ptok);
+  llama_free(ctx);
+  llama_model_free(model);
+  llama_backend_free();
+  return n_embd;
+}
+
 // Квантовать GGUF в другой файл тем же llama.cpp, без внешних бинарников.
 // ftype — llama_ftype: 7 = Q8_0, 15 = Q4_K_M. 0 = успех.
 int lb_quantize(const char *src, const char *dst, int ftype) {
@@ -422,4 +535,4 @@ int lb_quantize(const char *src, const char *dst, int ftype) {
   return llama_model_quantize(src, dst, &p) == 0 ? 0 : -1;
 }
 
-const char *lb_version(void) { return "llama-bench-musl-9"; }
+const char *lb_version(void) { return "llama-bench-musl-10"; }
