@@ -35,6 +35,8 @@ jobs:
       - name: Download safetensors + tokenizers
         run: |
           python - <<'PY'
+          import json
+          from pathlib import Path
           from huggingface_hub import snapshot_download
           for repo in ["hindsight-ai/hs-rerank-1", "hindsight-ai/hs-embed-1"]:
               p = snapshot_download(
@@ -43,6 +45,13 @@ jobs:
                   ignore_patterns=["*.onnx", "assets/*", ".gitattributes"],
               )
               print(repo, "->", p)
+              # llama.cpp b12554 does not know gelu_pytorch_tanh. ModernBert graph
+              # already uses GELU_ERF internally, so drop the override and log it.
+              cfg = Path(p) / "config.json"
+              data = json.loads(cfg.read_text())
+              if "classifier_activation" in data:
+                  print("drop classifier_activation:", data.pop("classifier_activation"))
+                  cfg.write_text(json.dumps(data, indent=2))
           PY
 
       - name: Convert to GGUF (f16)
