@@ -80,7 +80,9 @@ for (const g of gold) {
     const text = String(hits[i].text || "").replace(/\s+/g, " ").slice(0, 600);
     // Sentence-Transformers CrossEncoder: query + sep_token + document.
     // В GGUF sep_token_id = eos (<eos>), add_special добавляет <bos>/<eos>.
-    const prompt = String(g.query) + " <eos> " + text;
+    // Пробелы вокруг <eos> дают два лишних space-токена — delimiter должен
+    // идти вплотную: "a<eos>b" = 5 токенов, "a <eos> b" = 6.
+    const prompt = String(g.query).trimEnd() + "<eos>" + text.trimStart();
     const score = new Float64Array(1);
     const metrics = new Float64Array(4);
     const rc = lib.symbols.lb_cls_score(st, prompt, score, metrics);
