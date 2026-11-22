@@ -44,8 +44,8 @@ const lib = dlopen(SO, {
 });
 const runtime = lib.symbols.lb_version();
 const rtNum = Number(String(runtime).split("musl-")[1] || 0);
-if (!(rtNum >= 10)) {
-  console.error(`нужна обёртка musl-10+ с lb_embed, сейчас ${runtime}`);
+if (!(rtNum >= 12)) {
+  console.error(`нужна обёртка musl-12+ с lb_embed и ctx=1024, сейчас ${runtime}`);
   process.exit(2);
 }
 
