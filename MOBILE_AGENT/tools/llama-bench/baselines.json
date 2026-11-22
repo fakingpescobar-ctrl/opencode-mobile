@@ -84,6 +84,18 @@
       "heldout_recall5": 1,
       "heldout_mrr": 0.8,
       "at": 1795360385141
+    },
+    "ddc420457378ab0b|61925934feae090013bbd5b67457cfa51c4d71e8e77f2811c25b0078886631e1": {
+      "index_sha": "ddc420457378ab0b",
+      "gold_sha": "61925934feae090013bbd5b67457cfa51c4d71e8e77f2811c25b0078886631e1",
+      "gold_n": 40,
+      "heldout_n": 9,
+      "recall5": 0.95,
+      "mrr": 0.7033333333333334,
+      "ndcg": 0.7648712314377457,
+      "heldout_recall5": 1,
+      "heldout_mrr": 0.8,
+      "at": 1795362134533
     }
   }
 }
