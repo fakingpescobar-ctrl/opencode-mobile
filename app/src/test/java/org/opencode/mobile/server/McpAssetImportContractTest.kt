@@ -88,6 +88,7 @@ class McpAssetImportContractTest {
                 "./memory-core.js",
                 "./memory-index.mjs",
                 "./memory-adaptive.js",
+                "./memory-adaptive-store.js",
                 "./memory-llm.js",
                 "./memory-map.js",
             )
@@ -105,6 +106,16 @@ class McpAssetImportContractTest {
         assertTrue(
             "memory.js не импортирует ./memory-map.js — карта памяти не подключена",
             File(mcpDir, "memory.js").readText().contains("./memory-map.js"),
+        )
+        // Data-plane саморастущего корпуса: если ассет не скопирован,
+        // memory_signal упадёт на импорте и MCP не поднимется вовсе.
+        assertTrue(
+            "memory-adaptive-store.js должен лежать в assets/mcp",
+            File(mcpDir, "memory-adaptive-store.js").isFile,
+        )
+        assertTrue(
+            "memory.js не импортирует ./memory-adaptive-store.js — буфер сигналов не подключён",
+            File(mcpDir, "memory.js").readText().contains("./memory-adaptive-store.js"),
         )
     }
 
