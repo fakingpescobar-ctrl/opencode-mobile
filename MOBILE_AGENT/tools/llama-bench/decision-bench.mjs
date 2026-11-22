@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 // Замер decision-модели hs-decide-1-flash именно в роли ядра памяти.
 // Ядро детерминированно даёт 5 кандидатов; модель получает те же 5 как вариант
-// choice и читает вероятности в позиции двоеточия строки "Q1:" одним forward pass.
+// choice и читает probability choice-токенов через lb_score в позиции ":"
+// строки "Q1:" одним forward pass (не генерацией буквы).
 // Сравнение честное: baseline и модель меряются на одном и том же gold и том же
 // наборе кандидатов. Результат — research, дефолтное поведение ядра не меняется.
 import { dlopen, FFIType } from "bun:ffi";
@@ -83,10 +84,14 @@ idx.indexDocs(DB, ROOT);
 const index = core.indexSha(DB);
 const gold = readFileSync(ROOT + "/memory/gold.jsonl", "utf8")
   .split("\n").filter(Boolean).map((l) => JSON.parse(l));
+// Сплит из gold, никогда не пересчитывается; как в rerank/embed — чтобы
+// research-цифры можно было сравнивать только внутри одной пары хэшей.
+const heldout = new Set(core.heldoutSubset(gold).map((g) => g.id));
 const goldShaValue = goldSha(gold);
 
 const rows = [];
 let modelTop1 = 0, modelTop3 = 0, coreTop1 = 0, coreTop3 = 0;
+let hN = 0, hModelTop1 = 0, hModelTop3 = 0, hCoreTop1 = 0, hCoreTop3 = 0;
 let parseOk = 0, totalMs = 0;
 
 for (const g of gold) {
@@ -122,15 +127,22 @@ for (const g of gold) {
   const hit3 = order.slice(0, 3).some((x) => coreOrder[x.i] === true);
   if (hit1) modelTop1++;
   if (hit3) modelTop3++;
+  if (heldout.has(g.id)) {
+    hN++;
+    if (hit1) hModelTop1++;
+    if (hit3) hModelTop3++;
+    if (coreOrder[0]) hCoreTop1++;
+    if (coreOrder.slice(0, 3).some(Boolean)) hCoreTop3++;
+  }
   rows.push({
-    id: g.id, query: g.query, expect: g.expect_source,
+    id: g.id, heldout: heldout.has(g.id), query: g.query, expect: g.expect_source,
     core_top: hits.map((x) => x.source),
     choice_order: order.map((x) => ({ letter: LETTERS[x.i], p: Math.round(x.p * 1000) / 1000 })),
     model_top1: hit1, model_top3: hit3,
     core_top1: coreOrder[0] === true, core_top3: coreOrder.slice(0, 3).some(Boolean),
     ms: Math.round(metrics[1]), prompt_tokens: metrics[2],
   });
-  console.log(`${g.id}: модель ${LETTERS[top]} ${hit1 ? "OK" : "MISS"} | ядро ${coreOrder[0] ? "OK" : "MISS"} | ${Math.round(metrics[1])} мс`);
+  console.log(`${g.id}${heldout.has(g.id) ? " [held-out]" : ""}: модель ${LETTERS[top]} ${hit1 ? "OK" : "MISS"} | ядро ${coreOrder[0] ? "OK" : "MISS"} | ${Math.round(metrics[1])} мс`);
 }
 
 const n = rows.length || 1;
@@ -148,6 +160,13 @@ const out = {
   model_top3: modelTop3 / n,
   core_top1: coreTop1 / n,
   core_top3: coreTop3 / n,
+  heldout: {
+    n: hN,
+    model_top1: hN ? hModelTop1 / hN : 0,
+    model_top3: hN ? hModelTop3 / hN : 0,
+    core_top1: hN ? hCoreTop1 / hN : 0,
+    core_top3: hN ? hCoreTop3 / hN : 0,
+  },
   avg_ms: Math.round(totalMs / n),
   rows,
 };
@@ -155,3 +174,5 @@ writeFileSync(ROOT + "/tools/llama-bench/" + OUT, JSON.stringify(out, null, 2) +
 console.log(`\nИТОГ: модель top1 ${(modelTop1 / n).toFixed(3)}, top3 ${(modelTop3 / n).toFixed(3)}; ` +
   `ядро top1 ${(coreTop1 / n).toFixed(3)}, top3 ${(coreTop3 / n).toFixed(3)}; ` +
   `${Math.round(totalMs / n)} мс/запрос`);
+if (hN) console.log(`held-out (${hN}): модель top1 ${(hModelTop1 / hN).toFixed(3)} / ` +
+  `ядро ${(hCoreTop1 / hN).toFixed(3)}; top3 ${(hModelTop3 / hN).toFixed(3)} / ${(hCoreTop3 / hN).toFixed(3)}`);
