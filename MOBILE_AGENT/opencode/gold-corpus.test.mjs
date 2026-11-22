@@ -73,6 +73,10 @@ try {
   truthy(gc.goldSha(x) !== gc.goldSha(x.concat([{ id: "g03", query: "c" }])),
     "gold_sha меняется при добавлении строки");
   eq(gc.goldSha(x).length, 64, "gold_sha — sha256");
+  const nested = [{ z: 1, a: { y: 2, b: [3, { d: 4, c: 5 }] }, id: "g01" }];
+  eq(store.goldSha(nested), gc.goldSha(nested),
+    "рантайм goldSha совпадает с офлайн-модулем на вложенном JSON");
+  eq(store.goldSha([]), gc.goldSha([]), "пустой корпус: оба хэша совпадают");
 
   // --- Чтение/запись -----------------------------------------------------
   const p = join(dir, "gold.jsonl");
