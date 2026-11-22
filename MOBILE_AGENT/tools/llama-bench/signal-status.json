@@ -1,16 +1,15 @@
 {
-  "total": 12,
+  "total": 2,
   "by_status": {
-    "raw": 12
+    "raw": 2
   },
   "by_origin": {
-    "control": 3,
-    "miss": 9
+    "miss": 2
   },
-  "raw_unique": 12,
+  "raw_unique": 2,
   "threshold": 10,
-  "eligible": true,
-  "staged": 12,
+  "eligible": false,
+  "staged": 0,
   "limits": {
     "maxCandidates": 200,
     "maxControl": 40,
@@ -18,7 +17,5 @@
     "curateThreshold": 10,
     "batchTarget": 15
   },
-  "at": 1795348519489,
-  "smoke": true,
-  "note": "Пробный прогон на 12 синтетических сигналах из tmp/signal-status-smoke"
+  "at": 1795365267421
 }
