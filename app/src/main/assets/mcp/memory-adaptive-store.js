@@ -250,3 +250,164 @@ export function policySnapshot(dir) {
     updatedAt: state.updatedAt,
   };
 }
+
+// --- raw_signals: кандидаты в золотой корпус -------------------------------
+// Отдельный запечатанный файл рядом с memory-adaptive.json. Так hash основного
+// состояния не ломается, VERSION=1 не меняется, старые состояния остаются
+// совместимыми. Всё остаётся в app-private filesDir; на GitHub уходит только
+// отобранный куратором gold с ID источников.
+
+export const GOLD_SPLIT_SALT = "gold-v1";
+export const SPLIT_POLICY = "sha256-bucket-75-v1";
+export const SIGNAL_LIMITS = Object.freeze({
+  maxCandidates: 200,
+  ttlMs: 7 * 24 * 60 * 60 * 1000,
+  curateThreshold: 10,
+  batchTarget: 15,
+});
+
+const SIGNAL_FILE = "memory-signal-candidates.json";
+const SIGNAL_VERSION = 1;
+
+// Нормализация обязана совпадать с tools/gold-corpus.mjs.normalizeQuery.
+export function normalizeQuery(query) {
+  return String(query == null ? "" : query).trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+// Сплит нового ID без обращения к остальной базе. Старые 40 кейсов сюда не
+// попадают: их сплит закреплён в gold и backfill'ится один раз офлайн.
+export function computeSplit(query, salt = GOLD_SPLIT_SALT) {
+  const norm = normalizeQuery(query);
+  const bucket = parseInt(sha256(String(salt) + norm).slice(0, 8), 16) % 100;
+  return {
+    norm,
+    norm_hash: sha256(norm),
+    bucket,
+    split: bucket < 75 ? "train" : "held-out",
+    split_policy: SPLIT_POLICY,
+    hash_salt: String(salt),
+  };
+}
+
+function defaultSignalState() {
+  return { version: SIGNAL_VERSION, candidates: [], updatedAt: 0, hash: "" };
+}
+
+export function signalCandidatesPath(dir) {
+  return join(String(dir || process.env.MEMORY_ADAPTIVE_DIR || process.cwd()), SIGNAL_FILE);
+}
+
+function saveSignalState(dir, state) {
+  const path = signalCandidatesPath(dir);
+  const folder = join(path, "..");
+  mkdirSync(folder, { recursive: true });
+  const sealed = seal(state);
+  const tmp = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(sealed, null, 2) + "\n");
+  renameSync(tmp, path);
+  return sealed;
+}
+
+export function loadSignalCandidates(dir) {
+  const path = signalCandidatesPath(dir);
+  if (!existsSync(path)) return { state: seal(defaultSignalState()), status: "new" };
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return { state: seal(defaultSignalState()), status: "quarantined" };
+  }
+  if (!parsed || parsed.version !== SIGNAL_VERSION || !Array.isArray(parsed.candidates) ||
+      typeof parsed.hash !== "string" || parsed.hash !== sha256(canonical(parsed))) {
+    return { state: seal(defaultSignalState()), status: "quarantined" };
+  }
+  const now = Date.now();
+  const kept = parsed.candidates.filter((c) =>
+    Number.isFinite(c.ts) && now - c.ts <= SIGNAL_LIMITS.ttlMs);
+  if (kept.length !== parsed.candidates.length) {
+    const next = saveSignalState(dir, { ...parsed, candidates: kept, updatedAt: now });
+    return { state: next, status: "pruned" };
+  }
+  return { state: parsed, status: "ok" };
+}
+
+// Сырой сигнал промаха. expected_chunk_id может быть null — не выводим его
+// гаданием, заполняет куратор. origin: miss | control.
+export function recordSignalCandidate(dir, cand) {
+  const { state } = loadSignalCandidates(dir);
+  const query = String(cand?.query == null ? "" : cand.query).trim();
+  if (!query) return { ok: false, reason: "bad-query" };
+  const split = computeSplit(query, cand?.hash_salt);
+  const hash = split.norm_hash;
+  const dup = state.candidates.find((c) => c.norm_hash === hash && c.status !== "rejected");
+  if (dup) return { ok: false, reason: "duplicate", id: dup.id };
+
+  const now = Date.now();
+  let nextNum = 1;
+  for (const c of state.candidates) {
+    const m = /^s(\d+)$/.exec(String(c.id));
+    if (m) nextNum = Math.max(nextNum, Number(m[1]) + 1);
+  }
+  const id = "s" + String(nextNum).padStart(3, "0");
+  const row = {
+    id,
+    query,
+    norm_hash: hash,
+    suggested_split: split.split,
+    split_policy: split.split_policy,
+    hash_salt: split.hash_salt,
+    bucket: split.bucket,
+    index_sha: String(cand?.index_sha || ""),
+    gold_sha: String(cand?.gold_sha || ""),
+    candidate_chunk_ids: Array.isArray(cand?.candidate_chunk_ids) ? cand.candidate_chunk_ids.slice(0, 12) : [],
+    expected_chunk_id: cand?.expected_chunk_id == null ? null : String(cand.expected_chunk_id),
+    expect_source: cand?.expect_source == null ? null : String(cand.expect_source),
+    expect_kind: cand?.expect_kind == null ? null : String(cand.expect_kind),
+    origin: cand?.origin === "control" ? "control" : "miss",
+    status: "raw",
+    note: "",
+    ts: now,
+  };
+  const candidates = state.candidates.concat([row]);
+  let dropped = 0;
+  while (candidates.length > SIGNAL_LIMITS.maxCandidates) {
+    const i = candidates.findIndex((c) => c.status === "raw");
+    candidates.splice(i < 0 ? 0 : i, 1);
+    dropped++;
+  }
+  saveSignalState(dir, { ...state, candidates, updatedAt: now });
+  return {
+    ok: true,
+    id,
+    count: candidates.length,
+    dropped,
+    eligible: candidates.filter((c) => c.status === "raw").length >= SIGNAL_LIMITS.curateThreshold,
+  };
+}
+
+export function listSignalCandidates(dir, opts = {}) {
+  const { state } = loadSignalCandidates(dir);
+  const want = opts.status == null ? null : Array.isArray(opts.status) ? opts.status : [opts.status];
+  return state.candidates
+    .filter((c) => want == null || want.includes(c.status))
+    .map((c) => ({ ...c }));
+}
+
+const SIGNAL_STATUSES = ["raw", "staging", "alias", "gold", "rejected"];
+
+export function setSignalCandidateStatus(dir, id, status, note) {
+  const { state } = loadSignalCandidates(dir);
+  if (!SIGNAL_STATUSES.includes(String(status))) return { ok: false, reason: "bad-status" };
+  const idx = state.candidates.findIndex((c) => c.id === String(id));
+  if (idx < 0) return { ok: false, reason: "not-found" };
+  const row = { ...state.candidates[idx], status: String(status), note: String(note || "") };
+  const candidates = state.candidates.slice();
+  candidates[idx] = row;
+  saveSignalState(dir, { ...state, candidates, updatedAt: Date.now() });
+  return { ok: true, row };
+}
+
+export function pruneSignalCandidates(dir) {
+  const { state } = loadSignalCandidates(dir);
+  return { ok: true, count: state.candidates.length };
+}
