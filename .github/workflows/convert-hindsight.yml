@@ -54,6 +54,13 @@ jobs:
               if "classifier_activation" in data:
                   print("drop classifier_activation:", data.pop("classifier_activation"))
                   cfg.write_text(json.dumps(data, indent=2))
+              # HF publishes the new generic TokenizersBackend class; the pinned
+              # transformers used by llama.cpp b12554 expects a concrete class.
+              tcfg = Path(p) / "tokenizer_config.json"
+              tdata = json.loads(tcfg.read_text())
+              if tdata.get("tokenizer_class") == "TokenizersBackend":
+                  tdata["tokenizer_class"] = "BertTokenizerFast"
+                  tcfg.write_text(json.dumps(tdata, indent=2))
           PY
 
       - name: Convert to GGUF (f16)
