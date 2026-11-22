@@ -6,6 +6,7 @@ import { dlopen, FFIType } from "bun:ffi";
 import { Database } from "bun:sqlite";
 import { readFileSync, writeFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { goldSha } from "../gold-corpus.mjs";
 
 // Запуск: LLAMA_VERBOSE=1 ... 2>/dev/null — обёртка musl-14 чинит рекурсию
 // в set_logging(), но env всё равно нужен, чтобы видеть причины ошибок GGUF.
@@ -61,6 +62,7 @@ const gold = readFileSync(ROOT + "/memory/gold.jsonl", "utf8")
   .split("\n").filter(Boolean).map((l) => JSON.parse(l));
 const heldout = new Set(core.heldoutSubset(gold).map((g) => g.id));
 const index = core.indexSha(DB);
+const goldShaValue = goldSha(gold);
 
 const rows = [];
 let modelTop1 = 0, modelTop3 = 0, coreTop1 = 0, coreTop3 = 0;
@@ -135,6 +137,7 @@ const out = {
   role: "переранжирование 5 кандидатов ядра, 5 forward pass на запрос",
   note: "classifier_activation=gelu_pytorch_tanh удалён при конвертации: llama.cpp b12554 использует GELU_ERF",
   index_sha: index,
+  gold_sha: goldShaValue,
   n: rows.length,
   pairs,
   model_top1: modelTop1 / n,
