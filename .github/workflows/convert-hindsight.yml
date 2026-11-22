@@ -31,6 +31,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r /tmp/llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
           python -m pip install -q huggingface_hub
+          # b12554 конвертер не понимает TokenizersBackend из transformers 5.x.
+          python -m pip install -q 'transformers==4.46.3'
 
       - name: Download safetensors + tokenizers
         run: |
