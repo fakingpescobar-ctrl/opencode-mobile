@@ -76,6 +76,57 @@ try {
   s = store.loadState(dir);
   eq(s.status, "quarantined", "битый hash карантинируется");
   eq(s.state.params.weight, 0.5, "дефолт подставлен вместо испорченного веса");
+
+  // --- raw_signals: кандидаты в gold ------------------------------------
+  const sigDir = mkdtempSync(join(tmpdir(), "signal-candidates-"));
+  try {
+    let sc = store.loadSignalCandidates(sigDir);
+    eq(sc.status, "new", "буфер сигналов изначально пуст");
+    eq(store.listSignalCandidates(sigDir).length, 0, "нет кандидатов");
+
+    const first = store.recordSignalCandidate(sigDir, {
+      query: "  Какая   Температура в Печи ",
+      index_sha: "idx1", gold_sha: "gold1",
+      candidate_chunk_ids: ["a", "b"], expected_chunk_id: null, origin: "miss",
+    });
+    eq(first.ok, true, "сигнал записан");
+    eq(first.count, 1, "один кандидат в буфере");
+    eq(first.eligible, false, "до 10 уникальных куратор не зовётся");
+
+    const row = store.listSignalCandidates(sigDir)[0];
+    eq(JSON.stringify([row.suggested_split, row.split_policy, row.hash_salt]),
+      JSON.stringify([store.computeSplit("какая температура в печи").split, "sha256-bucket-75-v1", "gold-v1"]),
+      "сплит и соль зафиксированы в момент сигнала");
+    eq(row.expected_chunk_id, null, "неизвестный chunk_id остаётся null");
+    eq(row.origin, "miss", "origin по умолчанию miss");
+
+    eq(store.recordSignalCandidate(sigDir, { query: "какая температура в печи", origin: "miss" }).reason,
+      "duplicate", "дубль по norm_hash не попадает в буфер повторно");
+    eq(store.recordSignalCandidate(sigDir, { query: "  " }).reason, "bad-query",
+      "пустой запрос не записывается");
+
+    for (let i = 0; i < 10; i++) {
+      store.recordSignalCandidate(sigDir, { query: "уникальный промах " + i, origin: i % 3 ? "miss" : "control" });
+    }
+    eq(store.listSignalCandidates(sigDir, { status: "raw" }).length, 11, "накопилось 11 уникальных сигналов");
+    eq(store.recordSignalCandidate(sigDir, { query: "ещё один", origin: "miss" }).eligible, true,
+      "порог в 10 уникальных открыт");
+
+    eq(store.setSignalCandidateStatus(sigDir, first.id, "staging", "в батче").ok, true,
+      "статус staging проставлен");
+    eq(store.listSignalCandidates(sigDir, { status: "staging" }).length, 1, "один в staging");
+    eq(store.setSignalCandidateStatus(sigDir, first.id, "wrong", "").reason, "bad-status",
+      "неизвестный статус отвергнут");
+
+    const sigPath = store.signalCandidatesPath(sigDir);
+    const tampered = JSON.parse(readFileSync(sigPath, "utf8"));
+    tampered.candidates[0].expected_chunk_id = "hacked";
+    writeFileSync(sigPath, JSON.stringify(tampered));
+    eq(store.loadSignalCandidates(sigDir).status, "quarantined", "порча буфера карантинируется");
+    eq(store.listSignalCandidates(sigDir).length, 0, "испорченный буфер не читается");
+  } finally {
+    rmSync(sigDir, { recursive: true, force: true });
+  }
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
