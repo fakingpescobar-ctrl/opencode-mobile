@@ -7,6 +7,8 @@ import { Database } from "bun:sqlite";
 import { readFileSync, writeFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 
+// Запуск: LLAMA_VERBOSE=1 ... 2>/dev/null — обёртка musl-14 чинит рекурсию
+// в set_logging(), но env всё равно нужен, чтобы видеть причины ошибок GGUF.
 const ROOT = "/storage/emulated/0/Documents/OpencodeTerminal/MOBILE_AGENT";
 const SO = "/data/user/0/org.opencode.mobile.debug/files/musl/libllama-bench.so";
 // Вызов: embed-bench.mjs [model.gguf] [sha|any] [out.json]
