@@ -441,6 +441,7 @@ int lb_classify(const char *model_path, const char *prompt,
   cp.n_threads_batch = 8;
   // Без embeddings граф пулинга не строится и llama_get_embeddings_seq() = NULL.
   cp.embeddings = true;
+  cp.pooling_type = LLAMA_POOLING_TYPE_RANK;
   struct llama_context *ctx = llama_init_from_model(model, cp);
   if (!ctx) { llama_model_free(model); llama_backend_free(); return -1; }
 
@@ -503,6 +504,7 @@ int lb_embed(const char *model_path, const char *prompt,
   cp.n_threads = 8;
   cp.n_threads_batch = 8;
   cp.embeddings = true;
+  cp.pooling_type = LLAMA_POOLING_TYPE_MEAN;
   struct llama_context *ctx = llama_init_from_model(model, cp);
   if (!ctx) { llama_model_free(model); llama_backend_free(); return -1; }
 
@@ -550,7 +552,10 @@ struct lb_state {
   int n_cls;
 };
 
-struct lb_state * lb_state_init(const char *model_path) {
+// pooling_type: 4 = LLAMA_POOLING_TYPE_RANK (rerank), 1 = MEAN (embed).
+// Конвертер b12554 пишет только modern-bert.* метаданные, поэтому llama.cpp
+// не определяет пулинг сам — его надо задать явно.
+struct lb_state * lb_state_init(const char *model_path, int pooling_type) {
   if (!model_path) return NULL;
   set_logging();
   llama_backend_init();
@@ -564,6 +569,7 @@ struct lb_state * lb_state_init(const char *model_path) {
   cp.n_threads = 8;
   cp.n_threads_batch = 8;
   cp.embeddings = true;  // без этого граф пулинга не строится
+  cp.pooling_type = (enum llama_pooling_type) pooling_type;
   struct llama_context *ctx = llama_init_from_model(model, cp);
   if (!ctx) { llama_model_free(model); llama_backend_free(); return NULL; }
   llama_token *ptok = (llama_token *)malloc(sizeof(llama_token) * 1024);
@@ -644,4 +650,4 @@ int lb_quantize(const char *src, const char *dst, int ftype) {
   return llama_model_quantize(src, dst, &p) == 0 ? 0 : -1;
 }
 
-const char *lb_version(void) { return "llama-bench-musl-15"; }
+const char *lb_version(void) { return "llama-bench-musl-16"; }
