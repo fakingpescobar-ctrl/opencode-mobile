@@ -10,8 +10,10 @@
 #   sh /storage/emulated/0/Documents/OpencodeTerminal/MOBILE_AGENT/opencode/run-core-tests.sh
 #
 # Включает: memory-core.test.mjs (леммы, индекс, поиск, пак, аудит, адаптив,
-# негатив, guard) и memory-integration.test.mjs (staged-ассеты = протестированное
-# ядро, живой memory.js, Kotlin, реальный pack). Остальные moltbook-тесты живого
+# негатив, guard), memory-adaptive-store.test.mjs (hash-замок, кулдаун,
+# signal_candidates), gold-corpus.test.mjs (заморозка сплитов, gold_sha, дедуп,
+# квота) и memory-integration.test.mjs (staged-ассеты = протестированное ядро,
+# живой memory.js, Kotlin, реальный pack). Остальные moltbook-тесты живого
 # плагина здесь НЕ запускаются:
 # они требуют MOLTBOOK_JS_PATH с named exports и не относятся к ядру памяти.
 
@@ -42,6 +44,14 @@ if [ "$status" -eq 0 ]; then
   echo "Тест: $ROOT/opencode/memory-adaptive-store.test.mjs"
   echo ""
   $RUN "$ROOT/opencode/memory-adaptive-store.test.mjs"
+  status=$?
+fi
+
+if [ "$status" -eq 0 ]; then
+  echo ""
+  echo "Тест: $ROOT/opencode/gold-corpus.test.mjs"
+  echo ""
+  $RUN "$ROOT/opencode/gold-corpus.test.mjs"
   status=$?
 fi
 
