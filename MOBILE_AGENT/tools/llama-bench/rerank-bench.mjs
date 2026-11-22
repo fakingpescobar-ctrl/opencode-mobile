@@ -72,8 +72,9 @@ for (const g of gold) {
   let rowMs = 0;
   for (let i = 0; i < hits.length; i++) {
     const text = String(hits[i].text || "").replace(/\s+/g, " ").slice(0, 600);
-    // Sentence-Transformers CrossEncoder: query [SEP] document.
-    const prompt = String(g.query) + " [SEP] " + text;
+    // Sentence-Transformers CrossEncoder: query + sep_token + document.
+    // В GGUF sep_token_id = eos (<eos>), add_special добавляет <bos>/<eos>.
+    const prompt = String(g.query) + " <eos> " + text;
     const score = new Float64Array(1);
     const metrics = new Float64Array(4);
     const rc = lib.symbols.lb_classify(MODEL, prompt, score, metrics);
