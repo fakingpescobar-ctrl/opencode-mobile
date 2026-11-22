@@ -130,12 +130,13 @@ class McpAssetImportContractTest {
         val exportPattern = Regex("$named|$listed")
         val importPattern = Regex("""import\s*\{([^}]*)\}\s*from\s*[\x22'](\.[^\x22']+)[\x22']""")
         val scripts = mcpDir.listFiles()?.filter { it.isFile && it.name.endsWith(".js") }.orEmpty()
-        val problems = scripts.asSequence()
+        val problems = scripts
+            .asSequence()
             .flatMap { script ->
-                importPattern.findAll(script.readText())
+                importPattern
+                    .findAll(script.readText())
                     .flatMap { m -> missingExports(script.name, m, exportPattern).asSequence() }
-            }
-            .toList()
+            }.toList()
         assertTrue(
             "именованных импортов без экспорта:\n" + problems.joinToString("\n"),
             problems.isEmpty(),
@@ -159,9 +160,11 @@ class McpAssetImportContractTest {
     private fun exportedNames(
         target: File,
         pattern: Regex,
-    ): Set<String> = pattern.findAll(target.readText())
-        .flatMap { e -> exportNames(e).asSequence() }
-        .toSet()
+    ): Set<String> =
+        pattern
+            .findAll(target.readText())
+            .flatMap { e -> exportNames(e).asSequence() }
+            .toSet()
 
     private fun missingExports(
         scriptName: String,
