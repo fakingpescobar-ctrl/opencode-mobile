@@ -37,24 +37,28 @@ if (SHA !== "any" && gotSha !== SHA) {
 
 const lib = dlopen(SO, {
   lb_version: { args: [], returns: FFIType.cstring },
-  lb_embed: {
-    args: [FFIType.cstring, FFIType.cstring, FFIType.ptr, FFIType.i32, FFIType.ptr],
+  lb_state_init: { args: [FFIType.cstring], returns: FFIType.ptr },
+  lb_emb_run: {
+    args: [FFIType.ptr, FFIType.cstring, FFIType.ptr, FFIType.i32, FFIType.ptr],
     returns: FFIType.i32,
   },
+  lb_state_free: { args: [FFIType.ptr], returns: FFIType.void },
 });
 const runtime = lib.symbols.lb_version();
 const rtNum = Number(String(runtime).split("musl-")[1] || 0);
-if (!(rtNum >= 12)) {
-  console.error(`нужна обёртка musl-12+ с lb_embed и ctx=1024, сейчас ${runtime}`);
+if (!(rtNum >= 13)) {
+  console.error(`нужна обёртка musl-13+ с persistent lb_state, сейчас ${runtime}`);
   process.exit(2);
 }
+const st = lib.symbols.lb_state_init(MODEL);
+if (!st) { console.error("lb_state_init failed"); process.exit(2); }
 
 const CAP = 2048;
 let dim = 0;
 const metrics = new Float64Array(4);
 const embed = (text) => {
   const out = new Float32Array(CAP);
-  const n = lib.symbols.lb_embed(MODEL, String(text), out, CAP, metrics);
+  const n = lib.symbols.lb_emb_run(st, String(text), out, CAP, metrics);
   if (n < 1) throw new Error("lb_embed failed");
   dim = n;
   const v = out.slice(0, n);
@@ -146,6 +150,7 @@ const out = {
   avg_ms_per_query: Math.round(totalMs / n),
   rows,
 };
+lib.symbols.lb_state_free(st);
 writeFileSync(ROOT + "/tools/llama-bench/" + OUT, JSON.stringify(out, null, 2) + "\n");
 console.log(`\nИТОГ: embed top1 ${(modelTop1 / n).toFixed(3)}, top3 ${(modelTop3 / n).toFixed(3)}; ` +
   `ядро top1 ${(coreTop1 / n).toFixed(3)}, top3 ${(coreTop3 / n).toFixed(3)}; ` +
