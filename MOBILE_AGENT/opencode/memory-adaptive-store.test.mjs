@@ -112,6 +112,20 @@ try {
     eq(store.recordSignalCandidate(sigDir, { query: "ещё один", origin: "miss" }).eligible, true,
       "порог в 10 уникальных открыт");
 
+    // Наплыв удачных запросов не должен вытеснить промахи: лимит 40 control.
+    let ctrlOk = 0, ctrlFull = 0;
+    for (let i = 0; i < 45; i++) {
+      const r = store.recordSignalCandidate(sigDir,
+        { query: "контрольный запрос " + i, origin: "control" });
+      if (r.ok) ctrlOk++;
+      else if (r.reason === "control-quota-full") ctrlFull++;
+    }
+    eq(ctrlOk, store.SIGNAL_LIMITS.maxControl - 4,
+      "контроль остановился на лимите (4 уже было в цикле)");
+    truthy(ctrlFull > 0, "дальнейший контроль отклонён");
+    truthy(store.listSignalCandidates(sigDir, { status: "raw" }).some((c) => c.origin === "miss"),
+      "промахи остались в буфере после наплыва контроля");
+
     eq(store.setSignalCandidateStatus(sigDir, first.id, "staging", "в батче").ok, true,
       "статус staging проставлен");
     eq(store.listSignalCandidates(sigDir, { status: "staging" }).length, 1, "один в staging");
