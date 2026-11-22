@@ -1,0 +1,67 @@
+# CI: конвертировать ModernBERT-модели Hindsight из safetensors в GGUF.
+# Готовых GGUF у hs-rerank-1/hs-embed-1 нет, но llama.cpp b12554 умеет
+# ModernBertModel и ModernBertForSequenceClassification через conversion/bert.py.
+# На телефон приходят только GGUF-артефакты; AMD/original веса остаются в CI.
+name: Convert Hindsight ModernBERT to GGUF
+
+on:
+  workflow_dispatch:
+    inputs:
+      llama_ref:
+        description: 'тег llama.cpp'
+        required: false
+        default: 'b12554'
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: llama.cpp source
+        run: |
+          git clone --depth 1 --branch ${{ github.event.inputs.llama_ref || 'b12554' }} \
+            https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp
+
+      - name: Conversion deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r /tmp/llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
+          python -m pip install -q huggingface_hub
+
+      - name: Download safetensors + tokenizers
+        run: |
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          for repo in ["hindsight-ai/hs-rerank-1", "hindsight-ai/hs-embed-1"]:
+              p = snapshot_download(
+                  repo_id=repo,
+                  local_dir="/tmp/models/" + repo.split("/")[-1],
+                  ignore_patterns=["*.onnx", "assets/*", ".gitattributes"],
+              )
+              print(repo, "->", p)
+          PY
+
+      - name: Convert to GGUF (f16)
+        run: |
+          cd /tmp/llama.cpp
+          python convert_hf_to_gguf.py /tmp/models/hs-rerank-1 \
+            --outfile /tmp/hs-rerank-1-f16.gguf --outtype f16
+          python convert_hf_to_gguf.py /tmp/models/hs-embed-1 \
+            --outfile /tmp/hs-embed-1-f16.gguf --outtype f16
+          ls -la /tmp/hs-*-f16.gguf
+
+      - name: Upload rerank GGUF
+        uses: actions/upload-artifact@v4
+        with:
+          name: hs-rerank-1-gguf
+          path: /tmp/hs-rerank-1-f16.gguf
+
+      - name: Upload embed GGUF
+        uses: actions/upload-artifact@v4
+        with:
+          name: hs-embed-1-gguf
+          path: /tmp/hs-embed-1-f16.gguf
