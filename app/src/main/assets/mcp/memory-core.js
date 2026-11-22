@@ -1115,11 +1115,21 @@ export function runDreamPass(DB, opts = {}) {
   return { created, updated, invalidated, groups: groups.length };
 }
 
-// Детерминированная fifth-подвыборка gold, общей для baseline и gate:
-// baseline и пост-коммитный замер обязаны мерить один и тот же набор.
+// Детерминированная подвыборка gold, общей для baseline и gate: baseline и
+// пост-коммитный замер обязаны мерить один и тот же набор.
+//
+// Сплит закреплён в строке gold и НЕ пересчитывается при чтении. Первые 40
+// кейсов backfill'ены по старому правилу `sha256(query)[0] % 5 === 0`, поэтому
+// выборка осталась прежней. Для строк без явного split (старый формат) =
+// fallback на то же старое правило — обратная совместимость на случай, если
+// gold не был backfill'ен.
 export function heldoutSubset(gold) {
   const all = Array.isArray(gold) ? gold : [];
-  const held = all.filter((g) => sha256(String(g.query)).charCodeAt(0) % 5 === 0);
+  const frozen = all.some((g) => g && (g.split === "train" || g.split === "held-out"));
+  const isHeld = (g) => frozen && (g.split === "train" || g.split === "held-out")
+    ? g.split === "held-out"
+    : sha256(String(g && g.query == null ? "" : g.query)).charCodeAt(0) % 5 === 0;
+  const held = all.filter(isHeld);
   return held.length ? held : all;
 }
 
