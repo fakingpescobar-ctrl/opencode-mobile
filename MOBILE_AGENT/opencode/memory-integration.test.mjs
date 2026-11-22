@@ -35,8 +35,9 @@ function truthy(value, label) {
 function section(title) { console.log("\n=== " + title + " ==="); }
 
 const CORE_FILES = [
-  "memory-core.js", "memory-adaptive.js", "memory-lemma.js",
-  "memory-index.mjs", "memory-llm.js", "memory-map.js", "russian-stemmer.js",
+  "memory-core.js", "memory-adaptive.js", "memory-adaptive-store.js",
+  "memory-lemma.js", "memory-index.mjs", "memory-llm.js", "memory-map.js",
+  "russian-stemmer.js",
 ];
 
 // ---------------------------------------------------------------- 1. Ассеты
