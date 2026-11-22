@@ -39,7 +39,7 @@ if (SHA !== "any" && gotSha !== SHA) {
 
 const lib = dlopen(SO, {
   lb_version: { args: [], returns: FFIType.cstring },
-  lb_state_init: { args: [FFIType.cstring], returns: FFIType.ptr },
+  lb_state_init: { args: [FFIType.cstring, FFIType.i32], returns: FFIType.ptr },
   lb_emb_run: {
     args: [FFIType.ptr, FFIType.cstring, FFIType.ptr, FFIType.i32, FFIType.ptr],
     returns: FFIType.i32,
@@ -48,11 +48,11 @@ const lib = dlopen(SO, {
 });
 const runtime = lib.symbols.lb_version();
 const rtNum = Number(String(runtime).split("musl-")[1] || 0);
-if (!(rtNum >= 15)) {
-  console.error(`нужна обёртка musl-15+ с cp.embeddings=true, сейчас ${runtime}`);
+if (!(rtNum >= 16)) {
+  console.error(`нужна обёртка musl-16+ с явным POOLING_TYPE_MEAN, сейчас ${runtime}`);
   process.exit(2);
 }
-const st = lib.symbols.lb_state_init(MODEL);
+const st = lib.symbols.lb_state_init(MODEL, 1);  // LLAMA_POOLING_TYPE_MEAN
 if (!st) { console.error("lb_state_init failed"); process.exit(2); }
 
 const CAP = 2048;
