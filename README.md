@@ -13,12 +13,15 @@
 работают только офлайн; гипотезы сравниваются внутри одной пары хэшей, дефолт
 ядра остаётся legacy. Тул `memory_signal` теперь пишет кандидатов в data-plane
 буфер (успех = `control`, провал = `miss`); с apk-64 это работает и вживую —
-живой вызов вернул `candidate` с id и флагом `eligible`.
+живой вызов по HTTP на `:4199` вернул `candidate` с id и флагом `eligible`.
+Путь буфера задаётся `MCP_MEMORY_DIR` (у приложения это общий воркспейс
+`opencode-home/.memory`), офлайн-пульс и куратор читают ту же переменную
+окружения или `--dir`.
 
 Ядро памяти остаётся детерминированным FTS5-слоем с legacy fallback по
 умолчанию (`DEFAULT_MODE="legacy"`). Адаптивный слой
 `MOBILE_AGENT/opencode/memory-core/memory-adaptive-store.js` реализован как
-opt-in data-plane в app-private `filesDir` под hash-замком и не включается
+opt-in data-plane в каталоге `MCP_MEMORY_DIR` под hash-замком и не включается
 автоматически. Исследования Hindsight (rerank/embed/decision/hybrid-gate)
 живут в `MOBILE_AGENT/tools/llama-bench/` и в дефолт ядра не попадают.
 
