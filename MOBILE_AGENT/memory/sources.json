@@ -16,7 +16,7 @@
     },
     {
       "path": "СОСТОЯНИЕ.md",
-      "sha": "7b5269b91d96963f286e7e2380096cbea8240eed73313fbd295d302acf4cbdd2"
+      "sha": "d0e38c78136f4c35e221032e2604cec0adeb09801da2510c0af49eb25dba2ab9"
     },
     {
       "path": "ХАРНЕС.md",
@@ -32,7 +32,11 @@
     },
     {
       "path": "ЖУРНАЛ.md",
-      "sha": "23dcf8ffb9a58ca91b31611c661e32e101b0e1b4c92a607de7fd9b6b6e8f2108"
+      "sha": "bc8cd35486fcd735060e14ae2a6d9714d1a8cf0491eabedcef4a96ba85204dc7"
+    },
+    {
+      "path": "РОСТ_ЗОЛОТОГО_КОРПУСА.md",
+      "sha": "41c2332c64e823bb71d58c893d02b295f54459d3fd52ca7293dd4aaa1a9e501f"
     },
     {
       "path": "MOLTBOOK_REPORT.md",
