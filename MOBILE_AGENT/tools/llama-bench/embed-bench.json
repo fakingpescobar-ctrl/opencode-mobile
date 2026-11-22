@@ -5,7 +5,7 @@
   "bytes": 238335168,
   "runtime": "llama-bench-musl-16",
   "role": "косинусный ранжир 5 кандидатов ядра, 6 forward pass на запрос",
-  "index_sha": "de89f9c736958831",
+  "index_sha": "9acbaa1af0ec784e",
   "gold_sha": "61925934feae090013bbd5b67457cfa51c4d71e8e77f2811c25b0078886631e1",
   "dim": 384,
   "n": 40,
@@ -19,8 +19,8 @@
     "model_top1": 0.6666666666666666,
     "core_top1": 0.6666666666666666
   },
-  "avg_ms_per_text": 45,
-  "avg_ms_per_query": 272,
+  "avg_ms_per_text": 58,
+  "avg_ms_per_query": 350,
   "rows": [
     {
       "id": "g01",
@@ -60,7 +60,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": false,
-      "ms": 248
+      "ms": 437
     },
     {
       "id": "g02",
@@ -100,7 +100,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 219
+      "ms": 394
     },
     {
       "id": "g03",
@@ -140,7 +140,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": false,
-      "ms": 257
+      "ms": 341
     },
     {
       "id": "g04",
@@ -180,7 +180,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 269
+      "ms": 318
     },
     {
       "id": "g05",
@@ -220,7 +220,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 336
+      "ms": 1073
     },
     {
       "id": "g06",
@@ -260,7 +260,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": true,
-      "ms": 227
+      "ms": 298
     },
     {
       "id": "g07",
@@ -300,7 +300,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": true,
-      "ms": 269
+      "ms": 374
     },
     {
       "id": "g08",
@@ -340,7 +340,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 271
+      "ms": 304
     },
     {
       "id": "g09",
@@ -380,7 +380,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 242
+      "ms": 306
     },
     {
       "id": "g10",
@@ -420,7 +420,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 320
+      "ms": 310
     },
     {
       "id": "g11",
@@ -460,7 +460,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 264
+      "ms": 302
     },
     {
       "id": "g12",
@@ -500,7 +500,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 289
+      "ms": 345
     },
     {
       "id": "g13",
@@ -540,7 +540,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": false,
-      "ms": 273
+      "ms": 261
     },
     {
       "id": "g14",
@@ -551,8 +551,8 @@
         "КАТАЛОГ_ПЕРЕДЕЛОК.md",
         "АРХИВ_СОСТОЯНИЯ.md",
         "docs/MOLTBOOK_ADVICE.md",
-        "АРХИВ_СОСТОЯНИЯ.md",
-        "КАТАЛОГ_ПЕРЕДЕЛОК.md"
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
+        "АРХИВ_СОСТОЯНИЯ.md"
       ],
       "embed_order": [
         {
@@ -580,7 +580,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 279
+      "ms": 428
     },
     {
       "id": "g15",
@@ -620,7 +620,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": false,
-      "ms": 307
+      "ms": 276
     },
     {
       "id": "g16",
@@ -660,7 +660,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 304
+      "ms": 380
     },
     {
       "id": "g17",
@@ -700,7 +700,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": false,
-      "ms": 323
+      "ms": 386
     },
     {
       "id": "g18",
@@ -740,7 +740,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 268
+      "ms": 302
     },
     {
       "id": "g19",
@@ -780,7 +780,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 233
+      "ms": 242
     },
     {
       "id": "g20",
@@ -820,7 +820,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 264
+      "ms": 324
     },
     {
       "id": "g21",
@@ -860,7 +860,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 292
+      "ms": 300
     },
     {
       "id": "g22",
@@ -900,7 +900,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 263
+      "ms": 357
     },
     {
       "id": "g23",
@@ -940,7 +940,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 278
+      "ms": 280
     },
     {
       "id": "g24",
@@ -980,7 +980,7 @@
       "model_top3": false,
       "core_top1": true,
       "core_top3": true,
-      "ms": 344
+      "ms": 365
     },
     {
       "id": "g25",
@@ -1020,7 +1020,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 289
+      "ms": 300
     },
     {
       "id": "g26",
@@ -1060,7 +1060,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 316
+      "ms": 311
     },
     {
       "id": "g27",
@@ -1100,7 +1100,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 221
+      "ms": 302
     },
     {
       "id": "g28",
@@ -1140,7 +1140,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 283
+      "ms": 399
     },
     {
       "id": "g29",
@@ -1180,7 +1180,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 269
+      "ms": 312
     },
     {
       "id": "g31",
@@ -1220,7 +1220,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 230
+      "ms": 367
     },
     {
       "id": "g32",
@@ -1260,7 +1260,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 227
+      "ms": 242
     },
     {
       "id": "g33",
@@ -1300,7 +1300,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 302
+      "ms": 251
     },
     {
       "id": "g34",
@@ -1340,7 +1340,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 222
+      "ms": 261
     },
     {
       "id": "g35",
@@ -1380,7 +1380,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 265
+      "ms": 225
     },
     {
       "id": "g36",
@@ -1420,7 +1420,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 187
+      "ms": 332
     },
     {
       "id": "g37",
@@ -1460,7 +1460,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 319
+      "ms": 488
     },
     {
       "id": "g38",
@@ -1500,7 +1500,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": false,
-      "ms": 315
+      "ms": 415
     },
     {
       "id": "g39",
@@ -1540,7 +1540,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 276
+      "ms": 344
     },
     {
       "id": "g40",
@@ -1580,7 +1580,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 188
+      "ms": 443
     },
     {
       "id": "g41",
