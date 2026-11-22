@@ -5,10 +5,10 @@
   "bytes": 811843840,
   "runtime": "llama-bench-musl-16",
   "role": "choice над 5 кандидатами ядра, один forward pass",
-  "index_sha": "aca4c694261a2a41",
+  "index_sha": "f993a67a6dc417ce",
   "gold_sha": "61925934feae090013bbd5b67457cfa51c4d71e8e77f2811c25b0078886631e1",
   "n": 40,
-  "model_top1": 0.6,
+  "model_top1": 0.625,
   "model_top3": 0.925,
   "core_top1": 0.475,
   "core_top3": 0.875,
@@ -19,7 +19,7 @@
     "core_top1": 0.5555555555555556,
     "core_top3": 0.8888888888888888
   },
-  "avg_ms": 6216,
+  "avg_ms": 8750,
   "rows": [
     {
       "id": "g01",
@@ -59,7 +59,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": false,
-      "ms": 6345,
+      "ms": 7650,
       "prompt_tokens": 580
     },
     {
@@ -100,7 +100,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 6177,
+      "ms": 7318,
       "prompt_tokens": 582
     },
     {
@@ -109,40 +109,40 @@
       "query": "apk-40 sha установки verify-install",
       "expect": "ХАРНЕС.md",
       "core_top": [
-        "ПРИЁМКА_APK47.md",
         "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
         "СОСТОЯНИЕ.md",
         "СОСТОЯНИЕ.md",
         "ХАРНЕС.md"
       ],
       "choice_order": [
         {
-          "letter": "A",
-          "p": 0.889
-        },
-        {
           "letter": "E",
-          "p": 0.087
-        },
-        {
-          "letter": "D",
-          "p": 0.015
-        },
-        {
-          "letter": "C",
-          "p": 0.006
+          "p": 0.657
         },
         {
           "letter": "B",
-          "p": 0.003
+          "p": 0.201
+        },
+        {
+          "letter": "C",
+          "p": 0.09
+        },
+        {
+          "letter": "D",
+          "p": 0.031
+        },
+        {
+          "letter": "A",
+          "p": 0.021
         }
       ],
-      "model_top1": false,
+      "model_top1": true,
       "model_top3": true,
       "core_top1": false,
       "core_top3": false,
-      "ms": 6849,
-      "prompt_tokens": 648
+      "ms": 10498,
+      "prompt_tokens": 630
     },
     {
       "id": "g04",
@@ -182,7 +182,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 9407,
+      "ms": 6502,
       "prompt_tokens": 566
     },
     {
@@ -223,7 +223,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 7608,
+      "ms": 6882,
       "prompt_tokens": 581
     },
     {
@@ -264,7 +264,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": true,
-      "ms": 6774,
+      "ms": 6454,
       "prompt_tokens": 562
     },
     {
@@ -275,22 +275,18 @@
       "core_top": [
         "ХАРНЕС.md",
         "ПРАВИЛА.md",
-        "ПРАВИЛА.md",
         "СОСТОЯНИЕ.md",
+        "ПРАВИЛА.md",
         "СОСТОЯНИЕ.md"
       ],
       "choice_order": [
         {
           "letter": "A",
-          "p": 0.978
+          "p": 0.979
         },
         {
           "letter": "B",
           "p": 0.012
-        },
-        {
-          "letter": "C",
-          "p": 0.005
         },
         {
           "letter": "E",
@@ -298,14 +294,18 @@
         },
         {
           "letter": "D",
-          "p": 0.001
+          "p": 0.003
+        },
+        {
+          "letter": "C",
+          "p": 0.002
         }
       ],
       "model_top1": false,
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 5732,
+      "ms": 7041,
       "prompt_tokens": 555
     },
     {
@@ -346,7 +346,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 5875,
+      "ms": 6857,
       "prompt_tokens": 549
     },
     {
@@ -364,7 +364,7 @@
       "choice_order": [
         {
           "letter": "A",
-          "p": 0.4
+          "p": 0.393
         },
         {
           "letter": "B",
@@ -372,23 +372,23 @@
         },
         {
           "letter": "C",
-          "p": 0.158
+          "p": 0.16
         },
         {
           "letter": "E",
-          "p": 0.095
+          "p": 0.097
         },
         {
           "letter": "D",
-          "p": 0.06
+          "p": 0.063
         }
       ],
       "model_top1": false,
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 4802,
-      "prompt_tokens": 483
+      "ms": 10609,
+      "prompt_tokens": 544
     },
     {
       "id": "g10",
@@ -428,7 +428,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 6448,
+      "ms": 7783,
       "prompt_tokens": 576
     },
     {
@@ -458,7 +458,7 @@
         },
         {
           "letter": "E",
-          "p": 0.001
+          "p": 0.002
         },
         {
           "letter": "D",
@@ -469,8 +469,8 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 5588,
-      "prompt_tokens": 543
+      "ms": 7845,
+      "prompt_tokens": 546
     },
     {
       "id": "g12",
@@ -510,7 +510,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 6443,
+      "ms": 8092,
       "prompt_tokens": 611
     },
     {
@@ -551,7 +551,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": false,
-      "ms": 6001,
+      "ms": 13717,
       "prompt_tokens": 561
     },
     {
@@ -563,37 +563,37 @@
         "КАТАЛОГ_ПЕРЕДЕЛОК.md",
         "АРХИВ_СОСТОЯНИЯ.md",
         "docs/MOLTBOOK_ADVICE.md",
-        "АРХИВ_СОСТОЯНИЯ.md",
-        "КАТАЛОГ_ПЕРЕДЕЛОК.md"
+        "СОСТОЯНИЕ.md",
+        "АРХИВ_СОСТОЯНИЯ.md"
       ],
       "choice_order": [
         {
           "letter": "C",
-          "p": 0.825
-        },
-        {
-          "letter": "D",
-          "p": 0.107
-        },
-        {
-          "letter": "B",
-          "p": 0.041
+          "p": 0.774
         },
         {
           "letter": "E",
-          "p": 0.015
+          "p": 0.115
+        },
+        {
+          "letter": "D",
+          "p": 0.056
+        },
+        {
+          "letter": "B",
+          "p": 0.042
         },
         {
           "letter": "A",
-          "p": 0.011
+          "p": 0.013
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 6014,
-      "prompt_tokens": 548
+      "ms": 7442,
+      "prompt_tokens": 541
     },
     {
       "id": "g15",
@@ -633,7 +633,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": false,
-      "ms": 6329,
+      "ms": 8353,
       "prompt_tokens": 602
     },
     {
@@ -674,7 +674,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 6375,
+      "ms": 7855,
       "prompt_tokens": 558
     },
     {
@@ -715,7 +715,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": false,
-      "ms": 6012,
+      "ms": 15384,
       "prompt_tokens": 578
     },
     {
@@ -756,7 +756,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 6212,
+      "ms": 10604,
       "prompt_tokens": 594
     },
     {
@@ -797,7 +797,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 5939,
+      "ms": 6700,
       "prompt_tokens": 536
     },
     {
@@ -838,7 +838,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 5775,
+      "ms": 8016,
       "prompt_tokens": 603
     },
     {
@@ -879,7 +879,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 6039,
+      "ms": 9748,
       "prompt_tokens": 590
     },
     {
@@ -920,7 +920,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 6097,
+      "ms": 9390,
       "prompt_tokens": 588
     },
     {
@@ -961,7 +961,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 6212,
+      "ms": 7993,
       "prompt_tokens": 585
     },
     {
@@ -1002,7 +1002,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 8104,
+      "ms": 10449,
       "prompt_tokens": 604
     },
     {
@@ -1015,24 +1015,24 @@
         "ХАРНЕС.md",
         "АРХИВ_СОСТОЯНИЯ.md",
         "ХАРНЕС.md",
-        "ХАРНЕС.md"
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md"
       ],
       "choice_order": [
         {
           "letter": "A",
-          "p": 0.509
+          "p": 0.538
         },
         {
           "letter": "C",
-          "p": 0.329
+          "p": 0.326
         },
         {
           "letter": "D",
-          "p": 0.094
+          "p": 0.098
         },
         {
           "letter": "E",
-          "p": 0.057
+          "p": 0.028
         },
         {
           "letter": "B",
@@ -1043,8 +1043,8 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 6423,
-      "prompt_tokens": 599
+      "ms": 8944,
+      "prompt_tokens": 608
     },
     {
       "id": "g26",
@@ -1084,7 +1084,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 7089,
+      "ms": 9245,
       "prompt_tokens": 662
     },
     {
@@ -1125,7 +1125,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 5550,
+      "ms": 7162,
       "prompt_tokens": 521
     },
     {
@@ -1166,7 +1166,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 5730,
+      "ms": 7554,
       "prompt_tokens": 564
     },
     {
@@ -1207,7 +1207,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 5533,
+      "ms": 6965,
       "prompt_tokens": 518
     },
     {
@@ -1248,7 +1248,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 5747,
+      "ms": 7650,
       "prompt_tokens": 540
     },
     {
@@ -1289,7 +1289,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 5768,
+      "ms": 6731,
       "prompt_tokens": 533
     },
     {
@@ -1330,7 +1330,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 5996,
+      "ms": 10305,
       "prompt_tokens": 561
     },
     {
@@ -1371,7 +1371,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 5080,
+      "ms": 6077,
       "prompt_tokens": 480
     },
     {
@@ -1412,7 +1412,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 5550,
+      "ms": 13282,
       "prompt_tokens": 526
     },
     {
@@ -1453,7 +1453,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 6037,
+      "ms": 8026,
       "prompt_tokens": 537
     },
     {
@@ -1494,7 +1494,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 6553,
+      "ms": 8708,
       "prompt_tokens": 618
     },
     {
@@ -1503,31 +1503,31 @@
       "query": "итерация 7 lb_score lb_code_ids choice",
       "expect": "ЖУРНАЛ.md",
       "core_top": [
-        "АРХИТЕКТУРА_ПАМЯТИ.md",
         "СОСТОЯНИЕ.md",
         "ЖУРНАЛ.md",
         "ЖУРНАЛ.md",
-        "СОСТОЯНИЕ.md"
+        "СОСТОЯНИЕ.md",
+        "ИССЛЕДОВАНИЕ_ПАМЯТИ_АГЕНТОВ.md"
       ],
       "choice_order": [
         {
-          "letter": "E",
-          "p": 0.987
-        },
-        {
-          "letter": "C",
-          "p": 0.006
-        },
-        {
-          "letter": "A",
-          "p": 0.003
+          "letter": "D",
+          "p": 0.981
         },
         {
           "letter": "B",
+          "p": 0.01
+        },
+        {
+          "letter": "E",
+          "p": 0.004
+        },
+        {
+          "letter": "C",
           "p": 0.003
         },
         {
-          "letter": "D",
+          "letter": "A",
           "p": 0.002
         }
       ],
@@ -1535,8 +1535,8 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 6237,
-      "prompt_tokens": 620
+      "ms": 12294,
+      "prompt_tokens": 634
     },
     {
       "id": "g39",
@@ -1576,7 +1576,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 6105,
+      "ms": 8888,
       "prompt_tokens": 585
     },
     {
@@ -1617,7 +1617,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 5076,
+      "ms": 9766,
       "prompt_tokens": 569
     },
     {
@@ -1635,15 +1635,15 @@
       "choice_order": [
         {
           "letter": "A",
-          "p": 0.86
+          "p": 0.859
         },
         {
           "letter": "E",
-          "p": 0.043
+          "p": 0.041
         },
         {
           "letter": "D",
-          "p": 0.039
+          "p": 0.04
         },
         {
           "letter": "B",
@@ -1658,8 +1658,8 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 7022,
-      "prompt_tokens": 649
+      "ms": 9211,
+      "prompt_tokens": 647
     }
   ]
 }
