@@ -32,7 +32,7 @@ static void quiet_log(enum ggml_log_level level, const char *text, void *user_da
 // видеть причину отказа загрузки сконвертированных GGUF без пересборки обёртки.
 static void set_logging(void) {
   if (getenv("LLAMA_VERBOSE")) llama_log_set(NULL, NULL);
-  else set_logging();
+  else llama_log_set(quiet_log, NULL);
 }
 
 // Возвращает out[7]:
@@ -586,6 +586,21 @@ static int lb_state_encode(struct lb_state *st, const char *prompt, double *metr
   return rc == 0 ? ntok : -1;
 }
 
+// Диагностика: первые 8 логитов с каждого из первых/последнего токена.
+int lb_logits_dump(struct lb_state *st, const char *prompt, double *out) {
+  if (!st || !out) return -1;
+  int ntok = lb_state_encode(st, prompt, out + 8);
+  if (ntok <= 0) return -1;
+  for (int k = 0; k < 8; k++) out[k] = 0.0;
+  const float *first = llama_get_logits_ith(st->ctx, 0);
+  const float *last = llama_get_logits_ith(st->ctx, ntok - 1);
+  for (int k = 0; k < 4; k++) {
+    out[k] = first ? first[k] : -999.0;
+    out[k + 4] = last ? last[k] : -999.0;
+  }
+  return ntok;
+}
+
 // metrics[4] = [decode мс, токенов, n_cls_out, n_embd]
 int lb_cls_score(struct lb_state *st, const char *prompt, double *score, double *metrics) {
   if (!st || !score) return -1;
@@ -628,4 +643,4 @@ int lb_quantize(const char *src, const char *dst, int ftype) {
   return llama_model_quantize(src, dst, &p) == 0 ? 0 : -1;
 }
 
-const char *lb_version(void) { return "llama-bench-musl-13"; }
+const char *lb_version(void) { return "llama-bench-musl-14"; }
