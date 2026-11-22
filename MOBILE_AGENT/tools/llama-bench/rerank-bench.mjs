@@ -111,7 +111,13 @@ for (const g of gold) {
   rows.push({
     id: g.id, heldout: heldout.has(g.id), query: g.query, expect: g.expect_source,
     core_top: hits.map((x) => x.source),
-    rerank_order: order.map((x) => ({ source: hits[x.i].source, score: Math.round(x.score * 1e6) / 1e6 })),
+    // i — индекс кандидата ядра: нужен гибридному гейту, чтобы не потерять
+    // выравнивание при повторяющихся source в топ-5.
+    rerank_order: order.map((x) => ({
+      i: x.i, source: hits[x.i].source,
+      score: Math.round(x.score * 1e6) / 1e6,
+      core: hits[x.i].score,  // для гибридного гейта: та же шкала, что у ядра
+    })),
     model_top1: hit1, model_top3: hit3,
     core_top1: relevant[0] === true, core_top3: relevant.slice(0, 3).some(Boolean),
     ms: Math.round(rowMs),
