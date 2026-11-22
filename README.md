@@ -26,5 +26,8 @@ Staged-ассеты в `MOBILE_AGENT/tmp/apk-integrate/mcp/` должны бай
 
 ### Сборка
 
-Только Debug APK. Release APK / apk-62 собирается по отдельному подтверждению.
-Установка — через `mobile_app_install(action="local")`.
+Активная сборка — `apk-62` (релиз `Release APK`, run #58, head `81c7689`),
+установлена 22.11 через `mobile_app_install(action="local")`. CI собирает
+Debug APK как проверку, но установимый APK с нативами даёт только
+воркфлоу `Release APK`. Следующий Release — только по отдельному подтверждению
+Макса.
