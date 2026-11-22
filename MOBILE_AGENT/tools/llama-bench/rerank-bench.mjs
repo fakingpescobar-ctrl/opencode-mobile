@@ -37,17 +37,21 @@ if (SHA !== "any" && gotSha !== SHA) {
 
 const lib = dlopen(SO, {
   lb_version: { args: [], returns: FFIType.cstring },
-  lb_classify: {
-    args: [FFIType.cstring, FFIType.cstring, FFIType.ptr, FFIType.ptr],
+  lb_state_init: { args: [FFIType.cstring], returns: FFIType.ptr },
+  lb_cls_score: {
+    args: [FFIType.ptr, FFIType.cstring, FFIType.ptr, FFIType.ptr],
     returns: FFIType.i32,
   },
+  lb_state_free: { args: [FFIType.ptr], returns: FFIType.void },
 });
 const runtime = lib.symbols.lb_version();
 const rtNum = Number(String(runtime).split("musl-")[1] || 0);
-if (!(rtNum >= 12)) {
-  console.error(`нужна обёртка musl-12+ с lb_classify и ctx=1024, сейчас ${runtime}`);
+if (!(rtNum >= 13)) {
+  console.error(`нужна обёртка musl-13+ с persistent lb_state, сейчас ${runtime}`);
   process.exit(2);
 }
+const st = lib.symbols.lb_state_init(MODEL);
+if (!st) { console.error("lb_state_init failed"); process.exit(2); }
 
 const DB = new Database(":memory:");
 idx.indexDocs(DB, ROOT);
@@ -77,7 +81,7 @@ for (const g of gold) {
     const prompt = String(g.query) + " <eos> " + text;
     const score = new Float64Array(1);
     const metrics = new Float64Array(4);
-    const rc = lib.symbols.lb_classify(MODEL, prompt, score, metrics);
+    const rc = lib.symbols.lb_cls_score(st, prompt, score, metrics);
     if (rc !== 0) {
       console.error(`${g.id}/${i}: rc=${rc}`);
       continue;
@@ -131,6 +135,7 @@ const out = {
   avg_ms_per_query: Math.round(totalMs / n),
   rows,
 };
+lib.symbols.lb_state_free(st);
 writeFileSync(ROOT + "/tools/llama-bench/" + OUT, JSON.stringify(out, null, 2) + "\n");
 console.log(`\nИТОГ: rerank top1 ${(modelTop1 / n).toFixed(3)}, top3 ${(modelTop3 / n).toFixed(3)}; ` +
   `ядро top1 ${(coreTop1 / n).toFixed(3)}, top3 ${(coreTop3 / n).toFixed(3)}; ` +
