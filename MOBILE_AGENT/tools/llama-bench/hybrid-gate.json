@@ -1,6 +1,6 @@
 {
   "protocol": "rerank-bench.json",
-  "index_sha": "de89f9c736958831",
+  "index_sha": "9acbaa1af0ec784e",
   "gold_sha": "61925934feae090013bbd5b67457cfa51c4d71e8e77f2811c25b0078886631e1",
   "train": {
     "n": 31,
