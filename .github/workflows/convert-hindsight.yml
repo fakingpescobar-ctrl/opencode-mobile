@@ -61,21 +61,10 @@ jobs:
               if tdata.get("tokenizer_class") == "TokenizersBackend":
                   tdata["tokenizer_class"] = "BertTokenizerFast"
                   tcfg.write_text(json.dumps(tdata, indent=2))
-              # BPE + metaspace prepend_scheme 'always' is rejected by llama.cpp
-              # b12554. 'first' is the supported equivalent for a single prompt.
-              tj = Path(p) / "tokenizer.json"
-              jdata = json.loads(tj.read_text())
-              def fix(o):
-                  if isinstance(o, dict):
-                      if o.get("prepend_scheme") == "always":
-                          o["prepend_scheme"] = "first"
-                      for v in o.values():
-                          fix(v)
-                  elif isinstance(o, list):
-                      for v in o:
-                          fix(v)
-              fix(jdata)
-              tj.write_text(json.dumps(jdata, ensure_ascii=False))
+              # НЕ трогаем tokenizer.json: get_vocab_base_pre() в b12554
+              # сверяет chkhsh именно этого файла с mmBERT-хэшем. Правка
+              # prepend_scheme ломает распознавание pre-tokenizer. GGUF
+              # патчится потом, tools/llama-bench/patch-gguf-metaspace.mjs.
           PY
 
       - name: Convert to GGUF (f16)
