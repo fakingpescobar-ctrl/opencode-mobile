@@ -1,21 +1,18 @@
 {
-  "index_sha": "1ccba749cf6c8cd0",
+  "index_sha": "fe065c8efc2b730c",
   "gold_sha_before": "61925934feae090013bbd5b67457cfa51c4d71e8e77f2811c25b0078886631e1",
-  "gold_sha_after": "ca3f4158393c2776fced98f00f13d3e32e0c1a1d4d6b2178a6bc0c449416404d",
-  "candidates": 5,
-  "aliases": 1,
-  "selected": 4,
-  "added": 3,
-  "rejected": [
-    {
-      "id": "s002",
-      "reason": "curator-reject"
-    }
-  ],
+  "gold_sha_after": "8ba1017b9ab7bc538d119172c14df6a5681d6203dfc6731127b8f5ca629b26c8",
+  "candidates": 15,
+  "aliases": 13,
+  "duplicates": 13,
+  "control_in_batch": 1,
+  "selected": 2,
+  "added": 2,
+  "rejected": [],
   "quota_skipped": 0,
-  "total_gold": 43,
+  "total_gold": 42,
   "dry_run": false,
-  "at": 1795343874668,
+  "at": 1795348526793,
   "smoke": true,
-  "note": "Пробный прогон на синтетических сигналах; рабочий gold не тронут (used --gold=tmp/curate-smoke/gold.jsonl)"
+  "note": "Пробный прогон с control-сигналами на синтетических данных; рабочий gold не тронут (used --gold=tmp/curate-control-smoke/gold.jsonl)"
 }
