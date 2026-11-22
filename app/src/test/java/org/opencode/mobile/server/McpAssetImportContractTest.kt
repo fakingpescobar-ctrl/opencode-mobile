@@ -129,40 +129,41 @@ class McpAssetImportContractTest {
         val listed = """export\s*\{([^}]*)\}"""
         val exportPattern = Regex("$named|$listed")
         val importPattern = Regex("""import\s*\{([^}]*)\}\s*from\s*[\x22'](\.[^\x22']+)[\x22']""")
-        val problems = mutableListOf<String>()
         val scripts = mcpDir.listFiles()?.filter { it.isFile && it.name.endsWith(".js") }.orEmpty()
-
-        for (script in scripts) {
-            for (m in importPattern.findAll(script.readText())) {
-                val names =
-                    m.groupValues[1]
-                        .split(",")
-                        .map { it.trim().substringBefore(" as ").trim() }
-                        .filter { it.isNotEmpty() }
-                val target = File(mcpDir, m.groupValues[2])
-                if (!target.isFile) continue // наличие файла проверяет первый тест
-                val exports =
-                    exportPattern.findAll(target.readText()).flatMap { e ->
-                        if (e.groupValues[1].isNotEmpty()) {
-                            listOf(e.groupValues[1])
-                        } else {
-                            e.groupValues[2].split(",").map { part ->
-                                val pieces = part.trim().split(" as ")
-                                if (pieces.size > 1) pieces[1].trim() else pieces[0].trim()
-                            }
-                        }
-                    }.toSet()
-                for (name in names) {
-                    if (name !in exports) {
-                        problems += script.name + ": " + m.groupValues[2] + " не экспортирует " + name
-                    }
-                }
+        val problems = scripts.asSequence().flatMap { script ->
+            importPattern.findAll(script.readText()).flatMap { m ->
+                missingExports(script.name, m, exportPattern).asSequence()
             }
-        }
+        }.toList()
         assertTrue(
             "именованных импортов без экспорта:\n" + problems.joinToString("\n"),
             problems.isEmpty(),
         )
+    }
+
+    private fun importedNames(m: MatchResult): List<String> =
+        m.groupValues[1].split(",")
+            .map { it.trim().substringBefore(" as ").trim() }
+            .filter { it.isNotEmpty() }
+
+    private fun exportNames(e: MatchResult): List<String> {
+        if (e.groupValues[1].isNotEmpty()) return listOf(e.groupValues[1])
+        return e.groupValues[2].split(",").map { part ->
+            val pieces = part.trim().split(" as ")
+            if (pieces.size > 1) pieces[1].trim() else pieces[0].trim()
+        }
+    }
+
+    private fun exportedNames(target: File, pattern: Regex): Set<String> =
+        pattern.findAll(target.readText()).flatMap { e -> exportNames(e).asSequence() }.toSet()
+
+    private fun missingExports(scriptName: String, m: MatchResult, pattern: Regex): List<String> {
+        val target = File(mcpDir, m.groupValues[2])
+        if (!target.isFile) return emptyList() // наличие файла проверяет первый тест
+        val exports = exportedNames(target, pattern)
+        return importedNames(m).filterNot(exports::contains).map { name ->
+            scriptName + ": " + m.groupValues[2] + " не экспортирует " + name
+        }
     }
 
     /** Относительные импорты вида "./x.js" и "../y/z.js". */
