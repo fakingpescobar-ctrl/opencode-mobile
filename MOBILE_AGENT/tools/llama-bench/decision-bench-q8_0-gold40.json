@@ -5,13 +5,13 @@
   "bytes": 811843840,
   "runtime": "llama-bench-musl-16",
   "role": "choice над 5 кандидатами ядра, один forward pass",
-  "index_sha": "eb55e4f586281705",
+  "index_sha": "867816d6a262d606",
   "n": 40,
   "model_top1": 0.6,
-  "model_top3": 0.875,
-  "core_top1": 0.525,
+  "model_top3": 0.85,
+  "core_top1": 0.5,
   "core_top3": 0.85,
-  "avg_ms": 4012,
+  "avg_ms": 3752,
   "rows": [
     {
       "id": "g01",
@@ -50,7 +50,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": false,
-      "ms": 2756,
+      "ms": 2848,
       "prompt_tokens": 486
     },
     {
@@ -90,7 +90,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3504,
+      "ms": 3607,
       "prompt_tokens": 582
     },
     {
@@ -101,37 +101,37 @@
         "АРХИТЕКТУРА_ПАМЯТИ.md",
         "СОСТОЯНИЕ.md",
         "СОСТОЯНИЕ.md",
-        "ХАРНЕС.md",
-        "АРХИВ_СОСТОЯНИЯ.md"
+        "СОСТОЯНИЕ.md",
+        "ХАРНЕС.md"
       ],
       "choice_order": [
         {
-          "letter": "D",
-          "p": 0.619
-        },
-        {
           "letter": "B",
-          "p": 0.18
+          "p": 0.971
         },
         {
           "letter": "E",
-          "p": 0.113
+          "p": 0.015
         },
         {
           "letter": "C",
-          "p": 0.073
+          "p": 0.008
         },
         {
           "letter": "A",
-          "p": 0.016
+          "p": 0.004
+        },
+        {
+          "letter": "D",
+          "p": 0.002
         }
       ],
-      "model_top1": true,
+      "model_top1": false,
       "model_top3": true,
       "core_top1": false,
       "core_top3": false,
-      "ms": 3710,
-      "prompt_tokens": 585
+      "ms": 3709,
+      "prompt_tokens": 616
     },
     {
       "id": "g04",
@@ -170,7 +170,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3563,
+      "ms": 9830,
       "prompt_tokens": 566
     },
     {
@@ -210,7 +210,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3311,
+      "ms": 5893,
       "prompt_tokens": 563
     },
     {
@@ -250,7 +250,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3207,
+      "ms": 3030,
       "prompt_tokens": 540
     },
     {
@@ -260,22 +260,18 @@
       "core_top": [
         "ХАРНЕС.md",
         "ПРАВИЛА.md",
-        "ПРАВИЛА.md",
         "СОСТОЯНИЕ.md",
+        "ПРАВИЛА.md",
         "СОСТОЯНИЕ.md"
       ],
       "choice_order": [
         {
           "letter": "A",
-          "p": 0.978
+          "p": 0.979
         },
         {
           "letter": "B",
           "p": 0.012
-        },
-        {
-          "letter": "C",
-          "p": 0.005
         },
         {
           "letter": "E",
@@ -283,14 +279,18 @@
         },
         {
           "letter": "D",
-          "p": 0.001
+          "p": 0.003
+        },
+        {
+          "letter": "C",
+          "p": 0.002
         }
       ],
       "model_top1": false,
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3336,
+      "ms": 3323,
       "prompt_tokens": 555
     },
     {
@@ -330,7 +330,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3259,
+      "ms": 3182,
       "prompt_tokens": 549
     },
     {
@@ -370,7 +370,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": true,
-      "ms": 2880,
+      "ms": 2758,
       "prompt_tokens": 495
     },
     {
@@ -410,7 +410,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3426,
+      "ms": 3404,
       "prompt_tokens": 576
     },
     {
@@ -427,7 +427,7 @@
       "choice_order": [
         {
           "letter": "C",
-          "p": 0.99
+          "p": 0.991
         },
         {
           "letter": "A",
@@ -439,7 +439,7 @@
         },
         {
           "letter": "E",
-          "p": 0.002
+          "p": 0.001
         },
         {
           "letter": "D",
@@ -450,8 +450,8 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3285,
-      "prompt_tokens": 546
+      "ms": 3257,
+      "prompt_tokens": 553
     },
     {
       "id": "g12",
@@ -490,7 +490,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3730,
+      "ms": 3567,
       "prompt_tokens": 611
     },
     {
@@ -530,7 +530,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": false,
-      "ms": 3324,
+      "ms": 3153,
       "prompt_tokens": 561
     },
     {
@@ -570,7 +570,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3235,
+      "ms": 3063,
       "prompt_tokens": 548
     },
     {
@@ -610,7 +610,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": false,
-      "ms": 3683,
+      "ms": 3571,
       "prompt_tokens": 602
     },
     {
@@ -650,7 +650,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3590,
+      "ms": 5516,
       "prompt_tokens": 594
     },
     {
@@ -690,7 +690,7 @@
       "model_top3": false,
       "core_top1": false,
       "core_top3": false,
-      "ms": 3453,
+      "ms": 3480,
       "prompt_tokens": 578
     },
     {
@@ -730,7 +730,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3750,
+      "ms": 3357,
       "prompt_tokens": 594
     },
     {
@@ -770,7 +770,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 4113,
+      "ms": 3018,
       "prompt_tokens": 536
     },
     {
@@ -778,40 +778,40 @@
       "query": "ports memory mcp /mcp /mobile MemoryMcp",
       "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
       "core_top": [
+        "ПРАВИЛА.md",
         "АРХИТЕКТУРА_ПАМЯТИ.md",
-        "docs/agent-rules.md",
-        "docs/agent-rules.md",
-        "АРХИТЕКТУРА_ПАМЯТИ.md",
-        "АРХИТЕКТУРА_ПАМЯТИ.md"
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "ХАРНЕС.md"
       ],
       "choice_order": [
         {
-          "letter": "A",
-          "p": 0.92
-        },
-        {
-          "letter": "D",
-          "p": 0.061
+          "letter": "B",
+          "p": 0.334
         },
         {
           "letter": "E",
-          "p": 0.013
+          "p": 0.258
         },
         {
           "letter": "C",
-          "p": 0.004
+          "p": 0.245
         },
         {
-          "letter": "B",
-          "p": 0.001
+          "letter": "D",
+          "p": 0.135
+        },
+        {
+          "letter": "A",
+          "p": 0.028
         }
       ],
       "model_top1": true,
       "model_top3": true,
-      "core_top1": true,
+      "core_top1": false,
       "core_top3": true,
-      "ms": 4713,
-      "prompt_tokens": 588
+      "ms": 3640,
+      "prompt_tokens": 603
     },
     {
       "id": "g21",
@@ -850,7 +850,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 4573,
+      "ms": 3464,
       "prompt_tokens": 590
     },
     {
@@ -890,7 +890,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 4601,
+      "ms": 3554,
       "prompt_tokens": 588
     },
     {
@@ -930,7 +930,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 4518,
+      "ms": 3253,
       "prompt_tokens": 585
     },
     {
@@ -970,7 +970,7 @@
       "model_top3": false,
       "core_top1": true,
       "core_top3": true,
-      "ms": 4752,
+      "ms": 3579,
       "prompt_tokens": 607
     },
     {
@@ -1010,7 +1010,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 4653,
+      "ms": 3403,
       "prompt_tokens": 599
     },
     {
@@ -1050,7 +1050,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 4887,
+      "ms": 3915,
       "prompt_tokens": 638
     },
     {
@@ -1090,7 +1090,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 3942,
+      "ms": 2970,
       "prompt_tokens": 514
     },
     {
@@ -1130,7 +1130,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 4291,
+      "ms": 3310,
       "prompt_tokens": 552
     },
     {
@@ -1170,7 +1170,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 4342,
+      "ms": 3368,
       "prompt_tokens": 570
     },
     {
@@ -1186,31 +1186,31 @@
       ],
       "choice_order": [
         {
+          "letter": "C",
+          "p": 0.793
+        },
+        {
           "letter": "A",
-          "p": 0.807
+          "p": 0.109
         },
         {
           "letter": "B",
-          "p": 0.11
-        },
-        {
-          "letter": "C",
-          "p": 0.052
+          "p": 0.06
         },
         {
           "letter": "E",
-          "p": 0.018
+          "p": 0.019
         },
         {
           "letter": "D",
-          "p": 0.014
+          "p": 0.019
         }
       ],
       "model_top1": true,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 4094,
+      "ms": 2965,
       "prompt_tokens": 540
     },
     {
@@ -1250,7 +1250,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 4011,
+      "ms": 3038,
       "prompt_tokens": 533
     },
     {
@@ -1290,7 +1290,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 4228,
+      "ms": 3295,
       "prompt_tokens": 561
     },
     {
@@ -1299,10 +1299,10 @@
       "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
       "core_top": [
         "АРХИТЕКТУРА_ПАМЯТИ.md",
-        "ПРАВИЛА.md",
-        "ПРАВИЛА.md",
-        "СОСТОЯНИЕ.md",
-        "СОСТОЯНИЕ.md"
+        "ХАРНЕС.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
+        "АРХИВ_СОСТОЯНИЯ.md"
       ],
       "choice_order": [
         {
@@ -1310,11 +1310,11 @@
           "p": 0.995
         },
         {
-          "letter": "E",
-          "p": 0.002
+          "letter": "C",
+          "p": 0.003
         },
         {
-          "letter": "C",
+          "letter": "E",
           "p": 0.001
         },
         {
@@ -1330,8 +1330,8 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 4313,
-      "prompt_tokens": 573
+      "ms": 2684,
+      "prompt_tokens": 480
     },
     {
       "id": "g35",
@@ -1370,7 +1370,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 3913,
+      "ms": 3027,
       "prompt_tokens": 526
     },
     {
@@ -1410,7 +1410,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 4079,
+      "ms": 3761,
       "prompt_tokens": 537
     },
     {
@@ -1450,7 +1450,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 4569,
+      "ms": 4461,
       "prompt_tokens": 608
     },
     {
@@ -1467,19 +1467,19 @@
       "choice_order": [
         {
           "letter": "A",
-          "p": 0.982
+          "p": 0.9
+        },
+        {
+          "letter": "D",
+          "p": 0.085
+        },
+        {
+          "letter": "C",
+          "p": 0.007
         },
         {
           "letter": "E",
           "p": 0.007
-        },
-        {
-          "letter": "C",
-          "p": 0.005
-        },
-        {
-          "letter": "D",
-          "p": 0.004
         },
         {
           "letter": "B",
@@ -1487,11 +1487,11 @@
         }
       ],
       "model_top1": false,
-      "model_top3": true,
+      "model_top3": false,
       "core_top1": false,
       "core_top3": false,
-      "ms": 5562,
-      "prompt_tokens": 730
+      "ms": 4988,
+      "prompt_tokens": 696
     },
     {
       "id": "g39",
@@ -1530,7 +1530,7 @@
       "model_top3": true,
       "core_top1": false,
       "core_top3": true,
-      "ms": 4987,
+      "ms": 4566,
       "prompt_tokens": 585
     },
     {
@@ -1570,7 +1570,7 @@
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 4879,
+      "ms": 4468,
       "prompt_tokens": 569
     },
     {
@@ -1579,39 +1579,39 @@
       "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
       "core_top": [
         "АРХИТЕКТУРА_ПАМЯТИ.md",
-        "ИССЛЕДОВАНИЕ_ПАМЯТИ_АГЕНТОВ.md",
         "СОСТОЯНИЕ.md",
         "ПРАВИЛА.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
         "АРХИТЕКТУРА_ПАМЯТИ.md"
       ],
       "choice_order": [
         {
-          "letter": "B",
-          "p": 0.794
-        },
-        {
           "letter": "A",
-          "p": 0.16
-        },
-        {
-          "letter": "C",
-          "p": 0.019
+          "p": 0.84
         },
         {
           "letter": "E",
-          "p": 0.018
+          "p": 0.054
+        },
+        {
+          "letter": "B",
+          "p": 0.05
+        },
+        {
+          "letter": "C",
+          "p": 0.035
         },
         {
           "letter": "D",
-          "p": 0.009
+          "p": 0.022
         }
       ],
-      "model_top1": false,
+      "model_top1": true,
       "model_top3": true,
       "core_top1": true,
       "core_top3": true,
-      "ms": 5471,
-      "prompt_tokens": 638
+      "ms": 4819,
+      "prompt_tokens": 637
     }
   ]
 }
