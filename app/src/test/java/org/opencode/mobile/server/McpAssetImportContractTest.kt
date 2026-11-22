@@ -130,11 +130,12 @@ class McpAssetImportContractTest {
         val exportPattern = Regex("$named|$listed")
         val importPattern = Regex("""import\s*\{([^}]*)\}\s*from\s*[\x22'](\.[^\x22']+)[\x22']""")
         val scripts = mcpDir.listFiles()?.filter { it.isFile && it.name.endsWith(".js") }.orEmpty()
-        val problems = scripts.asSequence().flatMap { script ->
-            importPattern.findAll(script.readText()).flatMap { m ->
-                missingExports(script.name, m, exportPattern).asSequence()
+        val problems = scripts.asSequence()
+            .flatMap { script ->
+                importPattern.findAll(script.readText())
+                    .flatMap { m -> missingExports(script.name, m, exportPattern).asSequence() }
             }
-        }.toList()
+            .toList()
         assertTrue(
             "именованных импортов без экспорта:\n" + problems.joinToString("\n"),
             problems.isEmpty(),
@@ -142,7 +143,8 @@ class McpAssetImportContractTest {
     }
 
     private fun importedNames(m: MatchResult): List<String> =
-        m.groupValues[1].split(",")
+        m.groupValues[1]
+            .split(",")
             .map { it.trim().substringBefore(" as ").trim() }
             .filter { it.isNotEmpty() }
 
@@ -154,10 +156,18 @@ class McpAssetImportContractTest {
         }
     }
 
-    private fun exportedNames(target: File, pattern: Regex): Set<String> =
-        pattern.findAll(target.readText()).flatMap { e -> exportNames(e).asSequence() }.toSet()
+    private fun exportedNames(
+        target: File,
+        pattern: Regex,
+    ): Set<String> = pattern.findAll(target.readText())
+        .flatMap { e -> exportNames(e).asSequence() }
+        .toSet()
 
-    private fun missingExports(scriptName: String, m: MatchResult, pattern: Regex): List<String> {
+    private fun missingExports(
+        scriptName: String,
+        m: MatchResult,
+        pattern: Regex,
+    ): List<String> {
         val target = File(mcpDir, m.groupValues[2])
         if (!target.isFile) return emptyList() // наличие файла проверяет первый тест
         val exports = exportedNames(target, pattern)
