@@ -39,6 +39,14 @@ status=$?
 
 if [ "$status" -eq 0 ]; then
   echo ""
+  echo "Тест: $ROOT/opencode/memory-adaptive-store.test.mjs"
+  echo ""
+  $RUN "$ROOT/opencode/memory-adaptive-store.test.mjs"
+  status=$?
+fi
+
+if [ "$status" -eq 0 ]; then
+  echo ""
   echo "Тест: $ROOT/opencode/memory-integration.test.mjs"
   echo ""
   $RUN "$ROOT/opencode/memory-integration.test.mjs"
