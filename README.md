@@ -9,8 +9,11 @@
 (сплиты, дедуп, карантин, квоты, пара `index_sha`/`gold_sha`, таблицы и
 схемы) — в `MOBILE_AGENT/РОСТ_ЗОЛОТОГО_КОРПУСА.md`. Куратор
 `MOBILE_AGENT/tools/curate-gold.mjs` и базовый прогон
-`MOBILE_AGENT/tools/baseline.mjs` работают только офлайн; гипотезы сравниваются
-внутри одной пары хэшей, дефолт ядра остаётся legacy.
+`MOBILE_AGENT/tools/baseline.mjs` и пульс `MOBILE_AGENT/tools/signal-status.mjs`
+работают только офлайн; гипотезы сравниваются внутри одной пары хэшей, дефолт
+ядра остаётся legacy. Тул `memory_signal` теперь пишет кандидатов в data-plane
+буфер (успех = `control`, провал = `miss`); в рантайме это заработает после
+следующего Release APK.
 
 Ядро памяти остаётся детерминированным FTS5-слоем с legacy fallback по
 умолчанию (`DEFAULT_MODE="legacy"`). Адаптивный слой
