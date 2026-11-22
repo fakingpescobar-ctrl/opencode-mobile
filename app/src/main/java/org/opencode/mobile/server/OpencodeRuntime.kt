@@ -1019,6 +1019,7 @@ object OpencodeRuntime {
         listOf(
             "mcp/memory-core.js" to "memory-core.js",
             "mcp/memory-adaptive.js" to "memory-adaptive.js",
+            "mcp/memory-adaptive-store.js" to "memory-adaptive-store.js",
             "mcp/memory-lemma.js" to "memory-lemma.js",
             "mcp/memory-index.mjs" to "memory-index.mjs",
             "mcp/memory-llm.js" to "memory-llm.js",
