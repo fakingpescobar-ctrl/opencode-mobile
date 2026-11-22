@@ -433,17 +433,19 @@ int lb_classify(const char *model_path, const char *prompt,
   const struct llama_vocab *vocab = llama_model_get_vocab(model);
 
   struct llama_context_params cp = llama_context_default_params();
-  cp.n_ctx = 8192;
-  cp.n_batch = 8192;
+  // Полный ctx=8192 для non-causal ModernBERT строит граф на 8192 токенов —
+  // на телефоне это уходит в swap. Наши пары(query,doc) короче 1024 токенов.
+  cp.n_ctx = 1024;
+  cp.n_batch = 1024;
   cp.n_threads = 8;
   cp.n_threads_batch = 8;
   struct llama_context *ctx = llama_init_from_model(model, cp);
   if (!ctx) { llama_model_free(model); llama_backend_free(); return -1; }
 
-  llama_token *ptok = (llama_token *)malloc(sizeof(llama_token) * 8192);
+  llama_token *ptok = (llama_token *)malloc(sizeof(llama_token) * 1024);
   if (!ptok) { llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1; }
   // BERT-токенизатор сам добавляет [CLS]/[SEP] при special=1.
-  int ntok = llama_tokenize(vocab, prompt, (int)strlen(prompt), ptok, 8192, true, true);
+  int ntok = llama_tokenize(vocab, prompt, (int)strlen(prompt), ptok, 1024, true, true);
   if (ntok <= 0) {
     free(ptok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
   }
@@ -492,16 +494,16 @@ int lb_embed(const char *model_path, const char *prompt,
   }
 
   struct llama_context_params cp = llama_context_default_params();
-  cp.n_ctx = 8192;
-  cp.n_batch = 8192;
+  cp.n_ctx = 1024;
+  cp.n_batch = 1024;
   cp.n_threads = 8;
   cp.n_threads_batch = 8;
   struct llama_context *ctx = llama_init_from_model(model, cp);
   if (!ctx) { llama_model_free(model); llama_backend_free(); return -1; }
 
-  llama_token *ptok = (llama_token *)malloc(sizeof(llama_token) * 8192);
+  llama_token *ptok = (llama_token *)malloc(sizeof(llama_token) * 1024);
   if (!ptok) { llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1; }
-  int ntok = llama_tokenize(vocab, prompt, (int)strlen(prompt), ptok, 8192, true, true);
+  int ntok = llama_tokenize(vocab, prompt, (int)strlen(prompt), ptok, 1024, true, true);
   if (ntok <= 0) {
     free(ptok); llama_free(ctx); llama_model_free(model); llama_backend_free(); return -1;
   }
@@ -542,4 +544,4 @@ int lb_quantize(const char *src, const char *dst, int ftype) {
   return llama_model_quantize(src, dst, &p) == 0 ? 0 : -1;
 }
 
-const char *lb_version(void) { return "llama-bench-musl-11"; }
+const char *lb_version(void) { return "llama-bench-musl-12"; }
