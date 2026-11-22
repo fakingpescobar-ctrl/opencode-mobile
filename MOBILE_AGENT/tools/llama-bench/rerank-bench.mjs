@@ -90,8 +90,9 @@ for (const g of gold) {
       console.error(`${g.id}/${i}: rc=${rc}`);
       continue;
     }
-    totalMs += metrics[1];
-    rowMs += metrics[1];
+    // persistent API: metrics[0]=decode мс, [1]=токенов, [2]=n_cls, [3]=n_embd
+    totalMs += metrics[0];
+    rowMs += metrics[0];
     pairs++;
     scored.push({ i, score: score[0] });
   }
