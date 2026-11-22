@@ -252,6 +252,25 @@ export function policySnapshot(dir) {
 }
 
 // --- raw_signals: кандидаты в золотой корпус -------------------------------
+//
+// Хэш эталона нужен рантайму, чтобы запечатать снимок в момент сигнала. Алгоритм
+// дублирует tools/gold-corpus.mjs.goldSha намеренно: тот модуль офлайн и в APK
+// не входит. Расхождение ловит тест в gold-corpus.test.mjs (сверка двух хэшей
+// на одном и том же gold.jsonl).
+
+function canonicalGold(value) {
+  if (Array.isArray(value)) return "[" + value.map(canonicalGold).join(",") + "]";
+  if (value && typeof value === "object") {
+    return "{" + Object.keys(value).sort()
+      .map((k) => JSON.stringify(k) + ":" + canonicalGold(value[k])).join(",") + "}";
+  }
+  return JSON.stringify(value);
+}
+
+export function goldSha(gold) {
+  return sha256(canonicalGold(Array.isArray(gold) ? gold : []));
+}
+
 // Отдельный запечатанный файл рядом с memory-adaptive.json. Так hash основного
 // состояния не ломается, VERSION=1 не меняется, старые состояния остаются
 // совместимыми. Всё остаётся в app-private filesDir; на GitHub уходит только
@@ -261,6 +280,10 @@ export const GOLD_SPLIT_SALT = "gold-v1";
 export const SPLIT_POLICY = "sha256-bucket-75-v1";
 export const SIGNAL_LIMITS = Object.freeze({
   maxCandidates: 200,
+  // Успешные запросы помечаются origin:control и нужны куратору как обычный
+  // фон: без них эталон вырождается в сборник одних промахов. Но если их не
+  // ограничить, они вытеснят промахи из буфера — поэтому отдельный лимит.
+  maxControl: 40,
   ttlMs: 7 * 24 * 60 * 60 * 1000,
   curateThreshold: 10,
   batchTarget: 15,
@@ -368,6 +391,15 @@ export function recordSignalCandidate(dir, cand) {
     note: "",
     ts: now,
   };
+  // Контрольных сигналов может быть сколь угодно много (каждый удачный
+  // запрос), а промахи ценнее. Не даем контролю занять весь буфер.
+  if (row.origin === "control") {
+    const controls = state.candidates.filter((c) =>
+      c.status === "raw" && c.origin === "control").length;
+    if (controls >= SIGNAL_LIMITS.maxControl) {
+      return { ok: false, reason: "control-quota-full", id: null };
+    }
+  }
   const candidates = state.candidates.concat([row]);
   let dropped = 0;
   while (candidates.length > SIGNAL_LIMITS.maxCandidates) {
