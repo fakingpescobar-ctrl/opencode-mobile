@@ -65,7 +65,8 @@ for (const f of CORE_FILES) {
 section("2. Живой memory.js: импорты, инструменты, диспатч");
 {
   const js = readFileSync(join(TMP, "memory.js"), "utf8");
-  for (const f of ["memory-core.js", "memory-index.mjs", "memory-adaptive.js", "memory-llm.js"]) {
+  for (const f of ["memory-core.js", "memory-index.mjs", "memory-adaptive.js",
+    "memory-adaptive-store.js", "memory-llm.js"]) {
     truthy(js.includes('from "./' + f + '"'), "импорт " + f);
   }
   // lemma/stemmer приходят транзитивно через core/index/adaptive — это дешевле
@@ -94,6 +95,16 @@ section("2. Живой memory.js: импорты, инструменты, дис
     truthy(js.includes('name: "' + t + '"'), t + ": зарегистрирован");
     truthy(js.includes('case "' + t + '"'), t + ": есть dispatch");
   }
+  // Проводка саморастущего корпуса: memory_signal только расширяется, старый
+  // dispatch и имя тула не меняются.
+  truthy(js.includes("recordSignalCandidate(DATA_DIR"),
+    "memory_signal пишет кандидата в data-plane");
+  truthy(js.includes('goldSha(coreGold({}))'),
+    "сигнал несёт gold_sha снимка");
+  truthy(js.includes('a.success === true ? "control" : "miss"'),
+    "успех = control, провал = miss");
+  truthy(js.includes("noteBoot(\"recordSignalCandidate:"),
+    "сбой буфера не роняет MCP");
   truthy(js.includes("approved_by required"), "approve требует подпись");
   truthy(js.includes("ingest(DB, args"), "ingest передаёт DB первым аргументом");
   truthy(js.includes("approve(DB,") && js.includes("rollback(DB,"), "approve/rollback передают DB");
