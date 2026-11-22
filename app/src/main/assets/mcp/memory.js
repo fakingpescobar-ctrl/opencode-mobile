@@ -610,10 +610,17 @@ const memoryTools = [
   { name: "memory_suggest", description: " Подсказка источников по выученным закономерностям (термин -> источник). Opt-in: на ранжирование ядра не влияет.",
     inputSchema: { type: "object", properties: {
       query: { type: "string" }, limit: { type: "number" } }, required: ["query"] } },
-  { name: "memory_signal", description: " Meta-learning: отметить, помог или помешал сигнал (anchor/graph/kind/authority) для типа запроса. Возвращает политику доверия по сигналам.",
+  { name: "memory_signal", description: " Meta-learning: отметить, помог или помешал сигнал (anchor/graph/kind/authority) для типа запроса. Возвращает политику доверия по сигналам. Добавочные поля query/origin/expect_* пишут кандидата в data-plane буфер саморастущего gold-корпуса; имя тула и обязательные поля не меняются.",
     inputSchema: { type: "object", properties: {
       query_kind: { type: "string" }, signal: { type: "string" },
-      success: { type: "boolean" } }, required: ["query_kind", "signal"] } },
+      success: { type: "boolean" },
+      query: { type: "string", description: "Уникальный запрос для буфера сигналов; без него кандидат не создаётся." },
+      candidate_chunk_ids: { type: "array", items: { type: "string" }, description: "ID кандидатов ядра по порядку." },
+      expected_chunk_id: { type: "string", description: "ID ожидаемого чанка, если он известен." },
+      expect_source: { type: "string", description: "Ожидаемый источник для gold-кейса." },
+      expect_kind: { type: "string" },
+      origin: { type: "string", enum: ["miss", "control"], description: "miss — провал, control — удачный запрос; по умолчанию выводится из success." } },
+      required: ["query_kind", "signal"] } },
 ];
 
 const MOBILE_INSTALL_TOOLS = [
