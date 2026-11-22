@@ -1,12 +1,12 @@
 {
-  "total": 2,
+  "total": 3,
   "by_status": {
-    "raw": 2
+    "raw": 3
   },
   "by_origin": {
-    "miss": 2
+    "miss": 3
   },
-  "raw_unique": 2,
+  "raw_unique": 3,
   "threshold": 10,
   "eligible": false,
   "staged": 0,
@@ -17,5 +17,5 @@
     "curateThreshold": 10,
     "batchTarget": 15
   },
-  "at": 1795365267421
+  "at": 1795369057458
 }
