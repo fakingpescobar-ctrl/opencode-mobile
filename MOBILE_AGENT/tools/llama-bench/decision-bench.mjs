@@ -8,6 +8,7 @@ import { dlopen, FFIType } from "bun:ffi";
 import { Database } from "bun:sqlite";
 import { readFileSync, writeFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { goldSha } from "../gold-corpus.mjs";
 
 const ROOT = "/storage/emulated/0/Documents/OpencodeTerminal/MOBILE_AGENT";
 const SO = "/data/user/0/org.opencode.mobile.debug/files/musl/libllama-bench.so";
@@ -82,6 +83,7 @@ idx.indexDocs(DB, ROOT);
 const index = core.indexSha(DB);
 const gold = readFileSync(ROOT + "/memory/gold.jsonl", "utf8")
   .split("\n").filter(Boolean).map((l) => JSON.parse(l));
+const goldShaValue = goldSha(gold);
 
 const rows = [];
 let modelTop1 = 0, modelTop3 = 0, coreTop1 = 0, coreTop3 = 0;
@@ -140,6 +142,7 @@ const out = {
   runtime,
   role: "choice над 5 кандидатами ядра, один forward pass",
   index_sha: index,
+  gold_sha: goldShaValue,
   n: rows.length,
   model_top1: modelTop1 / n,
   model_top3: modelTop3 / n,
