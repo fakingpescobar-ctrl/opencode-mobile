@@ -79,6 +79,7 @@ for (let i = 0; i < LETTERS.length; i++) {
 
 const DB = new Database(":memory:");
 idx.indexDocs(DB, ROOT);
+const index = core.indexSha(DB);
 const gold = readFileSync(ROOT + "/memory/gold.jsonl", "utf8")
   .split("\n").filter(Boolean).map((l) => JSON.parse(l));
 
@@ -138,6 +139,7 @@ const out = {
   bytes: modelSize,
   runtime,
   role: "choice над 5 кандидатами ядра, один forward pass",
+  index_sha: index,
   n: rows.length,
   model_top1: modelTop1 / n,
   model_top3: modelTop3 / n,
