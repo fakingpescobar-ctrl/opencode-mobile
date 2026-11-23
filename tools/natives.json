@@ -26,6 +26,11 @@
         "bytes": 245505128,
         "sha256": "f093a3ea0b1572176c5d95504e910fc25d35dfe460cce466fcb6d64c1547951c",
         "note": "сверено на телефоне 16.11: npm cli-linux-arm64-musl-2.3.0.tgz, ELF + маркеры libstdc++.so.6/libgcc_s.so.1 (musl, не windows/v1)"
+      },
+      "2.4.0": {
+        "bytes": 264772712,
+        "sha256": "dba039147df3eeeca202a57f2594c5aff7c0078c129666c30f0250faeb8537f5",
+        "note": "сверено на телефоне 23.11: npm cli-linux-arm64-musl-2.4.0.tgz, бинарь байтно равен докачанному CoreUpdater в files/core/libopencode.so"
       }
     }
   },
