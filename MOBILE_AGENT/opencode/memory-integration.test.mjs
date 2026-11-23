@@ -105,6 +105,18 @@ section("2. Живой memory.js: импорты, инструменты, дис
     "успех = control, провал = miss");
   truthy(js.includes("noteBoot(\"recordSignalCandidate:"),
     "сбой буфера не роняет MCP");
+  // Волна 1: fail-closed манифест, подпись оператора, receipt цитат.
+  truthy(js.includes("manifestStatus(DOCS_DIR)"), "ensureCoreIndex сверяет манифест ДО индексации");
+  truthy(js.includes('status: "no-manifest"'), "без манифеста индекс не строится");
+  truthy(js.includes("MCP_OPERATOR_ID"), "подпись оператора — отдельный env, недоступный модели");
+  truthy(js.includes("requireOperator("), "approve/rollback требуют подпись оператора");
+  truthy(js.includes("externalApproval === true"), "внешний provenance требует явного одобрения");
+  truthy(js.includes("{ pack_id: a.pack_id }"), "memory_outcome передаёт pack_id в receipt-проверку");
+  const coreJs = readFileSync(CORE + "memory-core.js", "utf8");
+  truthy(coreJs.includes("memory_pack_receipt"), "receipt-таблица в схеме ядра");
+  truthy(coreJs.includes("externalApproval !== true"), "гейт provenance в ядре");
+  const adviceTrustGuard = "/moltbook|advice/i.test(String(source";
+  truthy(coreJs.includes(adviceTrustGuard), "внешние советы понижены ДО ветки .md");
   truthy(js.includes("approved_by required"), "approve требует подпись");
   truthy(js.includes("ingest(DB, args"), "ingest передаёт DB первым аргументом");
   truthy(js.includes("approve(DB,") && js.includes("rollback(DB,"), "approve/rollback передают DB");

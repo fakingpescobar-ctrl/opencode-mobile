@@ -590,7 +590,7 @@ section("6. Временны́е факты, слоты и связи");
 {
   function makeFact(DB, id, content, topicKey, validFrom, confidence = 0.5, reason = "", links = []) {
     const staged = core.ingest(DB, {
-      content, id, provenance: "test-op", kind: "fact",
+      content, id, provenance: "own-test", kind: "fact",
       topic_key: topicKey, valid_from: validFrom, confidence, reason, links,
     }, null);
     return core.approve(DB, staged.id, "operator", reason);
@@ -657,7 +657,7 @@ section("6. Временны́е факты, слоты и связи");
     const DB = new Database(":memory:");
     idx.indexDocs(DB, DOCS);
     core.ingest(DB, {
-      content: "заплатка памяти", id: "fact-links", provenance: "test-op", kind: "fact",
+      content: "заплатка памяти", id: "fact-links", provenance: "own-test", kind: "fact",
       topic_key: "runtime/bug-fix", valid_from: 1000, confidence: 0.8, reason: "патч",
       links: [
         { target: "fact-report-v1", relation: "fixes", evidence: "исправление каталога" },
@@ -706,7 +706,7 @@ section("7. Ночной проход предложений");
 {
   function makeFact(DB, id, content, topicKey, validFrom, confidence = 0.5, links = []) {
     const staged = core.ingest(DB, {
-      content, id, provenance: "test-op", kind: "fact",
+      content, id, provenance: "own-test", kind: "fact",
       topic_key: topicKey, valid_from: validFrom, confidence, reason: "тест", links,
     }, null);
     return core.approve(DB, staged.id, "operator", "тест");
@@ -1068,6 +1068,77 @@ section("12. Карта памяти, self-supervised mining и meta-learning с
   eq(pol[0].n, 2, "счётчик исходов корректен");
   eq(mmap.signalPolicy(D, "unknown-kind").length, 0, "типы запросов изолированы");
   D.close();
+}
+
+// ------------------------------------ 12. Волна 1: гейты безопасности
+section("12. Волна 1: подпись, provenance и receipt цитаты");
+{
+  // 12.1. approve — настоящий гейт по provenance
+  {
+    const DB = new Database(":memory:");
+    const ext = core.ingest(DB, { content: "совет со стороны", id: "wave1-ext",
+      provenance: "moltbook" }, null);
+    let threw = false;
+    try { core.approve(DB, ext.id, "operator", "без гейта"); }
+    catch (e) { threw = /externalApproval/.test(e.message); }
+    truthy(threw, "approve отвергает внешний provenance без externalApproval");
+    const ap = core.approve(DB, ext.id, "operator", "явно одобрено", { externalApproval: true });
+    truthy(!!ap.audit_id, "approve с externalApproval проходит");
+    const unk = core.ingest(DB, { content: "неизвестный источник", id: "wave1-unk" }, null);
+    let threw2 = false;
+    try { core.approve(DB, unk.id, "operator"); }
+    catch (e) { threw2 = /externalApproval/.test(e.message); }
+    truthy(threw2, "approve отвергает unknown provenance");
+    DB.close();
+  }
+
+  // 12.2. acceptProposal не отмывает внешний факт в "operator"
+  {
+    const DB = new Database(":memory:");
+    idx.indexDocs(DB, DOCS);
+    const mk = (id, content, vf) => {
+      const s = core.ingest(DB, { content, id, kind: "fact", topic_key: "wave1/prov",
+        provenance: "web", valid_from: vf }, null);
+      return core.approve(DB, s.id, "operator", "принято явно", { externalApproval: true });
+    };
+    mk("wave1-src", "внешний факт один", 1000);
+    mk("wave1-src2", "внешний факт два", 2000);
+    core.runProposalPass(DB, { at: 3000 });
+    const prop = DB.prepare("SELECT id, source FROM memory_proposal WHERE source LIKE 'wave1-%' LIMIT 1").get();
+    truthy(!!prop, "предложение создано из внешнего факта");
+    const srcProv = DB.prepare("SELECT provenance FROM memory_fact WHERE id=?").get(prop.source).provenance;
+    eq(srcProv, "web", "исходный факт внешний");
+    let threw = false;
+    try { core.acceptProposal(DB, prop.id, "operator", "без гейта"); }
+    catch (e) { threw = /externalApproval/.test(e.message); }
+    truthy(threw, "acceptProposal не одобряет внешний факт молча");
+    core.acceptProposal(DB, prop.id, "operator", "явно", { externalApproval: true });
+    const newProv = DB.prepare("SELECT provenance FROM memory_fact WHERE id=?")
+      .get("proposal-" + prop.id).provenance;
+    eq(newProv, "web", "provenance унаследован, а не переписан в operator");
+    DB.close();
+  }
+
+  // 12.3. receipt: достроенная моделью цитата не поднимает вес чанка
+  {
+    const DB = new Database(":memory:");
+    idx.indexDocs(DB, DOCS);
+    const q = "куда plugin пишет отчёт moltbook";
+    const pack = core.memoryPack(DB, q, { budgetTokens: 1024, limit: 8 });
+    truthy(!!pack.pack_id, "memoryPack выдал pack_id");
+    truthy(Array.isArray(pack.issued) && pack.issued.length > 0, "issued не пустой");
+    const good = pack.issued[0].id;
+    const out = core.learnOutcome(DB, q, [good, "фэйковый-чанк"], "success", 1,
+      "receipt", { pack_id: pack.pack_id });
+    eq(out.hallucinated.length, 1, "подстроенная цитата поймана");
+    eq(out.hallucinated[0], "фэйковый-чанк", "именно она помечена");
+    eq(out.verified, 1, "реальная цитата принята");
+    eq(DB.prepare("SELECT uses FROM memory_utility WHERE chunk_id=?").get("фэйковый-чанк"),
+      null, "Q фэйкового чанка не создан");
+    const goodRow = DB.prepare("SELECT uses FROM memory_utility WHERE chunk_id=?").get(good);
+    eq(goodRow.uses, 1, "Q реального чанка обновлён");
+    DB.close();
+  }
 }
 
 // ---------------------------------------------------------------- итог

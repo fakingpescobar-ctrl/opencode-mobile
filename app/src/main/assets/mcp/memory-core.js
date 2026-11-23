@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS memory_outcome (
   outcome TEXT NOT NULL, reward REAL NOT NULL DEFAULT 0,
   at INTEGER NOT NULL, note TEXT NOT NULL DEFAULT ''
 );
+-- v5: receipt выданного пак. learnOutcome сверяет chunk_ids с реально выданными:
+-- галлюцинированная моделью цитата не должна поднимать вес чужого чанка.
+CREATE TABLE IF NOT EXISTS memory_pack_receipt (
+  pack_id TEXT PRIMARY KEY, query_sha TEXT NOT NULL,
+  ids TEXT NOT NULL, at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pack_receipt_query ON memory_pack_receipt(query_sha, at);
 -- v4: консолидированные наблюдения (Hindsight-like beliefs с proof count).
 CREATE TABLE IF NOT EXISTS memory_observation (
   id TEXT PRIMARY KEY, topic_key TEXT NOT NULL, content TEXT NOT NULL,
@@ -249,14 +256,31 @@ function recencyOf(created, now) {
   return 0.5 + 0.5 * Math.exp(-age / HALF_LIFE_MS);
 }
 
-function trustMultiplier(provenance, source) {
+function trustMultiplier(provenance, source, anchors = []) {
   const p = String(provenance || source || "").toLowerCase();
   if (["operator", "user", "own-log", "own-test", "own-runtime", "phone-agent"].includes(p)) return 1.0;
   if (["moltbook", "external-agent", "guide", "web", "external"].includes(p)) return 0.85;
+  // v5: путь к внешнему совету понижаем ДО ветки .md. Иначе docs/MOLTBOOK_ADVICE.md
+  // и MOLTBOOK_REPORT.md получали trust 1.0 как ПРАВИЛА.md — совет со стороны
+  // ранжировался наравне с нашими правилами. Если вопрос ЯВНО про advice, штраф
+  // снимается: пользователь сам попросил внешний совет, прятать его не нужно.
+  if (/moltbook|advice/i.test(String(source || ""))) {
+    return Array.isArray(anchors) && anchors.includes("advice") ? 1.0 : 0.85;
+  }
   // Наша собственная память — исходники в MOBILE_AGENT/. Их автор — агент/оператор,
   // а не «неизвестный внешний источник». Иначе все rule/state занижались в 0.7.
   if (/\.md$/i.test(String(source || "")) || /\.(md|jsonl)$/i.test(String(source || ""))) return 1.0;
   return 0.7;
+}
+
+// v5: только эти источники агент мог получить сам или от человека. Всё остальное
+// (включая unknown) — предложение, которое обязан пропустить человек. Используется
+// и в approve как гейт, и при переносе provenance из факта в предложение.
+const OWN_PROVENANCE = new Set([
+  "operator", "user", "own-log", "own-test", "own-runtime", "phone-agent",
+]);
+function isOwnProvenance(value) {
+  return OWN_PROVENANCE.has(String(value || "").trim().toLowerCase());
 }
 
 // Приоритет источника при дедупликации одинакового текста:
@@ -458,7 +482,7 @@ function recallDocsOnce(DB, query, opts = {}) {
     const authority = effectiveAuthority(c.kind, anchors);
     const graph = graphProximity(graphReached, c.id);
     const recency = recencyOf(c.created, now);
-    const trust = trustMultiplier(c.source, c.source);
+    const trust = trustMultiplier(c.source, c.source, anchors);
     const fb = feedback.get(c.id) || 0;
     const fbMul = 1 + 0.06 * Math.max(-0.5, Math.min(1, fb));
     // Явный kind-якорь ("советы" -> advice, "правило" -> rule) — это более
@@ -577,6 +601,7 @@ export function memoryPack(DB, query, opts = {}) {
   let used = 0;
   const out = [];
   const packedSources = new Set();
+  const issued = []; // v5: receipt — какие чанки реально отданы модели
   let packedCount = 0;
   let curTitle = "";
   let buf = [];
@@ -587,6 +612,11 @@ export function memoryPack(DB, query, opts = {}) {
     used += est;
     packedCount++;
     packedSources.add(h.source);
+    issued.push({
+      id: String(h.id || `${h.source}:${h.line_from}`),
+      sha: sha256(String(h.text || "")).slice(0, 16),
+      source: h.source, line_from: h.line_from, line_to: h.line_to,
+    });
     const title = kindToTitle.get(h.kind) || "ДОКУМЕНТЫ";
     if (title !== curTitle) { flush(); curTitle = title; buf = [`## ${title}`]; }
     buf.push(`### ${h.source} :: ${h.heading} (${h.line_from}-${h.line_to}) [score ${h.score}]`);
@@ -594,12 +624,28 @@ export function memoryPack(DB, query, opts = {}) {
     buf.push(`> why: ${JSON.stringify(h.why)}`);
   }
   flush();
+  // v5: сохраняем receipt выданного набора, чтобы learnOutcome мог отличить
+  // реально показанную моделью цитату от достроенной. Запись необязательна
+  // для самой выдачи — при сбое пак остаётся прежним, просто без verify.
+  const at = Date.now();
+  const qsha = sha256(String(query || "").toLowerCase().trim()).slice(0, 16);
+  let packId = "";
+  try {
+    packId = `pack-${sha256(qsha + "|" + issued.map((x) => x.id).join(",") + "|" + at).slice(0, 16)}`;
+    DB.prepare(`INSERT OR IGNORE INTO memory_pack_receipt(pack_id, query_sha, ids, at)
+      VALUES (?, ?, ?, ?)`).run(packId, qsha, JSON.stringify(issued), at);
+    const n = Number(DB.prepare("SELECT count(*) n FROM memory_pack_receipt").get().n);
+    if (n > 1000) {
+      DB.prepare(`DELETE FROM memory_pack_receipt WHERE pack_id IN
+        (SELECT pack_id FROM memory_pack_receipt ORDER BY at DESC LIMIT -1 OFFSET 500)`).run();
+    }
+  } catch { packId = ""; }
   return {
     query, budgetTokens: budget, usedTokensEstimate: used,
     packed: out.join("\n\n"), chunks: packedCount,
     sources: [...packedSources],
     topScore: hits.length ? hits[0].score : 0,
-    index_sha: indexSha(DB), at: Date.now(),
+    index_sha: indexSha(DB), at, pack_id: packId, issued,
   };
 }
 
@@ -685,6 +731,16 @@ export function approve(DB, id, approvedBy = "operator", reason = "", opts = {})
   const row = DB.prepare("SELECT * FROM memory_staged WHERE id = ?").get(id);
   if (!row) throw new Error("staged memory not found: " + id);
 
+  // v5: approve — настоящий гейт, а не формальная галочка. Раньше provenance и
+  // auto_applyable только возвращались вызывающему: инжектированная модель с
+  // токеном MCP могла сама approve внешний текст. Внешний/unknown источник
+  // требует явного opts.externalApproval=true и непустой подписи.
+  if (!String(approvedBy || "").trim()) throw new Error("approve: approved_by required");
+  if (!isOwnProvenance(row.provenance) && opts.externalApproval !== true) {
+    throw new Error("approve: external/unknown provenance requires externalApproval=true: " +
+      String(row.provenance || "unknown"));
+  }
+
   // Необязательный held-out gate: baseline меряем ДО коммита, иначе rollback
   // нечего сравнивать. По умолчанию opts.gate !== true — путь байтно прежний.
   const gateOn = opts && opts.gate === true;
@@ -763,8 +819,9 @@ function withApproveGate(DB, applied, gateOn, suite, gold, baseline, opts) {
   return { ...applied, gate };
 }
 
-export function rollback(DB, auditId) {
+export function rollback(DB, auditId, approvedBy = "system") {
   ensureCoreSchema(DB);
+  const who = String(approvedBy || "system");
   const snap = DB.prepare("SELECT payload FROM memory_snapshot WHERE audit_id = ?").get(auditId);
   if (!snap) throw new Error("audit snapshot not found: " + auditId);
   const saved = JSON.parse(snap.payload);
@@ -790,7 +847,7 @@ export function rollback(DB, auditId) {
       // v4: аудит append-only. Вместо тихого удаления пишем компенсирующую
       // запись — цепочка hash-chain остаётся непрерывной и проверяемой.
       writeAudit(DB, `rollback-${auditId}`, "rollback", row.id, row.sha,
-        "compensating rollback of " + auditId, Date.now(), "system");
+        "compensating rollback of " + auditId, Date.now(), who);
       bumpEpoch(DB);
       DB.exec("COMMIT");
     } catch (e) {
@@ -806,7 +863,7 @@ export function rollback(DB, auditId) {
         provenance=excluded.provenance, at=excluded.at`)
       .run(row.id, row.content, row.sha, row.provenance, row.at);
     writeAudit(DB, `rollback-${auditId}`, "rollback", row.id, row.sha,
-      "compensating rollback of " + auditId, Date.now(), "system");
+      "compensating rollback of " + auditId, Date.now(), who);
     bumpEpoch(DB);
     DB.exec("COMMIT");
   } catch (e) {
@@ -989,10 +1046,17 @@ export function acceptProposal(DB, id, approvedBy = "operator", reason = "", opt
   if (p.status === "accepted") return { reused: true, id, status: "accepted", audit_id: p.audit_id };
   if (p.status === "rejected") throw new Error("rejected proposal requires reopen: " + id);
   const stagedId = `proposal-${id}`;
+  // v5: раньше жёстко писалось "operator" — внешний факт, одобренный один раз,
+  // «отмывался» в доверенный. Переносим provenance из исходного факта; approve
+  // ниже его проверит и потребует externalApproval для чужих источников.
+  const srcFact = p.source
+    ? DB.prepare("SELECT provenance FROM memory_fact WHERE id = ?").get(p.source)
+    : null;
+  const prov = srcFact ? String(srcFact.provenance || "unknown") : "unknown";
   ingest(DB, {
     id: stagedId, content: p.content, kind: "fact", topic_key: p.topic_key,
     valid_from: p.valid_from, confidence: p.contribution || 0.5,
-    provenance: "operator",
+    provenance: prov,
     reason: reason || p.reason || `proposal ${p.kind}`,
     links: p.target ? [{
       target: p.target,
@@ -1037,13 +1101,33 @@ export function rollbackProposal(DB, id) {
 
 // Credit/blame: что именно попало в контекст и к чему привело. Q обновляется
 // из внешнего reward — веса модели и legacy-ранжирование не трогаются.
-export function learnOutcome(DB, query, chunkIds, outcome = "success", reward = 1, note = "") {
+export function learnOutcome(DB, query, chunkIds, outcome = "success", reward = 1, note = "", opts = {}) {
   ensureCoreSchema(DB);
   const ids = [...new Set((chunkIds || []).map(String))].slice(0, 32);
   const r = clamp(Number.isFinite(reward) ? reward : (outcome === "success" ? 1 : outcome === "failure" ? -1 : 0), -1, 1);
   const qsha = sha256(String(query || "").toLowerCase().trim()).slice(0, 16);
   const id = `out-${sha256(qsha + "|" + ids.join(",") + "|" + r + "|" + Date.now()).slice(0, 16)}`;
   const at = Date.now();
+
+  // v5: receipt-проверка. pack_id из memoryPack — самый строгий путь; без него
+  // берём последний receipt того же запроса. Нет receipt вообще — старый путь
+  // (обратная совместимость), но в ответе честно verified=false.
+  const packId = String(opts.pack_id || "");
+  let receipt = null;
+  try {
+    receipt = packId
+      ? DB.prepare("SELECT ids FROM memory_pack_receipt WHERE pack_id = ?").get(packId)
+      : DB.prepare("SELECT ids FROM memory_pack_receipt WHERE query_sha = ? ORDER BY at DESC LIMIT 1").get(qsha);
+  } catch { receipt = null; }
+  let allowed = null;
+  if (receipt || packId) {
+    allowed = new Set();
+    try {
+      for (const x of JSON.parse(receipt?.ids || "[]")) allowed.add(String(x && x.id ? x.id : x));
+    } catch { /* пустой набор = всё не верифицировано */ }
+  }
+  const hallucinated = allowed ? ids.filter((cid) => !allowed.has(cid)) : [];
+  const verified = allowed ? ids.filter((cid) => allowed.has(cid)) : ids.slice();
   const tx = DB.transaction(() => {
     DB.prepare(`INSERT INTO memory_outcome(id, query_sha, chunk_ids, outcome, reward, at, note)
       VALUES (?, ?, ?, ?, ?, ?, ?)`)
@@ -1053,7 +1137,9 @@ export function learnOutcome(DB, query, chunkIds, outcome = "success", reward = 
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(chunk_id) DO UPDATE SET q=excluded.q, uses=excluded.uses,
         successes=excluded.successes, failures=excluded.failures, last_used=excluded.last_used`);
-    for (const cid of ids) {
+    // Неверифицированные (достроенные моделью) цитаты НЕ трогают Q — иначе
+    // галлюцинация повышает полезность чанка, которого модель не видела.
+    for (const cid of verified) {
       const cur = get.get(cid) || { q: 0.5, uses: 0, successes: 0, failures: 0 };
       const q = clamp(Number(cur.q) + UTILITY_ALPHA * (clamp((r + 1) / 2) - Number(cur.q)));
       put.run(cid, q, Number(cur.uses) + 1,
@@ -1062,7 +1148,10 @@ export function learnOutcome(DB, query, chunkIds, outcome = "success", reward = 
     bumpEpoch(DB);
   });
   tx();
-  return { id, query_sha: qsha, chunks: ids.length, reward: r, outcome: String(outcome) };
+  return {
+    id, query_sha: qsha, chunks: ids.length, reward: r, outcome: String(outcome),
+    pack_id: packId, verified: verified.length, hallucinated,
+  };
 }
 
 // «Dreaming»: дешёвая офлайн-сверка фактов в наблюдения с proof count

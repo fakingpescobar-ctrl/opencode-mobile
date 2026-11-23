@@ -16,7 +16,7 @@ import {
   MODES, DEFAULT_MODE,
   ingest, approve, rollback, runBench,
 } from "./memory-core.js";
-import { indexDocs } from "./memory-index.mjs";
+import { indexDocs, manifestStatus } from "./memory-index.mjs";
 import {
   confidenceOf, conceptThread, learnFromFeedback, adaptivePack, runAdaptiveBench,
 } from "./memory-adaptive.js";
@@ -365,8 +365,19 @@ function ensureCoreIndex(force = false) {
   if (coreIndex && !force) return coreIndex;
   if (!DOCS_DIR) return { status: "no-docs-dir", files: 0, chunks: 0, sources: 0, docsDir: "" };
   try {
+    // v5: манифест — замок, а не декорация. Без него collectSources уходит в
+    // обход всего дерева .md и индексирует подброшенный файл без approve.
+    // Проверяем ДО indexDocs: нет манифеста — памяти нет, точка.
+    const st = manifestStatus(DOCS_DIR);
+    if (!st.enabled) {
+      coreIndex = { status: "no-manifest", files: 0, chunks: 0, sources: 0,
+        docsDir: DOCS_DIR, ...st, index_sha: indexSha(DB) };
+      return coreIndex;
+    }
     const stat = indexDocs(DB, DOCS_DIR);
-    coreIndex = { ...stat, status: "ok", docsDir: DOCS_DIR, index_sha: indexSha(DB) };
+    coreIndex = { ...stat, status: st.rejected.length ? "partial" : "ok",
+      docsDir: DOCS_DIR, accepted: st.accepted, rejected: st.rejected, total: st.total,
+      index_sha: indexSha(DB) };
     return coreIndex;
   } catch (e) {
     return { status: "error", error: String((e && e.message) || e), docsDir: DOCS_DIR };
@@ -558,18 +569,21 @@ const memoryTools = [
       kind: { type: "string", enum: ["doc", "fact"] }, topic_key: { type: "string" },
       valid_from: { type: "number" }, confidence: { type: "number" },
       reason: { type: "string" }, links: { type: "array" } }, required: ["content"] } },
-  { name: "memory_approve", description: " Применить staged-запись: создать audit-запись и снимок для отката. approved_by обязателен — approve без подписи запрещён. gate=true гоняет held-out gate сразу после approve и при регрессе >maxDrop с autoRollback=true откатывает по audit_id.",
+  { name: "memory_approve", description: " Применить staged-запись: создать audit-запись и снимок для отката. approved_by обязателен и сверяется с MCP_OPERATOR_ID. Внешний/unknown provenance требует externalApproval=true. gate=true гоняет held-out gate сразу после approve и при регрессе >maxDrop с autoRollback=true откатывает по audit_id.",
     inputSchema: { type: "object", properties: {
       id: { type: "string" }, approved_by: { type: "string" }, reason: { type: "string" },
+      externalApproval: { type: "boolean" },
       gate: { type: "boolean" }, suite: { type: "string" }, baseline: { type: "number" },
       maxDrop: { type: "number" }, autoRollback: { type: "boolean" }, scope: { type: "string" },
       gold_path: { type: "string" }, gold: { type: "array", items: { type: "object" } } },
       required: ["id", "approved_by"] } },
-  { name: "memory_rollback", description: " Откатить approve по audit_id: восстановить staged-запись и дописать компенсирующую аудит-запись. Исходный аудит НЕ удаляется — цепочка остаётся проверяемой.",
-    inputSchema: { type: "object", properties: { audit_id: { type: "string" } }, required: ["audit_id"] } },
-  { name: "memory_proposal_accept", description: " Принять предложение ночного прохода: staged→fact с аудитом. Человек в контуре, без автоматического применения. gate=true включает held-out gate с авто-откатом после принятия.",
+  { name: "memory_rollback", description: " Откатить approve по audit_id: восстановить staged-запись и дописать компенсирующую аудит-запись. Исходный аудит НЕ удаляется — цепочка остаётся проверяемой. approved_by сверяется с MCP_OPERATOR_ID.",
+    inputSchema: { type: "object", properties: {
+      audit_id: { type: "string" }, approved_by: { type: "string" } }, required: ["audit_id"] } },
+  { name: "memory_proposal_accept", description: " Принять предложение ночного прохода: staged→fact с аудитом. Provenance наследуется от исходного факта; внешние требуют externalApproval=true. gate=true включает held-out gate с авто-откатом после принятия.",
     inputSchema: { type: "object", properties: {
       id: { type: "string" }, approved_by: { type: "string" }, reason: { type: "string" },
+      externalApproval: { type: "boolean" },
       gate: { type: "boolean" }, suite: { type: "string" }, baseline: { type: "number" },
       maxDrop: { type: "number" }, autoRollback: { type: "boolean" }, scope: { type: "string" },
       gold_path: { type: "string" }, gold: { type: "array", items: { type: "object" } } },
@@ -580,11 +594,11 @@ const memoryTools = [
       required: ["id", "approved_by"] } },
   { name: "memory_proposal_rollback", description: " Откатить принятое предложение, сохранив аудит и пометив статус rolled_back.",
     inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
-  { name: "memory_outcome", description: " Credit/blame: записать, какие chunk_id реально помогли (или помешали), и обновить непараметрическую полезность Q. legacy-ранжирование не меняется.",
+  { name: "memory_outcome", description: " Credit/blame: записать, какие chunk_id реально помогли (или помешали), и обновить непараметрическую полезность Q. pack_id из memory_pack включает receipt-проверку: достроенные моделью цитаты не трогают Q. legacy-ранжирование не меняется.",
     inputSchema: { type: "object", properties: {
       query: { type: "string" }, chunk_ids: { type: "array", items: { type: "string" } },
       outcome: { type: "string", enum: ["success", "failure", "neutral"] },
-      reward: { type: "number" }, note: { type: "string" } },
+      reward: { type: "number" }, note: { type: "string" }, pack_id: { type: "string" } },
       required: ["query", "chunk_ids"] } },
   { name: "memory_dream", description: " Офлайн-сверка «dreaming»: собрать факты с общим topic_key в наблюдения с proof count. Ничего не удаляет, идемпотентно.",
     inputSchema: { type: "object", properties: {} } },
@@ -1659,34 +1673,38 @@ async function callTool(name, args) {
     case "memory_ingest": return ingest(DB, args || {}, { normalizeProvenance, autoApplyable });
     case "memory_approve": {
       const a = args || {};
-      if (!String(a.approved_by || "").trim()) throw new Error("approved_by required");
+      const who = requireOperator(a.approved_by);
       const opts = a.gate === true ? {
         gate: true, gold: coreGold(a), suite: a.suite, scope: a.scope,
         baseline: a.baseline, maxDrop: a.maxDrop, autoRollback: a.autoRollback === true,
       } : {};
-      return approve(DB, String(a.id || ""), String(a.approved_by), String(a.reason || ""), opts);
+      if (a.externalApproval === true) opts.externalApproval = true;
+      return approve(DB, String(a.id || ""), who, String(a.reason || ""), opts);
     }
-    case "memory_rollback": return rollback(DB, String((args || {}).audit_id || ""));
+    case "memory_rollback": {
+      const a = args || {};
+      return rollback(DB, String(a.audit_id || ""), requireOperator(a.approved_by || "operator"));
+    }
     case "memory_proposal_accept": {
       const a = args || {};
-      if (!String(a.approved_by || "").trim()) throw new Error("approved_by required");
+      const who = requireOperator(a.approved_by);
       const opts = a.gate === true ? {
         gate: true, gold: coreGold(a), suite: a.suite, scope: a.scope,
         baseline: a.baseline, maxDrop: a.maxDrop, autoRollback: a.autoRollback === true,
       } : {};
-      return acceptProposal(DB, String(a.id || ""), String(a.approved_by), String(a.reason || ""), opts);
+      if (a.externalApproval === true) opts.externalApproval = true;
+      return acceptProposal(DB, String(a.id || ""), who, String(a.reason || ""), opts);
     }
     case "memory_proposal_reject": {
       const a = args || {};
-      if (!String(a.approved_by || "").trim()) throw new Error("approved_by required");
-      return rejectProposal(DB, String(a.id || ""), String(a.approved_by), String(a.reason || ""));
+      return rejectProposal(DB, String(a.id || ""), requireOperator(a.approved_by), String(a.reason || ""));
     }
     case "memory_proposal_rollback": return rollbackProposal(DB, String((args || {}).id || ""));
     case "memory_outcome": {
       const a = args || {};
       return learnOutcome(DB, String(a.query || ""), a.chunk_ids || [],
         String(a.outcome || "success"), Number.isFinite(a.reward) ? a.reward : undefined,
-        String(a.note || ""));
+        String(a.note || ""), { pack_id: a.pack_id });
     }
     case "memory_dream": return runDreamPass(DB);
     case "memory_audit_verify": {
@@ -1851,6 +1869,20 @@ async function handleMessage(msg, scope = STDIO_SCOPE) {
 // ---- Транспорт выбор: stdio (default) или HTTP/Streamable (env MCP_TCP_PORT) --
 const TCP_PORT = Number(process.env.MCP_TCP_PORT) || 0;
 const MEMORY_TOKEN = process.env.MCP_MEMORY_TOKEN || "";
+// v5: отдельный идентификатор оператора. MEMORY_TOKEN есть у модели, поэтому
+// одной подписи "operator" в аргументе недостаточно — модель способна сама
+// одобрить внешнюю запись. Значение приходит из Kotlin и модели не выдаётся.
+// Пока env не задан, сохраняем старый путь (не ломаем апгрейд на place).
+const OPERATOR_ID = process.env.MCP_OPERATOR_ID || "";
+
+function requireOperator(who) {
+  const w = String(who || "").trim();
+  if (!w) throw new Error("approved_by required");
+  if (OPERATOR_ID && constantTimeEqual(w, OPERATOR_ID) === false) {
+    throw new Error("approved_by mismatch: operator id required");
+  }
+  return w;
+}
 
 function constantTimeEqual(left, right) {
   if (left.length !== right.length) return false;
