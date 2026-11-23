@@ -15,6 +15,8 @@ import java.util.concurrent.Executors
  * — дифф по префиксу, чанкер, движок, плеер — внутри. Правила «что вообще
  * можно озвучить» живут в [SpeechFilter], выбор движка — в [SpeechFactory].
  */
+// reconfigure() после скачивания модели — 11-я функция, ровно предел detekt.
+@Suppress("TooManyFunctions")
 object TtsNarrator {
     private const val TAG = "TTS"
 
