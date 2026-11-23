@@ -404,9 +404,11 @@ flowchart LR
 Retrieval-фикс: исправлена инверсия bm25, top1 held-out 0.733→0.800 —
 `MOBILE_AGENT/tools/llama-bench/RETRIEVAL-FIX-BM25.md`. Волна 1 безопасности
 ядра: fail-closed манифест, `approve` как гейт provenance и receipt цитат —
-подробности в `MOBILE_AGENT/ВЕРДИКТ_RESEARCH_ПАМЯТИ.md`. **Активная сборка
-apk-71** (opencode 2.4.0, versionCode 71), оба фикса доставлены на телефон и
-подтверждены живой сверкой ассета.
+подробности в `MOBILE_AGENT/ВЕРДИКТ_RESEARCH_ПАМЯТИ.md`. Волна 2: детерминированный
+FTS5-прирост в дефолтном `legacy` (recall5 0.982, held-out 1.000), held-out gate
+по умолчанию и `MCP_OPERATOR_ID` из Kotlin. **Активная сборка apk-72** (opencode
+2.4.0, versionCode 72), обе волны доставлены на телефон и подтверждены живой
+сверкой ассета и environ.
 
 ---
 
