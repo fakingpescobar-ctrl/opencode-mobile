@@ -406,9 +406,10 @@ Retrieval-фикс: исправлена инверсия bm25, top1 held-out 0.
 ядра: fail-closed манифест, `approve` как гейт provenance и receipt цитат —
 подробности в `MOBILE_AGENT/ВЕРДИКТ_RESEARCH_ПАМЯТИ.md`. Волна 2: детерминированный
 FTS5-прирост в дефолтном `legacy` (recall5 0.982, held-out 1.000), held-out gate
-по умолчанию и `MCP_OPERATOR_ID` из Kotlin. **Активная сборка apk-72** (opencode
-2.4.0, versionCode 72), обе волны доставлены на телефон и подтверждены живой
-сверкой ассета и environ.
+по умолчанию и `MCP_OPERATOR_ID` из Kotlin. Волна 3 добавила явный
+`mode:"l0"` с entity-алиасами (дефолт по-прежнему `legacy`). **Активная сборка
+apk-73** (opencode 2.4.0, versionCode 73), все три волны доставлены на телефон
+и подтверждены живой сверкой ассетов, environ и `l0`-поиска.
 
 ---
 
