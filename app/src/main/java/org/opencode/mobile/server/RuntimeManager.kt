@@ -256,6 +256,10 @@ class RuntimeManager(
                                 )
                             }
                         }
+                        // Стартовый комплект агента: инструкции по Memory Core и
+                        // минимальная рабочая память. Только отсутствующие файлы —
+                        // пользовательские правки и журнал не затираются.
+                        WorkspaceSeed.ensure(context, resolution.dir)
                         resolution
                     }
                 if (wsResult.isFailure) {
