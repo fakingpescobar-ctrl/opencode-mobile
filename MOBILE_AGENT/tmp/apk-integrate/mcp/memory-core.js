@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS memory_outcome (
   outcome TEXT NOT NULL, reward REAL NOT NULL DEFAULT 0,
   at INTEGER NOT NULL, note TEXT NOT NULL DEFAULT ''
 );
+-- v5: receipt выданного пак. learnOutcome сверяет chunk_ids с реально выданными:
+-- галлюцинированная моделью цитата не должна поднимать вес чужого чанка.
+CREATE TABLE IF NOT EXISTS memory_pack_receipt (
+  pack_id TEXT PRIMARY KEY, query_sha TEXT NOT NULL,
+  ids TEXT NOT NULL, at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pack_receipt_query ON memory_pack_receipt(query_sha, at);
 -- v4: консолидированные наблюдения (Hindsight-like beliefs с proof count).
 CREATE TABLE IF NOT EXISTS memory_observation (
   id TEXT PRIMARY KEY, topic_key TEXT NOT NULL, content TEXT NOT NULL,
@@ -149,14 +156,26 @@ function parseLinks(raw) {
 const W = { bm25text: 0.45, bm25anchor: 0.33, graph: 0.10, authority: 0.05, recency: 0.07 };
 const HALF_LIFE_MS = 30 * 24 * 60 * 60 * 1000;
 
-// v4 включается явно: legacy остаётся работающим fallback и эталоном сравнения.
-// По умолчанию НИКАКИХ изменений ранжирования — только новые таблицы и тулы.
-export const MODES = ["legacy", "v4", "rrf"];
+// Дефолт — legacy. Волна 2 вкатывает в него детерминированные выигрыши FTS5
+// (tokenchars-якоря, бюджет 4, evidence 0.02) без смены имени и без LLM.
+// v4/rrf остаются явными режимами сравнения; wave2 — те же веса + UCB.
+export const MODES = ["legacy", "v4", "rrf", "wave2", "l0"];
 export const DEFAULT_MODE = "legacy";
 const UTILITY_LAMBDA = 0.08;  // доля Q в формуле (1−λ)·sim + λ·Q
 const UTILITY_ALPHA = 0.20;   // скорость обновления Q из reward (Monte-Carlo)
 const EVIDENCE_BONUS = 0.03;  // дешёвый бонус за соседей из того же источника
 const OBSERVATION_BONUS = 0.05;
+// Волна 2: прогон на 113 gold / 30 held-out дал выигрыш по top1 held-out
+// 0.800→0.900 и recall@5 held-out 0.967→1.000 (якорный бюджет 4). Улучшения
+// детерминированного FTS5 вкатываются в legacy-путь: DEFAULT_MODE не меняется,
+// LLM в hot path не появляется. режим wave2 — явный псевдоним с теми же весами.
+const WAVE2_EVIDENCE = 0.02;
+const WAVE2_UCB = 0.02;
+const WAVE2_ANCHOR_PER_SOURCE = 4;
+// Волна 3: entity-алиасы, слой L0. Явный opt-in mode:"l0", дефолт не меняется.
+// Замер на 20 парафразах gold-hard: recall@5 0.900→1.000 (h04/h14 закрыты),
+// на 113 gold без просадки. Ни LLM, ни эмбеддингов, ни новых таблиц.
+const L0_ENTITY_BONUS = 0.15;
 const RRF_K = 60;
 
 function clamp(x, lo = 0, hi = 1) { return Math.max(lo, Math.min(hi, x)); }
@@ -184,6 +203,17 @@ function utilityMap(DB) {
     // с реальным исходом (uses > 0). Остальные сохраняют legacy-скор.
     for (const r of DB.prepare("SELECT chunk_id, q FROM memory_utility WHERE uses > 0").all()) out.set(r.chunk_id, r.q);
   } catch { /* таблица есть, но БД старая — нормально */ }
+  return out;
+}
+// UCB-бонус: нужны не только Q, но и счётчики uses. Холодный старт (uses=0)
+// получает одинаковую надбавку и порядок чанков не меняет.
+function utilityStatsMap(DB) {
+  const out = new Map();
+  try {
+    for (const r of DB.prepare("SELECT chunk_id, q, uses FROM memory_utility WHERE uses > 0").all()) {
+      out.set(r.chunk_id, { q: Number(r.q), uses: Number(r.uses) });
+    }
+  } catch { /* старая БД */ }
   return out;
 }
 function observationMap(DB, anchors) {
@@ -249,14 +279,31 @@ function recencyOf(created, now) {
   return 0.5 + 0.5 * Math.exp(-age / HALF_LIFE_MS);
 }
 
-function trustMultiplier(provenance, source) {
+function trustMultiplier(provenance, source, anchors = []) {
   const p = String(provenance || source || "").toLowerCase();
   if (["operator", "user", "own-log", "own-test", "own-runtime", "phone-agent"].includes(p)) return 1.0;
   if (["moltbook", "external-agent", "guide", "web", "external"].includes(p)) return 0.85;
+  // v5: путь к внешнему совету понижаем ДО ветки .md. Иначе docs/MOLTBOOK_ADVICE.md
+  // и MOLTBOOK_REPORT.md получали trust 1.0 как ПРАВИЛА.md — совет со стороны
+  // ранжировался наравне с нашими правилами. Если вопрос ЯВНО про advice, штраф
+  // снимается: пользователь сам попросил внешний совет, прятать его не нужно.
+  if (/moltbook|advice/i.test(String(source || ""))) {
+    return Array.isArray(anchors) && anchors.includes("advice") ? 1.0 : 0.85;
+  }
   // Наша собственная память — исходники в MOBILE_AGENT/. Их автор — агент/оператор,
   // а не «неизвестный внешний источник». Иначе все rule/state занижались в 0.7.
   if (/\.md$/i.test(String(source || "")) || /\.(md|jsonl)$/i.test(String(source || ""))) return 1.0;
   return 0.7;
+}
+
+// v5: только эти источники агент мог получить сам или от человека. Всё остальное
+// (включая unknown) — предложение, которое обязан пропустить человек. Используется
+// и в approve как гейт, и при переносе provenance из факта в предложение.
+const OWN_PROVENANCE = new Set([
+  "operator", "user", "own-log", "own-test", "own-runtime", "phone-agent",
+]);
+function isOwnProvenance(value) {
+  return OWN_PROVENANCE.has(String(value || "").trim().toLowerCase());
 }
 
 // Приоритет источника при дедупликации одинакового текста:
@@ -340,6 +387,36 @@ export function nearDuplicateKey(text) {
   return sha256(norm).slice(0, 16);
 }
 
+// --- Волна 3: entity-алиасы (уровень 0, только mode:"l0") ------------------
+// Составной идентификатор запроса (plugin.sha256, runtime/report-dir, apk-45)
+// режется на части; каждая часть прогоняется через analyze(), чтобы получить
+// тот же лемматизированный якорь, что и в индексе. Дополнительной модели нет:
+// используем уже посчитанные v4-якоря из той же БД.
+function l0QueryEntities(anchors, useRaw, query) {
+  const raw = useRaw ? rawIdentifiers(query).map((x) => String(x).toLowerCase()) : [];
+  const parts = raw.flatMap((x) => x.split(/[^a-z0-9а-я]+/).filter(Boolean));
+  const alias = parts.flatMap((p) => analyze(p).anchors);
+  return [...new Set([...anchors, ...raw, ...alias])];
+}
+
+function l0Rerank(DB, query, anchors, useRaw, head, bonus) {
+  const ents = l0QueryEntities(anchors, useRaw, query);
+  if (!ents.length || !bonus) return head;
+  let v4Anchors;
+  try {
+    v4Anchors = new Map(DB.prepare(`SELECT chunk_id, anchors FROM ${ANCHOR_FTS_V4}`).all()
+      .map((r) => [r.chunk_id, String(r.anchors || "").toLowerCase()]));
+  } catch { return head; } // старый индекс без v4-таблицы — честный fallback
+  const out = head.map((h) => {
+    const hay = v4Anchors.get(h.id) || "";
+    const cover = ents.filter((e) => hay.includes(e)).length / ents.length;
+    return { ...h, score: h.score + bonus * cover,
+      why: { ...h.why, entity: Math.round(cover * 1000) / 1000 } };
+  });
+  out.sort((x, y) => y.score - x.score);
+  return out;
+}
+
 // Главный поиск. Возвращает топ-чанки с весами и объяснением `why`.
 export function recallDocs(DB, query, opts = {}) {
   // Read Boundaries: если во время чтения в БД пришла запись, пересчитываем
@@ -353,7 +430,12 @@ function recallDocsOnce(DB, query, opts = {}) {
   const now = Date.now();
   const limit = Math.max(1, Math.min(opts.limit || 10, 20));
   const mode = MODES.includes(opts.mode) ? opts.mode : DEFAULT_MODE;
-  const v4 = mode !== "legacy";
+  // l0 — это legacy + один entity-бонус ПОСЛЕ скоринга. Базовая формула и
+  // детерминированные слои поэтому остаются побайтно legacy-ными.
+  const v4 = mode !== "legacy" && mode !== "l0";
+  // Детерминированные улучшения Волны 2 работают и в legacy — DEFAULT_MODE
+  // остаётся прежним, но tokenchars-якоря и бюджет теперь часть ядра.
+  const wave2 = mode === "wave2" || mode === "legacy" || mode === "l0";
   const a = analyze(query);
   const anchors = a.anchors;
   // Trigram-FTS по умолчанию связывает слова через AND: длинная фраза «как агент
@@ -363,9 +445,10 @@ function recallDocsOnce(DB, query, opts = {}) {
     .replace(/[^a-z0-9а-я\s]/gi, " ").split(/\s+/)
     .filter((w) => w.length >= 3);
   const trigramQuery = trigramWords.map((w) => `"${w}"`).join(" OR ");
-  // Сырые идентификаторы — отдельная опция: на русском gold они ухудшали
-  // recall, поэтому v4 по умолчанию использует тот же якорный слой, что legacy.
-  const useRaw = v4 && opts.rawIds === true;
+  // Сырые идентификаторы: в legacy/wave2 включены после того, как замер на
+  // 113 gold / 30 held-out показал выигрыш (held-out top1 0.8→0.9). В v4/rrf
+  // остаются opt-in — это режимы сравнения с прежним поведением.
+  const useRaw = wave2 || (v4 && opts.rawIds === true);
   const qAnchors = useRaw ? [...new Set([...anchors, ...rawIdentifiers(query)])] : anchors;
   const anchorQuery = qAnchors.length ? qAnchors.map((x) => `"${x}"`).join(" OR ") : "";
 
@@ -385,7 +468,13 @@ function recallDocsOnce(DB, query, opts = {}) {
   // несколько чанков одного источника (у `commit` — КАТАЛОГ_ПЕРЕДЕЛОК.md),
   // из-за чего эталон из ХАРНЕС.md выпадал за пределы пула. Берём не более
   // трёх чанков с одного источника, затем добираем до ANCHOR_POOL.
-  const ANCHOR_PER_SOURCE = 3;
+  // read-time anchor budget: сколько чанков одного источника может попасть
+  // в якорный пул. 4 — замеренный минимум, при котором held-out recall5 стал
+  // 1.000; opts.anchorBudget позволяет прогнать 1/2/5/6 без правки ядра.
+  const ANCHOR_PER_SOURCE = Math.max(1, Math.min(6,
+    Number.isFinite(opts.anchorBudget) ? opts.anchorBudget
+      : (mode === "wave2" || mode === "legacy" || mode === "l0"
+            ? WAVE2_ANCHOR_PER_SOURCE : 3)));
   const textHits = queryFts(DB, "doc_fts", trigramQuery, FTS_POOL);
   const anchorTable = useRaw ? ANCHOR_FTS_V4 : "anchor_fts";
   let anchorHits = anchorQuery ? queryFts(DB, anchorTable, anchorQuery, ANCHOR_POOL * 3) : [];
@@ -433,14 +522,24 @@ function recallDocsOnce(DB, query, opts = {}) {
     }
   } catch { /* таблица ещё не создана — нормально */ }
 
-  // v4-слои. В legacy они даже не читаются — ноль накладных расходов и
-  // байтно прежний результат (гарантия fallback).
+  // Полезность Q и наблюдения — только в явных v4/wave2. В legacy читаются
+  // дешёвые детерминированные слои (utilityStats/sourceCount), но НЕ Q/UCB:
+  // ранжирование не зависит от исходов обучения, fallback остаётся стабильным.
   const utility = v4 ? utilityMap(DB) : new Map();
+  const utilityStats = wave2 ? utilityStatsMap(DB) : new Map();
+  const totalUses = wave2 ? [...utilityStats.values()].reduce((s, x) => s + x.uses, 0) : 0;
+  // UCB — только явный opt-in: в legacy он менял бы ранжирование после
+  // learnOutcome и ломал гарантию «legacy не зависит от обучения».
+  const ucbW = mode === "wave2"
+    ? (Number.isFinite(opts.ucbBonus) ? opts.ucbBonus : WAVE2_UCB)
+    : 0;
   const observations = v4 ? observationMap(DB, qAnchors) : new Map();
   const textRanks = mode === "rrf" ? rrfRank(textHits) : null;
   const anchorRanks = mode === "rrf" ? rrfRank(anchorHits) : null;
   const sourceCount = new Map();
-  if (v4) {
+  // Волна 2: evidence-бонус работает и в legacy — раньше sourceCount считался
+  // только в v4, поэтому legacy получал нулевой бонус даже при явном весе.
+  if (v4 || wave2) {
     for (const item of byId.values()) {
       const s = item.chunk.source;
       sourceCount.set(s, (sourceCount.get(s) || 0) + 1);
@@ -458,7 +557,7 @@ function recallDocsOnce(DB, query, opts = {}) {
     const authority = effectiveAuthority(c.kind, anchors);
     const graph = graphProximity(graphReached, c.id);
     const recency = recencyOf(c.created, now);
-    const trust = trustMultiplier(c.source, c.source);
+    const trust = trustMultiplier(c.source, c.source, anchors);
     const fb = feedback.get(c.id) || 0;
     const fbMul = 1 + 0.06 * Math.max(-0.5, Math.min(1, fb));
     // Явный kind-якорь ("советы" -> advice, "правило" -> rule) — это более
@@ -482,16 +581,25 @@ function recallDocsOnce(DB, query, opts = {}) {
     } else if (v4 && utility.has(c.id)) {
       q = clamp(Number(utility.get(c.id)));
       // Non-parametric utility (MemRL/MEMOIR): (1−λ)·sim + λ·Q.
-      // Применяется ТОЛЬКО к чанкам с реальным исходом — холодный старт
-      // байтно совпадает с legacy.
+      // Применяется ТОЛЬКО к чанкам с реальным исходом. На холодном старте
+      // Q-часть равна нулю (остальные надбавки v4/legacy описаны ниже).
       score = (1 - UTILITY_LAMBDA) * sim + UTILITY_LAMBDA * q;
     }
-    // Read-time evidence chain: по умолчанию информационная (why.evidence),
-    // а не скоринговая. Бонус включается явно — на gold он ухудшал recall.
-    if (v4) {
+    // Read-time evidence chain + UCB. Волна 2 включается и в legacy: это
+    // детерминированные надбавки к FTS5, не LLM и не новая модель.
+    if (v4 || wave2) {
       const siblings = Math.max(0, (sourceCount.get(c.source) || 1) - 1);
-      const evidenceW = Number.isFinite(opts.evidenceBonus) ? opts.evidenceBonus : 0;
+      const evidenceW = Number.isFinite(opts.evidenceBonus)
+        ? opts.evidenceBonus : (wave2 ? WAVE2_EVIDENCE : 0);
       score += evidenceW * clamp(siblings / 3);
+      if (ucbW > 0) {
+        // UCB1: неизведанные чанки получают бонус, но он убывает по мере
+        // накопления исходов. totalUses=0 → все получают одинаково, порядок
+        // не меняется (гарантия холодного старта).
+        const st = utilityStats.get(c.id);
+        const uses = st ? st.uses : 0;
+        score += ucbW * Math.sqrt(Math.log(1 + totalUses) / (1 + uses));
+      }
       for (const [topic, weight] of observations) {
         if (c.text.toLowerCase().includes(topic.toLowerCase())) {
           score += OBSERVATION_BONUS * weight;
@@ -538,6 +646,13 @@ function recallDocsOnce(DB, query, opts = {}) {
   // дедупа порядок обязан быть пересобран: иначе топ-N берёт старые позиции
   // и ранжирование перестаёт быть монотонным (живой p06: 0.4396 → 0.6940).
   dedup.sort((x, y) => y.score - x.score);
+  // Волна 3: entity-слой применяется к голове ПОСЛЕ дедупа. 20 — тот же потолок,
+  // на котором мерился прототип, поэтому mode:"l0" = legacy + один бонус,
+  // а дефолтный legacy-путь не меняется вообще.
+  if (mode === "l0") {
+    return l0Rerank(DB, query, anchors, useRaw, dedup.slice(0, 20), L0_ENTITY_BONUS)
+      .slice(0, limit);
+  }
   return dedup.slice(0, limit);
 }
 
@@ -577,6 +692,7 @@ export function memoryPack(DB, query, opts = {}) {
   let used = 0;
   const out = [];
   const packedSources = new Set();
+  const issued = []; // v5: receipt — какие чанки реально отданы модели
   let packedCount = 0;
   let curTitle = "";
   let buf = [];
@@ -587,6 +703,11 @@ export function memoryPack(DB, query, opts = {}) {
     used += est;
     packedCount++;
     packedSources.add(h.source);
+    issued.push({
+      id: String(h.id || `${h.source}:${h.line_from}`),
+      sha: sha256(String(h.text || "")).slice(0, 16),
+      source: h.source, line_from: h.line_from, line_to: h.line_to,
+    });
     const title = kindToTitle.get(h.kind) || "ДОКУМЕНТЫ";
     if (title !== curTitle) { flush(); curTitle = title; buf = [`## ${title}`]; }
     buf.push(`### ${h.source} :: ${h.heading} (${h.line_from}-${h.line_to}) [score ${h.score}]`);
@@ -594,12 +715,28 @@ export function memoryPack(DB, query, opts = {}) {
     buf.push(`> why: ${JSON.stringify(h.why)}`);
   }
   flush();
+  // v5: сохраняем receipt выданного набора, чтобы learnOutcome мог отличить
+  // реально показанную моделью цитату от достроенной. Запись необязательна
+  // для самой выдачи — при сбое пак остаётся прежним, просто без verify.
+  const at = Date.now();
+  const qsha = sha256(String(query || "").toLowerCase().trim()).slice(0, 16);
+  let packId = "";
+  try {
+    packId = `pack-${sha256(qsha + "|" + issued.map((x) => x.id).join(",") + "|" + at).slice(0, 16)}`;
+    DB.prepare(`INSERT OR IGNORE INTO memory_pack_receipt(pack_id, query_sha, ids, at)
+      VALUES (?, ?, ?, ?)`).run(packId, qsha, JSON.stringify(issued), at);
+    const n = Number(DB.prepare("SELECT count(*) n FROM memory_pack_receipt").get().n);
+    if (n > 1000) {
+      DB.prepare(`DELETE FROM memory_pack_receipt WHERE pack_id IN
+        (SELECT pack_id FROM memory_pack_receipt ORDER BY at DESC LIMIT -1 OFFSET 500)`).run();
+    }
+  } catch { packId = ""; }
   return {
     query, budgetTokens: budget, usedTokensEstimate: used,
     packed: out.join("\n\n"), chunks: packedCount,
     sources: [...packedSources],
     topScore: hits.length ? hits[0].score : 0,
-    index_sha: indexSha(DB), at: Date.now(),
+    index_sha: indexSha(DB), at, pack_id: packId, issued,
   };
 }
 
@@ -685,6 +822,16 @@ export function approve(DB, id, approvedBy = "operator", reason = "", opts = {})
   const row = DB.prepare("SELECT * FROM memory_staged WHERE id = ?").get(id);
   if (!row) throw new Error("staged memory not found: " + id);
 
+  // v5: approve — настоящий гейт, а не формальная галочка. Раньше provenance и
+  // auto_applyable только возвращались вызывающему: инжектированная модель с
+  // токеном MCP могла сама approve внешний текст. Внешний/unknown источник
+  // требует явного opts.externalApproval=true и непустой подписи.
+  if (!String(approvedBy || "").trim()) throw new Error("approve: approved_by required");
+  if (!isOwnProvenance(row.provenance) && opts.externalApproval !== true) {
+    throw new Error("approve: external/unknown provenance requires externalApproval=true: " +
+      String(row.provenance || "unknown"));
+  }
+
   // Необязательный held-out gate: baseline меряем ДО коммита, иначе rollback
   // нечего сравнивать. По умолчанию opts.gate !== true — путь байтно прежний.
   const gateOn = opts && opts.gate === true;
@@ -763,8 +910,9 @@ function withApproveGate(DB, applied, gateOn, suite, gold, baseline, opts) {
   return { ...applied, gate };
 }
 
-export function rollback(DB, auditId) {
+export function rollback(DB, auditId, approvedBy = "system") {
   ensureCoreSchema(DB);
+  const who = String(approvedBy || "system");
   const snap = DB.prepare("SELECT payload FROM memory_snapshot WHERE audit_id = ?").get(auditId);
   if (!snap) throw new Error("audit snapshot not found: " + auditId);
   const saved = JSON.parse(snap.payload);
@@ -790,7 +938,7 @@ export function rollback(DB, auditId) {
       // v4: аудит append-only. Вместо тихого удаления пишем компенсирующую
       // запись — цепочка hash-chain остаётся непрерывной и проверяемой.
       writeAudit(DB, `rollback-${auditId}`, "rollback", row.id, row.sha,
-        "compensating rollback of " + auditId, Date.now(), "system");
+        "compensating rollback of " + auditId, Date.now(), who);
       bumpEpoch(DB);
       DB.exec("COMMIT");
     } catch (e) {
@@ -806,7 +954,7 @@ export function rollback(DB, auditId) {
         provenance=excluded.provenance, at=excluded.at`)
       .run(row.id, row.content, row.sha, row.provenance, row.at);
     writeAudit(DB, `rollback-${auditId}`, "rollback", row.id, row.sha,
-      "compensating rollback of " + auditId, Date.now(), "system");
+      "compensating rollback of " + auditId, Date.now(), who);
     bumpEpoch(DB);
     DB.exec("COMMIT");
   } catch (e) {
@@ -989,10 +1137,17 @@ export function acceptProposal(DB, id, approvedBy = "operator", reason = "", opt
   if (p.status === "accepted") return { reused: true, id, status: "accepted", audit_id: p.audit_id };
   if (p.status === "rejected") throw new Error("rejected proposal requires reopen: " + id);
   const stagedId = `proposal-${id}`;
+  // v5: раньше жёстко писалось "operator" — внешний факт, одобренный один раз,
+  // «отмывался» в доверенный. Переносим provenance из исходного факта; approve
+  // ниже его проверит и потребует externalApproval для чужих источников.
+  const srcFact = p.source
+    ? DB.prepare("SELECT provenance FROM memory_fact WHERE id = ?").get(p.source)
+    : null;
+  const prov = srcFact ? String(srcFact.provenance || "unknown") : "unknown";
   ingest(DB, {
     id: stagedId, content: p.content, kind: "fact", topic_key: p.topic_key,
     valid_from: p.valid_from, confidence: p.contribution || 0.5,
-    provenance: "operator",
+    provenance: prov,
     reason: reason || p.reason || `proposal ${p.kind}`,
     links: p.target ? [{
       target: p.target,
@@ -1037,13 +1192,33 @@ export function rollbackProposal(DB, id) {
 
 // Credit/blame: что именно попало в контекст и к чему привело. Q обновляется
 // из внешнего reward — веса модели и legacy-ранжирование не трогаются.
-export function learnOutcome(DB, query, chunkIds, outcome = "success", reward = 1, note = "") {
+export function learnOutcome(DB, query, chunkIds, outcome = "success", reward = 1, note = "", opts = {}) {
   ensureCoreSchema(DB);
   const ids = [...new Set((chunkIds || []).map(String))].slice(0, 32);
   const r = clamp(Number.isFinite(reward) ? reward : (outcome === "success" ? 1 : outcome === "failure" ? -1 : 0), -1, 1);
   const qsha = sha256(String(query || "").toLowerCase().trim()).slice(0, 16);
   const id = `out-${sha256(qsha + "|" + ids.join(",") + "|" + r + "|" + Date.now()).slice(0, 16)}`;
   const at = Date.now();
+
+  // v5: receipt-проверка. pack_id из memoryPack — самый строгий путь; без него
+  // берём последний receipt того же запроса. Нет receipt вообще — старый путь
+  // (обратная совместимость), но в ответе честно verified=false.
+  const packId = String(opts.pack_id || "");
+  let receipt = null;
+  try {
+    receipt = packId
+      ? DB.prepare("SELECT ids FROM memory_pack_receipt WHERE pack_id = ?").get(packId)
+      : DB.prepare("SELECT ids FROM memory_pack_receipt WHERE query_sha = ? ORDER BY at DESC LIMIT 1").get(qsha);
+  } catch { receipt = null; }
+  let allowed = null;
+  if (receipt || packId) {
+    allowed = new Set();
+    try {
+      for (const x of JSON.parse(receipt?.ids || "[]")) allowed.add(String(x && x.id ? x.id : x));
+    } catch { /* пустой набор = всё не верифицировано */ }
+  }
+  const hallucinated = allowed ? ids.filter((cid) => !allowed.has(cid)) : [];
+  const verified = allowed ? ids.filter((cid) => allowed.has(cid)) : ids.slice();
   const tx = DB.transaction(() => {
     DB.prepare(`INSERT INTO memory_outcome(id, query_sha, chunk_ids, outcome, reward, at, note)
       VALUES (?, ?, ?, ?, ?, ?, ?)`)
@@ -1053,7 +1228,9 @@ export function learnOutcome(DB, query, chunkIds, outcome = "success", reward = 
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(chunk_id) DO UPDATE SET q=excluded.q, uses=excluded.uses,
         successes=excluded.successes, failures=excluded.failures, last_used=excluded.last_used`);
-    for (const cid of ids) {
+    // Неверифицированные (достроенные моделью) цитаты НЕ трогают Q — иначе
+    // галлюцинация повышает полезность чанка, которого модель не видела.
+    for (const cid of verified) {
       const cur = get.get(cid) || { q: 0.5, uses: 0, successes: 0, failures: 0 };
       const q = clamp(Number(cur.q) + UTILITY_ALPHA * (clamp((r + 1) / 2) - Number(cur.q)));
       put.run(cid, q, Number(cur.uses) + 1,
@@ -1062,7 +1239,10 @@ export function learnOutcome(DB, query, chunkIds, outcome = "success", reward = 
     bumpEpoch(DB);
   });
   tx();
-  return { id, query_sha: qsha, chunks: ids.length, reward: r, outcome: String(outcome) };
+  return {
+    id, query_sha: qsha, chunks: ids.length, reward: r, outcome: String(outcome),
+    pack_id: packId, verified: verified.length, hallucinated,
+  };
 }
 
 // «Dreaming»: дешёвая офлайн-сверка фактов в наблюдения с proof count

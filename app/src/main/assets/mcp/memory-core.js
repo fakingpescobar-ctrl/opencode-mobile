@@ -159,7 +159,7 @@ const HALF_LIFE_MS = 30 * 24 * 60 * 60 * 1000;
 // Дефолт — legacy. Волна 2 вкатывает в него детерминированные выигрыши FTS5
 // (tokenchars-якоря, бюджет 4, evidence 0.02) без смены имени и без LLM.
 // v4/rrf остаются явными режимами сравнения; wave2 — те же веса + UCB.
-export const MODES = ["legacy", "v4", "rrf", "wave2"];
+export const MODES = ["legacy", "v4", "rrf", "wave2", "l0"];
 export const DEFAULT_MODE = "legacy";
 const UTILITY_LAMBDA = 0.08;  // доля Q в формуле (1−λ)·sim + λ·Q
 const UTILITY_ALPHA = 0.20;   // скорость обновления Q из reward (Monte-Carlo)
@@ -172,6 +172,10 @@ const OBSERVATION_BONUS = 0.05;
 const WAVE2_EVIDENCE = 0.02;
 const WAVE2_UCB = 0.02;
 const WAVE2_ANCHOR_PER_SOURCE = 4;
+// Волна 3: entity-алиасы, слой L0. Явный opt-in mode:"l0", дефолт не меняется.
+// Замер на 20 парафразах gold-hard: recall@5 0.900→1.000 (h04/h14 закрыты),
+// на 113 gold без просадки. Ни LLM, ни эмбеддингов, ни новых таблиц.
+const L0_ENTITY_BONUS = 0.15;
 const RRF_K = 60;
 
 function clamp(x, lo = 0, hi = 1) { return Math.max(lo, Math.min(hi, x)); }
@@ -383,6 +387,36 @@ export function nearDuplicateKey(text) {
   return sha256(norm).slice(0, 16);
 }
 
+// --- Волна 3: entity-алиасы (уровень 0, только mode:"l0") ------------------
+// Составной идентификатор запроса (plugin.sha256, runtime/report-dir, apk-45)
+// режется на части; каждая часть прогоняется через analyze(), чтобы получить
+// тот же лемматизированный якорь, что и в индексе. Дополнительной модели нет:
+// используем уже посчитанные v4-якоря из той же БД.
+function l0QueryEntities(anchors, useRaw, query) {
+  const raw = useRaw ? rawIdentifiers(query).map((x) => String(x).toLowerCase()) : [];
+  const parts = raw.flatMap((x) => x.split(/[^a-z0-9а-я]+/).filter(Boolean));
+  const alias = parts.flatMap((p) => analyze(p).anchors);
+  return [...new Set([...anchors, ...raw, ...alias])];
+}
+
+function l0Rerank(DB, query, anchors, useRaw, head, bonus) {
+  const ents = l0QueryEntities(anchors, useRaw, query);
+  if (!ents.length || !bonus) return head;
+  let v4Anchors;
+  try {
+    v4Anchors = new Map(DB.prepare(`SELECT chunk_id, anchors FROM ${ANCHOR_FTS_V4}`).all()
+      .map((r) => [r.chunk_id, String(r.anchors || "").toLowerCase()]));
+  } catch { return head; } // старый индекс без v4-таблицы — честный fallback
+  const out = head.map((h) => {
+    const hay = v4Anchors.get(h.id) || "";
+    const cover = ents.filter((e) => hay.includes(e)).length / ents.length;
+    return { ...h, score: h.score + bonus * cover,
+      why: { ...h.why, entity: Math.round(cover * 1000) / 1000 } };
+  });
+  out.sort((x, y) => y.score - x.score);
+  return out;
+}
+
 // Главный поиск. Возвращает топ-чанки с весами и объяснением `why`.
 export function recallDocs(DB, query, opts = {}) {
   // Read Boundaries: если во время чтения в БД пришла запись, пересчитываем
@@ -396,10 +430,12 @@ function recallDocsOnce(DB, query, opts = {}) {
   const now = Date.now();
   const limit = Math.max(1, Math.min(opts.limit || 10, 20));
   const mode = MODES.includes(opts.mode) ? opts.mode : DEFAULT_MODE;
-  const v4 = mode !== "legacy";
+  // l0 — это legacy + один entity-бонус ПОСЛЕ скоринга. Базовая формула и
+  // детерминированные слои поэтому остаются побайтно legacy-ными.
+  const v4 = mode !== "legacy" && mode !== "l0";
   // Детерминированные улучшения Волны 2 работают и в legacy — DEFAULT_MODE
   // остаётся прежним, но tokenchars-якоря и бюджет теперь часть ядра.
-  const wave2 = mode === "wave2" || mode === "legacy";
+  const wave2 = mode === "wave2" || mode === "legacy" || mode === "l0";
   const a = analyze(query);
   const anchors = a.anchors;
   // Trigram-FTS по умолчанию связывает слова через AND: длинная фраза «как агент
@@ -437,7 +473,8 @@ function recallDocsOnce(DB, query, opts = {}) {
   // 1.000; opts.anchorBudget позволяет прогнать 1/2/5/6 без правки ядра.
   const ANCHOR_PER_SOURCE = Math.max(1, Math.min(6,
     Number.isFinite(opts.anchorBudget) ? opts.anchorBudget
-      : (mode === "wave2" || mode === "legacy" ? WAVE2_ANCHOR_PER_SOURCE : 3)));
+      : (mode === "wave2" || mode === "legacy" || mode === "l0"
+            ? WAVE2_ANCHOR_PER_SOURCE : 3)));
   const textHits = queryFts(DB, "doc_fts", trigramQuery, FTS_POOL);
   const anchorTable = useRaw ? ANCHOR_FTS_V4 : "anchor_fts";
   let anchorHits = anchorQuery ? queryFts(DB, anchorTable, anchorQuery, ANCHOR_POOL * 3) : [];
@@ -609,6 +646,13 @@ function recallDocsOnce(DB, query, opts = {}) {
   // дедупа порядок обязан быть пересобран: иначе топ-N берёт старые позиции
   // и ранжирование перестаёт быть монотонным (живой p06: 0.4396 → 0.6940).
   dedup.sort((x, y) => y.score - x.score);
+  // Волна 3: entity-слой применяется к голове ПОСЛЕ дедупа. 20 — тот же потолок,
+  // на котором мерился прототип, поэтому mode:"l0" = legacy + один бонус,
+  // а дефолтный legacy-путь не меняется вообще.
+  if (mode === "l0") {
+    return l0Rerank(DB, query, anchors, useRaw, dedup.slice(0, 20), L0_ENTITY_BONUS)
+      .slice(0, limit);
+  }
   return dedup.slice(0, limit);
 }
 

@@ -1141,6 +1141,46 @@ section("12. Волна 1: подпись, provenance и receipt цитаты");
   }
 }
 
+// ------------------------------------ 13. Волна 3: entity-алиасы L0
+section("13. Волна 3: entity-алиасы уровня 0 (opt-in)");
+{
+  eq(core.DEFAULT_MODE, "legacy", "дефолт остался legacy");
+  truthy(core.MODES.includes("l0"), "l0 зарегистрирован в MODES");
+  const D = new Database(":memory:");
+  idx.indexDocs(D, DOCS);
+
+  // Без сущностей l0 побайтно равен legacy: никакого скрытого изменения весов.
+  const plain = "привет мир";
+  const a = core.recallDocs(D, plain, { limit: 5, mode: "legacy" });
+  const b = core.recallDocs(D, plain, { limit: 5, mode: "l0" });
+  eq(b.map((x) => [x.id, x.score]), a.map((x) => [x.id, x.score]), "l0 без entity = legacy");
+
+  const fb = core.recallDocs(D, plain, { limit: 3, mode: "нет-такого" });
+  eq(fb[0].why.mode, "legacy", "неизвестный режим честно падает на дефолт");
+
+  // Парафразы, где legacy проваливался: составной идентификатор режется на
+  // части (plugin.sha256 → plugin + sha), и нужный источник входит в топ-5.
+  for (const [q, source] of [
+    ["где лежит эталон плагина и как обновить plugin.sha256", "ПРАВИЛА.md"],
+    ["какой коммит и run собрали apk-45", "ХАРНЕС.md"],
+  ]) {
+    const legacy = core.recallDocs(D, q, { limit: 5, mode: "legacy" }).map((x) => x.source);
+    const l0 = core.recallDocs(D, q, { limit: 5, mode: "l0" });
+    truthy(!legacy.includes(source), "legacy проваливается: " + source);
+    truthy(l0.some((x) => x.source === source), "l0 находит " + source);
+    truthy(l0.every((x) => x.why.mode === "l0"), "why.mode=l0");
+    truthy(l0.some((x) => x.why.entity > 0), "entity-покрытие объяснено в why");
+  }
+
+  const p1 = core.memoryPack(D, "как обновить plugin.sha256", { budgetTokens: 768, mode: "l0" });
+  const p2 = core.memoryPack(D, "как обновить plugin.sha256", { budgetTokens: 768, mode: "l0" });
+  // pack_id включает Date.now(), поэтому детерминизм меряем по issued/packed.
+  eq(p1.issued.map((x) => x.id), p2.issued.map((x) => x.id), "l0-pack детерминирован по issued");
+  eq(p1.packed, p2.packed, "l0-pack детерминирован по тексту");
+  truthy(/^pack-[0-9a-f]{16}$/.test(p1.pack_id), "pack_id выдан");
+  D.close();
+}
+
 // ---------------------------------------------------------------- итог
 console.log("\n" + "=".repeat(56));
 console.log("ТЕСТЫ ЯДРА ПАМЯТИ: OK=" + ok + " BAD=" + bad);
