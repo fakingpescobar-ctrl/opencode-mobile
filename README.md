@@ -399,7 +399,8 @@ flowchart LR
 `MOBILE_AGENT/tools/llama-bench/DECISION-GOLD113.md`. Внешние embed/rerank
 (e5-small, bge-v2-m3) тоже прогнаны на 113/30 и тоже проиграли ядру по top1
 и held-out (0.600 и 0.500 против 0.733); гибрид bge на held-out 0.700. Итоговая
-сводка — `MOBILE_AGENT/tools/llama-bench/EXTERNALS-GOLD113.md`.
+сводка — `MOBILE_AGENT/tools/llama-bench/EXTERNALS-GOLD113.md`. Финальный вердикт
+всего research (дефолт FTS5, APK не трогать) — `MOBILE_AGENT/ВЕРДИКТ_RESEARCH_ПАМЯТИ.md`.
 
 ---
 
