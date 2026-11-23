@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "note": "Закрытый контейнер источников ядра памяти. Только эти файлы индексируются; sha — замок: при несовпадении источник исключается до явного обновления манифеста.",
+  "sources": [
+    {
+      "path": "docs/agent-rules.md",
+      "sha": "b7fd1d27392ffa7e7406357f4788ba23ba2daac2becddf577bdcd8748cad82fc"
+    },
+    {
+      "path": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "sha": "e30e2ce4590a196af560fe4be809ed61d4ebce3fa451a7657c7cb178ef4f06ab"
+    },
+    {
+      "path": "ПРАВИЛА.md",
+      "sha": "9b6db0d27ce9b6543fd5355491e8b65df771f897be3c2e1fa6598609fabf20bf"
+    },
+    {
+      "path": "СОСТОЯНИЕ.md",
+      "sha": "7b372194d69f8af2d14d84a7ab5bb834d9bd6a511fe180f7275f05adb1678860"
+    },
+    {
+      "path": "ХАРНЕС.md",
+      "sha": "77eb92758f3b99ba3f629d759019422cafcbbffbe9cf765070ac9c8d0d103fd4"
+    },
+    {
+      "path": "КАТАЛОГ_ПЕРЕДЕЛОК.md",
+      "sha": "e9714f3988b29f2e72cd59aced10d338691be71fa7d2d302719251a1cc4b4885"
+    },
+    {
+      "path": "АРХИВ_СОСТОЯНИЯ.md",
+      "sha": "b9a73ac4886a50f39b7cdb4a3c296ffdbbbefcd905f96cc94e4a582a786443bc"
+    },
+    {
+      "path": "ЖУРНАЛ.md",
+      "sha": "73807bc2aa2bc0d9f3f5db8a51b18dd096bacb142b09a7eee5f9888dd909ad7e"
+    },
+    {
+      "path": "РОСТ_ЗОЛОТОГО_КОРПУСА.md",
+      "sha": "ad78bad04291d7f4defacde6a0d5ecfea4da79272dd471035c893382b91ec59c"
+    },
+    {
+      "path": "MOLTBOOK_REPORT.md",
+      "sha": "e86ad0edcd09deedbd25f9c934bbd210fd58ef2346609c9c07d6dd52dca563b0"
+    },
+    {
+      "path": "docs/RESTORE_AFTER_REINSTALL.md",
+      "sha": "ebd21839a628d8633150d2ee79bb2e620cedd037fea4ee3a875252a10f523a55"
+    },
+    {
+      "path": "БЕНЧМАРК_ЛЛМ.md",
+      "sha": "3d49e9a5d80b2a36560fb49bd449e11fde82a7149411e9857cd79409e8e228d8"
+    },
+    {
+      "path": "БЕНЧМАРК_СОПРОЦЕССОРА.md",
+      "sha": "f79e7374d1ced9fe3f9a28839e53d83a2391e812f7a6cab340bbe0464ccce5bc"
+    },
+    {
+      "path": "ВЫБОР_МОДЕЛИ_LLM.md",
+      "sha": "c735d062b0d9c0fa55cedc03db1cc5b69a356f46cfb2985db9ca53c75b91f718"
+    },
+    {
+      "path": "ИССЛЕДОВАНИЕ_МОБИЛЬНЫХ_ЛЛМ.md",
+      "sha": "4e13b5f55c9dc1272aff76a63ba6a8f98d5c08301896e077c8d8ede2334e0f40"
+    },
+    {
+      "path": "ИССЛЕДОВАНИЕ_ЯДЕР_LLAMA.md",
+      "sha": "23648abfdf2e8fa293f764793296ab0cc2243986a9133d9586bc7d34efc3224f"
+    },
+    {
+      "path": "КАЧЕСТВО_ЛЛМ.md",
+      "sha": "c3b383e25023480669cb9d084a481960ed2cafc3f6bdeff8ac3549c8d657ee38"
+    },
+    {
+      "path": "НАСТРОЙКИ_САБАГЕНТОВ.md",
+      "sha": "eb18d090d737e78aadc0a9371be36df6d57e36c8fbae67c65fd9a9f6ea4f404b"
+    },
+    {
+      "path": "ПРИЁМКА_APK47.md",
+      "sha": "fe17726a0232133d9c66ffb093d942cd0653c0af878ec02b44eefe78bd8c8d9c"
+    },
+    {
+      "path": "ПРИЁМКА_APK48.md",
+      "sha": "3966685d2fd4ad13d236754f728fcba50dc8bd7fb330a4aa84485144eea389a2"
+    },
+    {
+      "path": "ПРИЁМКА_APK49.md",
+      "sha": "678685ad0d44f2437d26fa251114dfb269946bbef417db7fe8090e9441d2ce56"
+    },
+    {
+      "path": "docs/MOLTBOOK_ADVICE.md",
+      "sha": "d3cf623c3e48a03aa8adb7b555e6b4243cb538bcc39b85f2ba246f366a71e5a9"
+    },
+    {
+      "path": "ИССЛЕДОВАНИЕ_ПАМЯТИ_АГЕНТОВ.md",
+      "sha": "f9d7dd51a3f3820d198a730150754793dc0b9e4c3c48d6f05ea3126033558ccf"
+    }
+  ]
+}

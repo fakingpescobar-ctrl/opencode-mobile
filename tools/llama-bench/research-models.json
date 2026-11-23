@@ -1,0 +1,42 @@
+[
+  {
+    "id": "multilingual-e5-small-q8",
+    "repo": "cstr/multilingual-e5-small-GGUF",
+    "file": "multilingual-e5-small-q8_0.gguf",
+    "size": 131624960,
+    "sha256": "0a34067a40f25d3149b36885faa62bee0e5284d0f9edc102acfc00e115d953e8",
+    "url": "https://huggingface.co/cstr/multilingual-e5-small-GGUF/resolve/main/multilingual-e5-small-q8_0.gguf?download=true",
+    "purpose": "Research: embeds с поддержкой русского (query:/passage: префиксы)",
+    "license": "mit"
+  },
+  {
+    "id": "multilingual-e5-small-q8-milimyname",
+    "repo": "milimyname/multilingual-e5-small-Q8_0-GGUF",
+    "file": "multilingual-e5-small-q8_0.gguf",
+    "size": 132196704,
+    "sha256": "dc5a4599f11a6f5f27ecd20f8ebcf218407d51129522e5fccb900ffab8afb96a",
+    "url": "https://huggingface.co/milimyname/multilingual-e5-small-Q8_0-GGUF/resolve/main/multilingual-e5-small-q8_0.gguf?download=true",
+    "purpose": "Альтернативная конвертация e5-small Q8 для проверки NaN",
+    "license": "mit"
+  },
+  {
+    "id": "multilingual-e5-small-f16-hdrrayan",
+    "repo": "hdrrayan/multilingual-e5-small-gguf",
+    "file": "multilingual-e5-small-f16.gguf",
+    "size": 242360000,
+    "sha256": "6a5b2dfb958f98c851028f8c08424458249359ea921314be378f8b82088dcac1",
+    "url": "https://huggingface.co/hdrrayan/multilingual-e5-small-gguf/resolve/main/multilingual-e5-small-f16.gguf?download=true",
+    "purpose": "Альтернативная F16-конвертация e5-small для проверки NaN",
+    "license": "mit"
+  },
+  {
+    "id": "bge-reranker-v2-m3-q8",
+    "repo": "gpustack/bge-reranker-v2-m3-GGUF",
+    "file": "bge-reranker-v2-m3-Q8_0.gguf",
+    "size": 635676416,
+    "sha256": "a43c7c9b11a4c1517e5bf95151960e1621d1b72f7a493364b01e386cf1aaa1d3",
+    "url": "https://huggingface.co/gpustack/bge-reranker-v2-m3-GGUF/resolve/main/bge-reranker-v2-m3-Q8_0.gguf?download=true",
+    "purpose": "Research: multilingual cross-encoder reranker",
+    "license": "apache-2.0"
+  }
+]
