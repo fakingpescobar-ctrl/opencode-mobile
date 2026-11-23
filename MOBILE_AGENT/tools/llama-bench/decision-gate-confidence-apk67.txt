@@ -1,0 +1,28 @@
+index_sha=81d284de6b7068d8 gold_sha=61925934feae n=40 ms=5662
+train=31 heldout=9
+ядро top1: train 0.419 held 0.667
+модель top1: train 0.484 held 0.778
+выигрыш модели (модель OK / ядро MISS): 6 [g03(m0.456), g11(m0.981), g18(m0.768), g20(m0.006), g35(m0.976), g40(m0.245)]
+потеря модели (ядро OK / модель MISS): 3 [g23(m0.393), g24(m0.211), g37(m0.117)]
+совпадений: 31/40
+средняя уверенность: выигрыш 0.572, потеря 0.240
+
+ГЕЙТ (только по уверенности модели): margin >= 0.44
+  train: top1 0.548 при 15/31 вызовах (0.484 моделей)
+  held-out: top1 0.667 при 7/9 вызовах; ядро 0.667, всегда-модель 0.778
+
+Верхняя граница (идеальное знание core wrong): 6/40 исправлено, 3 испорчено
+
+Сдвинутые held-out, уверенность модели:
+  g02 m=0.954 core=OK model=OK
+  g05 m=0.242 core=OK model=OK
+  g06 m=0.863 core=MISS model=MISS
+  g15 m=0.615 core=MISS model=MISS
+  g20 m=0.006 core=MISS model=OK
+  g21 m=0.611 core=OK model=OK
+  g32 m=0.978 core=OK model=OK
+  g34 m=0.992 core=OK model=OK
+  g36 m=0.616 core=OK model=OK
+
+RRF (ранг ядра + ранг модели): вес модели 0.60
+  train top1 0.484 | held-out top1 0.778

@@ -1,0 +1,30 @@
+baseline: ядро train 0.419 held 0.667
+always model: train 0.484 held 0.778
+margin / model: порог <= 0.02 | train 0.516 (14/31 вызовов) | held 0.778 (4/9 вызовов)
+margin / rrf: порог <= 0.02 | train 0.516 (14/31 вызовов) | held 0.778 (4/9 вызовов)
+conf / model: порог <= 0.16 | train 0.484 (8/31 вызовов) | held 0.778 (4/9 вызовов)
+conf / rrf: порог <= 0.16 | train 0.484 (8/31 вызовов) | held 0.778 (4/9 вызовов)
+peak / model: порог <= 0.10 | train 0.484 (23/31 вызовов) | held 0.778 (6/9 вызовов)
+peak / rrf: порог <= 0.10 | train 0.484 (23/31 вызовов) | held 0.778 (6/9 вызовов)
+
+held-out, признаки ядра:
+  g02 margin=0.012 conf=0.326 core=OK model=OK
+  g05 margin=0.022 conf=0.140 core=OK model=OK
+  g06 margin=0.278 conf=0.535 core=MISS model=MISS
+  g15 margin=0.007 conf=0.157 core=MISS model=MISS
+  g20 margin=0.006 conf=0.160 core=MISS model=OK
+  g21 margin=0.025 conf=0.166 core=OK model=OK
+  g32 margin=0.270 conf=0.558 core=OK model=OK
+  g34 margin=0.229 conf=0.480 core=OK model=OK
+  g36 margin=0.000 conf=0.153 core=OK model=OK
+
+Чувствительность порога (при срабатывании берём модель, иначе ядро):
+  margin <= 0.01: train 0.484/10, held 0.778/3
+  margin <= 0.02: train 0.516/14, held 0.778/4
+  margin <= 0.03: train 0.516/17, held 0.778/6
+  margin <= 0.05: train 0.452/22, held 0.778/6
+  conf <= 0.14: train 0.419/1, held 0.667/1
+  conf <= 0.15: train 0.452/2, held 0.667/1
+  conf <= 0.16: train 0.484/8, held 0.778/4
+  conf <= 0.17: train 0.484/11, held 0.778/5
+  conf <= 0.18: train 0.452/15, held 0.778/5
