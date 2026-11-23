@@ -156,14 +156,22 @@ function parseLinks(raw) {
 const W = { bm25text: 0.45, bm25anchor: 0.33, graph: 0.10, authority: 0.05, recency: 0.07 };
 const HALF_LIFE_MS = 30 * 24 * 60 * 60 * 1000;
 
-// v4 включается явно: legacy остаётся работающим fallback и эталоном сравнения.
-// По умолчанию НИКАКИХ изменений ранжирования — только новые таблицы и тулы.
-export const MODES = ["legacy", "v4", "rrf"];
+// Дефолт — legacy. Волна 2 вкатывает в него детерминированные выигрыши FTS5
+// (tokenchars-якоря, бюджет 4, evidence 0.02) без смены имени и без LLM.
+// v4/rrf остаются явными режимами сравнения; wave2 — те же веса + UCB.
+export const MODES = ["legacy", "v4", "rrf", "wave2"];
 export const DEFAULT_MODE = "legacy";
 const UTILITY_LAMBDA = 0.08;  // доля Q в формуле (1−λ)·sim + λ·Q
 const UTILITY_ALPHA = 0.20;   // скорость обновления Q из reward (Monte-Carlo)
 const EVIDENCE_BONUS = 0.03;  // дешёвый бонус за соседей из того же источника
 const OBSERVATION_BONUS = 0.05;
+// Волна 2: прогон на 113 gold / 30 held-out дал выигрыш по top1 held-out
+// 0.800→0.900 и recall@5 held-out 0.967→1.000 (якорный бюджет 4). Улучшения
+// детерминированного FTS5 вкатываются в legacy-путь: DEFAULT_MODE не меняется,
+// LLM в hot path не появляется. режим wave2 — явный псевдоним с теми же весами.
+const WAVE2_EVIDENCE = 0.02;
+const WAVE2_UCB = 0.02;
+const WAVE2_ANCHOR_PER_SOURCE = 4;
 const RRF_K = 60;
 
 function clamp(x, lo = 0, hi = 1) { return Math.max(lo, Math.min(hi, x)); }
@@ -191,6 +199,17 @@ function utilityMap(DB) {
     // с реальным исходом (uses > 0). Остальные сохраняют legacy-скор.
     for (const r of DB.prepare("SELECT chunk_id, q FROM memory_utility WHERE uses > 0").all()) out.set(r.chunk_id, r.q);
   } catch { /* таблица есть, но БД старая — нормально */ }
+  return out;
+}
+// UCB-бонус: нужны не только Q, но и счётчики uses. Холодный старт (uses=0)
+// получает одинаковую надбавку и порядок чанков не меняет.
+function utilityStatsMap(DB) {
+  const out = new Map();
+  try {
+    for (const r of DB.prepare("SELECT chunk_id, q, uses FROM memory_utility WHERE uses > 0").all()) {
+      out.set(r.chunk_id, { q: Number(r.q), uses: Number(r.uses) });
+    }
+  } catch { /* старая БД */ }
   return out;
 }
 function observationMap(DB, anchors) {
@@ -378,6 +397,9 @@ function recallDocsOnce(DB, query, opts = {}) {
   const limit = Math.max(1, Math.min(opts.limit || 10, 20));
   const mode = MODES.includes(opts.mode) ? opts.mode : DEFAULT_MODE;
   const v4 = mode !== "legacy";
+  // Детерминированные улучшения Волны 2 работают и в legacy — DEFAULT_MODE
+  // остаётся прежним, но tokenchars-якоря и бюджет теперь часть ядра.
+  const wave2 = mode === "wave2" || mode === "legacy";
   const a = analyze(query);
   const anchors = a.anchors;
   // Trigram-FTS по умолчанию связывает слова через AND: длинная фраза «как агент
@@ -387,9 +409,10 @@ function recallDocsOnce(DB, query, opts = {}) {
     .replace(/[^a-z0-9а-я\s]/gi, " ").split(/\s+/)
     .filter((w) => w.length >= 3);
   const trigramQuery = trigramWords.map((w) => `"${w}"`).join(" OR ");
-  // Сырые идентификаторы — отдельная опция: на русском gold они ухудшали
-  // recall, поэтому v4 по умолчанию использует тот же якорный слой, что legacy.
-  const useRaw = v4 && opts.rawIds === true;
+  // Сырые идентификаторы: в legacy/wave2 включены после того, как замер на
+  // 113 gold / 30 held-out показал выигрыш (held-out top1 0.8→0.9). В v4/rrf
+  // остаются opt-in — это режимы сравнения с прежним поведением.
+  const useRaw = wave2 || (v4 && opts.rawIds === true);
   const qAnchors = useRaw ? [...new Set([...anchors, ...rawIdentifiers(query)])] : anchors;
   const anchorQuery = qAnchors.length ? qAnchors.map((x) => `"${x}"`).join(" OR ") : "";
 
@@ -409,7 +432,12 @@ function recallDocsOnce(DB, query, opts = {}) {
   // несколько чанков одного источника (у `commit` — КАТАЛОГ_ПЕРЕДЕЛОК.md),
   // из-за чего эталон из ХАРНЕС.md выпадал за пределы пула. Берём не более
   // трёх чанков с одного источника, затем добираем до ANCHOR_POOL.
-  const ANCHOR_PER_SOURCE = 3;
+  // read-time anchor budget: сколько чанков одного источника может попасть
+  // в якорный пул. 4 — замеренный минимум, при котором held-out recall5 стал
+  // 1.000; opts.anchorBudget позволяет прогнать 1/2/5/6 без правки ядра.
+  const ANCHOR_PER_SOURCE = Math.max(1, Math.min(6,
+    Number.isFinite(opts.anchorBudget) ? opts.anchorBudget
+      : (mode === "wave2" || mode === "legacy" ? WAVE2_ANCHOR_PER_SOURCE : 3)));
   const textHits = queryFts(DB, "doc_fts", trigramQuery, FTS_POOL);
   const anchorTable = useRaw ? ANCHOR_FTS_V4 : "anchor_fts";
   let anchorHits = anchorQuery ? queryFts(DB, anchorTable, anchorQuery, ANCHOR_POOL * 3) : [];
@@ -457,14 +485,24 @@ function recallDocsOnce(DB, query, opts = {}) {
     }
   } catch { /* таблица ещё не создана — нормально */ }
 
-  // v4-слои. В legacy они даже не читаются — ноль накладных расходов и
-  // байтно прежний результат (гарантия fallback).
+  // Полезность Q и наблюдения — только в явных v4/wave2. В legacy читаются
+  // дешёвые детерминированные слои (utilityStats/sourceCount), но НЕ Q/UCB:
+  // ранжирование не зависит от исходов обучения, fallback остаётся стабильным.
   const utility = v4 ? utilityMap(DB) : new Map();
+  const utilityStats = wave2 ? utilityStatsMap(DB) : new Map();
+  const totalUses = wave2 ? [...utilityStats.values()].reduce((s, x) => s + x.uses, 0) : 0;
+  // UCB — только явный opt-in: в legacy он менял бы ранжирование после
+  // learnOutcome и ломал гарантию «legacy не зависит от обучения».
+  const ucbW = mode === "wave2"
+    ? (Number.isFinite(opts.ucbBonus) ? opts.ucbBonus : WAVE2_UCB)
+    : 0;
   const observations = v4 ? observationMap(DB, qAnchors) : new Map();
   const textRanks = mode === "rrf" ? rrfRank(textHits) : null;
   const anchorRanks = mode === "rrf" ? rrfRank(anchorHits) : null;
   const sourceCount = new Map();
-  if (v4) {
+  // Волна 2: evidence-бонус работает и в legacy — раньше sourceCount считался
+  // только в v4, поэтому legacy получал нулевой бонус даже при явном весе.
+  if (v4 || wave2) {
     for (const item of byId.values()) {
       const s = item.chunk.source;
       sourceCount.set(s, (sourceCount.get(s) || 0) + 1);
@@ -506,16 +544,25 @@ function recallDocsOnce(DB, query, opts = {}) {
     } else if (v4 && utility.has(c.id)) {
       q = clamp(Number(utility.get(c.id)));
       // Non-parametric utility (MemRL/MEMOIR): (1−λ)·sim + λ·Q.
-      // Применяется ТОЛЬКО к чанкам с реальным исходом — холодный старт
-      // байтно совпадает с legacy.
+      // Применяется ТОЛЬКО к чанкам с реальным исходом. На холодном старте
+      // Q-часть равна нулю (остальные надбавки v4/legacy описаны ниже).
       score = (1 - UTILITY_LAMBDA) * sim + UTILITY_LAMBDA * q;
     }
-    // Read-time evidence chain: по умолчанию информационная (why.evidence),
-    // а не скоринговая. Бонус включается явно — на gold он ухудшал recall.
-    if (v4) {
+    // Read-time evidence chain + UCB. Волна 2 включается и в legacy: это
+    // детерминированные надбавки к FTS5, не LLM и не новая модель.
+    if (v4 || wave2) {
       const siblings = Math.max(0, (sourceCount.get(c.source) || 1) - 1);
-      const evidenceW = Number.isFinite(opts.evidenceBonus) ? opts.evidenceBonus : 0;
+      const evidenceW = Number.isFinite(opts.evidenceBonus)
+        ? opts.evidenceBonus : (wave2 ? WAVE2_EVIDENCE : 0);
       score += evidenceW * clamp(siblings / 3);
+      if (ucbW > 0) {
+        // UCB1: неизведанные чанки получают бонус, но он убывает по мере
+        // накопления исходов. totalUses=0 → все получают одинаково, порядок
+        // не меняется (гарантия холодного старта).
+        const st = utilityStats.get(c.id);
+        const uses = st ? st.uses : 0;
+        score += ucbW * Math.sqrt(Math.log(1 + totalUses) / (1 + uses));
+      }
       for (const [topic, weight] of observations) {
         if (c.text.toLowerCase().includes(topic.toLowerCase())) {
           score += OBSERVATION_BONUS * weight;

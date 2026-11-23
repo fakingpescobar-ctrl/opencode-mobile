@@ -569,7 +569,7 @@ const memoryTools = [
       kind: { type: "string", enum: ["doc", "fact"] }, topic_key: { type: "string" },
       valid_from: { type: "number" }, confidence: { type: "number" },
       reason: { type: "string" }, links: { type: "array" } }, required: ["content"] } },
-  { name: "memory_approve", description: " Применить staged-запись: создать audit-запись и снимок для отката. approved_by обязателен и сверяется с MCP_OPERATOR_ID. Внешний/unknown provenance требует externalApproval=true. gate=true гоняет held-out gate сразу после approve и при регрессе >maxDrop с autoRollback=true откатывает по audit_id.",
+  { name: "memory_approve", description: " Применить staged-запись: создать audit-запись и снимок для отката. approved_by обязателен и сверяется с MCP_OPERATOR_ID. Внешний/unknown provenance требует externalApproval=true. held-out gate включён по умолчанию (gold из ассетов); gate=false — явный обход, при регрессе >maxDrop с autoRollback=true откат по audit_id.",
     inputSchema: { type: "object", properties: {
       id: { type: "string" }, approved_by: { type: "string" }, reason: { type: "string" },
       externalApproval: { type: "boolean" },
@@ -580,7 +580,7 @@ const memoryTools = [
   { name: "memory_rollback", description: " Откатить approve по audit_id: восстановить staged-запись и дописать компенсирующую аудит-запись. Исходный аудит НЕ удаляется — цепочка остаётся проверяемой. approved_by сверяется с MCP_OPERATOR_ID.",
     inputSchema: { type: "object", properties: {
       audit_id: { type: "string" }, approved_by: { type: "string" } }, required: ["audit_id"] } },
-  { name: "memory_proposal_accept", description: " Принять предложение ночного прохода: staged→fact с аудитом. Provenance наследуется от исходного факта; внешние требуют externalApproval=true. gate=true включает held-out gate с авто-откатом после принятия.",
+  { name: "memory_proposal_accept", description: " Принять предложение ночного прохода: staged→fact с аудитом. Provenance наследуется от исходного факта; внешние требуют externalApproval=true. held-out gate включён по умолчанию, gate=false — явный обход.",
     inputSchema: { type: "object", properties: {
       id: { type: "string" }, approved_by: { type: "string" }, reason: { type: "string" },
       externalApproval: { type: "boolean" },
@@ -1674,8 +1674,13 @@ async function callTool(name, args) {
     case "memory_approve": {
       const a = args || {};
       const who = requireOperator(a.approved_by);
-      const opts = a.gate === true ? {
-        gate: true, gold: coreGold(a), suite: a.suite, scope: a.scope,
+      // Волна 2: held-out gate включён по умолчанию. gold всегда лежит в
+      // ассетах; gate=false остаётся явным выходом для аварийного approve.
+      let gold = [];
+      try { gold = coreGold(a); } catch { /* без gold gate не изображаем */ }
+      const gateOn = a.gate !== false && gold.length > 0;
+      const opts = gateOn ? {
+        gate: true, gold, suite: a.suite, scope: a.scope,
         baseline: a.baseline, maxDrop: a.maxDrop, autoRollback: a.autoRollback === true,
       } : {};
       if (a.externalApproval === true) opts.externalApproval = true;
@@ -1688,8 +1693,11 @@ async function callTool(name, args) {
     case "memory_proposal_accept": {
       const a = args || {};
       const who = requireOperator(a.approved_by);
-      const opts = a.gate === true ? {
-        gate: true, gold: coreGold(a), suite: a.suite, scope: a.scope,
+      let gold = [];
+      try { gold = coreGold(a); } catch { /* без gold gate не изображаем */ }
+      const gateOn = a.gate !== false && gold.length > 0;
+      const opts = gateOn ? {
+        gate: true, gold, suite: a.suite, scope: a.scope,
         baseline: a.baseline, maxDrop: a.maxDrop, autoRollback: a.autoRollback === true,
       } : {};
       if (a.externalApproval === true) opts.externalApproval = true;

@@ -38,6 +38,15 @@ class RuntimeManager(
         /** Максимум подряд идущих витков без HEALTHY (лимит рестартов). */
         const val MAX_RESTART_ATTEMPTS = 5
 
+        /**
+         * Подпись оператора для гейта memory_approve. Отдельный UUID, а не сам
+         * MCP_MEMORY_TOKEN: токен есть у модели, подпись передаётся только в
+         * окружении memory-процесса и в аргументах тула её нужно повторить.
+         * В отличие от memoryToken (новый на каждый виток цикла), подпись
+         * живёт всё время жизни процесса — смена не создаёт разрыва гейта.
+         */
+        private val operatorId: String = UUID.randomUUID().toString()
+
         /** Backoff рестартов: base × 2^failures, но не выше потолка; степень ≤ shiftCap. */
         private const val RESTART_BASE_DELAY_MS = 1_000L
         private const val RESTART_MAX_DELAY_MS = 15_000L
@@ -415,6 +424,9 @@ class RuntimeManager(
                         extraEnv =
                             mapOf(
                                 "MCP_MEMORY_TOKEN" to memoryToken,
+                                // v5: отдельная подпись оператора. Модель видит токен,
+                                // но не должна угадывать подпись для approve/rollback.
+                                "MCP_OPERATOR_ID" to operatorId,
                                 // Ссылка {env:MCP_YNISON_TOKEN} в конфиге разворачивается
                                 // именно в окружении serve, поэтому переменная нужна и ему.
                                 // Само значение — тот же UUID, что у ynison.js.
@@ -905,7 +917,10 @@ class RuntimeManager(
                 context,
                 logFile = logFile,
                 workDir = workspace,
-                extraEnv = mapOf("MCP_MEMORY_TOKEN" to memoryToken) + AppInstallBridge.environment(),
+                extraEnv = mapOf(
+                    "MCP_MEMORY_TOKEN" to memoryToken,
+                    "MCP_OPERATOR_ID" to operatorId,
+                ) + AppInstallBridge.environment(),
             ) ?: return false
         memory.setProcess(proc)
         val ok = health.waitForPort(OpencodeRuntime.MEMORY_PORT) { proc.isAlive }
