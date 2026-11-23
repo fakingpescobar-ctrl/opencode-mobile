@@ -238,9 +238,9 @@ export function verifyAuditChain(DB) {
 }
 
 function normalizeBm25(raw) {
-  // bm25 в SQLite отрицателен: чем ближе к нулю, тем лучше. Переводим в 0..1.
+  // FTS5 bm25: чем отрицательнее, тем лучше совпадение. -0.00 = шум (якорь везде).
   if (!Number.isFinite(raw)) return 0;
-  return clamp(1 / (1 + Math.max(0, -raw) / 10));
+  return clamp(Math.max(0, -raw) / (10 + Math.max(0, -raw)));
 }
 
 function recencyOf(created, now) {

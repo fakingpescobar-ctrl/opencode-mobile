@@ -401,6 +401,8 @@ flowchart LR
 и held-out (0.600 и 0.500 против 0.733); гибрид bge на held-out 0.700. Итоговая
 сводка — `MOBILE_AGENT/tools/llama-bench/EXTERNALS-GOLD113.md`. Финальный вердикт
 всего research (дефолт FTS5, APK не трогать) — `MOBILE_AGENT/ВЕРДИКТ_RESEARCH_ПАМЯТИ.md`.
+Retrieval-фикс: исправлена инверсия bm25, top1 held-out 0.733→0.800 —
+`MOBILE_AGENT/tools/llama-bench/RETRIEVAL-FIX-BM25.md`.
 
 ---
 

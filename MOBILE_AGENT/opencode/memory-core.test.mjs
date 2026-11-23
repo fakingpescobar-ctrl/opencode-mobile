@@ -471,8 +471,10 @@ section("4g. Инкрементальная переиндексация вос�
     "эталон в топ-5 на свежем индексе");
 
   // Имитируем историю живой БД: удаляем и вставляем все строки FTS в обратном
-  // порядке. bm25 у якоря `apk` почти нулевой во всех чанках, поэтому ORDER BY
-  // score возвращает их в порядке rowid — эталон теряет anchorScore (apk-53).
+  // порядке. Раньше bm25 у якоря `apk` почти нулевой во всех чанках давал
+  // normalizeBm25=1.0, поэтому ORDER BY score возвращал их в порядке rowid и
+  // эталон терял anchorScore (apk-53). Сейчас инверсия bm25 исправлена:
+  // -0.00 даёт 0.0, а не максимум, и порядок вставки больше не влияет на выдачу.
   const rows = D.prepare("SELECT chunk_id, text FROM doc_fts").all();
   const anchors = D.prepare("SELECT chunk_id, anchors FROM anchor_fts").all();
   D.exec("DELETE FROM doc_fts; DELETE FROM anchor_fts;");
@@ -481,7 +483,7 @@ section("4g. Инкрементальная переиндексация вос�
   for (let i = rows.length - 1; i >= 0; i--) insDoc.run(rows[i].chunk_id, rows[i].text);
   for (let i = anchors.length - 1; i >= 0; i--) insAnchor.run(anchors[i].chunk_id, anchors[i].anchors);
   const broken = core.recallDocs(D, q, { limit: 5 }).map((r) => r.id);
-  truthy(JSON.stringify(broken) !== JSON.stringify(before), "порядок FTS реально сломан");
+  eq(broken, before, "порядок вставки FTS не влияет на выдачу");
 
   // Новая индексация не меняет файлы, но обязана пересобрать FTS в порядке ord
   // и вернуть результат байт в байт.
