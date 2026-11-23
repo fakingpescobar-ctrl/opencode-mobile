@@ -1,0 +1,53 @@
+протокол: index_sha 41d03a0959d549f2, gold_sha b4421d088404…
+baseline: ядро train 0.542 held 0.733
+always model: train 0.422 held 0.667
+margin / model: порог <= 0.00 | train 0.542 (7/83 вызовов) | held 0.733 (3/30 вызовов)
+margin / rrf: порог <= 0.00 | train 0.542 (7/83 вызовов) | held 0.733 (3/30 вызовов)
+conf / model: порог <= 0.00 | train 0.542 (0/83 вызовов) | held 0.733 (0/30 вызовов)
+conf / rrf: порог <= 0.00 | train 0.542 (0/83 вызовов) | held 0.733 (0/30 вызовов)
+peak / model: порог <= 0.00 | train 0.530 (3/83 вызовов) | held 0.733 (2/30 вызовов)
+peak / rrf: порог <= 0.00 | train 0.530 (3/83 вызовов) | held 0.733 (2/30 вызовов)
+
+held-out, признаки ядра:
+  g02 margin=0.012 conf=0.325 core=OK model=OK
+  g05 margin=0.021 conf=0.140 core=OK model=OK
+  g06 margin=0.278 conf=0.534 core=MISS model=OK
+  g15 margin=0.009 conf=0.157 core=MISS model=MISS
+  g20 margin=0.003 conf=0.162 core=MISS model=MISS
+  g21 margin=0.025 conf=0.166 core=OK model=OK
+  g32 margin=0.268 conf=0.559 core=OK model=OK
+  g34 margin=0.229 conf=0.480 core=OK model=OK
+  g36 margin=0.000 conf=0.154 core=OK model=OK
+  g43 margin=0.262 conf=0.661 core=OK model=OK
+  g56 margin=0.022 conf=0.177 core=MISS model=OK
+  g57 margin=0.327 conf=0.690 core=OK model=OK
+  g58 margin=0.025 conf=0.125 core=OK model=OK
+  g59 margin=0.040 conf=0.158 core=OK model=OK
+  g60 margin=0.338 conf=0.683 core=MISS model=MISS
+  g61 margin=0.000 conf=0.154 core=OK model=OK
+  g74 margin=0.370 conf=0.761 core=OK model=MISS
+  g75 margin=0.310 conf=0.650 core=OK model=OK
+  g76 margin=0.005 conf=0.126 core=OK model=OK
+  g77 margin=0.006 conf=0.157 core=OK model=OK
+  g78 margin=0.291 conf=0.600 core=OK model=MISS
+  g79 margin=0.004 conf=0.244 core=OK model=OK
+  g92 margin=0.317 conf=0.684 core=MISS model=MISS
+  g105 margin=0.025 conf=0.176 core=OK model=MISS
+  g106 margin=0.022 conf=0.170 core=OK model=MISS
+  g107 margin=0.006 conf=0.156 core=MISS model=MISS
+  g108 margin=0.022 conf=0.175 core=MISS model=MISS
+  g109 margin=0.000 conf=0.154 core=OK model=OK
+  g110 margin=0.099 conf=0.257 core=OK model=OK
+  g114 margin=0.142 conf=0.787 core=OK model=OK
+
+Чувствительность порога (при срабатывании берём модель, иначе ядро):
+  margin <= 0.01: train 0.470/34, held 0.733/9
+  margin <= 0.02: train 0.494/43, held 0.733/10
+  margin <= 0.03: train 0.422/55, held 0.700/17
+  margin <= 0.05: train 0.398/68, held 0.700/18
+  margin <= 0.10: train 0.410/69, held 0.700/19
+  conf <= 0.14: train 0.530/7, held 0.733/3
+  conf <= 0.15: train 0.542/10, held 0.733/3
+  conf <= 0.16: train 0.482/27, held 0.733/10
+  conf <= 0.17: train 0.470/38, held 0.700/13
+  conf <= 0.18: train 0.470/46, held 0.700/16

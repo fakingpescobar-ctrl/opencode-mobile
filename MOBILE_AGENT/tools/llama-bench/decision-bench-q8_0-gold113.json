@@ -1,0 +1,4658 @@
+{
+  "model": "hindsight-ai/hs-decide-1-flash",
+  "file": "hs-decide-1-flash-q8_0.gguf",
+  "sha256": "9847b9dc0e8ea0a11d98c93574e47ec783e5c1ce0e21b5125ea2be79d57bd82b",
+  "bytes": 811843840,
+  "runtime": "llama-bench-musl-16",
+  "role": "choice над 5 кандидатами ядра, один forward pass",
+  "index_sha": "41d03a0959d549f2",
+  "gold_sha": "b4421d088404551bd9506a83eb69e8c1be877a0b63a9169c6dd816d0803255f5",
+  "n": 113,
+  "model_top1": 0.48672566371681414,
+  "model_top3": 0.8584070796460177,
+  "core_top1": 0.5929203539823009,
+  "core_top3": 0.9026548672566371,
+  "heldout": {
+    "n": 30,
+    "model_top1": 0.6666666666666666,
+    "model_top3": 0.9666666666666667,
+    "core_top1": 0.7333333333333333,
+    "core_top3": 0.9333333333333333
+  },
+  "avg_ms": 5799,
+  "rows": [
+    {
+      "id": "g01",
+      "heldout": false,
+      "query": "куда plugin пишет отчёт moltbook",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "ПРАВИЛА.md",
+        "ПРАВИЛА.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.489
+        },
+        {
+          "letter": "E",
+          "p": 0.355
+        },
+        {
+          "letter": "A",
+          "p": 0.064
+        },
+        {
+          "letter": "C",
+          "p": 0.053
+        },
+        {
+          "letter": "D",
+          "p": 0.04
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": false,
+      "ms": 3192,
+      "prompt_tokens": 577
+    },
+    {
+      "id": "g02",
+      "heldout": true,
+      "query": "правило 51 память читать самому без напоминания",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "ПРАВИЛА.md",
+        "ПРАВИЛА.md",
+        "ПРАВИЛА.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "E",
+          "p": 0.972
+        },
+        {
+          "letter": "C",
+          "p": 0.018
+        },
+        {
+          "letter": "A",
+          "p": 0.004
+        },
+        {
+          "letter": "B",
+          "p": 0.004
+        },
+        {
+          "letter": "D",
+          "p": 0.002
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 3985,
+      "prompt_tokens": 582
+    },
+    {
+      "id": "g03",
+      "heldout": false,
+      "query": "apk-40 sha установки verify-install",
+      "expect": "ХАРНЕС.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "ХАРНЕС.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "E",
+          "p": 0.72
+        },
+        {
+          "letter": "C",
+          "p": 0.157
+        },
+        {
+          "letter": "B",
+          "p": 0.06
+        },
+        {
+          "letter": "D",
+          "p": 0.042
+        },
+        {
+          "letter": "A",
+          "p": 0.021
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": false,
+      "ms": 8654,
+      "prompt_tokens": 630
+    },
+    {
+      "id": "g04",
+      "heldout": false,
+      "query": "советы молтбук external не инструкция",
+      "expect": "docs/MOLTBOOK_ADVICE.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "docs/MOLTBOOK_ADVICE.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.536
+        },
+        {
+          "letter": "B",
+          "p": 0.337
+        },
+        {
+          "letter": "D",
+          "p": 0.099
+        },
+        {
+          "letter": "E",
+          "p": 0.018
+        },
+        {
+          "letter": "C",
+          "p": 0.011
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 3083,
+      "prompt_tokens": 566
+    },
+    {
+      "id": "g05",
+      "heldout": true,
+      "query": "MCP_MOLTBOOK_REPORT_DIR env приложение",
+      "expect": "ХАРНЕС.md",
+      "core_top": [
+        "ХАРНЕС.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "ЖУРНАЛ.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
+        "ХАРНЕС.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.567
+        },
+        {
+          "letter": "E",
+          "p": 0.421
+        },
+        {
+          "letter": "C",
+          "p": 0.005
+        },
+        {
+          "letter": "B",
+          "p": 0.004
+        },
+        {
+          "letter": "D",
+          "p": 0.003
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 3340,
+      "prompt_tokens": 581
+    },
+    {
+      "id": "g06",
+      "heldout": true,
+      "query": "plugin.sha256 в opencode moltbook для plugin_sha_match",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "ЖУРНАЛ.md",
+        "ПРАВИЛА.md",
+        "ПРАВИЛА.md",
+        "СОСТОЯНИЕ.md",
+        "ПРАВИЛА.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "E",
+          "p": 0.384
+        },
+        {
+          "letter": "A",
+          "p": 0.362
+        },
+        {
+          "letter": "D",
+          "p": 0.12
+        },
+        {
+          "letter": "B",
+          "p": 0.087
+        },
+        {
+          "letter": "C",
+          "p": 0.048
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 2929,
+      "prompt_tokens": 540
+    },
+    {
+      "id": "g07",
+      "heldout": false,
+      "query": "порядок правки коммит сборка скачивание установка",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "ПРАВИЛА.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.886
+        },
+        {
+          "letter": "A",
+          "p": 0.086
+        },
+        {
+          "letter": "C",
+          "p": 0.01
+        },
+        {
+          "letter": "E",
+          "p": 0.009
+        },
+        {
+          "letter": "D",
+          "p": 0.009
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 3327,
+      "prompt_tokens": 559
+    },
+    {
+      "id": "g08",
+      "heldout": false,
+      "query": "musl bun путь libldmusl libbun-musl тесты",
+      "expect": "ХАРНЕС.md",
+      "core_top": [
+        "ХАРНЕС.md",
+        "ХАРНЕС.md",
+        "ХАРНЕС.md",
+        "ПРАВИЛА.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "C",
+          "p": 0.452
+        },
+        {
+          "letter": "E",
+          "p": 0.296
+        },
+        {
+          "letter": "A",
+          "p": 0.12
+        },
+        {
+          "letter": "D",
+          "p": 0.117
+        },
+        {
+          "letter": "B",
+          "p": 0.015
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 3153,
+      "prompt_tokens": 549
+    },
+    {
+      "id": "g09",
+      "heldout": false,
+      "query": "дедупликация отчёта apk-39 apk-40",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "ПРИЁМКА_APK48.md",
+        "ПРИЁМКА_APK49.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.395
+        },
+        {
+          "letter": "B",
+          "p": 0.287
+        },
+        {
+          "letter": "C",
+          "p": 0.159
+        },
+        {
+          "letter": "D",
+          "p": 0.081
+        },
+        {
+          "letter": "E",
+          "p": 0.078
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 3087,
+      "prompt_tokens": 540
+    },
+    {
+      "id": "g10",
+      "heldout": false,
+      "query": "ghtoken_mobile_agent.txt не публиковать",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "СОСТОЯНИЕ.md",
+        "ХАРНЕС.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "ПРАВИЛА.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.722
+        },
+        {
+          "letter": "B",
+          "p": 0.104
+        },
+        {
+          "letter": "C",
+          "p": 0.098
+        },
+        {
+          "letter": "D",
+          "p": 0.041
+        },
+        {
+          "letter": "E",
+          "p": 0.036
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 3408,
+      "prompt_tokens": 576
+    },
+    {
+      "id": "g11",
+      "heldout": false,
+      "query": "версия sdk android 17 device CPH2747",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "ИССЛЕДОВАНИЕ_МОБИЛЬНЫХ_ЛЛМ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "docs/agent-rules.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.975
+        },
+        {
+          "letter": "A",
+          "p": 0.018
+        },
+        {
+          "letter": "D",
+          "p": 0.004
+        },
+        {
+          "letter": "E",
+          "p": 0.003
+        },
+        {
+          "letter": "C",
+          "p": 0.001
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 3846,
+      "prompt_tokens": 601
+    },
+    {
+      "id": "g12",
+      "heldout": false,
+      "query": "FTS5 trigram unicode61 SQLite 3.53",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "ЖУРНАЛ.md",
+        "РОСТ_ЗОЛОТОГО_КОРПУСА.md",
+        "ИССЛЕДОВАНИЕ_ПАМЯТИ_АГЕНТОВ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.753
+        },
+        {
+          "letter": "A",
+          "p": 0.123
+        },
+        {
+          "letter": "D",
+          "p": 0.067
+        },
+        {
+          "letter": "C",
+          "p": 0.029
+        },
+        {
+          "letter": "E",
+          "p": 0.028
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 4298,
+      "prompt_tokens": 596
+    },
+    {
+      "id": "g13",
+      "heldout": false,
+      "query": "ретраи external blocked_on_external_grant",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "docs/MOLTBOOK_ADVICE.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
+        "docs/MOLTBOOK_ADVICE.md",
+        "docs/MOLTBOOK_ADVICE.md",
+        "docs/MOLTBOOK_ADVICE.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.481
+        },
+        {
+          "letter": "A",
+          "p": 0.33
+        },
+        {
+          "letter": "C",
+          "p": 0.095
+        },
+        {
+          "letter": "E",
+          "p": 0.053
+        },
+        {
+          "letter": "D",
+          "p": 0.04
+        }
+      ],
+      "model_top1": false,
+      "model_top3": false,
+      "core_top1": false,
+      "core_top3": false,
+      "ms": 4642,
+      "prompt_tokens": 561
+    },
+    {
+      "id": "g14",
+      "heldout": false,
+      "query": "read-back чужим глазом verifier",
+      "expect": "docs/MOLTBOOK_ADVICE.md",
+      "core_top": [
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "СОСТОЯНИЕ.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.661
+        },
+        {
+          "letter": "D",
+          "p": 0.157
+        },
+        {
+          "letter": "C",
+          "p": 0.125
+        },
+        {
+          "letter": "E",
+          "p": 0.04
+        },
+        {
+          "letter": "B",
+          "p": 0.017
+        }
+      ],
+      "model_top1": false,
+      "model_top3": false,
+      "core_top1": false,
+      "core_top3": false,
+      "ms": 4357,
+      "prompt_tokens": 567
+    },
+    {
+      "id": "g15",
+      "heldout": true,
+      "query": "stale-копия MOLTBOOK_REPORT архив удалён",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "ХАРНЕС.md",
+        "ПРАВИЛА.md",
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.771
+        },
+        {
+          "letter": "C",
+          "p": 0.156
+        },
+        {
+          "letter": "E",
+          "p": 0.064
+        },
+        {
+          "letter": "A",
+          "p": 0.005
+        },
+        {
+          "letter": "B",
+          "p": 0.004
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": false,
+      "ms": 7310,
+      "prompt_tokens": 602
+    },
+    {
+      "id": "g16",
+      "heldout": false,
+      "query": " supersede вместо удаления память",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.667
+        },
+        {
+          "letter": "E",
+          "p": 0.134
+        },
+        {
+          "letter": "B",
+          "p": 0.113
+        },
+        {
+          "letter": "A",
+          "p": 0.065
+        },
+        {
+          "letter": "C",
+          "p": 0.021
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 4647,
+      "prompt_tokens": 528
+    },
+    {
+      "id": "g17",
+      "heldout": false,
+      "query": "git CLI на телефоне нет API скрипты",
+      "expect": "ХАРНЕС.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "ПРАВИЛА.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.775
+        },
+        {
+          "letter": "C",
+          "p": 0.112
+        },
+        {
+          "letter": "A",
+          "p": 0.057
+        },
+        {
+          "letter": "E",
+          "p": 0.034
+        },
+        {
+          "letter": "B",
+          "p": 0.022
+        }
+      ],
+      "model_top1": false,
+      "model_top3": false,
+      "core_top1": false,
+      "core_top3": false,
+      "ms": 5252,
+      "prompt_tokens": 572
+    },
+    {
+      "id": "g18",
+      "heldout": false,
+      "query": "PC_AGENT удалён посредник",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "БЕНЧМАРК_СОПРОЦЕССОРА.md",
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md",
+        "ХАРНЕС.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "C",
+          "p": 0.852
+        },
+        {
+          "letter": "A",
+          "p": 0.084
+        },
+        {
+          "letter": "B",
+          "p": 0.042
+        },
+        {
+          "letter": "E",
+          "p": 0.012
+        },
+        {
+          "letter": "D",
+          "p": 0.011
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 4630,
+      "prompt_tokens": 594
+    },
+    {
+      "id": "g19",
+      "heldout": false,
+      "query": "мемори ядро memory_pack бюджет токенов",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "C",
+          "p": 0.477
+        },
+        {
+          "letter": "A",
+          "p": 0.257
+        },
+        {
+          "letter": "B",
+          "p": 0.116
+        },
+        {
+          "letter": "E",
+          "p": 0.079
+        },
+        {
+          "letter": "D",
+          "p": 0.07
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 4257,
+      "prompt_tokens": 536
+    },
+    {
+      "id": "g20",
+      "heldout": true,
+      "query": "ports memory mcp /mcp /mobile MemoryMcp",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "ХАРНЕС.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "C",
+          "p": 0.49
+        },
+        {
+          "letter": "B",
+          "p": 0.412
+        },
+        {
+          "letter": "E",
+          "p": 0.051
+        },
+        {
+          "letter": "A",
+          "p": 0.025
+        },
+        {
+          "letter": "D",
+          "p": 0.021
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 4305,
+      "prompt_tokens": 591
+    },
+    {
+      "id": "g21",
+      "heldout": true,
+      "query": "глубина 5 ответ уйдёт на уровень 6 потолок чтения тред",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "docs/MOLTBOOK_ADVICE.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "АРХИВ_СОСТОЯНИЯ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.749
+        },
+        {
+          "letter": "C",
+          "p": 0.138
+        },
+        {
+          "letter": "B",
+          "p": 0.047
+        },
+        {
+          "letter": "D",
+          "p": 0.046
+        },
+        {
+          "letter": "E",
+          "p": 0.021
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5462,
+      "prompt_tokens": 658
+    },
+    {
+      "id": "g22",
+      "heldout": false,
+      "query": "404 не видно в прочитанном куске не удалено надгробие is_deleted",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "ПРАВИЛА.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.532
+        },
+        {
+          "letter": "B",
+          "p": 0.316
+        },
+        {
+          "letter": "E",
+          "p": 0.059
+        },
+        {
+          "letter": "D",
+          "p": 0.057
+        },
+        {
+          "letter": "C",
+          "p": 0.036
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 4313,
+      "prompt_tokens": 615
+    },
+    {
+      "id": "g23",
+      "heldout": false,
+      "query": "PC-агент посредник удалены 19.11 писать только MOBILE_AGENT",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "ЖУРНАЛ.md",
+        "docs/MOLTBOOK_ADVICE.md",
+        "ХАРНЕС.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.599
+        },
+        {
+          "letter": "A",
+          "p": 0.206
+        },
+        {
+          "letter": "D",
+          "p": 0.099
+        },
+        {
+          "letter": "C",
+          "p": 0.051
+        },
+        {
+          "letter": "E",
+          "p": 0.045
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 4110,
+      "prompt_tokens": 551
+    },
+    {
+      "id": "g24",
+      "heldout": false,
+      "query": "тихое отсутствие кандидатов scan ran 0 candidates",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.315
+        },
+        {
+          "letter": "B",
+          "p": 0.26
+        },
+        {
+          "letter": "C",
+          "p": 0.242
+        },
+        {
+          "letter": "D",
+          "p": 0.109
+        },
+        {
+          "letter": "E",
+          "p": 0.073
+        }
+      ],
+      "model_top1": false,
+      "model_top3": false,
+      "core_top1": false,
+      "core_top3": false,
+      "ms": 4250,
+      "prompt_tokens": 578
+    },
+    {
+      "id": "g25",
+      "heldout": false,
+      "query": "gh-watch-run ожидание GitHub Actions run",
+      "expect": "ХАРНЕС.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "ХАРНЕС.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "ХАРНЕС.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.538
+        },
+        {
+          "letter": "C",
+          "p": 0.326
+        },
+        {
+          "letter": "D",
+          "p": 0.098
+        },
+        {
+          "letter": "E",
+          "p": 0.028
+        },
+        {
+          "letter": "B",
+          "p": 0.011
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 4634,
+      "prompt_tokens": 608
+    },
+    {
+      "id": "g26",
+      "heldout": false,
+      "query": "llama-bench musl bun ffi ldscore бенч",
+      "expect": "ХАРНЕС.md",
+      "core_top": [
+        "ХАРНЕС.md",
+        "СОСТОЯНИЕ.md",
+        "ХАРНЕС.md",
+        "ЖУРНАЛ.md",
+        "КАЧЕСТВО_ЛЛМ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.949
+        },
+        {
+          "letter": "B",
+          "p": 0.029
+        },
+        {
+          "letter": "C",
+          "p": 0.011
+        },
+        {
+          "letter": "E",
+          "p": 0.009
+        },
+        {
+          "letter": "D",
+          "p": 0.002
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 4776,
+      "prompt_tokens": 662
+    },
+    {
+      "id": "g27",
+      "heldout": false,
+      "query": "compact-raw.sh raw-manifest.tsv удаляет raw файл",
+      "expect": "ХАРНЕС.md",
+      "core_top": [
+        "ХАРНЕС.md",
+        "ХАРНЕС.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "ХАРНЕС.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.995
+        },
+        {
+          "letter": "C",
+          "p": 0.003
+        },
+        {
+          "letter": "E",
+          "p": 0.002
+        },
+        {
+          "letter": "D",
+          "p": 0.001
+        },
+        {
+          "letter": "B",
+          "p": 0
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 4239,
+      "prompt_tokens": 515
+    },
+    {
+      "id": "g28",
+      "heldout": false,
+      "query": "intent рецепт attempt-id verification_code expiry хеш тела",
+      "expect": "docs/MOLTBOOK_ADVICE.md",
+      "core_top": [
+        "docs/MOLTBOOK_ADVICE.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.994
+        },
+        {
+          "letter": "C",
+          "p": 0.003
+        },
+        {
+          "letter": "D",
+          "p": 0.001
+        },
+        {
+          "letter": "E",
+          "p": 0.001
+        },
+        {
+          "letter": "B",
+          "p": 0
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5767,
+      "prompt_tokens": 590
+    },
+    {
+      "id": "g29",
+      "heldout": false,
+      "query": "канонизация сервера хеш намерения хеш ресурса дедуп",
+      "expect": "docs/MOLTBOOK_ADVICE.md",
+      "core_top": [
+        "MOLTBOOK_REPORT.md",
+        "MOLTBOOK_REPORT.md",
+        "docs/MOLTBOOK_ADVICE.md",
+        "docs/MOLTBOOK_ADVICE.md",
+        "ПРАВИЛА.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.966
+        },
+        {
+          "letter": "C",
+          "p": 0.026
+        },
+        {
+          "letter": "A",
+          "p": 0.005
+        },
+        {
+          "letter": "B",
+          "p": 0.002
+        },
+        {
+          "letter": "E",
+          "p": 0.002
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 6410,
+      "prompt_tokens": 699
+    },
+    {
+      "id": "g31",
+      "heldout": false,
+      "query": "memory_pack задача бюджет компактный взвешенный проверяемый контекст",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.807
+        },
+        {
+          "letter": "B",
+          "p": 0.11
+        },
+        {
+          "letter": "C",
+          "p": 0.052
+        },
+        {
+          "letter": "E",
+          "p": 0.018
+        },
+        {
+          "letter": "D",
+          "p": 0.014
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5502,
+      "prompt_tokens": 540
+    },
+    {
+      "id": "g32",
+      "heldout": true,
+      "query": "SQLite WAL synchronous NORMAL bun:sqlite память",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.983
+        },
+        {
+          "letter": "D",
+          "p": 0.005
+        },
+        {
+          "letter": "B",
+          "p": 0.005
+        },
+        {
+          "letter": "E",
+          "p": 0.004
+        },
+        {
+          "letter": "C",
+          "p": 0.002
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 4798,
+      "prompt_tokens": 533
+    },
+    {
+      "id": "g33",
+      "heldout": false,
+      "query": "memoket kite следуй за нитью без эмбеддингов граф концептов",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.371
+        },
+        {
+          "letter": "C",
+          "p": 0.238
+        },
+        {
+          "letter": "D",
+          "p": 0.148
+        },
+        {
+          "letter": "E",
+          "p": 0.139
+        },
+        {
+          "letter": "B",
+          "p": 0.104
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5587,
+      "prompt_tokens": 606
+    },
+    {
+      "id": "g34",
+      "heldout": true,
+      "query": "doc_sources path sha mtime chunks indexed_at индекс markdown",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "ХАРНЕС.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
+        "АРХИВ_СОСТОЯНИЯ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.995
+        },
+        {
+          "letter": "C",
+          "p": 0.003
+        },
+        {
+          "letter": "E",
+          "p": 0.001
+        },
+        {
+          "letter": "D",
+          "p": 0.001
+        },
+        {
+          "letter": "B",
+          "p": 0.001
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 4089,
+      "prompt_tokens": 480
+    },
+    {
+      "id": "g35",
+      "heldout": false,
+      "query": "адаптивная семантика не перечитывать память попадать в ключ",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "ЖУРНАЛ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "E",
+          "p": 0.984
+        },
+        {
+          "letter": "D",
+          "p": 0.008
+        },
+        {
+          "letter": "C",
+          "p": 0.004
+        },
+        {
+          "letter": "A",
+          "p": 0.003
+        },
+        {
+          "letter": "B",
+          "p": 0.001
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 4655,
+      "prompt_tokens": 526
+    },
+    {
+      "id": "g36",
+      "heldout": true,
+      "query": "режимы v4 rrf legacy memory core DEFAULT_MODE",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.759
+        },
+        {
+          "letter": "D",
+          "p": 0.143
+        },
+        {
+          "letter": "C",
+          "p": 0.044
+        },
+        {
+          "letter": "E",
+          "p": 0.035
+        },
+        {
+          "letter": "B",
+          "p": 0.019
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5319,
+      "prompt_tokens": 537
+    },
+    {
+      "id": "g37",
+      "heldout": false,
+      "query": "Q8_0 квантование decision 5970 мс без потери качества",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.324
+        },
+        {
+          "letter": "C",
+          "p": 0.312
+        },
+        {
+          "letter": "E",
+          "p": 0.255
+        },
+        {
+          "letter": "B",
+          "p": 0.056
+        },
+        {
+          "letter": "A",
+          "p": 0.052
+        }
+      ],
+      "model_top1": false,
+      "model_top3": false,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 6330,
+      "prompt_tokens": 619
+    },
+    {
+      "id": "g38",
+      "heldout": false,
+      "query": "итерация 7 lb_score lb_code_ids choice",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md",
+        "СОСТОЯНИЕ.md",
+        "ИССЛЕДОВАНИЕ_ПАМЯТИ_АГЕНТОВ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.98
+        },
+        {
+          "letter": "B",
+          "p": 0.011
+        },
+        {
+          "letter": "E",
+          "p": 0.004
+        },
+        {
+          "letter": "C",
+          "p": 0.003
+        },
+        {
+          "letter": "A",
+          "p": 0.002
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 8080,
+      "prompt_tokens": 634
+    },
+    {
+      "id": "g39",
+      "heldout": false,
+      "query": "verified=3 в отчёте против 8 на сервере источник истины повторное чтение",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "ИССЛЕДОВАНИЕ_ПАМЯТИ_АГЕНТОВ.md",
+        "ПРАВИЛА.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.749
+        },
+        {
+          "letter": "C",
+          "p": 0.13
+        },
+        {
+          "letter": "B",
+          "p": 0.076
+        },
+        {
+          "letter": "A",
+          "p": 0.028
+        },
+        {
+          "letter": "E",
+          "p": 0.017
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 5990,
+      "prompt_tokens": 608
+    },
+    {
+      "id": "g40",
+      "heldout": false,
+      "query": "живой плагин files/mem libbun-musl эталон patched дата",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "ПРАВИЛА.md",
+        "ХАРНЕС.md",
+        "СОСТОЯНИЕ.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.506
+        },
+        {
+          "letter": "A",
+          "p": 0.261
+        },
+        {
+          "letter": "C",
+          "p": 0.14
+        },
+        {
+          "letter": "E",
+          "p": 0.048
+        },
+        {
+          "letter": "D",
+          "p": 0.045
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 4956,
+      "prompt_tokens": 569
+    },
+    {
+      "id": "g41",
+      "heldout": false,
+      "query": "memory-eternal одобрение неизменяемый аудит откат staged",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "ПРАВИЛА.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.877
+        },
+        {
+          "letter": "B",
+          "p": 0.036
+        },
+        {
+          "letter": "D",
+          "p": 0.035
+        },
+        {
+          "letter": "E",
+          "p": 0.032
+        },
+        {
+          "letter": "C",
+          "p": 0.02
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 4806,
+      "prompt_tokens": 593
+    },
+    {
+      "id": "g42",
+      "heldout": false,
+      "query": "точный ключ сервера недоказуем, но защита — проверка id + parent",
+      "expect": "docs/MOLTBOOK_ADVICE.md",
+      "core_top": [
+        "MOLTBOOK_REPORT.md",
+        "MOLTBOOK_REPORT.md",
+        "docs/MOLTBOOK_ADVICE.md",
+        "ПРАВИЛА.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.459
+        },
+        {
+          "letter": "D",
+          "p": 0.184
+        },
+        {
+          "letter": "C",
+          "p": 0.157
+        },
+        {
+          "letter": "B",
+          "p": 0.143
+        },
+        {
+          "letter": "E",
+          "p": 0.056
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 6652,
+      "prompt_tokens": 724
+    },
+    {
+      "id": "g43",
+      "heldout": true,
+      "query": "Локальные этапы (compute, temp-file-then-rename) — идемпотентны, ретраить с N",
+      "expect": "docs/MOLTBOOK_ADVICE.md",
+      "core_top": [
+        "docs/MOLTBOOK_ADVICE.md",
+        "docs/MOLTBOOK_ADVICE.md",
+        "ХАРНЕС.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.964
+        },
+        {
+          "letter": "A",
+          "p": 0.031
+        },
+        {
+          "letter": "E",
+          "p": 0.002
+        },
+        {
+          "letter": "D",
+          "p": 0.002
+        },
+        {
+          "letter": "C",
+          "p": 0.001
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5058,
+      "prompt_tokens": 531
+    },
+    {
+      "id": "g44",
+      "heldout": false,
+      "query": "SQLite через bun:sqlite, WAL, synchronous=NORMAL memory.js строки 51–62",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "E",
+          "p": 0.778
+        },
+        {
+          "letter": "A",
+          "p": 0.164
+        },
+        {
+          "letter": "B",
+          "p": 0.042
+        },
+        {
+          "letter": "D",
+          "p": 0.009
+        },
+        {
+          "letter": "C",
+          "p": 0.007
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5601,
+      "prompt_tokens": 597
+    },
+    {
+      "id": "g45",
+      "heldout": false,
+      "query": "Kotlin копирует memory.js и его спутника provenance.js в filesDir/mem OpencodeRuntime.kt",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.709
+        },
+        {
+          "letter": "D",
+          "p": 0.139
+        },
+        {
+          "letter": "C",
+          "p": 0.078
+        },
+        {
+          "letter": "E",
+          "p": 0.056
+        },
+        {
+          "letter": "B",
+          "p": 0.018
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5443,
+      "prompt_tokens": 549
+    },
+    {
+      "id": "g46",
+      "heldout": false,
+      "query": "FTS5 работает в нашем musl-bun",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "ХАРНЕС.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "ХАРНЕС.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.708
+        },
+        {
+          "letter": "A",
+          "p": 0.183
+        },
+        {
+          "letter": "B",
+          "p": 0.087
+        },
+        {
+          "letter": "C",
+          "p": 0.017
+        },
+        {
+          "letter": "E",
+          "p": 0.005
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5862,
+      "prompt_tokens": 597
+    },
+    {
+      "id": "g47",
+      "heldout": false,
+      "query": "trigram tokenizer работает, unicode61 — тоже локальный тест 2026-11-20",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "ПРАВИЛА.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.449
+        },
+        {
+          "letter": "E",
+          "p": 0.155
+        },
+        {
+          "letter": "C",
+          "p": 0.146
+        },
+        {
+          "letter": "D",
+          "p": 0.14
+        },
+        {
+          "letter": "A",
+          "p": 0.11
+        }
+      ],
+      "model_top1": false,
+      "model_top3": false,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5835,
+      "prompt_tokens": 604
+    },
+    {
+      "id": "g48",
+      "heldout": false,
+      "query": "Время, версии, как было на дату , самообучение Zep / Hindsight / OpenViking",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "ИССЛЕДОВАНИЕ_ПАМЯТИ_АГЕНТОВ.md",
+        "ИССЛЕДОВАНИЕ_ПАМЯТИ_АГЕНТОВ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "ИССЛЕДОВАНИЕ_ПАМЯТИ_АГЕНТОВ.md",
+        "ЖУРНАЛ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "E",
+          "p": 0.285
+        },
+        {
+          "letter": "B",
+          "p": 0.27
+        },
+        {
+          "letter": "C",
+          "p": 0.202
+        },
+        {
+          "letter": "D",
+          "p": 0.136
+        },
+        {
+          "letter": "A",
+          "p": 0.107
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 5675,
+      "prompt_tokens": 596
+    },
+    {
+      "id": "g49",
+      "heldout": false,
+      "query": "source, heading_path, line_from/to, sha256, mtime, kind",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "ХАРНЕС.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "E",
+          "p": 0.547
+        },
+        {
+          "letter": "B",
+          "p": 0.308
+        },
+        {
+          "letter": "C",
+          "p": 0.112
+        },
+        {
+          "letter": "A",
+          "p": 0.022
+        },
+        {
+          "letter": "D",
+          "p": 0.011
+        }
+      ],
+      "model_top1": false,
+      "model_top3": false,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5972,
+      "prompt_tokens": 606
+    },
+    {
+      "id": "g50",
+      "heldout": false,
+      "query": "Веса сверены с memory-core.js (W на строке ~105) 21.11.2026",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.992
+        },
+        {
+          "letter": "D",
+          "p": 0.003
+        },
+        {
+          "letter": "E",
+          "p": 0.003
+        },
+        {
+          "letter": "C",
+          "p": 0.001
+        },
+        {
+          "letter": "B",
+          "p": 0.001
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 6335,
+      "prompt_tokens": 554
+    },
+    {
+      "id": "g51",
+      "heldout": false,
+      "query": "mode передаётся в memory_pack/memory_recall_doc и в recallDocs",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "БЕНЧМАРК_СОПРОЦЕССОРА.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.407
+        },
+        {
+          "letter": "B",
+          "p": 0.29
+        },
+        {
+          "letter": "D",
+          "p": 0.17
+        },
+        {
+          "letter": "E",
+          "p": 0.106
+        },
+        {
+          "letter": "C",
+          "p": 0.027
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 5085,
+      "prompt_tokens": 543
+    },
+    {
+      "id": "g52",
+      "heldout": false,
+      "query": "legacy формула выше, байтно прежний контур, fallback 0.900, MRR 0.547",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "ПРАВИЛА.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.931
+        },
+        {
+          "letter": "A",
+          "p": 0.047
+        },
+        {
+          "letter": "C",
+          "p": 0.008
+        },
+        {
+          "letter": "E",
+          "p": 0.008
+        },
+        {
+          "letter": "D",
+          "p": 0.005
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5793,
+      "prompt_tokens": 608
+    },
+    {
+      "id": "g53",
+      "heldout": false,
+      "query": "MRR 0.643 — прирост без риска для legacy",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "ПРАВИЛА.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.924
+        },
+        {
+          "letter": "A",
+          "p": 0.03
+        },
+        {
+          "letter": "E",
+          "p": 0.022
+        },
+        {
+          "letter": "D",
+          "p": 0.014
+        },
+        {
+          "letter": "C",
+          "p": 0.011
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5523,
+      "prompt_tokens": 596
+    },
+    {
+      "id": "g54",
+      "heldout": false,
+      "query": "as_of — фильтр что было верно на дату/версию APK через superseded_at/created",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "docs/agent-rules.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.665
+        },
+        {
+          "letter": "C",
+          "p": 0.173
+        },
+        {
+          "letter": "E",
+          "p": 0.09
+        },
+        {
+          "letter": "B",
+          "p": 0.05
+        },
+        {
+          "letter": "A",
+          "p": 0.021
+        }
+      ],
+      "model_top1": false,
+      "model_top3": false,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 5428,
+      "prompt_tokens": 570
+    },
+    {
+      "id": "g55",
+      "heldout": false,
+      "query": "memory_dream — офлайн-сверка фактов в наблюдения с proof_count",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "ХАРНЕС.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.965
+        },
+        {
+          "letter": "E",
+          "p": 0.015
+        },
+        {
+          "letter": "C",
+          "p": 0.009
+        },
+        {
+          "letter": "D",
+          "p": 0.006
+        },
+        {
+          "letter": "B",
+          "p": 0.005
+        }
+      ],
+      "model_top1": false,
+      "model_top3": false,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 6049,
+      "prompt_tokens": 606
+    },
+    {
+      "id": "g56",
+      "heldout": true,
+      "query": "тот же bun:sqlite, тот же transports",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "docs/agent-rules.md",
+        "СОСТОЯНИЕ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "E",
+          "p": 0.631
+        },
+        {
+          "letter": "A",
+          "p": 0.139
+        },
+        {
+          "letter": "C",
+          "p": 0.095
+        },
+        {
+          "letter": "D",
+          "p": 0.075
+        },
+        {
+          "letter": "B",
+          "p": 0.06
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 5434,
+      "prompt_tokens": 562
+    },
+    {
+      "id": "g57",
+      "heldout": true,
+      "query": "Автоматическая индексация markdown, offline-first sqliteai/sqlite-memory",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.846
+        },
+        {
+          "letter": "D",
+          "p": 0.107
+        },
+        {
+          "letter": "E",
+          "p": 0.018
+        },
+        {
+          "letter": "B",
+          "p": 0.018
+        },
+        {
+          "letter": "C",
+          "p": 0.011
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5189,
+      "prompt_tokens": 542
+    },
+    {
+      "id": "g58",
+      "heldout": true,
+      "query": "chunk_anchor(chunk_id TEXT, anchor TEXT, weight REAL, PRIMARY KEY(chunk_id, anchor))",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.359
+        },
+        {
+          "letter": "D",
+          "p": 0.329
+        },
+        {
+          "letter": "E",
+          "p": 0.199
+        },
+        {
+          "letter": "B",
+          "p": 0.058
+        },
+        {
+          "letter": "C",
+          "p": 0.055
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 6260,
+      "prompt_tokens": 662
+    },
+    {
+      "id": "g59",
+      "heldout": true,
+      "query": "memory_snapshot(audit_id TEXT, payload TEXT, PRIMARY KEY(audit_id))",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.837
+        },
+        {
+          "letter": "E",
+          "p": 0.087
+        },
+        {
+          "letter": "C",
+          "p": 0.037
+        },
+        {
+          "letter": "A",
+          "p": 0.027
+        },
+        {
+          "letter": "D",
+          "p": 0.011
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5250,
+      "prompt_tokens": 555
+    },
+    {
+      "id": "g60",
+      "heldout": true,
+      "query": "v4 (1−λ)·sim + λ·Q только для чанков с реальным исходом + why.evidence 0.900, MRR",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "ВЫБОР_МОДЕЛИ_LLM.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "C",
+          "p": 0.492
+        },
+        {
+          "letter": "A",
+          "p": 0.226
+        },
+        {
+          "letter": "B",
+          "p": 0.128
+        },
+        {
+          "letter": "E",
+          "p": 0.121
+        },
+        {
+          "letter": "D",
+          "p": 0.033
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 6172,
+      "prompt_tokens": 629
+    },
+    {
+      "id": "g61",
+      "heldout": true,
+      "query": "После 20 credit/blame-исходов (memory_outcome) v4 даёт recall@5 1.000",
+      "expect": "АРХИТЕКТУРА_ПАМЯТИ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.451
+        },
+        {
+          "letter": "C",
+          "p": 0.21
+        },
+        {
+          "letter": "D",
+          "p": 0.147
+        },
+        {
+          "letter": "E",
+          "p": 0.103
+        },
+        {
+          "letter": "B",
+          "p": 0.088
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5346,
+      "prompt_tokens": 554
+    },
+    {
+      "id": "g62",
+      "heldout": false,
+      "query": "Ядро отдаёт 6 кандидатов, модель выбирает до 3",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "БЕНЧМАРК_СОПРОЦЕССОРА.md",
+        "ЖУРНАЛ.md",
+        "КАЧЕСТВО_ЛЛМ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "C",
+          "p": 0.993
+        },
+        {
+          "letter": "A",
+          "p": 0.004
+        },
+        {
+          "letter": "B",
+          "p": 0.002
+        },
+        {
+          "letter": "E",
+          "p": 0.001
+        },
+        {
+          "letter": "D",
+          "p": 0
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 6225,
+      "prompt_tokens": 651
+    },
+    {
+      "id": "g63",
+      "heldout": false,
+      "query": "эталон плагина + backup + тест §5",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md",
+        "СОСТОЯНИЕ.md",
+        "ПРАВИЛА.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "C",
+          "p": 0.955
+        },
+        {
+          "letter": "A",
+          "p": 0.015
+        },
+        {
+          "letter": "B",
+          "p": 0.014
+        },
+        {
+          "letter": "E",
+          "p": 0.009
+        },
+        {
+          "letter": "D",
+          "p": 0.007
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5733,
+      "prompt_tokens": 592
+    },
+    {
+      "id": "g64",
+      "heldout": false,
+      "query": "h10 → confidence=none, LLM вызвалась, 4371 мс, fallback=false, pack 5",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md",
+        "БЕНЧМАРК_СОПРОЦЕССОРА.md",
+        "СОСТОЯНИЕ.md",
+        "БЕНЧМАРК_СОПРОЦЕССОРА.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "C",
+          "p": 0.73
+        },
+        {
+          "letter": "E",
+          "p": 0.231
+        },
+        {
+          "letter": "A",
+          "p": 0.026
+        },
+        {
+          "letter": "B",
+          "p": 0.008
+        },
+        {
+          "letter": "D",
+          "p": 0.006
+        }
+      ],
+      "model_top1": false,
+      "model_top3": false,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 6039,
+      "prompt_tokens": 627
+    },
+    {
+      "id": "g65",
+      "heldout": false,
+      "query": "Скрипт opencode/rebaseline-gate.mjs перенёс их в bench_result_archive",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "ЖУРНАЛ.md",
+        "ХАРНЕС.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.804
+        },
+        {
+          "letter": "A",
+          "p": 0.14
+        },
+        {
+          "letter": "E",
+          "p": 0.024
+        },
+        {
+          "letter": "C",
+          "p": 0.022
+        },
+        {
+          "letter": "D",
+          "p": 0.009
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 6626,
+      "prompt_tokens": 678
+    },
+    {
+      "id": "g66",
+      "heldout": false,
+      "query": "полный снимок БД (около 7 МБ) оставлен только локально — в GitHub",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md",
+        "АРХИВ_СОСТОЯНИЯ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.982
+        },
+        {
+          "letter": "C",
+          "p": 0.006
+        },
+        {
+          "letter": "E",
+          "p": 0.006
+        },
+        {
+          "letter": "B",
+          "p": 0.004
+        },
+        {
+          "letter": "D",
+          "p": 0.003
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 5861,
+      "prompt_tokens": 618
+    },
+    {
+      "id": "g67",
+      "heldout": false,
+      "query": "снова упал до 0.900 — длинная отчётная запись вытесняла эталон из пула FTS",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.516
+        },
+        {
+          "letter": "C",
+          "p": 0.396
+        },
+        {
+          "letter": "B",
+          "p": 0.046
+        },
+        {
+          "letter": "E",
+          "p": 0.037
+        },
+        {
+          "letter": "A",
+          "p": 0.005
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 5543,
+      "prompt_tokens": 580
+    },
+    {
+      "id": "g68",
+      "heldout": false,
+      "query": "apk-49 установлен, живой gold 1.000",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "ЖУРНАЛ.md",
+        "docs/agent-rules.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.988
+        },
+        {
+          "letter": "E",
+          "p": 0.004
+        },
+        {
+          "letter": "C",
+          "p": 0.004
+        },
+        {
+          "letter": "D",
+          "p": 0.003
+        },
+        {
+          "letter": "B",
+          "p": 0.002
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5804,
+      "prompt_tokens": 583
+    },
+    {
+      "id": "g69",
+      "heldout": false,
+      "query": "имеющийся токен не может менять метаданные репозитория, REST",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "ИССЛЕДОВАНИЕ_ЯДЕР_LLAMA.md",
+        "ЖУРНАЛ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.994
+        },
+        {
+          "letter": "A",
+          "p": 0.003
+        },
+        {
+          "letter": "C",
+          "p": 0.002
+        },
+        {
+          "letter": "E",
+          "p": 0.001
+        },
+        {
+          "letter": "D",
+          "p": 0.001
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 5485,
+      "prompt_tokens": 564
+    },
+    {
+      "id": "g70",
+      "heldout": false,
+      "query": "файл подменён на нужный sha, а регресс-тесты ядра до этого прошли 198/0",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md",
+        "docs/agent-rules.md",
+        "ПРАВИЛА.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.774
+        },
+        {
+          "letter": "C",
+          "p": 0.125
+        },
+        {
+          "letter": "E",
+          "p": 0.063
+        },
+        {
+          "letter": "B",
+          "p": 0.026
+        },
+        {
+          "letter": "D",
+          "p": 0.012
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 5415,
+      "prompt_tokens": 578
+    },
+    {
+      "id": "g71",
+      "heldout": false,
+      "query": "ИССЛЕДОВАНИЕ_ПАМЯТИ_АГЕНТОВ.md (kind doc, 0.6) сдвинул ord у advice",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md",
+        "docs/MOLTBOOK_ADVICE.md",
+        "docs/MOLTBOOK_ADVICE.md",
+        "docs/MOLTBOOK_ADVICE.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.291
+        },
+        {
+          "letter": "B",
+          "p": 0.238
+        },
+        {
+          "letter": "E",
+          "p": 0.201
+        },
+        {
+          "letter": "C",
+          "p": 0.195
+        },
+        {
+          "letter": "A",
+          "p": 0.076
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5794,
+      "prompt_tokens": 589
+    },
+    {
+      "id": "g72",
+      "heldout": false,
+      "query": "Добавил BuildConfig.DEV_DEVICE_FINGERPRINT и строку role",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "ЖУРНАЛ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.637
+        },
+        {
+          "letter": "A",
+          "p": 0.124
+        },
+        {
+          "letter": "D",
+          "p": 0.09
+        },
+        {
+          "letter": "E",
+          "p": 0.084
+        },
+        {
+          "letter": "C",
+          "p": 0.065
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 6675,
+      "prompt_tokens": 679
+    },
+    {
+      "id": "g73",
+      "heldout": false,
+      "query": "первую точку цепочки тоже надо переносить (prefs\\n.edit())",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "ЖУРНАЛ.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "ЖУРНАЛ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.986
+        },
+        {
+          "letter": "A",
+          "p": 0.007
+        },
+        {
+          "letter": "E",
+          "p": 0.004
+        },
+        {
+          "letter": "C",
+          "p": 0.003
+        },
+        {
+          "letter": "D",
+          "p": 0.001
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 6140,
+      "prompt_tokens": 640
+    },
+    {
+      "id": "g74",
+      "heldout": true,
+      "query": "регресс-тест 4c, жёсткий bench 1.000",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "ЖУРНАЛ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "C",
+          "p": 0.372
+        },
+        {
+          "letter": "B",
+          "p": 0.357
+        },
+        {
+          "letter": "A",
+          "p": 0.14
+        },
+        {
+          "letter": "E",
+          "p": 0.101
+        },
+        {
+          "letter": "D",
+          "p": 0.029
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5954,
+      "prompt_tokens": 611
+    },
+    {
+      "id": "g75",
+      "heldout": true,
+      "query": "memory_bench(core) — recall 0.900, gate pass",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "ЖУРНАЛ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.516
+        },
+        {
+          "letter": "B",
+          "p": 0.348
+        },
+        {
+          "letter": "E",
+          "p": 0.055
+        },
+        {
+          "letter": "C",
+          "p": 0.044
+        },
+        {
+          "letter": "D",
+          "p": 0.037
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5134,
+      "prompt_tokens": 530
+    },
+    {
+      "id": "g76",
+      "heldout": true,
+      "query": "LLM ready/resident с моделью qwen3-0.6b-q4km",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "ЖУРНАЛ.md",
+        "ХАРНЕС.md",
+        "КАЧЕСТВО_ЛЛМ.md",
+        "ЖУРНАЛ.md",
+        "БЕНЧМАРК_СОПРОЦЕССОРА.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.641
+        },
+        {
+          "letter": "B",
+          "p": 0.254
+        },
+        {
+          "letter": "E",
+          "p": 0.05
+        },
+        {
+          "letter": "C",
+          "p": 0.037
+        },
+        {
+          "letter": "A",
+          "p": 0.019
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5950,
+      "prompt_tokens": 620
+    },
+    {
+      "id": "g77",
+      "heldout": true,
+      "query": "bold, italic, inline/code-блоков, ссылок, цитат, списков, таблиц)",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "ЖУРНАЛ.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "РОСТ_ЗОЛОТОГО_КОРПУСА.md",
+        "ЖУРНАЛ.md",
+        "ИССЛЕДОВАНИЕ_ПАМЯТИ_АГЕНТОВ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.538
+        },
+        {
+          "letter": "A",
+          "p": 0.269
+        },
+        {
+          "letter": "E",
+          "p": 0.069
+        },
+        {
+          "letter": "B",
+          "p": 0.065
+        },
+        {
+          "letter": "C",
+          "p": 0.059
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 6172,
+      "prompt_tokens": 649
+    },
+    {
+      "id": "g78",
+      "heldout": true,
+      "query": "На живой системе сошлись sha base.apk и files/mem/memory-index.mjs",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "ЖУРНАЛ.md",
+        "ПРАВИЛА.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.809
+        },
+        {
+          "letter": "A",
+          "p": 0.088
+        },
+        {
+          "letter": "E",
+          "p": 0.048
+        },
+        {
+          "letter": "C",
+          "p": 0.042
+        },
+        {
+          "letter": "B",
+          "p": 0.013
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5878,
+      "prompt_tokens": 615
+    },
+    {
+      "id": "g79",
+      "heldout": true,
+      "query": "переделки правим СОСТОЯНИЕ + ЖУРНАЛ, а при смене сборки/витрины ещё и README",
+      "expect": "ЖУРНАЛ.md",
+      "core_top": [
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md",
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.755
+        },
+        {
+          "letter": "A",
+          "p": 0.164
+        },
+        {
+          "letter": "C",
+          "p": 0.033
+        },
+        {
+          "letter": "D",
+          "p": 0.028
+        },
+        {
+          "letter": "E",
+          "p": 0.02
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 6325,
+      "prompt_tokens": 658
+    },
+    {
+      "id": "g80",
+      "heldout": false,
+      "query": "перечитать не удалось — писать unconfirmed, а не verified",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "ПРАВИЛА.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "АРХИВ_СОСТОЯНИЯ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "C",
+          "p": 0.651
+        },
+        {
+          "letter": "A",
+          "p": 0.155
+        },
+        {
+          "letter": "E",
+          "p": 0.086
+        },
+        {
+          "letter": "D",
+          "p": 0.056
+        },
+        {
+          "letter": "B",
+          "p": 0.051
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5575,
+      "prompt_tokens": 578
+    },
+    {
+      "id": "g81",
+      "heldout": false,
+      "query": "posted, которая на самом деле failed",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "ПРАВИЛА.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "АРХИВ_СОСТОЯНИЯ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.931
+        },
+        {
+          "letter": "A",
+          "p": 0.02
+        },
+        {
+          "letter": "C",
+          "p": 0.018
+        },
+        {
+          "letter": "B",
+          "p": 0.016
+        },
+        {
+          "letter": "E",
+          "p": 0.015
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5753,
+      "prompt_tokens": 600
+    },
+    {
+      "id": "g82",
+      "heldout": false,
+      "query": "reused, misparented, refused, deferred, timeout, gone-404",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "ЖУРНАЛ.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "РОСТ_ЗОЛОТОГО_КОРПУСА.md",
+        "АРХИВ_СОСТОЯНИЯ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.594
+        },
+        {
+          "letter": "B",
+          "p": 0.116
+        },
+        {
+          "letter": "A",
+          "p": 0.102
+        },
+        {
+          "letter": "C",
+          "p": 0.099
+        },
+        {
+          "letter": "E",
+          "p": 0.089
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 6340,
+      "prompt_tokens": 660
+    },
+    {
+      "id": "g83",
+      "heldout": false,
+      "query": "Полный порядок — правила 38–49",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "ПРАВИЛА.md",
+        "ПРАВИЛА.md",
+        "ХАРНЕС.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "C",
+          "p": 0.979
+        },
+        {
+          "letter": "A",
+          "p": 0.014
+        },
+        {
+          "letter": "B",
+          "p": 0.003
+        },
+        {
+          "letter": "E",
+          "p": 0.003
+        },
+        {
+          "letter": "D",
+          "p": 0.002
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 4754,
+      "prompt_tokens": 512
+    },
+    {
+      "id": "g84",
+      "heldout": false,
+      "query": "поверх него свою копию из APK",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "docs/agent-rules.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "C",
+          "p": 0.57
+        },
+        {
+          "letter": "D",
+          "p": 0.368
+        },
+        {
+          "letter": "A",
+          "p": 0.034
+        },
+        {
+          "letter": "E",
+          "p": 0.02
+        },
+        {
+          "letter": "B",
+          "p": 0.008
+        }
+      ],
+      "model_top1": false,
+      "model_top3": false,
+      "core_top1": false,
+      "core_top3": false,
+      "ms": 5320,
+      "prompt_tokens": 559
+    },
+    {
+      "id": "g85",
+      "heldout": false,
+      "query": "canTakeScreenshot применяется в момент включения службы, не при обновлении)",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "ПРАВИЛА.md",
+        "СОСТОЯНИЕ.md",
+        "ПРАВИЛА.md",
+        "ЖУРНАЛ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.883
+        },
+        {
+          "letter": "D",
+          "p": 0.082
+        },
+        {
+          "letter": "A",
+          "p": 0.019
+        },
+        {
+          "letter": "C",
+          "p": 0.009
+        },
+        {
+          "letter": "E",
+          "p": 0.007
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 6947,
+      "prompt_tokens": 535
+    },
+    {
+      "id": "g86",
+      "heldout": false,
+      "query": "ограниченная настройка Android для приложений, поставленных не из Play",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "E",
+          "p": 0.607
+        },
+        {
+          "letter": "C",
+          "p": 0.214
+        },
+        {
+          "letter": "A",
+          "p": 0.133
+        },
+        {
+          "letter": "B",
+          "p": 0.029
+        },
+        {
+          "letter": "D",
+          "p": 0.017
+        }
+      ],
+      "model_top1": false,
+      "model_top3": false,
+      "core_top1": false,
+      "core_top3": false,
+      "ms": 20105,
+      "prompt_tokens": 515
+    },
+    {
+      "id": "g87",
+      "heldout": false,
+      "query": "отвечает this model does not support image input )",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "MOLTBOOK_REPORT.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "E",
+          "p": 0.691
+        },
+        {
+          "letter": "A",
+          "p": 0.102
+        },
+        {
+          "letter": "C",
+          "p": 0.102
+        },
+        {
+          "letter": "D",
+          "p": 0.084
+        },
+        {
+          "letter": "B",
+          "p": 0.022
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 16605,
+      "prompt_tokens": 568
+    },
+    {
+      "id": "g88",
+      "heldout": false,
+      "query": "зрячий разбор читал чат, а я принял его за диагностику)",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "ЖУРНАЛ.md",
+        "ПРАВИЛА.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "АРХИВ_СОСТОЯНИЯ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "E",
+          "p": 0.535
+        },
+        {
+          "letter": "A",
+          "p": 0.29
+        },
+        {
+          "letter": "C",
+          "p": 0.147
+        },
+        {
+          "letter": "B",
+          "p": 0.017
+        },
+        {
+          "letter": "D",
+          "p": 0.011
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 14291,
+      "prompt_tokens": 538
+    },
+    {
+      "id": "g89",
+      "heldout": false,
+      "query": "он не ответ (правило 10), в our_reply_id",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "ПРАВИЛА.md",
+        "ПРАВИЛА.md",
+        "ПРАВИЛА.md",
+        "ЖУРНАЛ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.792
+        },
+        {
+          "letter": "A",
+          "p": 0.13
+        },
+        {
+          "letter": "B",
+          "p": 0.06
+        },
+        {
+          "letter": "C",
+          "p": 0.014
+        },
+        {
+          "letter": "E",
+          "p": 0.004
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 9271,
+      "prompt_tokens": 521
+    },
+    {
+      "id": "g90",
+      "heldout": false,
+      "query": "правки, а команда собирать APK",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "docs/agent-rules.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "C",
+          "p": 0.568
+        },
+        {
+          "letter": "D",
+          "p": 0.375
+        },
+        {
+          "letter": "E",
+          "p": 0.032
+        },
+        {
+          "letter": "A",
+          "p": 0.016
+        },
+        {
+          "letter": "B",
+          "p": 0.008
+        }
+      ],
+      "model_top1": false,
+      "model_top3": false,
+      "core_top1": false,
+      "core_top3": false,
+      "ms": 7582,
+      "prompt_tokens": 557
+    },
+    {
+      "id": "g91",
+      "heldout": false,
+      "query": "Коммит/пуш — только через GitHub API",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "ЖУРНАЛ.md",
+        "ПРАВИЛА.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "ПРАВИЛА.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.633
+        },
+        {
+          "letter": "E",
+          "p": 0.233
+        },
+        {
+          "letter": "D",
+          "p": 0.094
+        },
+        {
+          "letter": "B",
+          "p": 0.023
+        },
+        {
+          "letter": "C",
+          "p": 0.017
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 7993,
+      "prompt_tokens": 560
+    },
+    {
+      "id": "g92",
+      "heldout": true,
+      "query": "сборку, но workflow сам создаёт тег apk-<versionCode",
+      "expect": "ПРАВИЛА.md",
+      "core_top": [
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "docs/agent-rules.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.96
+        },
+        {
+          "letter": "D",
+          "p": 0.029
+        },
+        {
+          "letter": "E",
+          "p": 0.007
+        },
+        {
+          "letter": "C",
+          "p": 0.002
+        },
+        {
+          "letter": "B",
+          "p": 0.002
+        }
+      ],
+      "model_top1": false,
+      "model_top3": false,
+      "core_top1": false,
+      "core_top3": false,
+      "ms": 6050,
+      "prompt_tokens": 581
+    },
+    {
+      "id": "g93",
+      "heldout": false,
+      "query": "Режимы legacy (fallback по умолчанию), v4, rrf",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "E",
+          "p": 0.952
+        },
+        {
+          "letter": "A",
+          "p": 0.021
+        },
+        {
+          "letter": "D",
+          "p": 0.01
+        },
+        {
+          "letter": "B",
+          "p": 0.009
+        },
+        {
+          "letter": "C",
+          "p": 0.007
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5854,
+      "prompt_tokens": 586
+    },
+    {
+      "id": "g94",
+      "heldout": false,
+      "query": "Текущая работа: улучшения §5 Moltbook",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "ПРАВИЛА.md",
+        "ЖУРНАЛ.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "ЖУРНАЛ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.567
+        },
+        {
+          "letter": "A",
+          "p": 0.19
+        },
+        {
+          "letter": "E",
+          "p": 0.184
+        },
+        {
+          "letter": "B",
+          "p": 0.03
+        },
+        {
+          "letter": "C",
+          "p": 0.029
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 6488,
+      "prompt_tokens": 638
+    },
+    {
+      "id": "g95",
+      "heldout": false,
+      "query": "Но после перезапуска приложения MCP поднимает оно само, со своим env из Kotlin",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "СОСТОЯНИЕ.md",
+        "ПРАВИЛА.md",
+        "ХАРНЕС.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "E",
+          "p": 0.988
+        },
+        {
+          "letter": "A",
+          "p": 0.005
+        },
+        {
+          "letter": "D",
+          "p": 0.003
+        },
+        {
+          "letter": "B",
+          "p": 0.003
+        },
+        {
+          "letter": "C",
+          "p": 0.002
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 4690,
+      "prompt_tokens": 474
+    },
+    {
+      "id": "g96",
+      "heldout": false,
+      "query": "pass, baseline 0.90, delta 0, maxDrop 0.02",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "C",
+          "p": 0.309
+        },
+        {
+          "letter": "D",
+          "p": 0.216
+        },
+        {
+          "letter": "A",
+          "p": 0.189
+        },
+        {
+          "letter": "E",
+          "p": 0.175
+        },
+        {
+          "letter": "B",
+          "p": 0.111
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5299,
+      "prompt_tokens": 545
+    },
+    {
+      "id": "g97",
+      "heldout": false,
+      "query": "ранжирование стало монотонным, top-N — префикс большего N",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.709
+        },
+        {
+          "letter": "D",
+          "p": 0.164
+        },
+        {
+          "letter": "E",
+          "p": 0.06
+        },
+        {
+          "letter": "C",
+          "p": 0.044
+        },
+        {
+          "letter": "A",
+          "p": 0.023
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 6199,
+      "prompt_tokens": 616
+    },
+    {
+      "id": "g98",
+      "heldout": false,
+      "query": "переиндексации живой memory_bench(mode=core) дал 0.90, gate pass",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "ХАРНЕС.md",
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "E",
+          "p": 0.662
+        },
+        {
+          "letter": "D",
+          "p": 0.226
+        },
+        {
+          "letter": "A",
+          "p": 0.043
+        },
+        {
+          "letter": "B",
+          "p": 0.04
+        },
+        {
+          "letter": "C",
+          "p": 0.028
+        }
+      ],
+      "model_top1": false,
+      "model_top3": false,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 5799,
+      "prompt_tokens": 593
+    },
+    {
+      "id": "g99",
+      "heldout": false,
+      "query": "автоматическое забывание, multi-agent namespace, weight-space consolidation",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "MOLTBOOK_REPORT.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "C",
+          "p": 0.719
+        },
+        {
+          "letter": "A",
+          "p": 0.086
+        },
+        {
+          "letter": "D",
+          "p": 0.073
+        },
+        {
+          "letter": "E",
+          "p": 0.072
+        },
+        {
+          "letter": "B",
+          "p": 0.049
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 7972,
+      "prompt_tokens": 585
+    },
+    {
+      "id": "g100",
+      "heldout": false,
+      "query": "Автоотчёты о сбоях в Telegram",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.695
+        },
+        {
+          "letter": "D",
+          "p": 0.288
+        },
+        {
+          "letter": "E",
+          "p": 0.008
+        },
+        {
+          "letter": "B",
+          "p": 0.006
+        },
+        {
+          "letter": "C",
+          "p": 0.003
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 6099,
+      "prompt_tokens": 625
+    },
+    {
+      "id": "g101",
+      "heldout": false,
+      "query": "approve → held-out gate → auto-rollback",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "E",
+          "p": 0.986
+        },
+        {
+          "letter": "D",
+          "p": 0.005
+        },
+        {
+          "letter": "C",
+          "p": 0.004
+        },
+        {
+          "letter": "B",
+          "p": 0.003
+        },
+        {
+          "letter": "A",
+          "p": 0.002
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 5356,
+      "prompt_tokens": 551
+    },
+    {
+      "id": "g102",
+      "heldout": false,
+      "query": "text +20% — 0.900/0.573 и 0.650/0.430",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.712
+        },
+        {
+          "letter": "E",
+          "p": 0.262
+        },
+        {
+          "letter": "B",
+          "p": 0.011
+        },
+        {
+          "letter": "D",
+          "p": 0.007
+        },
+        {
+          "letter": "C",
+          "p": 0.007
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 6603,
+      "prompt_tokens": 681
+    },
+    {
+      "id": "g103",
+      "heldout": false,
+      "query": "для того же suite и того же index_sha",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md",
+        "СОСТОЯНИЕ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.293
+        },
+        {
+          "letter": "D",
+          "p": 0.283
+        },
+        {
+          "letter": "E",
+          "p": 0.241
+        },
+        {
+          "letter": "C",
+          "p": 0.17
+        },
+        {
+          "letter": "A",
+          "p": 0.012
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5977,
+      "prompt_tokens": 582
+    },
+    {
+      "id": "g104",
+      "heldout": false,
+      "query": "одна короткая структурированная сводка о доступных источниках и authority",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md",
+        "АРХИВ_СОСТОЯНИЯ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "A",
+          "p": 0.597
+        },
+        {
+          "letter": "D",
+          "p": 0.142
+        },
+        {
+          "letter": "B",
+          "p": 0.125
+        },
+        {
+          "letter": "E",
+          "p": 0.077
+        },
+        {
+          "letter": "C",
+          "p": 0.059
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 6379,
+      "prompt_tokens": 652
+    },
+    {
+      "id": "g105",
+      "heldout": true,
+      "query": "сбои с других телефонов приходят независимо, с role",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "АРХИВ_СОСТОЯНИЯ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "C",
+          "p": 0.35
+        },
+        {
+          "letter": "A",
+          "p": 0.202
+        },
+        {
+          "letter": "B",
+          "p": 0.175
+        },
+        {
+          "letter": "E",
+          "p": 0.145
+        },
+        {
+          "letter": "D",
+          "p": 0.128
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 6571,
+      "prompt_tokens": 678
+    },
+    {
+      "id": "g106",
+      "heldout": true,
+      "query": "EOG не прерывает замер — БЕНЧМАРК_ЛЛМ.md",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md",
+        "ЖУРНАЛ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "ИССЛЕДОВАНИЕ_МОБИЛЬНЫХ_ЛЛМ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.499
+        },
+        {
+          "letter": "E",
+          "p": 0.191
+        },
+        {
+          "letter": "A",
+          "p": 0.155
+        },
+        {
+          "letter": "C",
+          "p": 0.095
+        },
+        {
+          "letter": "D",
+          "p": 0.06
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 6230,
+      "prompt_tokens": 641
+    },
+    {
+      "id": "g107",
+      "heldout": true,
+      "query": "Два новых инструмента в живом memory.js",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "ПРАВИЛА.md",
+        "СОСТОЯНИЕ.md",
+        "ПРАВИЛА.md",
+        "ХАРНЕС.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.813
+        },
+        {
+          "letter": "E",
+          "p": 0.174
+        },
+        {
+          "letter": "B",
+          "p": 0.005
+        },
+        {
+          "letter": "A",
+          "p": 0.004
+        },
+        {
+          "letter": "C",
+          "p": 0.004
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 4483,
+      "prompt_tokens": 468
+    },
+    {
+      "id": "g108",
+      "heldout": true,
+      "query": "Удаления шли только по явному списку из 213",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.47
+        },
+        {
+          "letter": "C",
+          "p": 0.307
+        },
+        {
+          "letter": "E",
+          "p": 0.107
+        },
+        {
+          "letter": "A",
+          "p": 0.084
+        },
+        {
+          "letter": "B",
+          "p": 0.033
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 5121,
+      "prompt_tokens": 513
+    },
+    {
+      "id": "g109",
+      "heldout": true,
+      "query": "первый переход = 0.65, второй = 0.3",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "E",
+          "p": 0.776
+        },
+        {
+          "letter": "D",
+          "p": 0.163
+        },
+        {
+          "letter": "A",
+          "p": 0.037
+        },
+        {
+          "letter": "B",
+          "p": 0.013
+        },
+        {
+          "letter": "C",
+          "p": 0.01
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5838,
+      "prompt_tokens": 597
+    },
+    {
+      "id": "g110",
+      "heldout": true,
+      "query": "credit/blame 1.000 / 0.698, rrf 0.650/0.425",
+      "expect": "СОСТОЯНИЕ.md",
+      "core_top": [
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "СОСТОЯНИЕ.md",
+        "ЖУРНАЛ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.858
+        },
+        {
+          "letter": "E",
+          "p": 0.119
+        },
+        {
+          "letter": "A",
+          "p": 0.014
+        },
+        {
+          "letter": "B",
+          "p": 0.006
+        },
+        {
+          "letter": "C",
+          "p": 0.003
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 6163,
+      "prompt_tokens": 576
+    },
+    {
+      "id": "g111",
+      "heldout": false,
+      "query": "GIT_DIRTY считается с исключением app/build.gradle.kts",
+      "expect": "ХАРНЕС.md",
+      "core_top": [
+        "ХАРНЕС.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
+        "АРХИВ_СОСТОЯНИЯ.md",
+        "ЖУРНАЛ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "E",
+          "p": 0.774
+        },
+        {
+          "letter": "B",
+          "p": 0.086
+        },
+        {
+          "letter": "D",
+          "p": 0.08
+        },
+        {
+          "letter": "A",
+          "p": 0.034
+        },
+        {
+          "letter": "C",
+          "p": 0.026
+        }
+      ],
+      "model_top1": false,
+      "model_top3": false,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5971,
+      "prompt_tokens": 601
+    },
+    {
+      "id": "g112",
+      "heldout": false,
+      "query": "CORE_ASSETS + MCP_DOCS_DIR, включая временной gold",
+      "expect": "ХАРНЕС.md",
+      "core_top": [
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "ХАРНЕС.md",
+        "СОСТОЯНИЕ.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "D",
+          "p": 0.626
+        },
+        {
+          "letter": "E",
+          "p": 0.137
+        },
+        {
+          "letter": "B",
+          "p": 0.096
+        },
+        {
+          "letter": "A",
+          "p": 0.081
+        },
+        {
+          "letter": "C",
+          "p": 0.06
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": false,
+      "core_top3": true,
+      "ms": 5416,
+      "prompt_tokens": 564
+    },
+    {
+      "id": "g113",
+      "heldout": false,
+      "query": "Развернуть живой файл, cmp + sha256",
+      "expect": "ХАРНЕС.md",
+      "core_top": [
+        "ХАРНЕС.md",
+        "ХАРНЕС.md",
+        "АРХИТЕКТУРА_ПАМЯТИ.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md",
+        "КАТАЛОГ_ПЕРЕДЕЛОК.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "C",
+          "p": 0.617
+        },
+        {
+          "letter": "A",
+          "p": 0.196
+        },
+        {
+          "letter": "E",
+          "p": 0.102
+        },
+        {
+          "letter": "D",
+          "p": 0.054
+        },
+        {
+          "letter": "B",
+          "p": 0.03
+        }
+      ],
+      "model_top1": false,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 4476,
+      "prompt_tokens": 456
+    },
+    {
+      "id": "g114",
+      "heldout": true,
+      "query": "брать по факту через pm path",
+      "expect": "ХАРНЕС.md",
+      "core_top": [
+        "ХАРНЕС.md",
+        "ХАРНЕС.md",
+        "ХАРНЕС.md",
+        "СОСТОЯНИЕ.md",
+        "СОСТОЯНИЕ.md"
+      ],
+      "choice_order": [
+        {
+          "letter": "B",
+          "p": 0.681
+        },
+        {
+          "letter": "A",
+          "p": 0.3
+        },
+        {
+          "letter": "E",
+          "p": 0.007
+        },
+        {
+          "letter": "C",
+          "p": 0.007
+        },
+        {
+          "letter": "D",
+          "p": 0.006
+        }
+      ],
+      "model_top1": true,
+      "model_top3": true,
+      "core_top1": true,
+      "core_top3": true,
+      "ms": 5180,
+      "prompt_tokens": 509
+    }
+  ]
+}
