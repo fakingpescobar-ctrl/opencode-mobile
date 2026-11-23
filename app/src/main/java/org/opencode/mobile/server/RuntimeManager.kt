@@ -241,9 +241,20 @@ class RuntimeManager(
                         // README — только в папке по умолчанию. В чужом проекте наш файл
                         // был бы мусором: папку выбрали именно чтобы работать в ней как есть.
                         if (resolution.requested == null && !File(resolution.dir, "README.md").exists()) {
-                            File(resolution.dir, "README.md").writeText(
-                                "# OpenCode Terminal\n\nРабочая директория на внешнем хранилище (Documents/OpencodeTerminal).\n",
-                            )
+                            // Если папки ещё нет (чистая установка с выданным
+                            // доступом к файлам), создаём её здесь. Раньше
+                            // writeText падал ENOENT и уводил serve в CRASHED.
+                            runCatching {
+                                if (!resolution.dir.isDirectory) resolution.dir.mkdirs()
+                                File(resolution.dir, "README.md").writeText(
+                                    "# OpenCode Terminal\n\nРабочая директория на внешнем хранилище (Documents/OpencodeTerminal).\n",
+                                )
+                            }.onFailure { error ->
+                                android.util.Log.w(
+                                    "OpencodeServer",
+                                    "не удалось записать README в ${resolution.dir}: ${error.message}",
+                                )
+                            }
                         }
                         resolution
                     }

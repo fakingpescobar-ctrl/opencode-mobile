@@ -126,6 +126,16 @@ internal object TtsModelDownloader {
             onProgress(done, TOTAL_BYTES)
         }
         SupertonicTts.resetLoadAttempt()
+        val cfg = TtsConfig.read(context)
+        if (cfg.engine == TtsEngine.Off) {
+            // Скачал модель — значит хочет говорить. Включаем локальный движок
+            // сами: просить юзера ещё и галочку ставить после 139 МБ закачки
+            // совсем не логично. Облако (если выбрано) не перебиваем.
+            TtsConfig.save(context, cfg.copy(engine = TtsEngine.Sherpa, model = TtsConfig.DEFAULT_MODEL))
+        }
+        // Подхватываем только что скачанную модель на лету: без рестарта
+        // приложения и без потери текущей сессии чата.
+        TtsNarrator.reconfigure(context)
         Log.i(TAG, "модель озвучки готова: ${d.absolutePath}, ${bytesOnDisk(context)} б")
     }
 

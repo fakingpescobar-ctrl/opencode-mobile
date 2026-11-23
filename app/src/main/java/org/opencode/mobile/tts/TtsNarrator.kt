@@ -96,6 +96,21 @@ object TtsNarrator {
     }
 
     /**
+     * Применить новую модель/движок сразу, без перезапуска приложения.
+     *
+     * Вызывается после скачивания модели: [ensureSpeaker] читает настройки
+     * каждый вызов, но ключ [loadedFor] мог остаться от прежней (ещё не
+     * скачанной) модели. Сбрасываем его и поднимаем синтезатор заново; старый
+     * спикер освободится внутри загрузчика, сервер и чат не трогаем.
+     */
+    fun reconfigure(context: Context) {
+        val cfg = TtsConfig.read(context)
+        loadedFor = ""
+        deferred = null
+        ensureSpeaker(context, cfg)
+    }
+
+    /**
      * Текст assistant-сообщения. [isFinal] — ответ дописан, можно отдавать остаток буфера.
      */
     fun onAssistantText(

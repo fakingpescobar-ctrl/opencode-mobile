@@ -56,12 +56,19 @@ import org.opencode.mobile.account.YandexAccountController
 import org.opencode.mobile.account.YandexOAuth
 import org.opencode.mobile.server.OpencodeServerService
 import org.opencode.mobile.server.ServerAuth
+import org.opencode.mobile.server.Workspace
+import org.opencode.mobile.server.WorkspacePath
 import org.opencode.mobile.ui.ChatOverlay
 import org.opencode.mobile.ui.theme.OpencodeMobileTheme
 
 private const val TAG = "OpencodeWebView"
+private const val WORKSPACE_ONBOARDING_PREFS = "workspace_onboarding"
+private const val WORKSPACE_ONBOARDING_DONE = "done"
 
 class MainActivity : ComponentActivity() {
+    /** Пока true — показываем онбординг и НЕ поднимаем serve. */
+    private var needWorkspacePermission by mutableStateOf(false)
+
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
@@ -71,19 +78,10 @@ class MainActivity : ComponentActivity() {
     // на настоящие Documents на внешнем хранилище, а не на внутреннюю песочницу.
     private val allFilesLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-            // Вернулись из настроек. Если юзер включил «Доступ ко всем файлам» —
-            // мягко перезапускаем serve: цикл runServerLoop перезапустит его с
-            // внешним workspace (Documents/OpencodeTerminal). Безопасно — не трогает
-            // foreground-сервис и не отменяет serverJob (stop+start гонялся и валил сервер).
-            if (Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()) {
-                Log.i(TAG, "All-files access granted — soft-restart serve for external workspace")
-                // Юзер мог вернуться из настроек раньше, чем onStartCommand доехал до
-                // runServerLoop: тогда рестартовать нечего (status=STOPPED дефолт),
-                // а стартующий сервис сам резолвнет внешний workspace уже с правом.
-                if (OpencodeServerService.state.value.status != OpencodeServerService.ServerStatus.STOPPED) {
-                    OpencodeServerService.restart(this)
-                }
-            }
+            // Вернулись из системных настроек. Сервер намеренно не стартовал
+            // раньше: гонка «права ещё нет, а serve уже резолвит workspace»
+            // и рождала ENOENT на чистой установке.
+            prepareWorkspaceAndStart()
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -92,17 +90,30 @@ class MainActivity : ComponentActivity() {
         // IME рисуется ПОВЕРХ терминала и поле ввода opencode остаётся под клавиатурой.
         // enableEdgeToEdge включает wiring флагов, чтобы окно сжималось под софт-клавиатуру.
         enableEdgeToEdge()
-        requestAllFilesAccessIfNeeded()
         // Пароль serve читаем сразу: WebView (SPA) стартует раньше сервиса и
         // должен успеть авторизоваться Basic-заголовком с первого запроса.
         // load-or-create: если сервис/старый ран уже генерили — читаем тот же,
         // иначе создаём и шифруем в Keystore сами (serve потом прочитает).
         ServerAuth.ensurePassword(this)
-        OpencodeServerService.start(this)
+        // Сначала выясняем статус доступа к файлам, и только потом поднимаем
+        // serve. Раньше запрос уходил в Настройки асинхронно, а сервер стартовал
+        // сразу — workspace резолвился без права и падал ENOENT.
+        when {
+            Workspace.hasAllFilesAccess() -> prepareWorkspaceAndStart()
+            onboardingDone() -> startServerWithoutPermission()
+            else -> needWorkspacePermission = true
+        }
         requestNotificationPermission()
         setContent {
             OpencodeMobileTheme {
-                TerminalScreen()
+                if (needWorkspacePermission) {
+                    WorkspacePermissionGate(
+                        onGrant = { requestAllFilesAccessIfNeeded() },
+                        onSkip = { startServerWithoutPermission() },
+                    )
+                } else {
+                    TerminalScreen()
+                }
             }
         }
         // Редирект разбирается и здесь, а не только в onNewIntent. Если процесс убили,
@@ -161,6 +172,52 @@ class MainActivity : ComponentActivity() {
         runOnUiThread { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
     }
 
+    /**
+     * Готовим рабочую папку и только потом стартуем serve.
+     *
+     * `WorkspacePath.prepare` создаёт каталог и пишет пробный файл: одного
+     * «право выдано» мало — на некоторых ROM папка видна, но запись отбита.
+     * Всё это на IO-потоке, в UI возвращаемся уже с готовым путём.
+     */
+    private fun prepareWorkspaceAndStart() {
+        Thread(
+            {
+                val root = Workspace.externalRoot()
+                if (Workspace.hasAllFilesAccess() && root != null) {
+                    val prepared = WorkspacePath.prepare(root.absolutePath)
+                    Log.i(
+                        TAG,
+                        "workspace prepared: ${prepared.dir?.absolutePath} problem=${prepared.problem}",
+                    )
+                }
+                runOnUiThread {
+                    markOnboardingDone()
+                    needWorkspacePermission = false
+                    OpencodeServerService.start(this@MainActivity)
+                }
+            },
+            "workspace-prepare",
+        ).start()
+    }
+
+    /** Юзер отказался от доступа к файлам — работаем в песочнице, без падения. */
+    private fun startServerWithoutPermission() {
+        markOnboardingDone()
+        needWorkspacePermission = false
+        OpencodeServerService.start(this)
+    }
+
+    private fun onboardingDone(): Boolean =
+        getSharedPreferences(WORKSPACE_ONBOARDING_PREFS, MODE_PRIVATE)
+            .getBoolean(WORKSPACE_ONBOARDING_DONE, false)
+
+    private fun markOnboardingDone() {
+        getSharedPreferences(WORKSPACE_ONBOARDING_PREFS, MODE_PRIVATE)
+            .edit()
+            .putBoolean(WORKSPACE_ONBOARDING_DONE, true)
+            .apply()
+    }
+
     private fun requestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
@@ -186,6 +243,45 @@ class MainActivity : ComponentActivity() {
                     // на очень старых/СCustom ROM нет этой настройки — пропускаем,
                     // workspace останется внутренним (fallback).
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Первый запуск: объясняем, зачем приложению доступ к файлам, и даём выбор.
+ * Пока этот экран наверху, serve не поднят — это и есть гейт от ENOENT.
+ */
+@Composable
+private fun WorkspacePermissionGate(
+    onGrant: () -> Unit,
+    onSkip: () -> Unit,
+) {
+    Surface(Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(24.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text("Рабочая папка", style = MaterialTheme.typography.headlineSmall)
+            Text(
+                "Приложение работает с вашими файлами. Разрешите доступ — мы создадим " +
+                    "папку Documents/OpencodeTerminal и будем хранить проекты там. " +
+                    "Без доступа всё останется только внутри приложения.",
+                modifier = Modifier.padding(top = 12.dp),
+                textAlign = TextAlign.Center,
+            )
+            Button(
+                onClick = onGrant,
+                modifier = Modifier.fillMaxWidth().padding(top = 24.dp),
+            ) {
+                Text("Разрешить доступ к файлам")
+            }
+            Button(
+                onClick = onSkip,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            ) {
+                Text("Продолжить без доступа")
             }
         }
     }

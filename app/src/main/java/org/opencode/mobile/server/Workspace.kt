@@ -46,7 +46,15 @@ object Workspace {
     /** Рабочая папка по умолчанию (когда пользователь ничего не выбирал). */
     fun defaultDir(context: Context): File {
         val external = externalRoot()
-        return if (hasAllFilesAccess() && external != null) external else internal(context)
+        return when {
+            !hasAllFilesAccess() || external == null -> internal(context)
+            external.isDirectory -> external
+            // Право «Доступ ко всем файлам» уже выдано, но на чистой установке
+            // сама папка ещё не создана. Раньше её пытался создать writeText
+            // README в RuntimeManager — и падал ENOENT, уводя рантайм в CRASHED.
+            external.mkdirs() -> external
+            else -> internal(context)
+        }
     }
 
     /** Что получилось из выбранной папки: путь, запрос и причина отказа. */
