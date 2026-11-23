@@ -1,0 +1,37 @@
+{
+  "protocol": "rerank-bench-bge-v2-m3-gold113.json",
+  "index_sha": "173b54f2d7263189",
+  "gold_sha": "b4421d088404551bd9506a83eb69e8c1be877a0b63a9169c6dd816d0803255f5",
+  "train": {
+    "n": 83,
+    "core_top1": 0.5662650602409639,
+    "chosen": {
+      "mode": "conf",
+      "fusion": "linear",
+      "w": 0.2,
+      "p": 0.2,
+      "useMinConf": false,
+      "minConf": 0.4047,
+      "cut": 0.154,
+      "top1": 0.5662650602409639,
+      "top3": 0.891566265060241,
+      "calls": 15
+    },
+    "q30": 0.005697343442699543,
+    "qc30": 0.16,
+    "conf25": 0.4047
+  },
+  "heldout": {
+    "n": 30,
+    "core_top1": 0.7333333333333333,
+    "hybrid_top1": 0.7,
+    "core_top3": 0.9333333333333333,
+    "hybrid_top3": 0.9333333333333333,
+    "calls": 3
+  },
+  "online": {
+    "delta_cap": 0.1,
+    "cooldown_unique_queries": 20,
+    "max_drop": 0.02
+  }
+}

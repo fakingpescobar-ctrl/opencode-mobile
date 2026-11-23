@@ -396,7 +396,10 @@ flowchart LR
 модель проиграла ядру по top1 и на всех (0.487 против 0.593), и на held-out
 (0.667 против 0.733); гейт по неуверенности не дал выигрыша ни на одном признаке.
 Дефолт остаётся детерминированный FTS5, модель — research/opt-in. Разбор:
-`MOBILE_AGENT/tools/llama-bench/DECISION-GOLD113.md`.
+`MOBILE_AGENT/tools/llama-bench/DECISION-GOLD113.md`. Внешние embed/rerank
+(e5-small, bge-v2-m3) тоже прогнаны на 113/30 и тоже проиграли ядру по top1
+и held-out (0.600 и 0.500 против 0.733); гибрид bge на held-out 0.700. Итоговая
+сводка — `MOBILE_AGENT/tools/llama-bench/EXTERNALS-GOLD113.md`.
 
 ---
 
