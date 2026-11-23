@@ -106,23 +106,28 @@ A (править `filesDir/mem`) отвергнут отдельно: петл�
 
 ## Что проверено на устройстве
 
-> **belief** · verified: 2026-10-08 · kill: 2026-11-07 · ref: живая сессия opencode, 01.10.2026
-> Агенту доступны инструменты `read, write, edit, glob, grep, bash` — спрошено у живой сессии.
+> **belief** · verified: 2026-11-23 · kill: 2026-12-23 · ref: живая сессия 01.10 + инструменты 23.11
+> Агенту доступны инструменты `read, write, edit, glob, grep, bash` — спрошено у живой сессии
+> и перепроверено 23.11.2026: все перечисленные инструменты реально сработали в этом ходе.
 
-> **belief** · verified: 2026-10-08 · kill: 2026-11-22 · ref: замер moltdns.mjs / moltip.mjs через libldmusl.so
+> **belief** · verified: 2026-11-23 · kill: 2026-12-23 · ref: замер moltdns.mjs / moltip.mjs + gh-*.mjs 23.11
 > Bun запускает JS на телефоне: `libldmusl.so libbun-musl.so файл.mjs` отрабатывает, проверено
-> на живых прогонах 08.10.2026 (без `run`, `bun run` ждёт запись в `package.json`).
+> на живых прогонах 08.10.2026 и перепроверено 23.11.2026: `gh-push-many.mjs`,
+> `gh-release-dispatch.mjs`, `gh-watch-run.mjs`, `gh-release-download.mjs` гонялись
+> через `run-bun.sh` без единого сбоя (без `run`, `bun run` ждёт запись в `package.json`).
 
 > **belief** · verified: 2026-10-08 · kill: 2026-11-22 · ref: `ynison-search.test.mjs` на устройстве, 01.10.2026
 > JS-тесты агентских инструментов на устройстве запускаются; 19 проверок `ynison-search.test.mjs`
 > упали только из-за относительного пути к `SOURCE`, а не из-за неработающего раннера.
 
-> **belief** · verified: 2026-10-08 · kill: 2026-12-07 · ref: `which git`, `find /storage/emulated/0 -name git`, `ls /system/bin/git`
+> **belief** · verified: 2026-11-23 · kill: 2026-12-23 · ref: `which git`, `find /storage/emulated/0 -name git`, `ls /system/bin/git`, 23.11
 > Git на устройстве отсутствует: бинаря нет (`which git` пусто, `/system/bin/git` отсутствует, toybox
-> его не содержит), каталога `.git` в workspace нет. Значит снапшоты пишем копированием файла.
+> его не содержит), каталога `.git` в workspace нет. Перепроверено 23.11.2026 (`command -v git`
+> → пусто). Значит снапшоты пишем копированием файла, а пушим через GitHub API.
 
-> **belief** · verified: 2026-10-08 · kill: 2026-12-07 · ref: `pm list packages | grep termux`, `/data/data/com.termux`
+> **belief** · verified: 2026-11-23 · kill: 2026-12-23 · ref: `pm list packages | grep termux`, 23.11
 > Termux на телефоне отсутствует: пакета нет, каталога `/data/data/com.termux` нет.
+> Перепроверено 23.11.2026: `pm list packages | grep termux` → пусто.
 
 > **belief** · verified: 2026-10-26 · kill: 2026-12-26 · ref: `dns.lookup` шарда под run-as, баг 26.10.2026
 > musl-Bun на Android резолвит DNS. Прежняя запись «не резолвит вовсе» (по `getaddrinfo
@@ -185,9 +190,10 @@ A (править `filesDir/mem`) отвергнут отдельно: петл�
 обязано пройти тесты, иначе автоматический откат. Агент может ошибаться
 сколько угодно — цена ошибки один откат.
 
-> **belief** · verified: 2026-10-08 · kill: 2026-11-22 · ref: замер harness.js 08.10.2026 + `which git`
+> **belief** · verified: 2026-11-23 · kill: 2026-12-23 · ref: замер harness.js 08.10 + gh-*.mjs 23.11
 > Тестовый гейт на устройстве работает на bun и обходится без git: снапшоты делаются копированием
-> файла перед патчем, откат — возвратом копии.
+> файла перед патчем, откат — возвратом копии. Перепроверено 23.11.2026: харнес `gh-*.mjs`
+> отработал на bun, git по-прежнему отсутствует.
 
 ### 4. Provenance в памяти — сделано
 
