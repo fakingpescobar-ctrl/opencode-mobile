@@ -402,9 +402,11 @@ flowchart LR
 сводка — `MOBILE_AGENT/tools/llama-bench/EXTERNALS-GOLD113.md`. Финальный вердикт
 всего research (дефолт FTS5, APK не трогать) — `MOBILE_AGENT/ВЕРДИКТ_RESEARCH_ПАМЯТИ.md`.
 Retrieval-фикс: исправлена инверсия bm25, top1 held-out 0.733→0.800 —
-`MOBILE_AGENT/tools/llama-bench/RETRIEVAL-FIX-BM25.md`. **Активная сборка apk-70**
-(opencode 2.4.0, versionCode 70), фикс доставлен на телефон и подтверждён живой
-сверкой ассета.
+`MOBILE_AGENT/tools/llama-bench/RETRIEVAL-FIX-BM25.md`. Волна 1 безопасности
+ядра: fail-closed манифест, `approve` как гейт provenance и receipt цитат —
+подробности в `MOBILE_AGENT/ВЕРДИКТ_RESEARCH_ПАМЯТИ.md`. **Активная сборка
+apk-71** (opencode 2.4.0, versionCode 71), оба фикса доставлены на телефон и
+подтверждены живой сверкой ассета.
 
 ---
 
