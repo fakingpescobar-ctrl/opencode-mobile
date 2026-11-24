@@ -1,6 +1,7 @@
 package org.opencode.mobile.server
 
 import android.content.Context
+import android.os.Build
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
@@ -825,10 +826,22 @@ class RuntimeManager(
     }
 
     private fun emitTerminalInvalidRuntime() {
+        // На 32-битном Android серверный бинарь не запустить принципиально: в APK
+        // лежит только arm64-ядро, а untrusted_app исполняет ELF из nativeLibraryDir
+        // под ABI приложения. Показываем причину прямо в ошибке, а не голое
+        // «Server failed. See logcat» — по нему друг не поймёт, что дело в разрядности.
+        val abi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
+        val is32Bit = abi.contains("armeabi") || abi.contains("armv7") || abi == "x86"
+        val message = if (is32Bit) {
+            "32-битный Android ($abi): локальный сервер недоступен, в APK только arm64-ядро. " +
+                "Нужен 64-битный Android. libopencode.so / libldmusl.so отсутствуют в nativeLibraryDir"
+        } else {
+            "libopencode.so / libldmusl.so отсутствуют в nativeLibraryDir"
+        }
         emitFailure(
             stage = RuntimeStage.PREPARING,
             code = RuntimeErrorCode.MISSING_NATIVE_BIN,
-            message = "libopencode.so / libldmusl.so отсутствуют в nativeLibraryDir",
+            message = message,
             recoverable = false,
         ) {
             copy(stage = RuntimeStage.FAILED_PERMANENTLY, stopReason = StopReason.INVALID_RUNTIME)
