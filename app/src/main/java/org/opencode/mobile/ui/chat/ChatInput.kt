@@ -128,6 +128,7 @@ internal fun ChatInput(
     voice: VoiceHoldActions,
 ) = ChatInputVariantRouter(state, actions, ask, voice)
 
+@Composable
 internal fun ChatInput80(
     state: ChatInputState,
     actions: ChatInputActions,
