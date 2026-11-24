@@ -677,6 +677,9 @@ fun ChatOverlay(
         }
 
     fun startVoice() {
+        // Повторное удержание во время записи или распознавания не должно
+        // поднимать вторую сессию: SpectrumBar и уровень берутся из одного PCM.
+        if (listening || whisperBusy) return
         speechError = null
         Log.d("VOICE", "startVoice: engine=${voice.sttEngine}")
         if (voice.sttEngine == VoiceEngine.WHISPER) {
@@ -802,7 +805,15 @@ fun ChatOverlay(
 
     val micPermissionLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) startVoice() else speechError = "нет доступа к микрофону"
+            // Раньше здесь сразу звался startVoice(): запись начиналась без удержания
+            // пальца и потом не имела парного stop(). Теперь после выдачи разрешения
+            // пользователь просто удерживает кнопку ещё раз — Record живёт ровно
+            // пока нажата, и stop() всегда находит свой рекордер.
+            if (granted) {
+                speechError = "Микрофон разрешён — удерживай кнопку голоса ещё раз"
+            } else {
+                speechError = "нет доступа к микрофону"
+            }
         }
 
     // Живая полоска спектра, пока держится микрофон. Уровень берём из настоящего
