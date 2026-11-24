@@ -1519,7 +1519,7 @@ private fun deviceFacts(
         "Плата / чип" to "${Build.BOARD} / ${Build.HARDWARE}",
         "Android" to "${Build.VERSION.RELEASE} · API ${Build.VERSION.SDK_INT}",
         "Прошивка" to "${Build.DISPLAY} · ${Build.ID} · ${Build.VERSION.INCREMENTAL}",
-        "Патч безопасности" to (Build.VERSION.securityPatch ?: "—"),
+        "Патч безопасности" to (Build.VERSION.SECURITY_PATCH ?: "—"),
         "Архитектура" to "$abis · ${Runtime.getRuntime().availableProcessors()} ядер",
         "Экран" to
             "${dm.widthPixels}×${dm.heightPixels} px · ${dm.densityDpi} dpi · " +
