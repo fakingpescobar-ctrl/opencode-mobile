@@ -158,8 +158,6 @@ internal fun ChatInput(
                 TextModeField(
                     draft = state.draft,
                     stopping = state.stopping,
-                    levels = state.levels,
-                    listening = state.listening,
                     onDraftChange = { act.onDraftChange(it) },
                     onSend = { act.onSend() },
                     onStop = { act.onStop() },
@@ -168,11 +166,13 @@ internal fun ChatInput(
                 )
             } else {
                 VoiceModeField(
-                    levels = state.levels,
-                    listening = state.listening,
+                    draft = state.draft,
+                    stopping = state.stopping,
                     voice = voice,
                     onTextMode = { textMode = true },
                     onAttach = { attachOpen = !attachOpen },
+                    onSend = { act.onSend() },
+                    onStop = { act.onStop() },
                 )
             }
         }
@@ -183,11 +183,13 @@ internal fun ChatInput(
 
 @Composable
 private fun RowScope.VoiceModeField(
-    levels: List<Float>,
-    listening: Boolean,
+    draft: String,
+    stopping: Boolean,
     voice: VoiceHoldActions,
     onTextMode: () -> Unit,
     onAttach: () -> Unit,
+    onSend: () -> Unit,
+    onStop: () -> Unit,
 ) {
     Row(
         modifier =
@@ -205,7 +207,7 @@ private fun RowScope.VoiceModeField(
             modifier = Modifier.padding(start = 6.dp),
         )
         Text(
-            "Удерживай микрофон",
+            "Удерживай синюю кнопку",
             color = Color(0xFFE8E8E8),
             fontSize = 13.sp,
             maxLines = 1,
@@ -213,7 +215,9 @@ private fun RowScope.VoiceModeField(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
         )
-        SpectrumBlock(levels = levels, listening = listening)
+        // Синий блок — ЭТО большая кнопка записи. Спектр в покое не рисуется,
+        // он появляется полноэкранным слоем только пока кнопка удерживается.
+        HoldVoiceButton(voice = voice)
     }
     Spacer(Modifier.width(8.dp))
     RoundIcon(
@@ -223,15 +227,18 @@ private fun RowScope.VoiceModeField(
         onClick = onAttach,
     )
     Spacer(Modifier.width(8.dp))
-    HoldMicButton(voice = voice)
+    SendStopButton(
+        draft = draft,
+        stopping = stopping,
+        onSend = onSend,
+        onStop = onStop,
+    )
 }
 
 @Composable
 private fun RowScope.TextModeField(
     draft: String,
     stopping: Boolean,
-    levels: List<Float>,
-    listening: Boolean,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
@@ -283,7 +290,6 @@ private fun RowScope.TextModeField(
                 }
             },
         )
-        SpectrumBlock(levels = levels, listening = listening)
     }
     Spacer(Modifier.width(8.dp))
     RoundIcon(
@@ -368,7 +374,7 @@ private fun RoundIcon(
 }
 
 @Composable
-private fun HoldMicButton(voice: VoiceHoldActions) {
+private fun HoldVoiceButton(voice: VoiceHoldActions) {
     val context = LocalContext.current
     val mic by rememberUpdatedState(voice.onRequestMic)
     val start by rememberUpdatedState(voice.onStart)
@@ -376,8 +382,8 @@ private fun HoldMicButton(voice: VoiceHoldActions) {
     Surface(
         modifier =
             Modifier
-                .size(44.dp)
-                .border(1.dp, Color(0xFF3A4C72), CircleShape)
+                .width(80.dp)
+                .height(44.dp)
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onPress = {
@@ -396,14 +402,14 @@ private fun HoldMicButton(voice: VoiceHoldActions) {
                         },
                     )
                 },
-        shape = CircleShape,
-        color = Color(0xFF2C3E63),
+        shape = RoundedCornerShape(0.dp, 10.dp, 10.dp, 0.dp),
+        color = Color(0xFF33426B),
     ) {
         Icon(
             imageVector = Icons.Filled.Mic,
             contentDescription = "Голосовое сообщение (удерживай для записи)",
-            tint = Color(0xFFFFFFFF),
-            modifier = Modifier.fillMaxSize().padding(11.dp),
+            tint = Color(0xFFDCEBFF),
+            modifier = Modifier.fillMaxSize().padding(12.dp),
         )
     }
 }
