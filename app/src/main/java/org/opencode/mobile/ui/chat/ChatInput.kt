@@ -112,12 +112,14 @@ internal class VoiceHoldActions(
     val onStop: () -> Unit,
 )
 
-// Нижняя панель чата: ОДИН тёмный контейнер с текстом, спектром и микрофоном
-// или отправкой внутри. Снаружи только Stop — прерывание генерации, а не ввод.
+// Нижняя панель чата: ОДИН тёмный контейнер с текстом, спектром и микрофоном.
+// В текстовом режиме (есть черновик) кнопок Send и Stop рядом с полем НЕТ:
+// отправка идёт клавишей Send на клавиатуре (ImeAction.Send), Stop появляется
+// снова, когда черновик пуст и нужно прервать генерацию.
 //
 // Ширина экрана 363 dp, корневой padding 12 dp → в строке 339 dp. Stop (38 dp)
 // и зазор 8 dp оставляют 293 dp на поле. Внутри поля: текст ~190 dp, спектр
-// 56 dp во время записи, круглая кнопка 38 dp.
+// 56 dp во время записи, круглая кнопка 38 dp микрофона.
 @Composable
 internal fun ChatInput(
     state: ChatInputState,
@@ -126,7 +128,6 @@ internal fun ChatInput(
     voice: VoiceHoldActions,
 ) = ChatInputVariantRouter(state, actions, ask, voice)
 
-@Composable
 internal fun ChatInput80(
     state: ChatInputState,
     actions: ChatInputActions,
@@ -166,10 +167,14 @@ internal fun ChatInput80(
             onSend = { act.onSend() },
             voice = voice,
         )
-        StopButton(
-            stopping = state.stopping,
-            onStop = { act.onStop() },
-        )
+        // Stop нужен только когда поле пусто: во время набора текста он мешает,
+        // а отправку делает клавиатура.
+        if (state.draft.isBlank()) {
+            StopButton(
+                stopping = state.stopping,
+                onStop = { act.onStop() },
+            )
+        }
     }
 }
 
@@ -225,7 +230,8 @@ private fun SpectrumBar(
 }
 
 // Комбинированное поле: текст слева, во время удержания — живой спектр, справа
-// микрофон (пока черновик пуст или идёт запись) либо отправка (если текст есть).
+// микрофон, пока черновик пуст или идёт запись. Если текст есть, справа ничего
+// нет: Send на клавиатуре уже подключён через keyboardActions.
 @Composable
 private fun RowScope.DraftRow(
     draft: String,
@@ -280,10 +286,8 @@ private fun RowScope.DraftRow(
                 modifier = Modifier.width(56.dp).padding(end = 4.dp),
             )
         }
-        if (draft.isEmpty() || listening) {
+        if (draft.isBlank() || listening) {
             MicButton(listening = listening, voice = voice)
-        } else {
-            SendButton80(onSend = onSend)
         }
     }
 }
@@ -329,25 +333,6 @@ private fun MicButton(
             imageVector = Icons.Filled.Mic,
             contentDescription = "Голосовой ввод (удерживай для записи)",
             tint = if (listening) Color.White else Color(0xFFADADAD),
-            modifier = Modifier.fillMaxSize().padding(9.dp),
-        )
-    }
-}
-
-// Отправка занимает то же место внутри поля, что и микрофон: как только появился
-// черновик, кнопка меняется, и поле остаётся единым элементом.
-@Composable
-private fun SendButton80(onSend: () -> Unit) {
-    val send by rememberUpdatedState(onSend)
-    Surface(
-        modifier = Modifier.size(38.dp).clickable { send() },
-        shape = CircleShape,
-        color = Color(0xFF7BA6F8),
-    ) {
-        Icon(
-            imageVector = Icons.Filled.Send,
-            contentDescription = "Отправить сообщение",
-            tint = Color(0xFF101418),
             modifier = Modifier.fillMaxSize().padding(9.dp),
         )
     }
