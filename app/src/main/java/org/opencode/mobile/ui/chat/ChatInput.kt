@@ -37,7 +37,6 @@ import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Send
-import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -77,7 +76,7 @@ internal data class ChatInputState(
     val listening: Boolean,
     val speechError: String?,
     val whisperBusy: Boolean,
-    /** Уровни полоски спектра: новый отсчёт слева, старые гаснут справа. */
+    /** Уровни спектра: новый отсчёт слева, старые гаснут справа. */
     val levels: List<Float> = emptyList(),
     val ask: AskCard?,
     val askBusy: Boolean,
@@ -106,13 +105,22 @@ internal class VoiceHoldActions(
     val onStop: () -> Unit,
 )
 
-// Нижняя строка по референсам из /sdcard/Documents/reference lowpanel.
-// Два режима, переключаются САМОЙ ЛЕВОЙ кнопкой в поле:
-//   голос: [⌨][Подпись][синий спектр]  (+) (крупный Mic)
-//   текст: [Mic][BasicTextField][синий спектр] (+) (Send/Stop)
-// При удержании крупной кнопки чат скрывается и открывается полноэкранный
-// живой спектр на «переливающемся» голубом градиенте (02-18-17-47).
-// Геометрия снята пиксельно: поле ~146 dp, синий блок ~80 dp, кнопки 34 dp.
+// Панель снята пиксель-в-пиксель с DeepSeek 2.9.0 (скриншоты 02-19-50-40 и
+// 02-19-56-80 из /sdcard/Documents/reference lowpanel):
+//   голос: сплошной скруглённый бар #242424, [микрофон] [Hold to speak]
+//          [синий блок #273041 с живым спектром из 46 столбиков] [+] [клавиатура]
+//   текст: бар #3c444c, [микрофон] [поле] [синяя кнопка отправки #345c84]
+// Высота всех элементов 30 dp, иконки 24 dp, синий блок 80 dp — все числа
+// переведены из пикселей референса при плотности 3.5 px/dp.
+// 28 dp и радиус 10 dp — константы из ChatInputDefaults (ChatSessionBottomBar.kt:249).
+private val BarHeight = 28.dp
+private val VoiceBar = Color(0xFF242424)
+private val TextBar = Color(0xFF3C444C)
+private val SpectrumBg = Color(0xFF273041)
+private val SpectrumFg = Color(0xFF6799FE)
+private val SendBlue = Color(0xFF345C84)
+private val IconWhite = Color(0xFFF8F8F8)
+
 @Composable
 internal fun ChatInput(
     state: ChatInputState,
@@ -125,7 +133,6 @@ internal fun ChatInput(
     var textMode by remember { mutableStateOf(false) }
     var attachOpen by remember { mutableStateOf(false) }
 
-    // Полноэкранный режим записи — отдельным окном, поверх чата и шапки.
     VoiceRecordingOverlay(
         listening = state.listening,
         levels = state.levels,
@@ -158,6 +165,8 @@ internal fun ChatInput(
                 TextModeField(
                     draft = state.draft,
                     stopping = state.stopping,
+                    levels = state.levels,
+                    listening = state.listening,
                     onDraftChange = { act.onDraftChange(it) },
                     onSend = { act.onSend() },
                     onStop = { act.onStop() },
@@ -166,143 +175,65 @@ internal fun ChatInput(
                 )
             } else {
                 VoiceModeField(
-                    draft = state.draft,
-                    stopping = state.stopping,
+                    levels = state.levels,
+                    listening = state.listening,
                     voice = voice,
                     onTextMode = { textMode = true },
                     onAttach = { attachOpen = !attachOpen },
-                    onSend = { act.onSend() },
-                    onStop = { act.onStop() },
                 )
             }
         }
     }
 }
 
-// ---------- Режимы поля ----------
+// ---------- Голосовой режим ----------
 
 @Composable
 private fun RowScope.VoiceModeField(
-    draft: String,
-    stopping: Boolean,
+    levels: List<Float>,
+    listening: Boolean,
     voice: VoiceHoldActions,
     onTextMode: () -> Unit,
     onAttach: () -> Unit,
-    onSend: () -> Unit,
-    onStop: () -> Unit,
 ) {
     Row(
         modifier =
             Modifier
                 .weight(1f)
-                .height(44.dp)
-                .background(Color(0xFF242424), RoundedCornerShape(10.dp)),
+                .height(BarHeight)
+                .background(VoiceBar, RoundedCornerShape(10.dp))
+                .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        RoundIcon(
-            icon = Icons.Filled.Keyboard,
-            description = "Переключить на текстовый ввод",
-            tint = Color(0xFF7BA6F8),
-            onClick = onTextMode,
-            modifier = Modifier.padding(start = 6.dp),
-        )
+        HoldMicButton(voice = voice, onTextMode = onTextMode)
+        Spacer(Modifier.width(4.dp))
         Text(
-            "Удерживай синюю кнопку",
-            color = Color(0xFFE8E8E8),
-            fontSize = 13.sp,
+            "Hold to speak",
+            color = IconWhite,
+            fontSize = 12.sp,
             maxLines = 1,
             softWrap = false,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+            modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
         )
-        // Синий блок — ЭТО большая кнопка записи. Спектр в покое не рисуется,
-        // он появляется полноэкранным слоем только пока кнопка удерживается.
-        HoldVoiceButton(voice = voice)
-    }
-    Spacer(Modifier.width(8.dp))
-    RoundIcon(
-        icon = Icons.Filled.Add,
-        description = "Прикрепить изображение или файл",
-        tint = Color(0xFFB8B8B8),
-        onClick = onAttach,
-    )
-    Spacer(Modifier.width(8.dp))
-    SendStopButton(
-        draft = draft,
-        stopping = stopping,
-        onSend = onSend,
-        onStop = onStop,
-    )
-}
-
-@Composable
-private fun RowScope.TextModeField(
-    draft: String,
-    stopping: Boolean,
-    onDraftChange: (String) -> Unit,
-    onSend: () -> Unit,
-    onStop: () -> Unit,
-    onVoiceMode: () -> Unit,
-    onAttach: () -> Unit,
-) {
-    val send by rememberUpdatedState(onSend)
-    Row(
-        modifier =
-            Modifier
-                .weight(1f)
-                .height(44.dp)
-                .background(Color(0xFF242424), RoundedCornerShape(10.dp)),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        RoundIcon(
-            icon = Icons.Filled.Mic,
-            description = "Переключить на голосовой ввод",
-            tint = Color(0xFF7BA6F8),
-            onClick = onVoiceMode,
-            modifier = Modifier.padding(start = 6.dp),
+        Spacer(Modifier.width(4.dp))
+        SpectrumBlock(levels = levels, listening = listening)
+        Spacer(Modifier.width(12.dp))
+        CircleIcon(
+            icon = Icons.Filled.Add,
+            description = "Прикрепить изображение или файл",
+            tint = IconWhite,
+            onClick = onAttach,
         )
-        BasicTextField(
-            value = draft,
-            onValueChange = onDraftChange,
-            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-            textStyle = TextStyle(color = Color(0xFFF0F0F0), fontSize = 15.sp),
-            cursorBrush = SolidColor(Color(0xFF7BA6F8)),
-            maxLines = 4,
-            keyboardOptions =
-                KeyboardOptions(
-                    capitalization = KeyboardCapitalization.Sentences,
-                    imeAction = ImeAction.Send,
-                ),
-            keyboardActions = KeyboardActions(onSend = { send() }),
-            decorationBox = { inner ->
-                Box {
-                    if (draft.isEmpty()) {
-                        Text(
-                            "Напиши сообщение…",
-                            color = Color(0xFFADADAD),
-                            fontSize = 14.sp,
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    inner()
-                }
-            },
+        Spacer(Modifier.width(8.dp))
+        CircleIcon(
+            icon = Icons.Filled.Keyboard,
+            description = "Переключить на текстовый ввод",
+            tint = IconWhite,
+            onClick = onTextMode,
         )
     }
-    Spacer(Modifier.width(8.dp))
-    RoundIcon(
-        icon = Icons.Filled.Add,
-        description = "Прикрепить изображение или файл",
-        tint = Color(0xFFB8B8B8),
-        onClick = onAttach,
-    )
-    Spacer(Modifier.width(8.dp))
-    SendStopButton(draft = draft, stopping = stopping, onSend = onSend, onStop = onStop)
 }
-
-// ---------- Общие элементы ----------
 
 @Composable
 private fun SpectrumBlock(
@@ -313,11 +244,11 @@ private fun SpectrumBlock(
         modifier =
             Modifier
                 .width(80.dp)
-                .height(44.dp)
-                .background(Color(0xFF33426B), RoundedCornerShape(0.dp, 10.dp, 10.dp, 0.dp))
-                .padding(horizontal = 4.dp, vertical = 6.dp),
+                .height(BarHeight)
+                .background(SpectrumBg, RoundedCornerShape(6.dp))
+                .padding(horizontal = 6.dp, vertical = 4.dp),
     ) {
-        SpectrumCanvas(levels = levels, listening = listening, barCount = 14, color = Color(0xFF7BA6F8))
+        SpectrumCanvas(levels = levels, listening = listening, barCount = 46, color = SpectrumFg)
     }
 }
 
@@ -330,16 +261,15 @@ private fun SpectrumCanvas(
 ) {
     Canvas(Modifier.fillMaxSize()) {
         val slot = size.width / barCount
-        val barW = (slot * 0.5f).coerceAtLeast(2f)
+        val barW = (slot * 0.55f).coerceAtLeast(1.5f)
         for (i in 0 until barCount) {
-            val raw = levels.getOrNull(i) ?: 0f
-            val v = if (listening) raw.coerceIn(0f, 1f) else 0.12f
-            val h = (3.dp.toPx() + v * (size.height - 3.dp.toPx())).coerceAtLeast(3.dp.toPx())
+            val raw = levels.getOrNull(i % levels.size.coerceAtLeast(1)) ?: 0f
+            val v = if (listening) raw.coerceIn(0f, 1f) else 0.18f
+            val h = (2.dp.toPx() + v * (size.height - 2.dp.toPx())).coerceAtLeast(2.dp.toPx())
             val x = i * slot + (slot - barW) / 2f
             val y = (size.height - h) / 2f
-            val tint = if (v > 0.62f) Color(0xFFFFFFFF) else color
             drawRoundRect(
-                color = tint,
+                color = color,
                 topLeft = Offset(x, y),
                 size = Size(barW, h),
                 cornerRadius = CornerRadius(barW / 2f, barW / 2f),
@@ -348,18 +278,114 @@ private fun SpectrumCanvas(
     }
 }
 
+// ---------- Текстовый режим ----------
+
 @Composable
-private fun RoundIcon(
+private fun RowScope.TextModeField(
+    draft: String,
+    stopping: Boolean,
+    levels: List<Float>,
+    listening: Boolean,
+    onDraftChange: (String) -> Unit,
+    onSend: () -> Unit,
+    onStop: () -> Unit,
+    onVoiceMode: () -> Unit,
+    onAttach: () -> Unit,
+) {
+    val send by rememberUpdatedState(onSend)
+    Row(
+        modifier =
+            Modifier
+                .weight(1f)
+                .height(BarHeight)
+                .background(TextBar, RoundedCornerShape(10.dp))
+                .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        HoldMicButton(voice = null, onClick = onVoiceMode)
+        Spacer(Modifier.width(4.dp))
+        CircleIcon(
+            icon = Icons.Filled.Add,
+            description = "Прикрепить изображение или файл",
+            tint = IconWhite,
+            onClick = onAttach,
+        )
+        Spacer(Modifier.width(8.dp))
+        BasicTextField(
+            value = draft,
+            onValueChange = onDraftChange,
+            modifier = Modifier.weight(1f).padding(end = 8.dp),
+            textStyle = TextStyle(color = IconWhite, fontSize = 14.sp),
+            cursorBrush = SolidColor(IconWhite),
+            maxLines = 4,
+            keyboardOptions =
+                KeyboardOptions(
+                    capitalization = KeyboardCapitalization.Sentences,
+                    imeAction = ImeAction.Send,
+                ),
+            keyboardActions = KeyboardActions(onSend = { send() }),
+            decorationBox = { inner ->
+                Box {
+                    if (draft.isEmpty()) {
+                        Text(
+                            "Type a message",
+                            color = Color(0xFFDCDCDC),
+                            fontSize = 14.sp,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    inner()
+                }
+            },
+        )
+        SendButton(draft = draft, stopping = stopping, onSend = onSend, onStop = onStop)
+    }
+}
+
+@Composable
+private fun SendButton(
+    draft: String,
+    stopping: Boolean,
+    onSend: () -> Unit,
+    onStop: () -> Unit,
+) {
+    val sending = draft.isNotEmpty()
+    Surface(
+        modifier =
+            Modifier
+                .width(49.dp)
+                .height(BarHeight)
+                .clickable(enabled = !stopping || sending) {
+                    if (sending) onSend() else onStop()
+                },
+        shape = RoundedCornerShape(6.dp),
+        color = SendBlue,
+    ) {
+        Icon(
+            imageVector = if (sending) Icons.Filled.Send else Icons.Filled.Close,
+            contentDescription = if (sending) "Отправить сообщение" else "Прервать генерацию",
+            tint = IconWhite,
+            modifier = Modifier.fillMaxSize().padding(9.dp),
+        )
+    }
+}
+
+// ---------- Общие элементы ----------
+
+@Composable
+private fun CircleIcon(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     description: String,
     tint: Color,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier,
 ) {
     Surface(
         modifier =
-            modifier
-                .size(34.dp)
+            Modifier
+                .size(24.dp)
+                .border(1.dp, Color(0x66FFFFFF), CircleShape)
                 .clickable(onClick = onClick),
         shape = CircleShape,
         color = Color.Transparent,
@@ -368,78 +394,54 @@ private fun RoundIcon(
             imageVector = icon,
             contentDescription = description,
             tint = tint,
-            modifier = Modifier.fillMaxSize().padding(7.dp),
+            modifier = Modifier.fillMaxSize().padding(5.dp),
         )
     }
 }
 
 @Composable
-private fun HoldVoiceButton(voice: VoiceHoldActions) {
+private fun HoldMicButton(
+    voice: VoiceHoldActions?,
+    onClick: (() -> Unit)? = null,
+) {
     val context = LocalContext.current
-    val mic by rememberUpdatedState(voice.onRequestMic)
-    val start by rememberUpdatedState(voice.onStart)
-    val stop by rememberUpdatedState(voice.onStop)
-    Surface(
-        modifier =
-            Modifier
-                .width(80.dp)
-                .height(44.dp)
-                .pointerInput(Unit) {
-                    detectTapGestures(
-                        onPress = {
-                            if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
-                                PackageManager.PERMISSION_GRANTED
-                            ) {
-                                mic()
-                            } else {
-                                start()
-                                try {
-                                    awaitRelease()
-                                } finally {
-                                    stop()
-                                }
+    val mic by rememberUpdatedState(voice?.onRequestMic ?: {})
+    val start by rememberUpdatedState(voice?.onStart ?: {})
+    val stop by rememberUpdatedState(voice?.onStop ?: {})
+    val tap by rememberUpdatedState(onClick)
+    val modifier =
+        Modifier
+            .size(24.dp)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { tap?.invoke() },
+                    onPress = {
+                        if (voice == null) return@detectTapGestures
+                        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
+                            PackageManager.PERMISSION_GRANTED
+                        ) {
+                            mic()
+                        } else {
+                            start()
+                            try {
+                                awaitRelease()
+                            } finally {
+                                stop()
                             }
-                        },
-                    )
-                },
-        shape = RoundedCornerShape(0.dp, 10.dp, 10.dp, 0.dp),
-        color = Color(0xFF33426B),
+                        }
+                    },
+                )
+            }
+    Surface(
+        modifier = modifier,
+        shape = CircleShape,
+        color = Color.Transparent,
     ) {
         Icon(
             imageVector = Icons.Filled.Mic,
             contentDescription = "Голосовое сообщение (удерживай для записи)",
-            tint = Color(0xFFDCEBFF),
-            modifier = Modifier.fillMaxSize().padding(12.dp),
-        )
-    }
-}
-
-@Composable
-private fun SendStopButton(
-    draft: String,
-    stopping: Boolean,
-    onSend: () -> Unit,
-    onStop: () -> Unit,
-) {
-    val send by rememberUpdatedState(onSend)
-    val stop by rememberUpdatedState(onStop)
-    val sending = draft.isNotEmpty()
-    Surface(
-        modifier =
-            Modifier
-                .size(34.dp)
-                .border(1.dp, Color(0xFF333333), CircleShape)
-                .clickable(enabled = !stopping || sending) {
-                    if (sending) send() else stop()
-                },
-        shape = CircleShape,
-        color = Color(0xFF242424),
-    ) {
-        Icon(
-            imageVector = if (sending) Icons.Filled.Send else Icons.Filled.Stop,
-            contentDescription = if (sending) "Отправить сообщение" else "Прервать генерацию",
-            tint = if (sending) Color(0xFF7BA6F8) else Color(0xFFFF6F5A),
-            modifier = Modifier.fillMaxSize().padding(8.dp),
+            tint = IconWhite,
+            modifier = Modifier.fillMaxSize().padding(5.dp),
         )
     }
 }
@@ -481,7 +483,7 @@ private fun AttachmentPanel(
         Spacer(Modifier.width(12.dp))
         AttachmentOption(Icons.Filled.InsertDriveFile, "Файл", onPick)
         Spacer(Modifier.weight(1f))
-        RoundIcon(icon = Icons.Filled.Close, description = "Закрыть", tint = Color(0xFFB8B8B8), onClick = onClose)
+        CircleIcon(icon = Icons.Filled.Close, description = "Закрыть", tint = IconWhite, onClick = onClose)
     }
 }
 
@@ -497,9 +499,9 @@ private fun AttachmentOption(
         color = Color(0xFF2A2A2A),
     ) {
         Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, contentDescription = label, tint = Color(0xFF7BA6F8), modifier = Modifier.size(20.dp))
+            Icon(icon, contentDescription = label, tint = SpectrumFg, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
-            Text(label, color = Color(0xFFE8E8E8), fontSize = 13.sp)
+            Text(label, color = IconWhite, fontSize = 13.sp)
         }
     }
 }
@@ -527,20 +529,20 @@ private fun VoiceRecordingOverlay(
         Box(
             Modifier
                 .fillMaxSize()
-                .background(Color(0xFF0E0E10)),
+                .background(Color(0xFF0F0F0F)),
         ) {
             Canvas(Modifier.fillMaxSize()) {
-                // Замер с 02-18-17-47: сверху почти чёрный (#0F0F11), внизу яркий
-                // голубой (#276ED8), по центру — «дышащее» пятно.
+                // Замер 02-18-17-47: чёрный верх, голубое «жидкое» пятно по центру
+                // и сплошной переливающийся градиент #265cb0 → #276dd3 внизу.
                 drawRect(
                     brush =
                         Brush.verticalGradient(
                             colors =
                                 listOf(
-                                    Color(0xFF0F0F11),
-                                    Color(0xFF12274A),
+                                    Color(0xFF0F0F0F),
+                                    Color(0xFF12284C),
                                     Color(0xFF1A4B98),
-                                    Color(0xFF276ED8),
+                                    Color(0xFF276DD3),
                                 ),
                         ),
                 )
@@ -549,27 +551,26 @@ private fun VoiceRecordingOverlay(
                         Brush.radialGradient(
                             colors =
                                 listOf(
-                                    Color(0xFF4EA8FF).copy(alpha = 0.18f + phase * 0.16f),
-                                    Color(0xFF2C7BE5).copy(alpha = 0.08f),
+                                    Color(0xFF3E8BEE).copy(alpha = 0.3f + phase * 0.18f),
+                                    Color(0xFF1A4B98).copy(alpha = 0.14f),
                                     Color.Transparent,
                                 ),
-                            center = Offset(size.width * 0.5f, size.height * (0.62f + phase * 0.06f)),
+                            center = Offset(size.width * 0.5f, size.height * (0.3f + phase * 0.04f)),
                             radius = size.minDimension * 1.05f,
                         ),
                 )
-                // Живой спектр по настоящему PCM из AudioRecorder.level().
-                val bars = 28
+                // Живой спектр по настоящему PCM; у DeepSeek 46 столбиков.
+                val bars = 46
                 val slot = size.width / (bars + 4)
                 val barW = (slot * 0.42f).coerceAtLeast(3.dp.toPx())
                 for (i in 0 until bars) {
                     val raw = levels.getOrNull(i % levels.size.coerceAtLeast(1)) ?: 0f
                     val v = raw.coerceIn(0f, 1f)
-                    val h = (8.dp.toPx() + v * size.height * 0.34f).coerceAtLeast(8.dp.toPx())
+                    val h = (8.dp.toPx() + v * size.height * 0.12f).coerceAtLeast(8.dp.toPx())
                     val x = (i + 2) * slot + (slot - barW) / 2f
-                    val y = size.height * 0.56f - h / 2f
-                    val alpha = 0.35f + 0.5f * v
+                    val y = size.height * 0.97f - h
                     drawRoundRect(
-                        color = Color(0xFFBFE2FF).copy(alpha = alpha),
+                        color = Color(0xFFB4C9EA).copy(alpha = 0.4f + 0.5f * v),
                         topLeft = Offset(x, y),
                         size = Size(barW, h),
                         cornerRadius = CornerRadius(barW / 2f, barW / 2f),
@@ -593,14 +594,24 @@ private fun VoiceRecordingOverlay(
                     )
                 }
                 Spacer(Modifier.width(12.dp))
-                Text(
-                    "Слушаю… говорите",
-                    color = Color(0xFFE8F3FF),
-                    fontSize = 16.sp,
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Column {
+                    Text(
+                        "Запись…",
+                        color = Color(0xFFE8F3FF),
+                        fontSize = 16.sp,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        "Проведи вверх, чтобы отменить",
+                        color = Color(0xFFBBD6F5),
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     }
