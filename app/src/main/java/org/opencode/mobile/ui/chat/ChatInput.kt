@@ -1,6 +1,7 @@
 package org.opencode.mobile.ui.chat
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -54,6 +55,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
@@ -105,18 +107,16 @@ internal class VoiceHoldActions(
     val onStop: () -> Unit,
 )
 
-// Панель снята пиксель-в-пиксель с DeepSeek 2.9.0 (скриншоты 02-19-50-40 и
-// 02-19-56-80 из /sdcard/Documents/reference lowpanel):
-//   голос: сплошной скруглённый бар #242424, [микрофон] [Hold to speak]
-//          [синий блок #273041 с живым спектром из 46 столбиков] [+] [клавиатура]
-//   текст: бар #3c444c, [микрофон] [поле] [синяя кнопка отправки #345c84]
-// Высота всех элементов 30 dp, иконки 24 dp, синий блок 80 dp — все числа
-// переведены из пикселей референса при плотности 3.5 px/dp.
-// 28 dp и радиус 10 dp — константы из ChatInputDefaults (ChatSessionBottomBar.kt:249).
+// По прямому указанию Макса (24.11, после apk-85): голосовой режим — ОДНА
+// сплошная скруглённая ячейка #242424 с микрофоном и подписью Hold to speak.
+// Удержание любого места полоски запускает распознавание; справа от ячейки —
+// одна квадратная кнопка клавиатуры, переключающая на текстовый ввод.
+// Никакого спектра, кружков + и микрофона в голосовом баре больше нет.
+// Высота 28 dp и радиус 10 dp — как в ChatInputDefaults (ChatSessionBottomBar.kt:249).
 private val BarHeight = 28.dp
+private val KeySize = 32.dp
 private val VoiceBar = Color(0xFF242424)
 private val TextBar = Color(0xFF3C444C)
-private val SpectrumBg = Color(0xFF273041)
 private val SpectrumFg = Color(0xFF6799FE)
 private val SendBlue = Color(0xFF345C84)
 private val IconWhite = Color(0xFFF8F8F8)
@@ -175,11 +175,8 @@ internal fun ChatInput(
                 )
             } else {
                 VoiceModeField(
-                    levels = state.levels,
-                    listening = state.listening,
                     voice = voice,
                     onTextMode = { textMode = true },
-                    onAttach = { attachOpen = !attachOpen },
                 )
             }
         }
@@ -190,91 +187,100 @@ internal fun ChatInput(
 
 @Composable
 private fun RowScope.VoiceModeField(
-    levels: List<Float>,
-    listening: Boolean,
     voice: VoiceHoldActions,
     onTextMode: () -> Unit,
-    onAttach: () -> Unit,
 ) {
+    val context = LocalContext.current
+    val requestMic by rememberUpdatedState(voice.onRequestMic)
+    val start by rememberUpdatedState(voice.onStart)
+    val stop by rememberUpdatedState(voice.onStop)
     Row(
-        modifier =
-            Modifier
-                .weight(1f)
-                .height(BarHeight)
-                .background(VoiceBar, RoundedCornerShape(10.dp))
-                .padding(horizontal = 8.dp),
+        modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        HoldMicButton(voice = voice, onClick = onTextMode)
-        Spacer(Modifier.width(4.dp))
-        Text(
-            "Hold to speak",
-            color = IconWhite,
-            fontSize = 12.sp,
-            maxLines = 1,
-            softWrap = false,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
-        )
-        Spacer(Modifier.width(4.dp))
-        SpectrumBlock(levels = levels, listening = listening)
-        Spacer(Modifier.width(12.dp))
-        CircleIcon(
-            icon = Icons.Filled.Add,
-            description = "Прикрепить изображение или файл",
-            tint = IconWhite,
-            onClick = onAttach,
-        )
+        // Одна сплошная ячейка: удержание любого её места = голосовой ввод.
+        Box(
+            modifier =
+                Modifier
+                    .weight(1f)
+                    .height(BarHeight)
+                    .background(VoiceBar, RoundedCornerShape(10.dp))
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onPress = {
+                                holdToSpeak(
+                                    context = context,
+                                    requestMic = { requestMic() },
+                                    start = { start() },
+                                    stop = { stop() },
+                                )
+                            },
+                        )
+                    }
+                    .padding(horizontal = 12.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Filled.Mic,
+                    contentDescription = "Удерживай полоску для голосового ввода",
+                    tint = IconWhite,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "Hold to speak",
+                    color = IconWhite,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
         Spacer(Modifier.width(8.dp))
-        CircleIcon(
-            icon = Icons.Filled.Keyboard,
-            description = "Переключить на текстовый ввод",
-            tint = IconWhite,
-            onClick = onTextMode,
-        )
+        KeyboardSquare(onClick = onTextMode)
     }
 }
 
+/** Квадратная кнопка справа от голосовой полоски: текстовый ввод. */
 @Composable
-private fun SpectrumBlock(
-    levels: List<Float>,
-    listening: Boolean,
-) {
-    Box(
+private fun KeyboardSquare(onClick: () -> Unit) {
+    Surface(
         modifier =
             Modifier
-                .width(80.dp)
-                .height(BarHeight)
-                .background(SpectrumBg, RoundedCornerShape(6.dp))
-                .padding(horizontal = 6.dp, vertical = 4.dp),
+                .size(KeySize)
+                .clickable(onClick = onClick),
+        shape = RoundedCornerShape(6.dp),
+        color = VoiceBar,
     ) {
-        SpectrumCanvas(levels = levels, listening = listening, barCount = 46, color = SpectrumFg)
+        Icon(
+            imageVector = Icons.Filled.Keyboard,
+            contentDescription = "Переключить на текстовый ввод",
+            tint = IconWhite,
+            modifier = Modifier.fillMaxSize().padding(7.dp),
+        )
     }
 }
 
-@Composable
-private fun SpectrumCanvas(
-    levels: List<Float>,
-    listening: Boolean,
-    barCount: Int,
-    color: Color,
+/** Нажал — начали запись, отпустил — остановили и отправили распознанное. */
+private suspend fun PointerInputScope.holdToSpeak(
+    context: Context,
+    requestMic: () -> Unit,
+    start: () -> Unit,
+    stop: () -> Unit,
 ) {
-    Canvas(Modifier.fillMaxSize()) {
-        val slot = size.width / barCount
-        val barW = (slot * 0.55f).coerceAtLeast(1.5f)
-        for (i in 0 until barCount) {
-            val raw = levels.getOrNull(i % levels.size.coerceAtLeast(1)) ?: 0f
-            val v = if (listening) raw.coerceIn(0f, 1f) else 0.18f
-            val h = (2.dp.toPx() + v * (size.height - 2.dp.toPx())).coerceAtLeast(2.dp.toPx())
-            val x = i * slot + (slot - barW) / 2f
-            val y = (size.height - h) / 2f
-            drawRoundRect(
-                color = color,
-                topLeft = Offset(x, y),
-                size = Size(barW, h),
-                cornerRadius = CornerRadius(barW / 2f, barW / 2f),
-            )
-        }
+    if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
+        PackageManager.PERMISSION_GRANTED
+    ) {
+        requestMic()
+        return
+    }
+    start()
+    try {
+        awaitRelease()
+    } finally {
+        stop()
     }
 }
 
@@ -417,18 +423,12 @@ private fun HoldMicButton(
                     onTap = { tap?.invoke() },
                     onPress = {
                         if (voice == null) return@detectTapGestures
-                        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
-                            PackageManager.PERMISSION_GRANTED
-                        ) {
-                            mic()
-                        } else {
-                            start()
-                            try {
-                                awaitRelease()
-                            } finally {
-                                stop()
-                            }
-                        }
+                        holdToSpeak(
+                            context = context,
+                            requestMic = { mic() },
+                            start = { start() },
+                            stop = { stop() },
+                        )
                     },
                 )
             }
