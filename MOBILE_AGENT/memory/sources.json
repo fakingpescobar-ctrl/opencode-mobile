@@ -4,7 +4,7 @@
   "sources": [
     {
       "path": "docs/agent-rules.md",
-      "sha": "5c93d92b67b609b78c63cd60ff85eb3348b780fca94671317e0cd440626d301e"
+      "sha": "a8c25a5848e57177510a66f75af7e8c27a1040f7f40f5e4e7eb14ad0f9e03a7c"
     },
     {
       "path": "АРХИТЕКТУРА_ПАМЯТИ.md",
@@ -12,11 +12,11 @@
     },
     {
       "path": "ПРАВИЛА.md",
-      "sha": "08aa1c8e0dccbc2f19e89798cd463f1601df5a093805d9f1018632d66ccbc38f"
+      "sha": "20b24ad1bd9a904429614f77179a6256bf2237e93b35052da952d4266b95b902"
     },
     {
       "path": "СОСТОЯНИЕ.md",
-      "sha": "4b50d5afe25f4c558660f56dbac7eede2582d4a599b17cf919eb388ddf15e3a0"
+      "sha": "a639fbcd096c6c65e042fa7202840de62516a10fdb3d393004b0635e5fcb567e"
     },
     {
       "path": "ХАРНЕС.md",
@@ -32,7 +32,7 @@
     },
     {
       "path": "ЖУРНАЛ.md",
-      "sha": "8a9c5aaa367ec34d8ade159335406e99f43337ae856113baaa73f496f82be881"
+      "sha": "ccdada7d58b49bd5e6c9274f8dc8fee900806069bb29620b488aec4fca812d24"
     },
     {
       "path": "РОСТ_ЗОЛОТОГО_КОРПУСА.md",
