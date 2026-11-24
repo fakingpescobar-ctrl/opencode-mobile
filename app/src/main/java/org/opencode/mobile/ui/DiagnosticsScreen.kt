@@ -3,8 +3,13 @@ package org.opencode.mobile.ui
 import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
+import android.os.BatteryManager
 import android.os.Build
+import android.os.Environment
+import android.os.StatFs
+import android.os.SystemClock
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -93,6 +98,7 @@ import org.opencode.mobile.server.Retention
 import org.opencode.mobile.server.RuntimeError
 import org.opencode.mobile.server.RuntimeStage
 import org.opencode.mobile.server.RuntimeValidation
+import org.opencode.mobile.server.Workspace
 import org.opencode.mobile.stt.ModelDownloader
 import org.opencode.mobile.stt.SttModels
 import org.opencode.mobile.tts.TtsModelDownloader
@@ -100,6 +106,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 
 /**
  * Полноэкранная диагностика приложения: состояние сервера (статус, порт,
@@ -455,6 +462,10 @@ fun DiagnosticsScreen(
                 runCatching { am.getMemoryInfo(it) }
             }
         }
+    // Сведения о телефоне собираются один раз на открытие и по кнопке «Обновить».
+    // registerReceiver(null, ...) и StatFs дешёвые, но в рекомпозе сервера они
+    // были бы лишним Binder IPC на каждый тик — поэтому remember по refreshKey.
+    val deviceRows = remember(refreshKey) { deviceFacts(context, memInfo) }
 
     Surface(
         modifier = modifier.fillMaxSize(),
@@ -999,7 +1010,11 @@ fun DiagnosticsScreen(
                     // останется 0.1.0 - он про продукт, а не про конкретный APK.
                     // «Какая сборка стоит» отвечает только этот ряд.
                     InfoRow("Сборка", buildStampLabel())
-                    InfoRow("ABI", Build.SUPPORTED_ABIS.firstOrNull() ?: "?")
+                    // Всё остальное — про устройство, на котором запущено приложение:
+                    // прошивка, железо, экран, память, хранилище, питание и время.
+                    // Идентификаторы (IMEI, серийный номер) намеренно не показываем:
+                    // для диагностики они не нужны, а доступ к ним — отдельное право.
+                    deviceRows.forEach { (label, value) -> InfoRow(label, value) }
                 }
 
                 DiagSection("Ядро opencode", coreTone) {
@@ -1007,6 +1022,10 @@ fun DiagnosticsScreen(
                     InfoRow("В APK", opencodeBinaryLabel())
                     coreLastCheckRow(context)
                     coreCheckRow(context, scope)
+                    // Редактор правил доступен и здесь: именно ядро opencode
+                    // читает AGENTS.md в начале сессии. Тот же редактор есть
+                    // в Memory Core ⚡ — человек найдёт его в любом месте.
+                    AgentRulesSection(context)
                 }
 
                 DiagSection("Лог сервера (хвост)", DiagTone.IDLE) {
@@ -1473,6 +1492,100 @@ internal fun fmtBytes(b: Long): String =
         else -> String.format(Locale.US, "%.1f МБ", b.toDouble() / (1024.0 * 1024))
     }
 
+/**
+ * Всё, что можно честно сказать о телефоне без особых прав. Один список на два
+ * выхода: секция «Система» и текстовый дамп. Поэтому в дампе не бывает строки,
+ * которой нет на экране, и наоборот — расхождение читалось бы как баг диагностики.
+ */
+private fun deviceFacts(
+    context: Context,
+    memInfo: ActivityManager.MemoryInfo,
+): List<Pair<String, String>> {
+    val dm = context.resources.displayMetrics
+    val abis = Build.SUPPORTED_ABIS.joinToString(", ")
+    val internal = storageSummary(context.filesDir.path)
+    val external =
+        if (Workspace.hasAllFilesAccess()) {
+            storageSummary(Environment.getExternalStorageDirectory().path)
+        } else {
+            "нет доступа"
+        }
+    val ram =
+        "всего ${fmtBytes(memInfo.totalMem)} · доступно ${fmtBytes(memInfo.availMem)} · " +
+            "порог ${fmtBytes(memInfo.threshold)} · мало=${memInfo.lowMemory}"
+    return listOf(
+        "Устройство" to "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
+        "Кодовое имя" to "${Build.DEVICE} / ${Build.PRODUCT}",
+        "Плата / чип" to "${Build.BOARD} / ${Build.HARDWARE}",
+        "Android" to "${Build.VERSION.RELEASE} · API ${Build.VERSION.SDK_INT}",
+        "Прошивка" to "${Build.DISPLAY} · ${Build.ID} · ${Build.VERSION.INCREMENTAL}",
+        "Патч безопасности" to (Build.VERSION.securityPatch ?: "—"),
+        "Архитектура" to "$abis · ${Runtime.getRuntime().availableProcessors()} ядер",
+        "Экран" to
+            "${dm.widthPixels}×${dm.heightPixels} px · ${dm.densityDpi} dpi · " +
+                "плотность ${dm.density}f · шрифт ${context.resources.configuration.fontScale}f",
+        "Язык / регион" to Locale.getDefault().toString(),
+        "Часовой пояс" to TimeZone.getDefault().id,
+        "ОЗУ" to ram,
+        "Хранилище приложения" to internal,
+        "Хранилище телефона" to external,
+        "Доступ ко всем файлам" to if (Workspace.hasAllFilesAccess()) "выдан" else "нет",
+        "Аккумулятор" to batterySummary(context),
+        "Время работы" to uptimeLabel(SystemClock.elapsedRealtime()),
+    )
+}
+
+/** Свободно/всего по StatFs; значение может быть недоступно — это не «0». */
+private fun storageSummary(path: String): String =
+    runCatching {
+        val stat = StatFs(path)
+        val total = stat.blockCountLong * stat.blockSizeLong
+        val free = stat.availableBlocksLong * stat.blockSizeLong
+        "свободно ${fmtBytes(free)} / всего ${fmtBytes(total)}"
+    }.getOrDefault("недоступно")
+
+/** Sticky-широковещание батареи: level/scale плюс подключение и состояние. */
+private fun batterySummary(context: Context): String {
+    val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+    val intent =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(null, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            context.registerReceiver(null, filter)
+        } ?: return "нет данных"
+    val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+    val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
+    if (level < 0 || scale <= 0) return "нет данных"
+    val power =
+        when (intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)) {
+            BatteryManager.BATTERY_PLUGGED_AC -> "от розетки"
+            BatteryManager.BATTERY_PLUGGED_USB -> "от USB"
+            BatteryManager.BATTERY_PLUGGED_WIRELESS -> "беспроводная"
+            else -> "от батареи"
+        }
+    val health =
+        when (intent.getIntExtra(BatteryManager.EXTRA_HEALTH, BatteryManager.BATTERY_HEALTH_UNKNOWN)) {
+            BatteryManager.BATTERY_HEALTH_GOOD -> "норма"
+            BatteryManager.BATTERY_HEALTH_OVERHEAT -> "перегрев"
+            BatteryManager.BATTERY_HEALTH_DEAD -> "разряжена"
+            BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE -> "перенапряжение"
+            else -> "неизвестно"
+        }
+    return "${level * 100 / scale}% · $power · $health"
+}
+
+/** Uptime в человеческом виде: часы и минуты, если больше часа. */
+private fun uptimeLabel(ms: Long): String {
+    val minutes = ms / 60_000L
+    val hours = minutes / 60L
+    return if (hours > 0L) {
+        "$hours ч ${minutes % 60L} мин"
+    } else {
+        "$minutes мин ${(ms / 1000L) % 60L} с"
+    }
+}
+
 private fun shareDump(
     context: Context,
     dump: String,
@@ -1512,16 +1625,14 @@ private fun buildDiagnosticsDump(
     sb.append("Сборка: ${buildStampLabel()}\n")
     sb.append("Ядро opencode: ${activeCoreLabel(context)}\n")
     sb.append("Ядро в APK: ${opencodeBinaryLabel()}\n")
-    sb.append("SDK: API ${Build.VERSION.SDK_INT}, ABI: ${Build.SUPPORTED_ABIS.firstOrNull() ?: "?"}\n")
     val mi = ActivityManager.MemoryInfo()
     runCatching {
         (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(mi)
     }
-    if (mi.totalMem > 0L) {
-        sb.append("RAM: свободно ${fmtBytes(mi.availMem)} / всего ${fmtBytes(mi.totalMem)}\n")
-    } else {
-        sb.append("RAM: недоступно\n")
-    }
+    // Полный список устройства — тот же, что в секции «Система»: дамп и экран
+    // не должны расходиться. Идентификаторов (IMEI/серийный номер) нет намеренно.
+    sb.append("\n--- Устройство ---\n")
+    deviceFacts(context, mi).forEach { (label, value) -> sb.append("$label: $value\n") }
 
     sb.append("\n--- Сервер ---\n")
     dumpServerSection(sb, st)

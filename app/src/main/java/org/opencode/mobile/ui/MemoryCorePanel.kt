@@ -4,8 +4,16 @@ package org.opencode.mobile.ui
 
 import android.content.Context
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -15,7 +23,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -24,6 +34,8 @@ import org.opencode.mobile.engine.GgufCatalog
 import org.opencode.mobile.engine.GgufModel
 import org.opencode.mobile.engine.GgufStore
 import org.opencode.mobile.server.MemoryTools
+import org.opencode.mobile.server.Workspace
+import java.io.File
 
 /**
  * Единый пульт ядра памяти: одна карточка в диагностике, внутри — всё, что
@@ -51,6 +63,13 @@ internal fun MemoryCorePanel(
                 "переформулировщик, чанки выбирает код.",
         )
 
+        // Правила агента лежат рядом с ядром памяти не случайно: именно они
+        // определяют, что агент читает перед работой и пишет после правки. Раньше
+        // человек не видел файл вообще и просил «написать правило» в чат; теперь
+        // путь и редактор доступны прямо в диагностике.
+        DiagSection("Правила агента (AGENTS.md)", DiagTone.IDLE) {
+            AgentRulesSection(context)
+        }
         DiagSection("Состояние ядра", DiagTone.IDLE) {
             CoreStatusSection(refreshKey)
         }
@@ -71,6 +90,146 @@ internal fun MemoryCorePanel(
         }
     }
 }
+
+/**
+ * Правила агента в корне рабочей папки. Это не «ещё один текст для справки»:
+ * [AGENTS.md] подхватывается opencode при старте сессии, поэтому человек может
+ * прямо здесь дописать своё правило или поправить моё — без ADB и без просьбы
+ * «напиши мне правило в чате». Файл не подменяется шаблоном: если его нет,
+ * шаблон только показывается в редакторе и создаётся по кнопке «Сохранить».
+ */
+@Composable
+internal fun AgentRulesSection(context: Context) {
+    val file = remember { File(Workspace.resolve(context), AGENTS_FILE_NAME) }
+    var text by remember { mutableStateOf<String?>(null) }
+    var draft by remember { mutableStateOf("") }
+    var editing by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var reloadKey by remember { mutableStateOf(0) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(file.absolutePath, reloadKey) {
+        val result =
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val exists = file.isFile
+                    RulesFile(
+                        text = if (exists) file.readText() else AGENTS_TEMPLATE,
+                        exists = exists,
+                        bytes = if (exists) file.length() else 0L,
+                    )
+                }
+            }
+        result
+            .onSuccess { loaded ->
+                text = loaded.text
+                error = null
+                note =
+                    if (loaded.exists) {
+                        "${file.absolutePath} · ${fmtBytes(loaded.bytes)}"
+                    } else {
+                        "файла ещё нет — сохрани, чтобы создать"
+                    }
+            }
+            .onFailure { error = "Не удалось прочитать: ${it.message ?: "ошибка"}" }
+    }
+
+    fun save() {
+        val value = draft
+        scope.launch {
+            val result =
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        file.parentFile?.mkdirs()
+                        file.writeText(value)
+                        file.length()
+                    }
+                }
+            result
+                .onSuccess { bytes ->
+                    text = value
+                    editing = false
+                    error = null
+                    note = "Сохранено: ${file.absolutePath} · ${fmtBytes(bytes)}"
+                    reloadKey++
+                }
+                .onFailure { error = "Не удалось сохранить: ${it.message ?: "ошибка"}" }
+        }
+    }
+
+    InfoRow(
+        "Зачем",
+        "AGENTS.md — стартовые инструкции агента: как читать память, вести журнал " +
+            "и собирать APK. Файл читается новой сессией: после сохранения открой новый " +
+            "чат или попроси агента перечитать его. Свои правила можно добавлять, мои — " +
+            "менять; не удаляй блок «Память — это мой мозг».",
+    )
+    note?.let { InfoRow("Файл", it, Color(0xFF7BD88F)) }
+    error?.let { InfoRow("Ошибка", it, Color(0xFFFF6F5A)) }
+    downloadButton("Открыть редактор AGENTS.md") {
+        draft = text ?: AGENTS_TEMPLATE
+        editing = true
+    }
+    downloadButton("Перечитать файл") { reloadKey++ }
+
+    if (editing) {
+        AlertDialog(
+            onDismissRequest = { editing = false },
+            title = { Text("AGENTS.md — правила агента", color = MoltAccent, fontSize = 14.sp) },
+            text = {
+                Column(Modifier.fillMaxWidth()) {
+                    Text(
+                        "Путь: ${file.absolutePath}",
+                        color = MoltIdle,
+                        fontSize = 11.sp,
+                    )
+                    Text(
+                        "Сохраняется на телефоне. Изменения подхватываются новой сессией " +
+                            "агента; текущий чат их не перечитывает сам.",
+                        color = MoltIdle,
+                        fontSize = 11.sp,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    BasicTextField(
+                        value = draft,
+                        onValueChange = { draft = it },
+                        textStyle = TextStyle(color = MoltValue, fontSize = 12.sp, lineHeight = 16.sp),
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 180.dp, max = 360.dp)
+                                .verticalScroll(rememberScrollState()),
+                    )
+                    error?.let {
+                        Spacer(Modifier.height(6.dp))
+                        Text(it, color = Color(0xFFFF6F5A), fontSize = 11.sp)
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { save() }) { Text("Сохранить") } },
+            dismissButton = { TextButton(onClick = { editing = false }) { Text("Отмена") } },
+        )
+    }
+}
+
+/** Шаблон для рабочей папки без AGENTS.md: создаётся только по «Сохранить». */
+private const val AGENTS_FILE_NAME = "AGENTS.md"
+private const val AGENTS_TEMPLATE =
+    "# Правила агента\n\n" +
+        "## Память — это мой мозг\n\n" +
+        "В начале любой нетривиальной задачи вызывай memory_pack и читай " +
+        "MOBILE_AGENT/СОСТОЯНИЕ.md, ПРАВИЛА.md, ЖУРНАЛ.md, ХАРНЕС.md. " +
+        "После правки сразу пиши в журнал, состояние и ядро памяти.\n\n" +
+        "## Дополнительные правила пользователя\n\n" +
+        "Пиши сюда свои пожелания простыми словами: что агент делает сам, " +
+        "чего не делает, и в каком виде отвечает.\n"
+
+private data class RulesFile(
+    val text: String,
+    val exists: Boolean,
+    val bytes: Long,
+)
 
 /** Живые счётчики индекса плюс интерактивная карта связей. */
 @Composable
