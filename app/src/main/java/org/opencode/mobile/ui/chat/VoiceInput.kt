@@ -161,6 +161,27 @@ internal class AudioRecorder(
             }
     }
 
+    /**
+     * Текущий уровень микрофона 0..1 для полоски спектра в поле ввода.
+     * Берём только хвост буфера (последние [windowMs] записи), чтобы визуал
+     * реагировал на речь здесь и сейчас, а не на всю запись целиком.
+     * Усиление 6 подобрано под тихий тракт OPPO (RMS речи ~0.05 → 0.3).
+     */
+    fun level(windowMs: Int = 60): Float {
+        if (!running) return 0f
+        val need = captureRate * windowMs / 1000
+        val tail =
+            synchronized(raw) {
+                val from = maxOf(0, raw.size - need)
+                FloatArray(raw.size - from) { i -> raw[from + i] / 32768f }
+            }
+        if (tail.isEmpty()) return 0f
+        var sum = 0.0
+        for (v in tail) sum += v.toDouble() * v
+        val rms = kotlin.math.sqrt(sum / tail.size)
+        return (rms * 6f).coerceIn(0f, 1f)
+    }
+
     fun stop(): FloatArray {
         running = false
         thread?.join(1500)
@@ -256,6 +277,89 @@ internal class AudioRecorder(
         var s = 0.0
         for (v in x) s += v.toDouble() * v
         return kotlin.math.sqrt(s / x.size)
+    }
+}
+
+/**
+ * Отдельный измеритель уровня для системного распознавания: у SpeechRecognizer
+ * нет доступа к PCM, а полоска спектра должна реагировать на голос и там.
+ * Читает микрофон малым буфером, держит только сглаженный уровень — в память
+ * ничего не пишет и в распознавание не вмешивается.
+ */
+internal class MicLevelMeter(
+    private val context: Context,
+) {
+    private var recorder: AudioRecord? = null
+    private var thread: Thread? = null
+
+    @Volatile private var running = false
+
+    @Volatile private var smoothed = 0f
+
+    fun start() {
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        val rate = 16000
+        val fmt = AudioFormat.CHANNEL_IN_MONO
+        val enc = AudioFormat.ENCODING_PCM_16BIT
+        val min = AudioRecord.getMinBufferSize(rate, fmt, enc)
+        if (min <= 0) return
+        val r =
+            try {
+                AudioRecord(MediaRecorder.AudioSource.MIC, rate, fmt, enc, maxOf(min * 2, 3200))
+            } catch (_: Throwable) {
+                null
+            } ?: return
+        if (r.state != AudioRecord.STATE_INITIALIZED) {
+            r.release()
+            return
+        }
+        recorder = r
+        running = true
+        try {
+            r.startRecording()
+        } catch (_: Exception) {
+            running = false
+            r.release()
+            recorder = null
+            return
+        }
+        val buf = ShortArray(maxOf(min * 2, 3200) / 2)
+        thread =
+            thread(name = "mic-level") {
+                while (running) {
+                    val n = r.read(buf, 0, buf.size)
+                    if (n <= 0) continue
+                    var sum = 0.0
+                    for (i in 0 until n) {
+                        val v = buf[i] / 32768f
+                        sum += v.toDouble() * v
+                    }
+                    val rms = kotlin.math.sqrt(sum / n)
+                    val peak = (rms * 6f).coerceIn(0f, 1f)
+                    smoothed = maxOf(peak, smoothed * 0.82f)
+                }
+            }
+    }
+
+    /** Сглаженный уровень 0..1; между чтениями держится, чтобы полоска не мигала. */
+    fun level(): Float = smoothed
+
+    fun stop() {
+        running = false
+        thread?.join(500)
+        thread = null
+        try {
+            recorder?.stop()
+        } catch (_: Exception) {
+        }
+        try {
+            recorder?.release()
+        } catch (_: Exception) {
+        }
+        recorder = null
+        smoothed = 0f
     }
 }
 

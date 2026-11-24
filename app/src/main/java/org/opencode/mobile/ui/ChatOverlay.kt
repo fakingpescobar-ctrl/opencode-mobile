@@ -3,6 +3,7 @@ package org.opencode.mobile.ui
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -85,6 +86,7 @@ import org.opencode.mobile.ui.chat.ElevenKeySettings
 import org.opencode.mobile.ui.chat.FontPanel
 import org.opencode.mobile.ui.chat.GaugePanel
 import org.opencode.mobile.ui.chat.McpPanel
+import org.opencode.mobile.ui.chat.MicLevelMeter
 import org.opencode.mobile.ui.chat.ModelColorPanel
 import org.opencode.mobile.ui.chat.NarrationInput
 import org.opencode.mobile.ui.chat.PANEL_COLOR
@@ -124,6 +126,9 @@ import java.util.Locale
 
 // Миллисекунд в минуте для паузы между обходами сессий.
 private const val MS_PER_MINUTE = 60_000L
+
+// Число столбиков полоски спектра при удержании микрофона.
+private const val SPECTRUM_BARS = 28
 
 // Геометрия и цвета полос расхода живут в GaugeStyle.kt и меняются пользователем
 // из панели шестерёнки в шапке. Констант GAUGE_* здесь больше нет намеренно:
@@ -255,6 +260,9 @@ fun ChatOverlay(
     var listening by remember { mutableStateOf(false) }
     var speechError by remember { mutableStateOf<String?>(null) }
     var whisperBusy by remember { mutableStateOf(false) }
+    // Уровни для полоски спектра: свежий отсчёт слева, старые гаснут вправо.
+    var voiceLevels by remember { mutableStateOf(List(SPECTRUM_BARS) { 0f }) }
+    var levelMeter by remember { mutableStateOf<MicLevelMeter?>(null) }
     // Движок распознавания и модель whisper.cpp: значения и правила их чтения
     // (миграция выпиленного ncnn, отбраковка неизвестной модели) живут в
     // VoiceSettings, где их держит юнит-тест.
@@ -797,6 +805,35 @@ fun ChatOverlay(
             if (granted) startVoice() else speechError = "нет доступа к микрофону"
         }
 
+    // Живая полоска спектра, пока держится микрофон. Уровень берём из настоящего
+    // PCM: при whisper — из уже идущей записи, при системном STT — из отдельного
+    // измерителя (у SpeechRecognizer нет доступа к сэмплам). Никаких случайных
+    // чисел: тишина даёт низкие столбики, речь — высокие.
+    LaunchedEffect(listening) {
+        if (!listening) {
+            voiceLevels = List(SPECTRUM_BARS) { 0f }
+            return@LaunchedEffect
+        }
+        if (voice.sttEngine != VoiceEngine.WHISPER &&
+            context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        ) {
+            val meter = MicLevelMeter(context.applicationContext)
+            meter.start()
+            levelMeter = meter
+        }
+        try {
+            while (listening) {
+                val level = whisperRecorder?.level() ?: levelMeter?.level() ?: 0f
+                voiceLevels = listOf(level) + voiceLevels.take(SPECTRUM_BARS - 1).map { it * 0.86f }
+                delay(55)
+            }
+        } finally {
+            levelMeter?.stop()
+            levelMeter = null
+            voiceLevels = List(SPECTRUM_BARS) { 0f }
+        }
+    }
+
     // Диагностика: синтез фразу системным TTS → прогон через наш whisper.
     // Чистое распознавание = модель и пайплайн ок, проблема в микрофоне/записи.
     var ttsTestRunning by remember { mutableStateOf(false) }
@@ -1094,6 +1131,7 @@ fun ChatOverlay(
                         listening = listening,
                         speechError = speechError,
                         whisperBusy = whisperBusy,
+                        levels = voiceLevels,
                         ask = ui.snapshot?.ask?.firstOrNull(),
                         askBusy = askBusy,
                         askError = askError,

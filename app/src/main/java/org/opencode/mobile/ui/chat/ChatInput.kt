@@ -2,9 +2,7 @@ package org.opencode.mobile.ui.chat
 
 import android.Manifest
 import android.content.pm.PackageManager
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -13,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -22,6 +21,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
@@ -31,6 +31,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
@@ -53,6 +56,8 @@ internal data class ChatInputState(
     val listening: Boolean,
     val speechError: String?,
     val whisperBusy: Boolean,
+    /** Уровни полоски спектра: новый отсчёт слева, старые гаснут справа. */
+    val levels: List<Float> = emptyList(),
     val ask: AskCard?,
     val askBusy: Boolean,
     val askError: String?,
@@ -103,6 +108,15 @@ internal fun ChatInput(
     val askAct by rememberUpdatedState(ask)
     if (state.listening || state.speechError != null || state.whisperBusy) {
         VoiceStatusText(state)
+    }
+    // Полоска спектра живёт ровно пока держится микрофон. Уровни приходят из
+    // реального PCM (своего рекордера или отдельного измерителя для системного STT),
+    // а не из случайных чисел: тишина — низкие столбики, речь — высокие.
+    if (state.listening) {
+        SpectrumBar(
+            levels = state.levels,
+            modifier = Modifier.padding(top = 4.dp),
+        )
     }
     state.ask?.let { card ->
         Box(modifier = Modifier.padding(top = 8.dp)) {
@@ -165,6 +179,35 @@ private fun VoiceStatusText(state: ChatInputState) {
     )
 }
 
+// Полоска спектра: 28 столбиков, высота каждого — уровень звука в момент опроса.
+// Новый отсчёт появляется слева, предыдущие гаснут и уходят вправо, поэтому во
+// время речи полоска «бежит», а после тишины оседает. Один Canvas на всю полоску —
+// дешевле, чем 28 отдельных View, и не ломает dp-бюджет узкого экрана.
+@Composable
+private fun SpectrumBar(
+    levels: List<Float>,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier.fillMaxWidth().height(26.dp)) {
+        val n = levels.size.coerceAtLeast(1)
+        val slot = size.width / n
+        val barW = minOf(slot * 0.55f, 6.dp.toPx()).coerceAtLeast(2f)
+        for (i in 0 until n) {
+            val v = levels[i].coerceIn(0f, 1f)
+            val h = (3.dp.toPx() + v * (size.height - 3.dp.toPx())).coerceAtLeast(3.dp.toPx())
+            val x = i * slot + (slot - barW) / 2f
+            val y = (size.height - h) / 2f
+            val tint = if (v > 0.62f) Color(0xFFFF6F5A) else Color(0xFF7BA6F8)
+            drawRoundRect(
+                color = tint,
+                topLeft = Offset(x, y),
+                size = Size(barW, h),
+                cornerRadius = CornerRadius(barW / 2f, barW / 2f),
+            )
+        }
+    }
+}
+
 // Поле ввода с микрофоном внутри: сам текст, подсказка и микрофон, который уходит,
 // как только пользователь начал печатать. Пока идёт запись (listening) он остаётся —
 // иначе нечем остановить её.
@@ -213,12 +256,13 @@ private fun RowScope.DraftRow(
                 }
             },
         )
-        AnimatedVisibility(
-            visible = draft.isEmpty() || listening,
-            enter = fadeIn(),
-            exit = fadeOut(),
-        ) {
+        // Пока поле пусто (или идёт запись) — микрофон. Как только появился текст,
+        // на его место приходит видимая кнопка отправки: раньше отправка была только
+        // в клавиатуре, и на нижней панели не было видимого действия.
+        if (draft.isEmpty() || listening) {
             MicButton(listening = listening, voice = voice)
+        } else {
+            SendButton(onSend = onSend)
         }
     }
 }
@@ -264,6 +308,25 @@ private fun MicButton(
             contentDescription = "Голосовой ввод (удерживай для записи)",
             tint = if (listening) Color.White else Color(0xFFE0E0E0),
             modifier = Modifier.fillMaxSize().padding(8.dp),
+        )
+    }
+}
+
+// Отправка текста без клавиатуры: та же кнопка занимает место микрофона, как только
+// в поле появился черновик. Цвет — акцент приложения, чтобы не путать с красным Stop.
+@Composable
+private fun SendButton(onSend: () -> Unit) {
+    val send by rememberUpdatedState(onSend)
+    Surface(
+        modifier = Modifier.size(38.dp).clickable { send() },
+        shape = CircleShape,
+        color = Color(0xFF7BA6F8),
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Send,
+            contentDescription = "Отправить сообщение",
+            tint = Color(0xFF101418),
+            modifier = Modifier.fillMaxSize().padding(9.dp),
         )
     }
 }
