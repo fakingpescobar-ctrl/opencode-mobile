@@ -179,7 +179,7 @@ internal class AudioRecorder(
         var sum = 0.0
         for (v in tail) sum += v.toDouble() * v
         val rms = kotlin.math.sqrt(sum / tail.size)
-        return (rms * 6f).coerceIn(0f, 1f)
+        return (rms * 6.0).coerceIn(0.0, 1.0).toFloat()
     }
 
     fun stop(): FloatArray {
@@ -337,7 +337,7 @@ internal class MicLevelMeter(
                         sum += v.toDouble() * v
                     }
                     val rms = kotlin.math.sqrt(sum / n)
-                    val peak = (rms * 6f).coerceIn(0f, 1f)
+                    val peak = (rms * 6.0).coerceIn(0.0, 1.0).toFloat()
                     smoothed = maxOf(peak, smoothed * 0.82f)
                 }
             }
