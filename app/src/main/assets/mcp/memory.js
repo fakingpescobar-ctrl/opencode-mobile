@@ -533,13 +533,13 @@ const memoryTools = [
       query: { type: "string" }, budgetTokens: { type: "number" }, limit: { type: "number" },
       scope: { type: ["string", "array"], items: { type: "string" } },
       as_of: { type: "number" }, facts: { type: "boolean" }, refresh: { type: "boolean" },
-      mode: { type: "string", enum: ["legacy", "v4", "rrf", "wave2", "l0"], description: "legacy — эталонный fallback; v4 — utility+evidence; rrf — fused ranks; wave2 — явный UCB; l0 — entity-алиасы поверх legacy" } }, required: ["query"] } },
+      mode: { type: "string", enum: ["legacy", "v4", "rrf", "wave2", "l0", "wave4"], description: "legacy — эталонный fallback; v4 — utility+evidence; rrf — fused ranks; wave2 — явный UCB; l0 — entity-алиасы поверх legacy; wave4 — l0 + диверсификация топ-5 (один чанк на источник)" } }, required: ["query"] } },
   { name: "memory_recall_doc", description: " Топ чанков рабочей памяти с полными весами и пояснением why. Без LLM, без эмбеддингов, на FTS5 + леммах + графе. scope ограничивает kind (rule/state/journal/path/catalog/advice/doc).",
     inputSchema: { type: "object", properties: {
       query: { type: "string" }, limit: { type: "number" },
       scope: { type: ["string", "array"], items: { type: "string" } },
       as_of: { type: "number" }, refresh: { type: "boolean" },
-      mode: { type: "string", enum: ["legacy", "v4", "rrf", "wave2", "l0"] } }, required: ["query"] } },
+      mode: { type: "string", enum: ["legacy", "v4", "rrf", "wave2", "l0", "wave4"] } }, required: ["query"] } },
   { name: "memory_adaptive", description: " Адаптивный доступ: confidence по peak=top1−медиана, бюджет по уверенности, концептуальная нить. explain=true возвращает только оценку уверенности без упаковки.",
     inputSchema: { type: "object", properties: {
       query: { type: "string" }, scope: { type: ["string", "array"], items: { type: "string" } },

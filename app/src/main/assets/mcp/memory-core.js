@@ -159,7 +159,7 @@ const HALF_LIFE_MS = 30 * 24 * 60 * 60 * 1000;
 // Дефолт — legacy. Волна 2 вкатывает в него детерминированные выигрыши FTS5
 // (tokenchars-якоря, бюджет 4, evidence 0.02) без смены имени и без LLM.
 // v4/rrf остаются явными режимами сравнения; wave2 — те же веса + UCB.
-export const MODES = ["legacy", "v4", "rrf", "wave2", "l0"];
+export const MODES = ["legacy", "v4", "rrf", "wave2", "l0", "wave4"];
 export const DEFAULT_MODE = "legacy";
 const UTILITY_LAMBDA = 0.08;  // доля Q в формуле (1−λ)·sim + λ·Q
 const UTILITY_ALPHA = 0.20;   // скорость обновления Q из reward (Monte-Carlo)
@@ -176,6 +176,11 @@ const WAVE2_ANCHOR_PER_SOURCE = 4;
 // Замер на 20 парафразах gold-hard: recall@5 0.900→1.000 (h04/h14 закрыты),
 // на 113 gold без просадки. Ни LLM, ни эмбеддингов, ни новых таблиц.
 const L0_ENTITY_BONUS = 0.15;
+// Волна 4: диверсификация головы выдачи. На h06 четыре из пяти верхних чанков
+// приходили из СОСТОЯНИЕ.md, а канонное правило из АРХИТЕКТУРА_ПАМЯТИ.md
+// оставалось на ранге 7. Один слот на источник в топ-5 — детерминированно,
+// без LLM и без изменения весов; режим отдельный, l0/legacy не трогаем.
+const WAVE4_TOP5_PER_SOURCE = 1;
 const RRF_K = 60;
 
 function clamp(x, lo = 0, hi = 1) { return Math.max(lo, Math.min(hi, x)); }
@@ -417,6 +422,22 @@ function l0Rerank(DB, query, anchors, useRaw, head, bonus) {
   return out;
 }
 
+// --- Волна 4: диверсификация топ-5 (только mode:"wave4") -------------------
+// Pareto-правка: НЕ меняем score и не трогаем веса — даём каждому источнику
+// не более одного слота в первых пяти позициях. Отсеянные чанки того же
+// документа остаются в хвосте и попадают в выдачу при limit > 5.
+function wave4Diversify(head, limit) {
+  const used = new Set();
+  const picked = [];
+  const rest = [];
+  for (const h of head) {
+    if (picked.length < 5 && used.has(h.source)) { rest.push(h); continue; }
+    used.add(h.source);
+    picked.push(h);
+  }
+  return picked.concat(rest).slice(0, limit);
+}
+
 // Главный поиск. Возвращает топ-чанки с весами и объяснением `why`.
 export function recallDocs(DB, query, opts = {}) {
   // Read Boundaries: если во время чтения в БД пришла запись, пересчитываем
@@ -432,10 +453,10 @@ function recallDocsOnce(DB, query, opts = {}) {
   const mode = MODES.includes(opts.mode) ? opts.mode : DEFAULT_MODE;
   // l0 — это legacy + один entity-бонус ПОСЛЕ скоринга. Базовая формула и
   // детерминированные слои поэтому остаются побайтно legacy-ными.
-  const v4 = mode !== "legacy" && mode !== "l0";
+  const v4 = mode !== "legacy" && mode !== "l0" && mode !== "wave4";
   // Детерминированные улучшения Волны 2 работают и в legacy — DEFAULT_MODE
   // остаётся прежним, но tokenchars-якоря и бюджет теперь часть ядра.
-  const wave2 = mode === "wave2" || mode === "legacy" || mode === "l0";
+  const wave2 = mode === "wave2" || mode === "legacy" || mode === "l0" || mode === "wave4";
   const a = analyze(query);
   const anchors = a.anchors;
   // Trigram-FTS по умолчанию связывает слова через AND: длинная фраза «как агент
@@ -473,7 +494,7 @@ function recallDocsOnce(DB, query, opts = {}) {
   // 1.000; opts.anchorBudget позволяет прогнать 1/2/5/6 без правки ядра.
   const ANCHOR_PER_SOURCE = Math.max(1, Math.min(6,
     Number.isFinite(opts.anchorBudget) ? opts.anchorBudget
-      : (mode === "wave2" || mode === "legacy" || mode === "l0"
+      : (mode === "wave2" || mode === "legacy" || mode === "l0" || mode === "wave4"
             ? WAVE2_ANCHOR_PER_SOURCE : 3)));
   const textHits = queryFts(DB, "doc_fts", trigramQuery, FTS_POOL);
   const anchorTable = useRaw ? ANCHOR_FTS_V4 : "anchor_fts";
@@ -649,9 +670,12 @@ function recallDocsOnce(DB, query, opts = {}) {
   // Волна 3: entity-слой применяется к голове ПОСЛЕ дедупа. 20 — тот же потолок,
   // на котором мерился прототип, поэтому mode:"l0" = legacy + один бонус,
   // а дефолтный legacy-путь не меняется вообще.
-  if (mode === "l0") {
-    return l0Rerank(DB, query, anchors, useRaw, dedup.slice(0, 20), L0_ENTITY_BONUS)
-      .slice(0, limit);
+  if (mode === "l0" || mode === "wave4") {
+    const head = l0Rerank(DB, query, anchors, useRaw, dedup.slice(0, 20), L0_ENTITY_BONUS);
+    if (mode === "wave4") {
+      return wave4Diversify(head, limit);
+    }
+    return head.slice(0, limit);
   }
   return dedup.slice(0, limit);
 }

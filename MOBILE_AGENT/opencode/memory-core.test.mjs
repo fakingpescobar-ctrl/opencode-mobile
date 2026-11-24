@@ -1181,6 +1181,50 @@ section("13. Волна 3: entity-алиасы уровня 0 (opt-in)");
   D.close();
 }
 
+// ------------------------------- 14. Волна 4: диверсификация топ-5
+section("14. Волна 4: wave4 — один слот на источник в топ-5 (opt-in)");
+{
+  eq(core.DEFAULT_MODE, "legacy", "дефолт по-прежнему legacy");
+  truthy(core.MODES.includes("wave4"), "wave4 зарегистрирован в MODES");
+  const D = new Database(":memory:");
+  idx.indexDocs(D, DOCS);
+
+  // h06: legacy и l0 держат четыре чанка СОСТОЯНИЕ.md в голове, а правило
+  // из АРХИТЕКТУРА_ПАМЯТИ.md остаётся за топ-5. wave4 обязан его вернуть.
+  const h06 = "какой вес якорей и графа в гибридной формуле поиска";
+  const rule = "АРХИТЕКТУРА_ПАМЯТИ.md";
+  for (const mode of ["legacy", "l0"]) {
+    const src = core.recallDocs(D, h06, { limit: 5, mode }).map((x) => x.source);
+    truthy(!src.includes(rule), `${mode} проваливается на h06`);
+  }
+  const w = core.recallDocs(D, h06, { limit: 5, mode: "wave4" });
+  truthy(w.some((x) => x.source === rule), "wave4 закрывает h06");
+  truthy(w.every((x) => x.why.mode === "wave4"), "why.mode=wave4");
+  eq(new Set(w.map((x) => x.source)).size, 5, "в топ-5 пять разных источников");
+
+  // Диверсификация не меняет score: тот же набор чанков, другой порядок.
+  const l0 = new Map(core.recallDocs(D, h06, { limit: 20, mode: "l0" })
+    .map((x) => [x.id, x.score]));
+  truthy(w.every((x) => l0.get(x.id) === x.score), "score чанков не изменён");
+
+  // Волна 3 не откатывается: h04/h14 по-прежнему находятся.
+  for (const [q, source] of [
+    ["где лежит эталон плагина и как обновить plugin.sha256", "ПРАВИЛА.md"],
+    ["какой коммит и run собрали apk-45", "ХАРНЕС.md"],
+  ]) {
+    const got = core.recallDocs(D, q, { limit: 5, mode: "wave4" }).map((x) => x.source);
+    truthy(got.includes(source), "wave4 держит Волну 3: " + source);
+  }
+
+  const p1 = core.recallDocs(D, h06, { limit: 5, mode: "wave4" });
+  const p2 = core.recallDocs(D, h06, { limit: 5, mode: "wave4" });
+  eq(p1.map((x) => x.id), p2.map((x) => x.id), "wave4 детерминирован");
+
+  const pack = core.memoryPack(D, h06, { budgetTokens: 768, mode: "wave4" });
+  truthy(/^pack-[0-9a-f]{16}$/.test(pack.pack_id), "wave4-pack выдан");
+  D.close();
+}
+
 // ---------------------------------------------------------------- итог
 console.log("\n" + "=".repeat(56));
 console.log("ТЕСТЫ ЯДРА ПАМЯТИ: OK=" + ok + " BAD=" + bad);
