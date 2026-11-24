@@ -4,7 +4,7 @@
   "sources": [
     {
       "path": "docs/agent-rules.md",
-      "sha": "b7fd1d27392ffa7e7406357f4788ba23ba2daac2becddf577bdcd8748cad82fc"
+      "sha": "5c93d92b67b609b78c63cd60ff85eb3348b780fca94671317e0cd440626d301e"
     },
     {
       "path": "АРХИТЕКТУРА_ПАМЯТИ.md",
@@ -12,11 +12,11 @@
     },
     {
       "path": "ПРАВИЛА.md",
-      "sha": "cb4a580744bcdcf9d4d25e4801a5b75884301ad247b7f560980888d67a0c25a9"
+      "sha": "08aa1c8e0dccbc2f19e89798cd463f1601df5a093805d9f1018632d66ccbc38f"
     },
     {
       "path": "СОСТОЯНИЕ.md",
-      "sha": "3b0a785c6f27d1374470294875a17c607acef42ba80c6e941d61136b78487cf6"
+      "sha": "4b50d5afe25f4c558660f56dbac7eede2582d4a599b17cf919eb388ddf15e3a0"
     },
     {
       "path": "ХАРНЕС.md",
@@ -32,7 +32,7 @@
     },
     {
       "path": "ЖУРНАЛ.md",
-      "sha": "478e120ae2ec36778350e20304b45ef901d5ddf22a887a3ce0e9178363b5b871"
+      "sha": "8a9c5aaa367ec34d8ade159335406e99f43337ae856113baaa73f496f82be881"
     },
     {
       "path": "РОСТ_ЗОЛОТОГО_КОРПУСА.md",
