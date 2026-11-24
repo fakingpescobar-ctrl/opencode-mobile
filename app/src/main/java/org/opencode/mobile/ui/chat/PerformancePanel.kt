@@ -105,9 +105,16 @@ object PerformanceMonitor {
     private var scope: CoroutineScope? = null
     private var gpuPrev: LongArray? = null
     private val history = ArrayList<FloatArray>()
+    // Мгновенная частота скачет от min до max за один такт гувернера, поэтому
+    // усредняем и по ядрам, и по времени: полоска показывает среднюю загрузку,
+    // а не случайный снимок. График получает те же сглаженные значения.
+    private var cpuEma = 0f
+    private val coreEma = FloatArray(CPU_CORES)
 
     fun start(active: () -> Boolean = { true }) {
         if (scope?.isActive == true) return
+        cpuEma = 0f
+        coreEma.fill(0f)
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO).also { s ->
             s.launch {
                 while (isActive) {
@@ -125,6 +132,8 @@ object PerformanceMonitor {
         scope?.cancel()
         scope = null
         gpuPrev = null
+        cpuEma = 0f
+        coreEma.fill(0f)
     }
 
     private fun sample(): PerformanceSnapshot {
@@ -134,15 +143,23 @@ object PerformanceMonitor {
         val available = mem["MemAvailable"] ?: 0L
         val ram = ((total - available) * 100f / total).roundToInt().coerceIn(0, 100)
         val cacheMb = (mem["Cached"] ?: 0L) / 1024L
-        val coreLevels = cores.map { it.toFloat() }.toFloatArray()
+        // Сглаживаем каждое ядро (alpha 0.3), затем усредняем по всем ядрам и
+        // ещё раз по времени (alpha 0.15). Полоска CPU показывает среднюю
+        // загрузку по ядрам, а не дёрганый снимок частоты.
+        for (i in cores.indices) {
+            coreEma[i] = coreEma[i] * 0.7f + cores[i] * 0.3f
+        }
+        val coreLevels = coreEma.copyOf()
+        val avg = if (coreLevels.isEmpty()) 0f else coreLevels.sum() / coreLevels.size
+        cpuEma = cpuEma * 0.85f + avg * 0.15f
         history.add(coreLevels)
         while (history.size > HISTORY_POINTS) history.removeAt(0)
         return PerformanceSnapshot(
-            cpu = if (cores.isEmpty()) 0 else cores.sum() / cores.size,
+            cpu = cpuEma.roundToInt().coerceIn(0, 100),
             gpu = readGpu(),
             ram = ram,
             cacheMb = cacheMb,
-            cores = cores,
+            cores = coreLevels.map { it.roundToInt().coerceIn(0, 100) },
             history = history.map { it.copyOf() },
         )
     }
@@ -284,7 +301,7 @@ internal fun PerformancePanel(onClose: () -> Unit) {
             )
         }
         MetricBar("GPU · загрузка", snapshot.gpu, Color(0xFF00E5FF))
-        MetricBar("CPU · частота", snapshot.cpu, Color(0xFF7BD88F))
+        MetricBar("CPU · среднее по ядрам", snapshot.cpu, Color(0xFF7BD88F))
         MetricBar("RAM · занято", snapshot.ram, Color(0xFFFFB74D))
         Text(
             "Кэш: ${snapshot.cacheMb} МБ  ·  /proc/stat закрыт, частота ядер вместо %",
