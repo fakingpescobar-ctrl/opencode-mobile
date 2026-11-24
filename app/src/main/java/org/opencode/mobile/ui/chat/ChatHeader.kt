@@ -33,6 +33,7 @@ internal const val PANEL_COLOR = "color"
 internal const val PANEL_FONT = "font"
 internal const val PANEL_SETTINGS = "settings"
 internal const val PANEL_STT = "stt"
+internal const val PANEL_PERF = "perf"
 
 // testTag-метки полос: якоря для проверки геометрии по дампу uiautomator.
 private const val TAG_CTX_GAUGE = "ctx_gauge"
@@ -99,6 +100,13 @@ private fun Indicators(
     state: ChatHeaderState,
     actions: ChatHeaderActions,
 ) {
+    // Светящаяся молния: открывает живые метрики (GPU/CPU/RAM + график ядер).
+    // Компактная, 20.dp, чтобы не съесть последний запас ширины у QuotaBadge.
+    PerformanceChip(
+        active = state.activePanel == PANEL_PERF,
+        onClick = { actions.onTogglePanel(PANEL_PERF) },
+        modifier = Modifier.padding(start = 4.dp),
+    )
     // «N MCP» + мигающая точка. Зелёный — все N подключённых серверов работают;
     // красный — какой-то из них не работает (или их нет вовсе).
     MCPIndicator(

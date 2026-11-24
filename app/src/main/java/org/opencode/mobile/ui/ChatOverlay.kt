@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -92,8 +93,11 @@ import org.opencode.mobile.ui.chat.NarrationInput
 import org.opencode.mobile.ui.chat.PANEL_COLOR
 import org.opencode.mobile.ui.chat.PANEL_FONT
 import org.opencode.mobile.ui.chat.PANEL_MCP
+import org.opencode.mobile.ui.chat.PANEL_PERF
 import org.opencode.mobile.ui.chat.PANEL_SETTINGS
 import org.opencode.mobile.ui.chat.PANEL_STT
+import org.opencode.mobile.ui.chat.PerformanceMonitor
+import org.opencode.mobile.ui.chat.PerformancePanel
 import org.opencode.mobile.ui.chat.ServerSendTransport
 import org.opencode.mobile.ui.chat.SharedPreferencesAppearanceStore
 import org.opencode.mobile.ui.chat.SharedPreferencesVoiceStore
@@ -401,6 +405,16 @@ fun ChatOverlay(
     // значения дешевле, чем каждый раз вспоминать остальные.
     var activePanel by remember { mutableStateOf<String?>(null) }
 
+    // Метрики для чипа-молнии и его панели. Один сэмплер на весь экран, в фоне
+    // не читает /sys — чип и панель читают один и тот же StateFlow, без расхождений.
+    val perfLifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(Unit) {
+        PerformanceMonitor.start { perfLifecycle.currentState == Lifecycle.State.RESUMED }
+    }
+    DisposableEffect(Unit) {
+        onDispose { PerformanceMonitor.stop() }
+    }
+
     // Панель может открыть не только палец, но и мост приложения: тап из
     // оболочки агента недоступен (`INJECT_EVENTS`), а снимок экрана — доступен.
     // Просьба применяется здесь, потому что состояние панели живёт в композиции,
@@ -433,6 +447,7 @@ fun ChatOverlay(
     val showFontPicker = activePanel == PANEL_FONT
     val showSettings = activePanel == PANEL_SETTINGS
     val showSttSettings = activePanel == PANEL_STT
+    val showPerf = activePanel == PANEL_PERF
 
     fun send() {
         val text = ui.draft.trim()
@@ -1117,6 +1132,9 @@ fun ChatOverlay(
             }
             if (showFontPicker) {
                 FontPanel(appearance, modelColor) { closeHeaderPanel(PANEL_FONT) }
+            }
+            if (showPerf) {
+                PerformancePanel { closeHeaderPanel(PANEL_PERF) }
             }
             ChatFeed(
                 state =
