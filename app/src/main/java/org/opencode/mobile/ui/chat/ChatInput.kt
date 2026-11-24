@@ -55,7 +55,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.AwaitPointerEventScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
@@ -264,7 +264,7 @@ private fun KeyboardSquare(onClick: () -> Unit) {
 }
 
 /** Нажал — начали запись, отпустил — остановили и отправили распознанное. */
-private suspend fun PointerInputScope.holdToSpeak(
+private suspend fun AwaitPointerEventScope.holdToSpeak(
     context: Context,
     requestMic: () -> Unit,
     start: () -> Unit,
