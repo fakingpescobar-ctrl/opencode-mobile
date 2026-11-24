@@ -250,23 +250,29 @@ internal fun PerformanceChip(
             delay(120)
         }
     }
+    // Та же геометрия, что у остальных иконок шапки (iconModifier в ChatHeader):
+    // 4.dp зазор, 22.dp кружок, подсветка открытой панели, 3.dp внутренний
+    // отступ у самой иконки. Свечение остаётся, но внутри кружка и тоньше —
+    // чтобы не заезжать на цифры пинга слева.
     Box(
         modifier
-            .size(20.dp)
+            .padding(start = 4.dp)
+            .size(22.dp)
             .clip(CircleShape)
+            .background(if (active) Color(0xFF3A3A3A) else Color.Transparent)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Canvas(Modifier.size(20.dp)) {
+        Canvas(Modifier.size(22.dp)) {
             val c = Offset(size.width / 2f, size.height / 2f)
             val tint = if (active) Color(0xFFFFF176) else Color(0xFFFFD54F)
-            drawCircle(tint.copy(alpha = pulse * 0.45f), radius = 9.dp.toPx(), center = c)
+            drawCircle(tint.copy(alpha = pulse * 0.3f), radius = 10.dp.toPx(), center = c)
         }
         Icon(
             Icons.Filled.FlashOn,
             contentDescription = "Производительность",
-            tint = Color(0xFFFFF8E1),
-            modifier = Modifier.size(15.dp),
+            tint = if (active) Color(0xFFFFF176) else Color(0xFFFFD54F),
+            modifier = Modifier.padding(3.dp),
         )
     }
 }

@@ -344,15 +344,18 @@ internal fun MCPIndicator(
         }
     }
     Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier.clickable { onClick() }) {
-        // Аккуратная мигающая точка-светодиод (без ореола/свечения).
-        Box(Modifier.size(22.dp), contentAlignment = Alignment.Center) {
-            Canvas(Modifier.size(22.dp)) {
+        // Аккуратная мигающая точка-светодиод (без ореола/свечения). Коробка
+        // 12.dp вместо 22.dp и зазор 2.dp вместо 4: точка сидит вплотную к
+        // «N MCP», а сэкономленные 12.dp уходят QuotaBadge — цифры пинга
+        // больше не обрезаются краем иконки молнии.
+        Box(Modifier.size(12.dp), contentAlignment = Alignment.Center) {
+            Canvas(Modifier.size(12.dp)) {
                 val c = Offset(size.width / 2f, size.height / 2f)
                 val rDot = 4.dp.toPx()
                 drawCircle(neon.copy(alpha = blink), radius = rDot, center = c)
             }
         }
-        Spacer(Modifier.width(4.dp))
+        Spacer(Modifier.width(2.dp))
         // «N MCP» — сначала число, потом слово; надпись ВСЕГДА бирюзовая (яркий неон),
         // не зависит от статуса. Статус показывает только точка-светодиод.
         Text(

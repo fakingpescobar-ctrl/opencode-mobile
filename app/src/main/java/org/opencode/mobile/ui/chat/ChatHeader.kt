@@ -101,7 +101,7 @@ private fun Indicators(
     actions: ChatHeaderActions,
 ) {
     // Светящаяся молния: открывает живые метрики (GPU/CPU/RAM + график ядер).
-    // Компактная, 20.dp, чтобы не съесть последний запас ширины у QuotaBadge.
+    // Та же геометрия, что и у остальных иконок шапки — 22.dp, зазор 4.dp.
     PerformanceChip(
         active = state.activePanel == PANEL_PERF,
         onClick = { actions.onTogglePanel(PANEL_PERF) },
