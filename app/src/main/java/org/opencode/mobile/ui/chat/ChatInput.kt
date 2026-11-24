@@ -4,14 +4,11 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -45,6 +42,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.opencode.mobile.server.AskCard
@@ -89,11 +88,12 @@ internal class VoiceHoldActions(
     val onStop: () -> Unit,
 )
 
-// Нижняя панель чата: поле ввода, синий чип удержания голоса, кнопка отправки
-// или Stop и полоска спектра над строкой. Всё, что не лента и не шапка, — здесь.
+// Нижняя панель чата: ОДИН тёмный контейнер с текстом, спектром и микрофоном
+// или отправкой внутри. Снаружи только Stop — прерывание генерации, а не ввод.
 //
-// Ширина экрана 363 dp, корневой padding 12 dp → в строке 339 dp. Поле занимает
-// остаток после чипа (70 dp) и круглой кнопки (42 dp) с зазорами: примерно 207 dp.
+// Ширина экрана 363 dp, корневой padding 12 dp → в строке 339 dp. Stop (38 dp)
+// и зазор 8 dp оставляют 293 dp на поле. Внутри поля: текст ~190 dp, спектр
+// 56 dp во время записи, круглая кнопка 38 dp.
 @Composable
 internal fun ChatInput(
     state: ChatInputState,
@@ -107,15 +107,6 @@ internal fun ChatInput(
     val askAct by rememberUpdatedState(ask)
     if (state.listening || state.speechError != null || state.whisperBusy) {
         VoiceStatusText(state)
-    }
-    // Полоска спектра живёт ровно пока держится микрофон. Уровни приходят из
-    // реального PCM (своего рекордера или отдельного измерителя для системного STT),
-    // а не из случайных чисел: тишина — низкие столбики, речь — высокие.
-    if (state.listening) {
-        SpectrumBar(
-            levels = state.levels,
-            modifier = Modifier.padding(top = 4.dp),
-        )
     }
     state.ask?.let { card ->
         Box(modifier = Modifier.padding(top = 8.dp)) {
@@ -135,28 +126,23 @@ internal fun ChatInput(
                 .padding(top = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        DraftField(
+        DraftRow(
             draft = state.draft,
-            onDraftChange = { act.onDraftChange(it) },
-            onSend = { act.onSend() },
-        )
-        Spacer(Modifier.width(8.dp))
-        VoiceChip(
             listening = state.listening,
             levels = state.levels,
+            onDraftChange = { act.onDraftChange(it) },
+            onSend = { act.onSend() },
             voice = voice,
         )
-        Spacer(Modifier.width(8.dp))
-        ActionButton(
-            draft = state.draft,
+        StopButton(
             stopping = state.stopping,
-            onSend = { act.onSend() },
             onStop = { act.onStop() },
         )
     }
 }
 
 // Строка состояния голосового ввода: «слушаю», «распознаю», причина отказа.
+// Обязательные softWrap/maxLines/overflow: узкий экран, иначе строка удваивается.
 @Composable
 private fun VoiceStatusText(state: ChatInputState) {
     Text(
@@ -167,26 +153,31 @@ private fun VoiceStatusText(state: ChatInputState) {
         },
         color = if (state.listening) Color(0xFFFF6F5A) else Color(0xFF8A8A8A),
         fontSize = 12.sp,
-        modifier = Modifier.padding(top = 6.dp),
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
     )
 }
 
-// Полоска спектра: 28 столбиков, высота каждого — уровень звука в момент опроса.
-// Новый отсчёт появляется слева, предыдущие гаснут и уходят вправо, поэтому во
-// время речи полоска «бежит», а после тишины оседает. Один Canvas на всю полоску —
-// дешевле, чем 28 отдельных View, и не ломает dp-бюджет узкого экрана.
+// Полоска спектра: 14 столбиков внутри общего поля, высота каждого — уровень
+// звука в момент опроса. Уровни приходят из реального PCM (AudioRecorder.level()
+// или MicLevelMeter.level()), случайных значений нет: тишина — низкие столбики,
+// речь — высокие. Новый отсчёт слева, предыдущие гаснут и уходят вправо.
 @Composable
 private fun SpectrumBar(
     levels: List<Float>,
     modifier: Modifier = Modifier,
-    barCount: Int = 28,
+    height: Dp = 24.dp,
+    barCount: Int = 14,
 ) {
-    Canvas(modifier = modifier.fillMaxWidth().height(26.dp)) {
-        val n = levels.size.coerceAtLeast(1)
+    Canvas(modifier = modifier.height(height)) {
+        val shown = levels.take(barCount)
+        val n = shown.size.coerceAtLeast(1)
         val slot = size.width / n
-        val barW = minOf(slot * 0.55f, 6.dp.toPx()).coerceAtLeast(2f)
+        val barW = minOf(slot * 0.55f, 5.dp.toPx()).coerceAtLeast(2f)
         for (i in 0 until n) {
-            val v = levels[i].coerceIn(0f, 1f)
+            val v = shown[i].coerceIn(0f, 1f)
             val h = (3.dp.toPx() + v * (size.height - 3.dp.toPx())).coerceAtLeast(3.dp.toPx())
             val x = i * slot + (slot - barW) / 2f
             val y = (size.height - h) / 2f
@@ -201,25 +192,29 @@ private fun SpectrumBar(
     }
 }
 
-// Поле ввода: тёмная скруглённая платформа с подсказкой, когда черновик пуст.
+// Комбинированное поле: текст слева, во время удержания — живой спектр, справа
+// микрофон (пока черновик пуст или идёт запись) либо отправка (если текст есть).
 @Composable
-private fun RowScope.DraftField(
+private fun RowScope.DraftRow(
     draft: String,
+    listening: Boolean,
+    levels: List<Float>,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
+    voice: VoiceHoldActions,
 ) {
     Row(
         modifier =
             Modifier
                 .weight(1f)
-                .background(Color(0xFF1C1C1C), RoundedCornerShape(14.dp))
-                .padding(horizontal = 10.dp, vertical = 4.dp),
+                .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
+                .padding(horizontal = 5.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         BasicTextField(
             value = draft,
             onValueChange = onDraftChange,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f).padding(end = 4.dp),
             textStyle = TextStyle(color = Color(0xFFF0F0F0), fontSize = 15.sp),
             cursorBrush = SolidColor(Color(0xFF7BA6F8)),
             maxLines = 4,
@@ -237,21 +232,36 @@ private fun RowScope.DraftField(
                             color = Color(0xFF777777),
                             fontSize = 15.sp,
                             maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                     inner()
                 }
             },
         )
+        // Полоска появляется ровно на время удержания микрофона — это и есть
+        // «реализация при удержании голосового ввода» с третьего скриншота.
+        if (listening) {
+            SpectrumBar(
+                levels = levels,
+                modifier = Modifier.width(56.dp).padding(end = 4.dp),
+            )
+        }
+        if (draft.isEmpty() || listening) {
+            MicButton(listening = listening, voice = voice)
+        } else {
+            SendButton(onSend = onSend)
+        }
     }
 }
 
-// Синий чип удержания: нажал и держишь — запись, отпустил — текст уйдёт в чат.
-// Внутри чипа во время записи идёт тот же спектр, только в миниатюре.
+// Микрофон внутри поля: нажал и держишь — запись, отпустил — текст уйдёт в чат.
+// Если разрешения нет, просим его и НЕ вызываем stop(): рекордера ещё нет, а
+// launcher сам запустит запись после выдачи разрешения (см. ChatOverlay).
 @Composable
-private fun VoiceChip(
+private fun MicButton(
     listening: Boolean,
-    levels: List<Float>,
     voice: VoiceHoldActions,
 ) {
     val context = LocalContext.current
@@ -261,13 +271,7 @@ private fun VoiceChip(
     Surface(
         modifier =
             Modifier
-                .width(70.dp)
-                .height(46.dp)
-                .border(
-                    width = 1.dp,
-                    color = Color(0xFF7BA6F8),
-                    shape = RoundedCornerShape(14.dp),
-                )
+                .size(38.dp)
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onPress = {
@@ -277,91 +281,67 @@ private fun VoiceChip(
                                 mic()
                             } else {
                                 start()
-                            }
-                            try {
-                                awaitRelease()
-                            } finally {
-                                stop()
+                                try {
+                                    awaitRelease()
+                                } finally {
+                                    stop()
+                                }
                             }
                         },
                     )
                 },
-        shape = RoundedCornerShape(14.dp),
-        color = if (listening) Color(0xFF243B5F) else Color(0xFF16233A),
+        shape = CircleShape,
+        color = if (listening) Color(0xFFB71C1C) else Color(0xFF252525),
     ) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 4.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
-        ) {
-            if (listening) {
-                Canvas(Modifier.fillMaxWidth().height(16.dp)) {
-                    val n = levels.size.coerceAtLeast(1)
-                    val slot = size.width / n
-                    val barW = minOf(slot * 0.6f, 3.dp.toPx()).coerceAtLeast(1.5f)
-                    for (i in 0 until n) {
-                        val v = levels[i].coerceIn(0f, 1f)
-                        val h = (2.dp.toPx() + v * (size.height - 2.dp.toPx())).coerceAtLeast(2.dp.toPx())
-                        drawRoundRect(
-                            color = Color(0xFFFF6F5A),
-                            topLeft = Offset(i * slot + (slot - barW) / 2f, (size.height - h) / 2f),
-                            size = Size(barW, h),
-                            cornerRadius = CornerRadius(barW / 2f, barW / 2f),
-                        )
-                    }
-                }
-            } else {
-                Icon(
-                    imageVector = Icons.Filled.Mic,
-                    contentDescription = "Голосовой ввод (удерживай для записи)",
-                    tint = Color(0xFF7BA6F8),
-                    modifier = Modifier.size(18.dp),
-                )
-                Text(
-                    "Голос",
-                    color = Color(0xFF7BA6F8),
-                    fontSize = 11.sp,
-                    maxLines = 1,
-                )
-            }
-        }
+        Icon(
+            imageVector = Icons.Filled.Mic,
+            contentDescription = "Голосовой ввод (удерживай для записи)",
+            tint = if (listening) Color.White else Color(0xFFADADAD),
+            modifier = Modifier.fillMaxSize().padding(9.dp),
+        )
     }
 }
 
-// Круглая кнопка справа: при черновике — отправка, иначе Stop. Так видимое действие
-// всегда есть на панели, а MIC остаётся в чипе и не съедает ширину поля.
+// Отправка занимает то же место внутри поля, что и микрофон: как только появился
+// черновик, кнопка меняется, и поле остаётся единым элементом.
 @Composable
-private fun ActionButton(
-    draft: String,
+private fun SendButton(onSend: () -> Unit) {
+    val send by rememberUpdatedState(onSend)
+    Surface(
+        modifier = Modifier.size(38.dp).clickable { send() },
+        shape = CircleShape,
+        color = Color(0xFF7BA6F8),
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Send,
+            contentDescription = "Отправить сообщение",
+            tint = Color(0xFF101418),
+            modifier = Modifier.fillMaxSize().padding(9.dp),
+        )
+    }
+}
+
+// Stop снаружи поля: прерывание текущей генерации, а не ввод текста или голоса.
+@Composable
+private fun StopButton(
     stopping: Boolean,
-    onSend: () -> Unit,
     onStop: () -> Unit,
 ) {
-    val send by rememberUpdatedState(onSend)
     val stop by rememberUpdatedState(onStop)
-    val sending = draft.isNotEmpty()
     Surface(
         modifier =
             Modifier
-                .size(42.dp)
-                .clickable(enabled = !stopping) { if (sending) send() else stop() },
+                .padding(start = 8.dp)
+                .size(38.dp)
+                .clickable(enabled = !stopping) { stop() },
         shape = CircleShape,
-        color =
-            when {
-                stopping -> Color(0xFF3A3A3A)
-                sending -> Color(0xFF7BA6F8)
-                else -> Color(0xFF9E1C1C)
-            },
+        color = if (stopping) Color(0xFF3A3A3A) else Color(0xFF9E1C1C),
     ) {
         Icon(
-            imageVector =
-                when {
-                    sending -> Icons.Filled.Send
-                    else -> Icons.Filled.Stop
-                },
-            contentDescription = if (sending) "Отправить сообщение" else "Прервать генерацию",
+            imageVector = Icons.Filled.Stop,
+            contentDescription = "Прервать генерацию",
             tint = Color.White,
-            modifier = Modifier.fillMaxSize().padding(10.dp),
+            modifier = Modifier.fillMaxSize().padding(8.dp),
         )
     }
 }
