@@ -13,6 +13,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.PressGestureScope
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -55,7 +56,6 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.input.pointer.AwaitPointerEventScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
@@ -264,7 +264,7 @@ private fun KeyboardSquare(onClick: () -> Unit) {
 }
 
 /** Нажал — начали запись, отпустил — остановили и отправили распознанное. */
-private suspend fun AwaitPointerEventScope.holdToSpeak(
+private suspend fun PressGestureScope.holdToSpeak(
     context: Context,
     requestMic: () -> Unit,
     start: () -> Unit,
