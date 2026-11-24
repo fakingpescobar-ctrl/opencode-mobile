@@ -205,7 +205,7 @@ private fun RowScope.VoiceModeField(
                 .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        HoldMicButton(voice = voice, onTextMode = onTextMode)
+        HoldMicButton(voice = voice, onClick = onTextMode)
         Spacer(Modifier.width(4.dp))
         Text(
             "Hold to speak",
