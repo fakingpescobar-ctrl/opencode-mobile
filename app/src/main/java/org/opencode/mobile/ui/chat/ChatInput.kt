@@ -4,16 +4,20 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -65,10 +69,6 @@ internal data class ChatInputState(
 
 /**
  * Куда поле ввода отдаёт нажатия: черновик, отправка и остановка.
- *
- * Ответ на вопрос сервера и голосовые действия — отдельными объектами: у них своя
- * жизнь (карточка вопроса приходит с сервера, микрофон держит палец), и вместе с
- * полем они давали восемь параметров, в которых ничего не читалось.
  */
 internal class ChatInputActions(
     val onDraftChange: (String) -> Unit,
@@ -89,11 +89,11 @@ internal class VoiceHoldActions(
     val onStop: () -> Unit,
 )
 
-// Нижний блок чата: состояние голосового ввода, блокирующий вопрос, поле с
-// микрофоном внутри и кнопка Stop. Всё, что не лента и не шапка, — здесь.
+// Нижняя панель чата: поле ввода, синий чип удержания голоса, кнопка отправки
+// или Stop и полоска спектра над строкой. Всё, что не лента и не шапка, — здесь.
 //
-// Микрофон внутри поля, а не рядом: три круга по 46 dp съедали 162 dp из 339, и на
-// текст оставалось меньше половины ширины экрана.
+// Ширина экрана 363 dp, корневой padding 12 dp → в строке 339 dp. Поле занимает
+// остаток после чипа (70 dp) и круглой кнопки (42 dp) с зазорами: примерно 207 dp.
 @Composable
 internal fun ChatInput(
     state: ChatInputState,
@@ -102,8 +102,7 @@ internal fun ChatInput(
     voice: VoiceHoldActions,
 ) {
     // pointerInput(Unit) и clickable держат лямбду первого кадра. Через
-    // rememberUpdatedState нажатие попадает в текущие действия, а не в те, что были
-    // при входе на экран.
+    // rememberUpdatedState нажатие попадает в текущие действия.
     val act by rememberUpdatedState(actions)
     val askAct by rememberUpdatedState(ask)
     if (state.listening || state.speechError != null || state.whisperBusy) {
@@ -136,31 +135,24 @@ internal fun ChatInput(
                 .padding(top = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        DraftRow(
+        DraftField(
             draft = state.draft,
-            listening = state.listening,
             onDraftChange = { act.onDraftChange(it) },
             onSend = { act.onSend() },
+        )
+        Spacer(Modifier.width(8.dp))
+        VoiceChip(
+            listening = state.listening,
+            levels = state.levels,
             voice = voice,
         )
-        // Кнопка Stop: ВСЕГДА видна рядом с микрофоном. Прерывает текущую генерацию
-        // модели; если модель не думает — abort просто не сработает.
-        Surface(
-            modifier =
-                Modifier
-                    .padding(start = 8.dp)
-                    .size(38.dp)
-                    .clickable(enabled = !state.stopping) { act.onStop() },
-            shape = CircleShape,
-            color = if (state.stopping) Color(0xFF3A3A3A) else Color(0xFF9E1C1C),
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Stop,
-                contentDescription = "Прервать генерацию",
-                tint = Color.White,
-                modifier = Modifier.fillMaxSize().padding(8.dp),
-            )
-        }
+        Spacer(Modifier.width(8.dp))
+        ActionButton(
+            draft = state.draft,
+            stopping = state.stopping,
+            onSend = { act.onSend() },
+            onStop = { act.onStop() },
+        )
     }
 }
 
@@ -187,6 +179,7 @@ private fun VoiceStatusText(state: ChatInputState) {
 private fun SpectrumBar(
     levels: List<Float>,
     modifier: Modifier = Modifier,
+    barCount: Int = 28,
 ) {
     Canvas(modifier = modifier.fillMaxWidth().height(26.dp)) {
         val n = levels.size.coerceAtLeast(1)
@@ -208,32 +201,25 @@ private fun SpectrumBar(
     }
 }
 
-// Поле ввода с микрофоном внутри: сам текст, подсказка и микрофон, который уходит,
-// как только пользователь начал печатать. Пока идёт запись (listening) он остаётся —
-// иначе нечем остановить её.
+// Поле ввода: тёмная скруглённая платформа с подсказкой, когда черновик пуст.
 @Composable
-private fun RowScope.DraftRow(
+private fun RowScope.DraftField(
     draft: String,
-    listening: Boolean,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
-    voice: VoiceHoldActions,
 ) {
     Row(
         modifier =
             Modifier
                 .weight(1f)
-                .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
-                .padding(horizontal = 5.dp, vertical = 4.dp),
+                .background(Color(0xFF1C1C1C), RoundedCornerShape(14.dp))
+                .padding(horizontal = 10.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         BasicTextField(
             value = draft,
             onValueChange = onDraftChange,
-            modifier =
-                Modifier
-                    .weight(1f)
-                    .padding(start = 8.dp, end = 4.dp),
+            modifier = Modifier.weight(1f),
             textStyle = TextStyle(color = Color(0xFFF0F0F0), fontSize = 15.sp),
             cursorBrush = SolidColor(Color(0xFF7BA6F8)),
             maxLines = 4,
@@ -250,28 +236,22 @@ private fun RowScope.DraftRow(
                             "Напиши сообщение…",
                             color = Color(0xFF777777),
                             fontSize = 15.sp,
+                            maxLines = 1,
                         )
                     }
                     inner()
                 }
             },
         )
-        // Пока поле пусто (или идёт запись) — микрофон. Как только появился текст,
-        // на его место приходит видимая кнопка отправки: раньше отправка была только
-        // в клавиатуре, и на нижней панели не было видимого действия.
-        if (draft.isEmpty() || listening) {
-            MicButton(listening = listening, voice = voice)
-        } else {
-            SendButton(onSend = onSend)
-        }
     }
 }
 
-// Микрофон: запись идёт, пока палец держит кнопку. Разрешение спрашивается в
-// момент нажатия, а не при старте экрана: до первого нажатия оно не нужно.
+// Синий чип удержания: нажал и держишь — запись, отпустил — текст уйдёт в чат.
+// Внутри чипа во время записи идёт тот же спектр, только в миниатюре.
 @Composable
-private fun MicButton(
+private fun VoiceChip(
     listening: Boolean,
+    levels: List<Float>,
     voice: VoiceHoldActions,
 ) {
     val context = LocalContext.current
@@ -281,7 +261,13 @@ private fun MicButton(
     Surface(
         modifier =
             Modifier
-                .size(38.dp)
+                .width(70.dp)
+                .height(46.dp)
+                .border(
+                    width = 1.dp,
+                    color = Color(0xFF7BA6F8),
+                    shape = RoundedCornerShape(14.dp),
+                )
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onPress = {
@@ -300,33 +286,82 @@ private fun MicButton(
                         },
                     )
                 },
-        shape = CircleShape,
-        color = if (listening) Color(0xFFB71C1C) else Color(0xFF252525),
+        shape = RoundedCornerShape(14.dp),
+        color = if (listening) Color(0xFF243B5F) else Color(0xFF16233A),
     ) {
-        Icon(
-            imageVector = Icons.Filled.Mic,
-            contentDescription = "Голосовой ввод (удерживай для записи)",
-            tint = if (listening) Color.White else Color(0xFFE0E0E0),
-            modifier = Modifier.fillMaxSize().padding(8.dp),
-        )
+        Column(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
+        ) {
+            if (listening) {
+                Canvas(Modifier.fillMaxWidth().height(16.dp)) {
+                    val n = levels.size.coerceAtLeast(1)
+                    val slot = size.width / n
+                    val barW = minOf(slot * 0.6f, 3.dp.toPx()).coerceAtLeast(1.5f)
+                    for (i in 0 until n) {
+                        val v = levels[i].coerceIn(0f, 1f)
+                        val h = (2.dp.toPx() + v * (size.height - 2.dp.toPx())).coerceAtLeast(2.dp.toPx())
+                        drawRoundRect(
+                            color = Color(0xFFFF6F5A),
+                            topLeft = Offset(i * slot + (slot - barW) / 2f, (size.height - h) / 2f),
+                            size = Size(barW, h),
+                            cornerRadius = CornerRadius(barW / 2f, barW / 2f),
+                        )
+                    }
+                }
+            } else {
+                Icon(
+                    imageVector = Icons.Filled.Mic,
+                    contentDescription = "Голосовой ввод (удерживай для записи)",
+                    tint = Color(0xFF7BA6F8),
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    "Голос",
+                    color = Color(0xFF7BA6F8),
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                )
+            }
+        }
     }
 }
 
-// Отправка текста без клавиатуры: та же кнопка занимает место микрофона, как только
-// в поле появился черновик. Цвет — акцент приложения, чтобы не путать с красным Stop.
+// Круглая кнопка справа: при черновике — отправка, иначе Stop. Так видимое действие
+// всегда есть на панели, а MIC остаётся в чипе и не съедает ширину поля.
 @Composable
-private fun SendButton(onSend: () -> Unit) {
+private fun ActionButton(
+    draft: String,
+    stopping: Boolean,
+    onSend: () -> Unit,
+    onStop: () -> Unit,
+) {
     val send by rememberUpdatedState(onSend)
+    val stop by rememberUpdatedState(onStop)
+    val sending = draft.isNotEmpty()
     Surface(
-        modifier = Modifier.size(38.dp).clickable { send() },
+        modifier =
+            Modifier
+                .size(42.dp)
+                .clickable(enabled = !stopping) { if (sending) send() else stop() },
         shape = CircleShape,
-        color = Color(0xFF7BA6F8),
+        color =
+            when {
+                stopping -> Color(0xFF3A3A3A)
+                sending -> Color(0xFF7BA6F8)
+                else -> Color(0xFF9E1C1C)
+            },
     ) {
         Icon(
-            imageVector = Icons.Filled.Send,
-            contentDescription = "Отправить сообщение",
-            tint = Color(0xFF101418),
-            modifier = Modifier.fillMaxSize().padding(9.dp),
+            imageVector =
+                when {
+                    sending -> Icons.Filled.Send
+                    else -> Icons.Filled.Stop
+                },
+            contentDescription = if (sending) "Отправить сообщение" else "Прервать генерацию",
+            tint = Color.White,
+            modifier = Modifier.fillMaxSize().padding(10.dp),
         )
     }
 }
