@@ -15,20 +15,11 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.FlashOn
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,8 +31,6 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -54,7 +43,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import kotlin.math.roundToInt
-import kotlin.math.sin
 
 private const val SAMPLE_MS = 700L
 private const val HISTORY_POINTS = 48
@@ -224,57 +212,6 @@ object PerformanceMonitor {
         } catch (_: Exception) {
             null
         }
-}
-
-/** Маленькая светящаяся молния в шапке. Пульс дискретный (не 60 fps). */
-@Composable
-internal fun PerformanceChip(
-    active: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val snapshot by PerformanceMonitor.state.collectAsState()
-    val lifecycle = LocalLifecycleOwner.current.lifecycle
-    var pulse by remember { mutableFloatStateOf(0.5f) }
-    LaunchedEffect(Unit) {
-        var t = 0.0
-        while (true) {
-            if (lifecycle.currentState != Lifecycle.State.RESUMED) {
-                pulse = 0.3f
-                delay(2_000L)
-                continue
-            }
-            val load = snapshot.cpu / 100f
-            pulse = 0.3f + 0.7f * ((sin(t) + 1.0) / 2.0).toFloat() * (0.6f + 0.4f * load)
-            t += 0.785
-            delay(120)
-        }
-    }
-    // Та же геометрия, что у остальных иконок шапки (iconModifier в ChatHeader):
-    // 4.dp зазор, 22.dp кружок, подсветка открытой панели, 3.dp внутренний
-    // отступ у самой иконки. Свечение остаётся, но внутри кружка и тоньше —
-    // чтобы не заезжать на цифры пинга слева.
-    Box(
-        modifier
-            .padding(start = 4.dp)
-            .size(22.dp)
-            .clip(CircleShape)
-            .background(if (active) Color(0xFF3A3A3A) else Color.Transparent)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Canvas(Modifier.size(22.dp)) {
-            val c = Offset(size.width / 2f, size.height / 2f)
-            val tint = if (active) Color(0xFFFFF176) else Color(0xFFFFD54F)
-            drawCircle(tint.copy(alpha = pulse * 0.3f), radius = 10.dp.toPx(), center = c)
-        }
-        Icon(
-            Icons.Filled.FlashOn,
-            contentDescription = "Производительность",
-            tint = if (active) Color(0xFFFFF176) else Color(0xFFFFD54F),
-            modifier = Modifier.padding(3.dp),
-        )
-    }
 }
 
 /** Неоновая карточка с полосками GPU/CPU/RAM и живым графиком ядер. */

@@ -3,6 +3,7 @@ package org.opencode.mobile.ui.chat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -15,6 +16,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TextFormat
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -25,6 +27,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 // Панели шапки. Строкой, а не enum: открыта всегда максимум одна, и живёт она в
 // одной переменной activePanel.
@@ -100,13 +103,6 @@ private fun Indicators(
     state: ChatHeaderState,
     actions: ChatHeaderActions,
 ) {
-    // Светящаяся молния: открывает живые метрики (GPU/CPU/RAM + график ядер).
-    // Та же геометрия, что и у остальных иконок шапки — 22.dp, зазор 4.dp.
-    PerformanceChip(
-        active = state.activePanel == PANEL_PERF,
-        onClick = { actions.onTogglePanel(PANEL_PERF) },
-        modifier = Modifier.padding(start = 4.dp),
-    )
     // «N MCP» + мигающая точка. Зелёный — все N подключённых серверов работают;
     // красный — какой-то из них не работает (или их нет вовсе).
     MCPIndicator(
@@ -115,6 +111,37 @@ private fun Indicators(
         onClick = { actions.onTogglePanel(PANEL_MCP) },
         modifier = Modifier.padding(start = 4.dp),
     )
+    // Молния: открывает живые метрики (GPU/CPU/RAM + график ядер). Сам знак ⚡,
+    // а не Material-иконка FlashOn — именно тот вид, что был в запросе. Стоит
+    // ПОСЛЕ MCP, чтобы не теснить цифры пинга слева.
+    PerformanceChip(
+        active = state.activePanel == PANEL_PERF,
+        onClick = { actions.onTogglePanel(PANEL_PERF) },
+    )
+}
+
+// Чип производительности: тот же кружок 22.dp и та же подсветка, что у
+// остальных иконок, но внутри — символ ⚡, а не Material FlashOn.
+@Composable
+private fun PerformanceChip(
+    active: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier
+            .padding(start = 4.dp)
+            .size(22.dp)
+            .clip(CircleShape)
+            .background(if (active) Color(0xFF3A3A3A) else Color.Transparent)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = "⚡",
+            fontSize = 14.sp,
+            color = if (active) Color.White else Color(0xFFBDBDBD),
+        )
+    }
 }
 
 // Оформление ответов модели: цвет и шрифт. Иконка цвета тонируется ТЕКУЩИМ
