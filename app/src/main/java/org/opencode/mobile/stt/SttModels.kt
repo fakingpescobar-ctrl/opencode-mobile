@@ -11,21 +11,21 @@ import java.io.File
  * recommendedForRu и должен быть первым рекомендуемым локальным выбором.
  */
 @Suppress("LongParameterList")
-internal data class SttModelFile(
+data class SttModelFile(
     val name: String,
     val url: String,
     val bytes: Long = -1L,
     val sha256: String? = null,
 )
 
-internal enum class SttEngineKind {
+enum class SttEngineKind {
     WHISPER_GGML,
     SHERPA_TRANSDUCER,
     SHERPA_SENSE_VOICE,
 }
 
 @Suppress("LongParameterList")
-internal data class SttModel(
+data class SttModel(
     /** Идентификатор, который пишется в prefs и понимает runtime. */
     val id: String,
     /** Что показываем пользователю. */
@@ -58,7 +58,7 @@ internal data class SttModel(
     val runnable: Boolean = true,
 )
 
-internal object SttModels {
+object SttModels {
     const val DEFAULT_ID = WhisperTranscribeService.MODEL_SMALL
 
     /** sherpa-onnx nemo_transducer (Parakeet). */

@@ -87,8 +87,10 @@ class WhisperTranscribeService : Service() {
         /** Старый идентификатор, оставлен для совместимости. */
         const val ENGINE_PARAKEET = "parakeet"
 
+        const val PARAKEET_DIR = "parakeet"
 
         /** Имя каталога для ModelSettings/use-кода (не private в companion лишает доступ вне). */
+        const val PARAKEET_DIR_NAME = "parakeet"
 
         /** Потоки для sherpa-onnx: 4 как у CPU-ветки whisper — на 8 ядрах не голодает. */
         private const val SHERPA_THREADS = 2
@@ -418,7 +420,10 @@ class WhisperTranscribeService : Service() {
          * назвал ЛЮБОЙ из двух источников: боевой путь выводит движок из id модели,
          * а стенд может задать `-e engine parakeet` при произвольной модели.
          */
-        private fun chooseEngine(modelId: String, requested: String): String {
+        private fun chooseEngine(
+            modelId: String,
+            requested: String,
+        ): String {
             val byModel = SttModels.byId(modelId)
             if (byModel != null) {
                 return when (byModel.engineKind) {
@@ -427,7 +432,11 @@ class WhisperTranscribeService : Service() {
                     SttEngineKind.SHERPA_SENSE_VOICE -> ENGINE_SENSE_VOICE
                 }
             }
-            return if (requested == ENGINE_PARAKEET || modelId == SttModels.PARAKEET_ID) ENGINE_SHERPA_TRANSDUCER else ENGINE_WHISPER
+            return if (requested == ENGINE_PARAKEET || modelId == SttModels.PARAKEET_ID) {
+                ENGINE_SHERPA_TRANSDUCER
+            } else {
+                ENGINE_WHISPER
+            }
         }
 
         /** Ветка whisper.cpp: грузит движок/модель и делает проход, печатая замеры. */
@@ -455,10 +464,7 @@ class WhisperTranscribeService : Service() {
         }
 
         /**
-         * Ветка sherpa-onnx OfflineRecognizer (Parakeet TDT). Движок — тот же
-         * libsherpa-onnx-jni, что и TTS (bundled), поэтому грузим его через
-         * EngineLibs.load(Engine.TTS). Модель offline: подаём весь клип целиком
-         * (acceptWaveform) и декодируем одним проходом.
+         * Ветка sherpa-onnx OfflineRecognizer (GigaAM/Parakeet transducer).
          */
         private fun transcribeSherpa(task: SttTask): String {
             val app = requireAppContext()
@@ -477,7 +483,7 @@ class WhisperTranscribeService : Service() {
             val done = SystemClock.elapsedRealtime()
             val audioMs = task.samples.size * MS_PER_SECOND / SAMPLE_RATE_HZ
             val rtf = if (audioMs > 0) (done - loaded).toFloat() / audioMs else 0f
-            Log.i(TAG, "sherpa(${task.model}): загрузка ${loaded - loadStart} мс, проход ${done - loaded} мс, звук $audioMs мс, rtf ${\"%.2f\".format(rtf)}")
+            Log.i(TAG, "sherpa(${task.model}): загрузка ${loaded - loadStart} мс, проход ${done - loaded} мс, звук ${audioMs} мс, rtf ${"%.2f".format(rtf)}")
             return text
         }
 
