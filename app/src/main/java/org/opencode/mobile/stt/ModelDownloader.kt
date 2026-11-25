@@ -208,7 +208,7 @@ object ModelDownloader {
             }
             if (mf.sha256 != null) {
                 val got = sha256Of(tmp)
-                if (!got.equals(mf.sha256, ignoreCase = true)) {
+                if (got == null || !got.equals(mf.sha256, ignoreCase = true)) {
                     tmp.delete()
                     error("SHA-256 не совпал для ${mf.name}")
                 }
