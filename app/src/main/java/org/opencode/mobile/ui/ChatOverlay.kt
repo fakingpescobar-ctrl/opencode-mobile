@@ -87,7 +87,7 @@ import org.opencode.mobile.ui.chat.ElevenKeySettings
 import org.opencode.mobile.ui.chat.FontPanel
 import org.opencode.mobile.ui.chat.GaugePanel
 import org.opencode.mobile.ui.chat.McpPanel
-import org.opencode.mobile.ui.chat.MicLevelMeter
+
 import org.opencode.mobile.ui.chat.ModelColorPanel
 import org.opencode.mobile.ui.chat.NarrationInput
 import org.opencode.mobile.ui.chat.PANEL_COLOR
@@ -261,12 +261,23 @@ fun ChatOverlay(
 
     // Голосовой ввод: системный распознаватель (SpeechRecognizer). Удержание кнопки — запись, отпускание — распознавание и отправка.
     val speechRecognizer = remember { createSpeechRecognizer(context) }
+    DisposableEffect(speechRecognizer) {
+        onDispose {
+            try {
+                speechRecognizer?.destroy()
+            } catch (_: Exception) {
+            }
+        }
+    }
     var listening by remember { mutableStateOf(false) }
     var speechError by remember { mutableStateOf<String?>(null) }
     var whisperBusy by remember { mutableStateOf(false) }
     // Уровни для полоски спектра: свежий отсчёт слева, старые гаснут вправо.
     var voiceLevels by remember { mutableStateOf(List(SPECTRUM_BARS) { 0f }) }
-    var levelMeter by remember { mutableStateOf<MicLevelMeter?>(null) }
+    // Для системного SpeechRecognizer нельзя открывать второй AudioRecord на том же
+    // MIC — это конфликтует с Google/SpeechRecognizer и даёт ERROR_CLIENT (5)/NO_MATCH.
+    // Уровень берём из onRmsChanged колбэка распознавателя.
+    var systemSpeechRms by remember { mutableStateOf(0f) }
     // Движок распознавания и модель whisper.cpp: значения и правила их чтения
     // (миграция выпиленного ncnn, отбраковка неизвестной модели) живут в
     // VoiceSettings, где их держит юнит-тест.
@@ -653,25 +664,36 @@ fun ChatOverlay(
 
                 override fun onBeginningOfSpeech() {}
 
-                override fun onRmsChanged(rmsdB: Float) {}
+                override fun onRmsChanged(rmsdB: Float) {
+                    // SpeechRecognizer отдаёт dB примерно в диапазоне [-2..10].
+                    systemSpeechRms = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
+                }
 
                 override fun onBufferReceived(buffer: ByteArray?) {}
 
                 override fun onEndOfSpeech() {}
 
                 override fun onError(error: Int) {
+                    Log.w("VOICE", "system stt error=$error engine=${voice.sttEngine}")
+                    systemSpeechRms = 0f
                     listening = false
+                    try {
+                        speechRecognizer?.cancel()
+                    } catch (_: Exception) {
+                    }
                     speechError =
                         when (error) {
                             SpeechRecognizer.ERROR_NO_MATCH -> "не расслышал, попробуй ещё"
                             SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "слишком тихо"
                             SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "нет доступа к микрофону"
+                            SpeechRecognizer.ERROR_CLIENT -> "ошибка распознавания (5): клиент распознавания. Проверь, что голосовой ввод Google активен и не занят другим приложением."
                             else -> "ошибка распознавания ($error)"
                         }
                 }
 
                 override fun onResults(results: Bundle?) {
                     listening = false
+                    systemSpeechRms = 0f
                     val best = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim()
                     if (!best.isNullOrEmpty()) {
                         speechError = null
@@ -696,6 +718,7 @@ fun ChatOverlay(
         // поднимать вторую сессию: SpectrumBar и уровень берутся из одного PCM.
         if (listening || whisperBusy) return
         speechError = null
+        systemSpeechRms = 0f
         Log.d("VOICE", "startVoice: engine=${voice.sttEngine}")
         if (voice.sttEngine == VoiceEngine.WHISPER) {
             // Локальный движок: запись PCM16 16 кГц в буфер.
@@ -720,14 +743,22 @@ fun ChatOverlay(
             Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "ru-RU")
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
             }
+        try {
+            sr.cancel()
+        } catch (_: Exception) {
+        }
         sr.setRecognitionListener(voiceListener)
         try {
             sr.startListening(intent)
             listening = true
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e("VOICE", "system stt start failed", e)
             speechError = "не удалось запустить распознавание"
+            listening = false
         }
     }
 
@@ -815,7 +846,13 @@ fun ChatOverlay(
             }
             return
         }
-        speechRecognizer?.stopListening()
+        try {
+            speechRecognizer?.stopListening()
+        } catch (e: Exception) {
+            Log.w("VOICE", "system stt stopListening failed", e)
+            listening = false
+            systemSpeechRms = 0f
+        }
     }
 
     val micPermissionLauncher =
@@ -831,31 +868,36 @@ fun ChatOverlay(
             }
         }
 
-    // Живая полоска спектра, пока держится микрофон. Уровень берём из настоящего
-    // PCM: при whisper — из уже идущей записи, при системном STT — из отдельного
-    // измерителя (у SpeechRecognizer нет доступа к сэмплам). Никаких случайных
-    // чисел: тишина даёт низкие столбики, речь — высокие.
-    LaunchedEffect(listening) {
+    // Живая полоска спектра, пока держится микрофон. Для Whisper берём реальный
+    // PCM из AudioRecorder. Для системного SpeechRecognizer НЕ открываем второй
+    // AudioRecord на том же MIC: это вызывает конфликт с Google/SpeechRecognizer
+    // и проявляется как ERROR_CLIENT (5). Уровень берём из onRmsChanged.
+    LaunchedEffect(listening, voice.sttEngine) {
         if (!listening) {
             voiceLevels = List(SPECTRUM_BARS) { 0f }
+            systemSpeechRms = 0f
             return@LaunchedEffect
         }
-        if (voice.sttEngine != VoiceEngine.WHISPER &&
-            context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        ) {
-            val meter = MicLevelMeter(context.applicationContext)
-            meter.start()
-            levelMeter = meter
+        if (voice.sttEngine == VoiceEngine.WHISPER) {
+            try {
+                while (listening) {
+                    val level = whisperRecorder?.level() ?: 0f
+                    voiceLevels = listOf(level) + voiceLevels.take(SPECTRUM_BARS - 1).map { it * 0.86f }
+                    delay(55)
+                }
+            } finally {
+                voiceLevels = List(SPECTRUM_BARS) { 0f }
+            }
+            return@LaunchedEffect
         }
         try {
             while (listening) {
-                val level = whisperRecorder?.level() ?: levelMeter?.level() ?: 0f
+                val level = systemSpeechRms.coerceIn(0f, 1f)
                 voiceLevels = listOf(level) + voiceLevels.take(SPECTRUM_BARS - 1).map { it * 0.86f }
                 delay(55)
             }
         } finally {
-            levelMeter?.stop()
-            levelMeter = null
+            systemSpeechRms = 0f
             voiceLevels = List(SPECTRUM_BARS) { 0f }
         }
     }
