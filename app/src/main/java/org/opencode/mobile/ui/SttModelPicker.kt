@@ -1,11 +1,18 @@
 package org.opencode.mobile.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -16,8 +23,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -25,22 +33,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.opencode.mobile.stt.SttModel
 import org.opencode.mobile.stt.SttModels
+import androidx.compose.ui.platform.LocalContext
 
-private const val PICK_BULLET_ARGB = 0xFFFF6D00L
-private const val PICK_TEXT_ARGB = 0xFFE6E6EL
-private const val PICK_DIM_ARGB = 0xFF90A4AEL
-private const val PICK_OK_ARGB = 0xFF7BD88FL
-private const val PICK_MISSING_ARGB = 0xFFFF6F5AL
-private const val PICK_BG_ARGB = 0xFF1C1C1CL
-private const val PICK_REC_ARGB = 0xFFFFD54FL
-private val PICK_CORNER = 8.dp
-private const val PICK_LEFT_PAD = 20
-private const val PICK_GAP = 2
+private val AnsiBg = Color(0xFF0D0F14)
+private val AnsiCard = Color(0xFF171B24)
+private val AnsiCardSelected = Color(0xFF1E1528)
+private val AnsiBorder = Color(0xFF343B4A)
+private val AnsiPurple = Color(0xFFB388FF)
+private val AnsiPurpleDim = Color(0xFF6C4AB6)
+private val AnsiOrange = Color(0xFFFF8A3D)
+private val AnsiText = Color(0xFFE6EAF2)
+private val AnsiDim = Color(0xFF8A93A6)
+private val AnsiOk = Color(0xFF7BD88F)
+private val AnsiBad = Color(0xFFFF6F5A)
 
-/**
- * Выбор локальной STT-модели. Модель, которой нет на диске, выбрать нельзя.
- * Готовность считается в IO, не на UI-потоке.
- */
 @Composable
 internal fun SttModelPicker(
     selected: String,
@@ -53,21 +59,24 @@ internal fun SttModelPicker(
     LaunchedEffect(Unit) {
         readyIds =
             withContext(Dispatchers.IO) {
-                SttModels.all
-                    .filter { it.isReady(context) }
-                    .map { it.id }
-                    .toSet()
+                SttModels.all.filter { it.isReady(context) }.map { it.id }.toSet()
             }
     }
 
     Column(
         modifier
             .fillMaxWidth()
-            .padding(top = 2.dp, bottom = 2.dp)
-            .background(Color(PICK_BG_ARGB), RoundedCornerShape(PICK_CORNER))
-            .padding(horizontal = 6.dp, vertical = 4.dp),
+            .clip(RoundedCornerShape(14.dp))
+            .background(Brush.verticalGradient(listOf(Color(0xFF121018), AnsiBg)))
+            .border(1.dp, Color(0xFF2B2338), RoundedCornerShape(14.dp))
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("Модель распознавания:", color = Color(PICK_DIM_ARGB), fontSize = 12.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("STT MODELS", color = AnsiPurple, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.1.sp)
+            Spacer(Modifier.weight(1f))
+            Text("ANSI", color = AnsiOrange, fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
+        }
         for (model in SttModels.all) {
             ModelRow(
                 model = model,
@@ -86,60 +95,84 @@ private fun ModelRow(
     selected: Boolean,
     onSelect: () -> Unit,
 ) {
+    val enabled = ready && model.runnable
+    val border = when {
+        selected -> AnsiOrange
+        enabled -> AnsiPurpleDim
+        else -> AnsiBorder
+    }
+    val bg = if (selected) AnsiCardSelected else AnsiCard
+    val statusColor = if (ready && model.runnable) AnsiOk else AnsiBad
+    val statusText = when {
+        !model.runnable -> "UNSUPPORTED"
+        ready -> "READY"
+        model.manual -> "MANUAL"
+        else -> "NOT DOWNLOADED"
+    }
+
     Column(
         Modifier
             .fillMaxWidth()
-            .clickable(enabled = ready && model.runnable) { onSelect() }
-            .padding(start = PICK_LEFT_PAD.dp, top = PICK_GAP.dp, bottom = PICK_GAP.dp),
+            .clip(RoundedCornerShape(12.dp))
+            .background(bg)
+            .border(if (selected) 1.5.dp else 1.dp, border, RoundedCornerShape(12.dp))
+            .clickable(enabled = enabled) { onSelect() }
+            .padding(horizontal = 10.dp, vertical = 9.dp),
     ) {
-        val status =
-            when {
-                !model.runnable -> "  ✘ не поддерживается этим APK"
-                ready -> "  ✔ скачана"
-                model.manual -> "  ✘ не установлена"
-                else -> "  ✘ не скачана"
-            }
-        val hint =
-            when {
-                !model.runnable -> " — обнови/собери APK с поддержкой этой модели"
-                ready -> ""
-                model.manual -> " — ставится вручную (adb push)"
-                else -> " — сначала скачай: Настройки -> Диагностика"
-            }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                if (selected) "● " else "○ ",
-                color = Color(PICK_BULLET_ARGB),
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
+            Box(
+                Modifier
+                    .size(10.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(if (selected) AnsiOrange else Color(0xFF3A4252))
+                    .border(1.dp, if (selected) AnsiOrange else Color(0xFF596276), RoundedCornerShape(3.dp))
             )
+            Spacer(Modifier.width(8.dp))
             Text(
                 model.id,
-                color = if (ready && model.runnable) Color(PICK_TEXT_ARGB) else Color(PICK_MISSING_ARGB),
-                fontSize = 13.sp,
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                color = if (enabled) AnsiText else Color(0xFFB0B7C5),
+                fontSize = 12.sp,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                modifier = Modifier.weight(1f),
             )
             if (model.recommendedForRu) {
-                Text(
-                    "  RU recommended",
-                    color = Color(PICK_REC_ARGB),
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
+                Tag("RU", AnsiPurple)
+                Spacer(Modifier.width(6.dp))
             }
-            Text("  " + model.sizeLabel, color = Color(PICK_DIM_ARGB), fontSize = 10.sp)
+            Tag(statusText, statusColor)
         }
-        Text(
-            status,
-            color = if (ready && model.runnable) Color(PICK_OK_ARGB) else Color(PICK_MISSING_ARGB),
-            fontSize = 10.sp,
-            modifier = Modifier.padding(start = 14.dp),
-        )
-        Text(
-            model.note + hint,
-            color = Color(PICK_DIM_ARGB),
-            fontSize = 10.sp,
-            modifier = Modifier.padding(start = 14.dp),
-        )
+        Spacer(Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(model.sizeLabel, color = AnsiOrange, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (selected) "SELECTED" else if (enabled) "TAP TO SELECT" else "DOWNLOAD IN DIAGNOSTICS",
+                color = if (selected) AnsiPurple else AnsiDim,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        val hint = when {
+            !model.runnable -> "Нужна сборка APK с поддержкой этой модели."
+            ready -> model.note
+            model.manual -> model.note + " — ставится вручную (adb push)."
+            else -> model.note + " — сначала скачай: Диагностика."
+        }
+        if (hint.isNotBlank()) {
+            Text(hint, color = AnsiDim, fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp))
+        }
+    }
+}
+
+@Composable
+private fun Tag(text: String, color: Color) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(color.copy(alpha = 0.14f))
+            .border(1.dp, color.copy(alpha = 0.45f), RoundedCornerShape(6.dp))
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    ) {
+        Text(text, color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold)
     }
 }
