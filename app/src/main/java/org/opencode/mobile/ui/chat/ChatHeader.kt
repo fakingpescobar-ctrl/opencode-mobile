@@ -177,19 +177,12 @@ private fun ServiceIcons(
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
-    // Диагностика: состояние сервера, STT-модели и хвост лога serve. Полноэкранный
-    // оверлей рисуется поверх всего, поэтому клавиатуру и фокус прячем здесь:
-    // корневой Surface сдвинут imePadding(), иначе оверлей «съехал» бы вверх.
     HeaderIcon(
         icon = Icons.Filled.Info,
-        description = "Диагностика",
-        tint = if (state.diagnostics) Color.White else Color(0xFFBDBDBD),
-        active = state.diagnostics,
-        onClick = {
-            keyboard?.hide()
-            focusManager.clearFocus()
-            actions.onDiagnostics()
-        },
+        description = "Настройки полосок контекста и квоты",
+        tint = if (state.activePanel == PANEL_SETTINGS) Color.White else Color(0xFFBDBDBD),
+        active = state.activePanel == PANEL_SETTINGS,
+        onClick = { actions.onTogglePanel(PANEL_SETTINGS) },
     )
     HeaderIcon(
         icon = Icons.Filled.Mic,
@@ -205,12 +198,19 @@ private fun ServiceIcons(
         active = state.activePanel == PANEL_TTS,
         onClick = { actions.onTogglePanel(PANEL_TTS) },
     )
+    // Диагностика: состояние сервера, STT-модели и хвост лога serve. Полноэкранный
+    // оверлей рисуется поверх всего, поэтому клавиатуру и фокус прячем здесь:
+    // корневой Surface сдвинут imePadding(), иначе оверлей «съехал» бы вверх.
     HeaderIcon(
         icon = Icons.Filled.Settings,
-        description = "Настройки гейджа",
-        tint = if (state.activePanel == PANEL_SETTINGS) Color.White else Color(0xFFBDBDBD),
-        active = state.activePanel == PANEL_SETTINGS,
-        onClick = { actions.onTogglePanel(PANEL_SETTINGS) },
+        description = "Диагностика",
+        tint = if (state.diagnostics) Color.White else Color(0xFFBDBDBD),
+        active = state.diagnostics,
+        onClick = {
+            keyboard?.hide()
+            focusManager.clearFocus()
+            actions.onDiagnostics()
+        },
     )
     // Тап — создать свежую сессию (старые остаются в списке); long-press —
     // «очистить все сессии» (диалог подтверждения).
