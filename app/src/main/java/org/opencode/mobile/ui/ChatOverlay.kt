@@ -96,6 +96,7 @@ import org.opencode.mobile.ui.chat.PANEL_MCP
 import org.opencode.mobile.ui.chat.PANEL_PERF
 import org.opencode.mobile.ui.chat.PANEL_SETTINGS
 import org.opencode.mobile.ui.chat.PANEL_STT
+import org.opencode.mobile.ui.chat.PANEL_TTS
 import org.opencode.mobile.ui.chat.PerformanceMonitor
 import org.opencode.mobile.ui.chat.PerformancePanel
 import org.opencode.mobile.ui.chat.ServerSendTransport

@@ -438,10 +438,19 @@ private fun TtsVoiceSection(tts: TtsSettings, context: Context) {
 @Composable
 private fun TtsDumpSection(context: Context, tts: TtsSettings) {
     Spacer(Modifier.height(10.dp))
-    TtsRadioRow("Дамп PCM (диагностика)", tts.config.dumpPcm) {
-        tts.update { it.copy(dumpPcm = !it.dumpPcm) }
-        TtsNarrator.applyDumpPref(context)
-        TtsNarrator.stop()
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                tts.update { it.copy(dumpPcm = !it.dumpPcm) }
+                TtsNarrator.applyDumpPref(context)
+                TtsNarrator.stop()
+            }
+            .padding(vertical = 6.dp),
+    ) {
+        Text(if (tts.config.dumpPcm) "● " else "○ ", color = Accent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        Text("Дамп PCM (диагностика)", color = TextMain, fontSize = 13.sp)
     }
     if (tts.config.dumpPcm) {
         Text(
