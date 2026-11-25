@@ -69,6 +69,13 @@ internal fun SttPanel(voice: VoiceSettings) {
             label = "Локальные модели (whisper.cpp / sherpa-onnx)",
             selected = voice.sttEngine == VoiceEngine.WHISPER,
         ) { voice.chooseEngine(VoiceEngine.WHISPER) }
+        // Подсказка: рекомендуется для русского
+        Text(
+            "Рекомендуется для русского: GigaAM v3 E2E RNNT (скачать в Диагностику)",
+            color = Color(0xFF90A4AE),
+            fontSize = 10.sp,
+            modifier = Modifier.padding(top = 2.dp, bottom = 4.dp),
+        )
         // Список моделей — только для локального движка.
         if (voice.sttEngine == VoiceEngine.WHISPER) {
             SttModelPicker(

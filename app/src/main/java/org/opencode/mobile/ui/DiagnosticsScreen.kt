@@ -150,23 +150,20 @@ private sealed interface EngineDownloadState {
     ) : EngineDownloadState
 }
 
-/** Состояние закачки ggml-моделей для whisper.cpp. Одна машина на base и turbo:
- *  они качаются одинаково, различаются лишь именем и размером, а держать два
- *  одинаковых набора состояний — значит потом забыть про один из них, как уже
- *  случилось с кнопкой base. */
-private sealed interface GgmlDownloadState {
-    data object Idle : GgmlDownloadState
+/** Состояние закачки STT-модели любого Engine-типа. Tracked by model id. */
+private sealed interface SttDownloadState {
+    data object Idle : SttDownloadState
 
     data class Running(
-        val model: String,
+        val modelId: String,
         val done: Long,
         val total: Long,
-    ) : GgmlDownloadState
+    ) : SttDownloadState
 
     data class Failed(
-        val model: String,
+        val modelId: String,
         val message: String,
-    ) : GgmlDownloadState
+    ) : SttDownloadState
 }
 
 /**
@@ -299,39 +296,32 @@ fun DiagnosticsScreen(
     var refreshKey by remember { mutableIntStateOf(0) }
     // Вывод последнего ручного прогона retention (расчёт или обрезка).
     var retentionOut by remember { mutableStateOf<String?>(null) }
-    // Состояние скачивания ggml-модели. Обновляется из IO-корутины
+    // Состояние скачивания STT-модели. Обновляется из IO-корутины
     // (snapshot-state потокобезопасен); выход с экрана отменяет корутину
-    // (CancellationException проходит сквозь загрузку через ensureActive) —
-    // .part остаётся для докачки.
-    var ggmlDl by remember { mutableStateOf<GgmlDownloadState>(GgmlDownloadState.Idle) }
-    val startGgmlDownload: (String) -> Unit = { model ->
-        if (ggmlDl !is GgmlDownloadState.Running) {
-            ggmlDl = GgmlDownloadState.Running(model, 0L, SttModels.byId(model)?.bytes ?: 0L)
+    // (CancellationException проходит сквозь загрузку через ensureActive).
+    var sttDl by remember { mutableStateOf<SttDownloadState>(SttDownloadState.Idle) }
+    val startSttDownload: (String) -> Unit = { modelId ->
+        if (sttDl !is SttDownloadState.Running) {
+            val model = SttModels.byId(modelId)
+                ?: error("в каталоге нет модели: $modelId")
+            sttDl = SttDownloadState.Running(modelId, 0L, model.bytes)
             scope.launch {
                 try {
                     withContext(Dispatchers.IO) {
                         val onProgress: (Long, Long) -> Unit = { done, total ->
-                            ggmlDl = GgmlDownloadState.Running(model, done, total)
+                            sttDl = SttDownloadState.Running(modelId, done, total)
                         }
-                        // Каталог знает, как качать каждую модель, поэтому диспетчер
-                        // не растёт вслед за списком: раньше здесь стояла цепочка
-                        // if/else и кнопки существовали ровно для двух моделей.
-                        // error(), а не throw: detekt ограничивает число throw в
-                        // функции, а здесь их уже два (модель и движок).
-                        // Идентификатор приходит из каталога, так что это
-                        // страховка от правки UI.
-                        SttModels.byId(model)?.fetch(context, onProgress)
-                            ?: error("в каталоге нет модели: $model")
+                        // Унифицированный fetch: для ggml small идет через
+                        // downloadSmall, для sherpa-onnx — через downloadSttModel.
+                        model.fetch(context, onProgress)
                     }
-                    ggmlDl = GgmlDownloadState.Idle
+                    sttDl = SttDownloadState.Idle
                     refreshKey++
                 } catch (e: Exception) {
                     // Отмена (уход с экрана) — не ошибка: ensureActive() пробрасывает
                     // CancellationException дальше, а обычные исключения попадают в Failed.
-                    // Именно ensureActive, а не `throw e`: detekt ограничивает число
-                    // throw в функции, и третий лябда уже упирается в лимит.
                     currentCoroutineContext().ensureActive()
-                    ggmlDl = GgmlDownloadState.Failed(model, e.message ?: e.javaClass.simpleName)
+                    sttDl = SttDownloadState.Failed(modelId, e.message ?: e.javaClass.simpleName)
                 }
             }
         }
@@ -342,7 +332,9 @@ fun DiagnosticsScreen(
     var droppedModels by remember { mutableStateOf("") }
     val dropOtherModels: () -> Unit = {
         scope.launch {
-            val gone = withContext(Dispatchers.IO) { ModelDownloader.deleteOtherModels(context) }
+            val ggmlGone = withContext(Dispatchers.IO) { ModelDownloader.deleteOtherModels(context) }
+            val sttGone = withContext(Dispatchers.IO) { ModelDownloader.deleteOtherSttDirs(context) }
+            val gone = ggmlGone + sttGone
             droppedModels =
                 if (gone.isEmpty()) {
                     "нечего удалять — все файлы в каталоге"
@@ -887,7 +879,13 @@ fun DiagnosticsScreen(
                     if (droppedModels.isNotEmpty()) {
                         InfoRow("Уборка моделей", droppedModels, Color(NOTE_ARGB))
                     }
-                    GgmlModelRows(snap, ggmlDl, { model -> startGgmlDownload(model) }, dropOtherModels)
+                    SttModelRows(
+                snap = snap,
+                state = sttDl,
+                onDownload = { startSttDownload(it) },
+                onRepeat = { startSttDownload(it) },
+                onDeleteOthers = dropOtherModels,
+            )
                 }
 
                 DiagSection("Озвучка (Supertonic, offline)", ttsTone) {
@@ -1867,72 +1865,77 @@ private fun readLogTail(
  *  base, 1,5 ГБ у turbo), и на главном потоке это заморозило бы экран.
  */
 @Composable
-private fun GgmlModelRows(
+private fun SttModelRows(
     snap: StorageSnapshot?,
-    state: GgmlDownloadState,
+    state: SttDownloadState,
     onDownload: (String) -> Unit,
+    onRepeat: (String) -> Unit,
     onDeleteOthers: () -> Unit,
 ) {
     val ready = snap?.ggmlReady.orEmpty()
     for (model in SttModels.all) {
         val bytes = ready[model.id]
-        // У ручной модели (Parakeet) fileOf — каталог, и его length() не размер
-        // модели; плюс имя без «ggml-», потому что это не ggml.
-        val title = if (model.manual) model.id else "ggml-" + model.id
+        // Модель уже готова на диске — показываем размер; иначе — статус
+        val title = model.id
         val size =
             when {
-                model.manual -> model.sizeLabel
                 bytes != null -> fmtBytes(bytes)
                 else -> model.sizeLabel
             }
-        InfoRow(
-            title,
-            (if (bytes != null) "готов · " else "нет · ") + size,
+        val statusText =
+            when {
+                bytes != null -> "готов · " + size
+                model.manual -> "не скачана · вручную (adb push)"
+                else -> "не скачана · сначала скачай: Настройки → Диагностика"
+            }
+        val statusColor =
             when {
                 bytes != null -> Color(0xFF7BD88F)
-                // Ручная модель (Parakeet) не скачивается приложением: «нет» у
-                // неё — нормальное состояние, а не поломка. Красным её красил
-                // только факт отсутствия файла, из-за чего в секции с бейджем
-                // «ок» висела красная строка (17.11). Настоящий сигнал, если
-                // такая модель выбрана и не готова, стоит в «Валидации runtime».
                 model.manual -> Color(NOTE_ARGB)
                 else -> Color(0xFFFF6F5A)
-            },
+            }
+        InfoRow(
+            model.id,
+            statusText,
+            statusColor,
         )
+        // Дополнительная строка с заметкой модели
         InfoRow("  " + model.id, model.note, Color(NOTE_ARGB))
+        if (model.recommendedForRu) InfoRow("  RU", "рекомендуется для русского", Color(0xFFFFD54F))
     }
     when (val dl = state) {
-        is GgmlDownloadState.Running -> InfoRow(
-            "Загрузка ggml-" + dl.model,
+        is SttDownloadState.Running -> InfoRow(
+            "Загрузка " + dl.modelId,
             "${fmtBytes(dl.done)} из ${fmtBytes(dl.total)}",
             Color(0xFFFFC107),
         )
 
-        is GgmlDownloadState.Failed -> {
+        is SttDownloadState.Failed -> {
             InfoRow("Скачивание не удалось", dl.message, Color(0xFFFF6F5A))
-            downloadButton("Повторить (докачка)") { onDownload(dl.model) }
+            downloadButton("Повторить (докачка)") { onRepeat(dl.modelId) }
         }
 
-        GgmlDownloadState.Idle -> GgmlIdleControls(ready, onDownload)
+        SttDownloadState.Idle -> SttDownloadControls(onDownload, ready)
     }
-    Spacer(Modifier.height(6.dp))
     downloadButton("Удалить модели, которых больше нет в списке") { onDeleteOthers() }
 }
 
-/** Кнопки скачивания для моделей, которых ещё нет на диске. Ручные модели
- *  (fetch — no-op, файлы кладут adb push) кнопки не получают: она «качала» бы
- *  в никуда. Вынесено из [GgmlModelRows] ради детекта (NestedBlockDepth). */
+/** Кнопки скачивания для STT-моделей, которых ещё нет на диске.
+ *  Использует model.fetch() для унифицированного скачивания:
+ *  - ggml small → downloadSmall
+ *  - sherpa-onnx модели → downloadSttModel (multi-file)
+ *  - manual модели — кнопки нет (файлы кладут adb push) */
 @Composable
-private fun GgmlIdleControls(
-    ready: Map<String, Long>,
+private fun SttDownloadControls(
     onDownload: (String) -> Unit,
+    ready: Map<String, Long>,
 ) {
     for (model in SttModels.all) {
         if (ready[model.id] != null) continue
         if (model.manual) {
             InfoRow("Установка " + model.id, "вручную (adb push) — кнопки скачивания нет", Color(NOTE_ARGB))
         } else {
-            downloadButton("Скачать ggml-" + model.id + " (~" + model.sizeLabel + ")") { onDownload(model.id) }
+            downloadButton("Скачать " + model.id + " (~" + model.sizeLabel + ")") { onDownload(model.id) }
         }
     }
 }

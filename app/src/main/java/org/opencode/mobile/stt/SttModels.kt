@@ -4,85 +4,83 @@ import android.content.Context
 import java.io.File
 
 /**
- * Каталог ggml-моделей для whisper.cpp.
+ * Каталог STT-моделей. Единый источник правды для UI, диагностики, загрузки и
+ * runtime-маршрутизации (P2).
  *
- * Сейчас в нём ровно одна модель — small — и это результат измерений, а не
- * недосмотр. Все варианты замерены на одном и том же устройстве
- * (OnePlus CPH2747, Snapdragon 8 Elite, Adreno 840) и на одном наборе из 40
- * клипов с человеческим эталоном; полные таблицы, методика и то, что
- * вычеркнуто и почему, лежат в `docs/VOICE-REPORT.md`.
- *
- * Коротко, почему осталась одна:
- *
- * - tiny (74 МБ) — 60 % ошибок, хуже base в 1,6 раза, мимо;
- * - base (141 МБ) — 38 % ошибок, треть слов неверных, для диктовки мусор;
- * - medium (1,46 ГБ) — 11 % ошибок, но 6,5 секунды: та же точность, что у
- *   small, втрое дороже по времени и втрое тяжелее;
- * - turbo f16 (1,55 ГБ) — 7 % ошибок, но 11 секунд: выигрыш 3 процентных
- *   пункта не окупает пятикратного времени;
- * - turbo q5_0 (574 МБ) — на GPU Adreno кванты дают мусор (WER ~3500 %),
- *   поэтому в приложении их нет вообще, а `jni.c` не пускает кванты на GPU;
- * - ncnn-turbo — отдельный движок, его Vulkan-путь падает в SIGSEGV на этом
- *   Adreno (см. `docs/VOICE-REPORT.md` и issue Tencent/ncnn#7097), CPU-путь
- *   в 11 раз медленнее small. Движок выпилен из приложения целиком.
- *
- * Каталог остаётся файлом, а не константой, потому что список моделей, кнопки
- * скачивания и проверка «что лежит на диске» читаются из одного места. Когда
- * появится модель, достойная внимания, это одна запись здесь.
+ * Приоритет продукта: русская речь. Поэтому GigaAM v3 E2E RNNT помечен как
+ * recommendedForRu и должен быть первым рекомендуемым локальным выбором.
  */
 @Suppress("LongParameterList")
+internal data class SttModelFile(
+    val name: String,
+    val url: String,
+    val bytes: Long = -1L,
+    val sha256: String? = null,
+)
+
+internal enum class SttEngineKind {
+    WHISPER_GGML,
+    SHERPA_TRANSDUCER,
+    SHERPA_SENSE_VOICE,
+}
+
+@Suppress("LongParameterList")
 internal data class SttModel(
-    /** Идентификатор, который пишется в prefs и понимает WhisperTranscribeService. */
+    /** Идентификатор, который пишется в prefs и понимает runtime. */
     val id: String,
-    /** Что показываем пользователю: время на фразе и цена ошибки. */
+    /** Что показываем пользователю. */
     val note: String,
-    /** Размер файла на диске — для подписи и для проверки свободного места. */
+    /** Оценочный/известный размер модели на диске. */
     val bytes: Long,
-    /** Готова ли модель: файл есть, размер сходится, контрольная сумма не битая. */
+    /** Готова ли модель: файлы на месте, размер/маркеры валидны. */
     val isReady: (Context) -> Boolean,
-    /** Файл модели на диске — нужен, чтобы узнать размер уже скачанного. */
+    /** Файл/каталог модели на диске. */
     val fileOf: (Context) -> File,
     /** Скачивание с колбэком прогресса (сделано, всего). */
     val fetch: suspend (Context, (Long, Long) -> Unit) -> Unit,
-    /** Короткая подпись размера, чтобы не форматировать его в трёх местах. */
+    /** Короткая подпись размера. */
     val sizeLabel: String,
-    /**
-     * Имя одиночного файла модели в каталоге моделей (modelsDir) или null,
-     * если модель лежит иначе (например, набор из нескольких файлов в другом
-     * каталоге, как Parakeet). Из этого поля строится [SttModels.fileNames] —
-     * белый список для [ModelDownloader.deleteOtherModels], поэтому добавлять
-     * имя в двух местах больше не нужно.
-     */
+    /** Имя одиночного файла в modelsDir, или null для multi-file каталога. */
     val flatFileName: String?,
-    /**
-     * Модель ставится вручную (например, adb push набора файлов), а не кнопкой
-     * скачивания: [fetch] у такой модели — no-op. Пикеру это нужно, чтобы не
-     * отправлять человека в диагностику за кнопкой, которой там нет.
-     */
+    /** Модель ставится вручную, а не кнопкой скачивания. */
     val manual: Boolean = false,
+    /** Runtime-семейство модели (нужно P2). */
+    val engineKind: SttEngineKind = SttEngineKind.WHISPER_GGML,
+    /** Каталог в filesDir/stt/<dirName> для multi-file моделей. */
+    val dirName: String? = null,
+    /** Файлы multi-file модели. */
+    val files: List<SttModelFile> = emptyList(),
+    /** Рекомендована для русского диктования. */
+    val recommendedForRu: Boolean = false,
+    /** Языки/фокус модели для UI. */
+    val languages: String = "ru",
+    /** Можно ли запускать в текущем APK (runtime-gate для P2). */
+    val runnable: Boolean = true,
 )
 
 internal object SttModels {
-    /**
-     * Модель по умолчанию, и она же единственная.
-     *
-     * На контрольном прогоне 40 клипов small дал 3,1 % ошибок на фразах
-     * 1,5–4 секунды (десять из двенадцати дословно) и 2,3 секунды на
-     * распознавание. Это единственная из всех моделей, что попадает в бюджет
-     * «2–3 секунды на раздумье» и при этом не ошибается в каждой трети слов.
-     *
-     * Время не зависит от длины записи: whisper всегда кодирует окно 30 секунд,
-     * поэтому короткая фраза платит за тишину в остальных. Отсюда и две
-     * границы применимости: огрызки короче 1,5 секунды дают высокую долю ошибок
-     * (одно слово из двух = 100 %), а длинные развёрнутые фразы модель
-     * перефразирует своими словами — смысл сохранён, но текст чужой.
-     */
     const val DEFAULT_ID = WhisperTranscribeService.MODEL_SMALL
 
-    /** Идентификатор Parakeet TDT 0.6B v3 (sherpa-onnx nemo_transducer). */
+    /** sherpa-onnx nemo_transducer (Parakeet). */
     const val PARAKEET_ID = "parakeet-tdt-0.6b-v3"
 
-    /** Все модели, которые приложение умеет предложить. Сейчас ровно одна. */
+    /** GigaAM v3 E2E RNNT, sherpa-onnx nemo_transducer. RU-first. */
+    const val GIGAAM_RNNT_ID = "gigaam-v3-e2e-rnnt"
+
+    /** SenseVoice small int8, sherpa-onnx sense_voice. */
+    const val SENSEVOICE_SMALL_ID = "sensevoice-small-int8"
+
+    private const val HF = "https://huggingface.co"
+    private const val MB = 1024L * 1024L
+
+    private fun sherpaDir(context: Context, dir: String): File = File(File(context.filesDir, "stt"), dir)
+
+    private fun sherpaReady(context: Context, model: SttModel): Boolean = ModelDownloader.sttModelReady(context, model)
+
+    private fun sherpaFetch(model: SttModel): suspend (Context, (Long, Long) -> Unit) -> Unit = { ctx, on ->
+        ModelDownloader.downloadSttModel(ctx, model, on)
+    }
+
     val all: List<SttModel> =
         listOf(
             SttModel(
@@ -94,49 +92,112 @@ internal object SttModels {
                 fetch = { ctx, on -> ModelDownloader.downloadSmall(ctx, on) },
                 sizeLabel = "465 МБ",
                 flatFileName = ModelDownloader.SMALL_FILE,
+                engineKind = SttEngineKind.WHISPER_GGML,
+                languages = "multilingual",
+            ),
+            SttModel(
+                id = GIGAAM_RNNT_ID,
+                note = "RU-first · sherpa-onnx RNNT · ~226 МБ · быстрый на CPU",
+                bytes = 226L * MB,
+                isReady = { ctx -> byIdStatic(ctx, GIGAAM_RNNT_ID) },
+                fileOf = { ctx -> sherpaDir(ctx, GIGAAM_RNNT_ID) },
+                fetch = { ctx, on -> byFetchStatic(ctx, GIGAAM_RNNT_ID, on) },
+                sizeLabel = "~226 МБ",
+                flatFileName = null,
+                manual = false,
+                engineKind = SttEngineKind.SHERPA_TRANSDUCER,
+                dirName = GIGAAM_RNNT_ID,
+                files =
+                    listOf(
+                        SttModelFile("encoder.int8.onnx", "$HF/Alexxerm/gigaam-v3-e2e-rnnt-sherpa-onnx/resolve/main/encoder.int8.onnx"),
+                        SttModelFile("decoder.onnx", "$HF/Alexxerm/gigaam-v3-e2e-rnnt-sherpa-onnx/resolve/main/decoder.onnx"),
+                        SttModelFile("joiner.onnx", "$HF/Alexxerm/gigaam-v3-e2e-rnnt-sherpa-onnx/resolve/main/joiner.onnx"),
+                        SttModelFile("tokens.txt", "$HF/Alexxerm/gigaam-v3-e2e-rnnt-sherpa-onnx/resolve/main/tokens.txt"),
+                    ),
+                recommendedForRu = true,
+                languages = "ru",
             ),
             SttModel(
                 id = PARAKEET_ID,
-                note = "0,8 с на 12,6 с аудио · WER 11,1% (лучше whisper на длинных) · CPU, ~640 МБ",
-                bytes = 670L * 1024 * 1024,
-                isReady = { ctx -> parakeetReady(ctx) },
-                fileOf = { ctx -> parakeetDir(ctx) },
-                fetch = { _, _ -> }, // скачивание вручную (tar.bz2) — оставим бенч-UI, не заводим в основной
+                note = "Мультиязычный · sherpa-onnx RNNT · ~670 МБ · RU поддерживается",
+                bytes = 670L * MB,
+                isReady = { ctx -> byIdStatic(ctx, PARAKEET_ID) },
+                fileOf = { ctx -> sherpaDir(ctx, PARAKEET_ID) },
+                fetch = { ctx, on -> byFetchStatic(ctx, PARAKEET_ID, on) },
                 sizeLabel = "~670 МБ",
-                flatFileName = null, // не одиночный .bin в modelsDir: 4 файла в external/parakeet
-                manual = true,
+                flatFileName = null,
+                manual = false,
+                engineKind = SttEngineKind.SHERPA_TRANSDUCER,
+                dirName = PARAKEET_ID,
+                files =
+                    listOf(
+                        SttModelFile("encoder.int8.onnx", "$HF/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/encoder.int8.onnx"),
+                        SttModelFile("decoder.int8.onnx", "$HF/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/decoder.int8.onnx"),
+                        SttModelFile("joiner.int8.onnx", "$HF/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/joiner.int8.onnx"),
+                        SttModelFile("tokens.txt", "$HF/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/tokens.txt"),
+                    ),
+                recommendedForRu = false,
+                languages = "multilingual (вкл. ru)",
+            ),
+            SttModel(
+                id = SENSEVOICE_SMALL_ID,
+                note = "Мультиязычный · sherpa-onnx SenseVoice · ~239 МБ · RU есть, не RU-first",
+                bytes = 239L * MB,
+                isReady = { ctx -> byIdStatic(ctx, SENSEVOICE_SMALL_ID) },
+                fileOf = { ctx -> sherpaDir(ctx, SENSEVOICE_SMALL_ID) },
+                fetch = { ctx, on -> byFetchStatic(ctx, SENSEVOICE_SMALL_ID, on) },
+                sizeLabel = "~239 МБ",
+                flatFileName = null,
+                manual = false,
+                engineKind = SttEngineKind.SHERPA_SENSE_VOICE,
+                dirName = SENSEVOICE_SMALL_ID,
+                files =
+                    listOf(
+                        SttModelFile("model.int8.onnx", "$HF/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx"),
+                        SttModelFile("tokens.txt", "$HF/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt"),
+                    ),
+                recommendedForRu = false,
+                languages = "multilingual (вкл. ru)",
+                runnable = true,
             ),
         )
 
-    /** Модель по идентификатору; null, если такого выбора уже нет в каталоге. */
+    private fun byIdStatic(context: Context, id: String): Boolean {
+        val m = all.firstOrNull { it.id == id } ?: return false
+        return ModelDownloader.sttModelReady(context, m)
+    }
+
+    private suspend fun byFetchStatic(context: Context, id: String, on: (Long, Long) -> Unit) {
+        val m = all.firstOrNull { it.id == id } ?: return
+        ModelDownloader.downloadSttModel(context, m, on)
+    }
+
     fun byId(id: String): SttModel? = all.firstOrNull { it.id == id }
 
-    /** Название для интерфейса; для неизвестного id возвращаем сам id. */
     fun labelOf(id: String): String = byId(id)?.id ?: id
 
-    /**
-     * Имена файлов, которые каталог считует своими. Всё прочее в
-     * filesDir/models — кандидат на удаление: см. [ModelDownloader.deleteOtherModels].
-     * Строится из [SttModel.flatFileName], чтобы белый список не мог разойтись
-     * с каталогом: модель, живущая одним файлом в modelsDir, попадает сюда сама.
-     */
+    /** Имена одиночных ggml-файлов в modelsDir, которые каталог считает своими. */
     val fileNames: Set<String> =
         all
             .mapNotNull { it.flatFileName }
             .toSet()
 
-    private fun parakeetDir(context: Context): File = File(context.getExternalFilesDir(null), WhisperTranscribeService.PARAKEET_DIR_NAME)
+    /** Известные каталоги multi-file моделей в filesDir/stt/. */
+    val sttDirNames: Set<String> =
+        all
+            .mapNotNull { it.dirName }
+            .toSet()
 
-    private fun parakeetReady(context: Context): Boolean {
-        val dir = parakeetDir(context)
-        if (!dir.exists()) return false
-        val files = listOf("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt")
-        return files.all { File(dir, it).exists() }
-    }
-
-    /** Готовность и размер всех моделей разом — только из IO-ветки (модель хешируется). */
+    /** Готовность и размер всех моделей разом — только из IO-ветки. */
     fun snapshotOf(context: Context): Map<String, Long> =
         all
             .filter { it.isReady(context) }
-            .associate { it.id to it.fileOf(context).length() }
+            .associate { it.id to modelSizeOnDisk(context, it) }
+
+    private fun modelSizeOnDisk(context: Context, model: SttModel): Long {
+        val f = model.fileOf(context)
+        if (f.isFile) return f.length()
+        if (f.isDirectory) return f.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        return 0L
+    }
 }

@@ -16,184 +16,80 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
 
 /**
- * Скачивание whisper-модели на устройство по требованию.
+ * Скачивание STT-моделей на устройство по требованию.
  *
- * APK остаётся маленьким: модель НЕ кладём в assets, а качаем в
- * filesDir/models. Загруженный файл живёт между запусками — повторно качаем
- * только если его нет.
- *
- * Модель одна: `ggml-small.bin` (487 601 967 б) из
- * ggerganov/whisper.cpp. Остальные варианты замерены и вычеркнуты, причины
- * и полные таблицы — в `docs/VOICE-REPORT.md`, коротко — в [SttModels].
+ * Whisper ggml small — single-file в filesDir/models.
+ * Sherpa-onnx модели — multi-file каталоги в filesDir/stt/<id>/.
  */
 object ModelDownloader {
     private const val TAG = "ModelDL"
 
     private const val HF_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
-    // ---- small (f16, 487601967 б) ----
-
     private const val URL_SMALL = "$HF_BASE/ggml-small.bin"
     const val SMALL_FILE = "ggml-small.bin"
     private const val MIN_SMALL = 460L * 1024 * 1024
     const val SMALL_BYTES = 487601967L
-
     const val SMALL_MODEL = "small"
+    private const val MIN_FREE_SMALL = 550L * 1024 * 1024
 
-    private const val MIN_FREE_SMALL = 550L * 1024 * 1024 // 465 МБ + запас
-
-    /**
-     * Каталоги выпиленных движков. Их файлы не `.bin`, поэтому обычная чистка
-     * моделей их не возьмёт, а `ncnn-turbo` — это 1,2 ГБ, которые пользователю
-     * нужно освободить руками. Перечислены явно, а не «всё, что не модель»:
-     * рядом лежит `tts/` с озвучкой, его удалять нельзя.
-     */
     private val RETIRED_MODEL_DIRS = listOf("ncnn-turbo")
 
-    /** Папка каталога моделей внутри filesDir: <filesDir>/models/. */
+    /** Папка каталога ggml-моделей внутри filesDir: <filesDir>/models/. */
     fun modelsDir(context: Context): File = File(context.filesDir, "models").apply { mkdirs() }
 
-    /**
-     * Сериализация скачиваний: [downloadSmall] может прийти из UI и из
-     * сервиса одновременно, а .part-файл и выходной файл у них общие.
-     */
     private val downloadMutex = Mutex()
 
-    // ---- SHA-256 манифест ----
+    /** Целостность скачанной модели. */
+    enum class ModelIntegrity { VALID, NO_MANIFEST, CORRUPT }
 
-    /**
-     * Результат проверки файла модели против локального манифеста (SHA-256 снапшот).
-     * - [VALID] — хеш совпал (или файл уже проверен в этом процессе при тех же размер+mtime);
-     * - [CORRUPT] — файл на диске повреждён/подменён (SHA-256 не сошёлся);
-     * - [NO_MANIFEST] — модель скачана до введения манифеста: проверять нечем,
-     *   загрузка разрешена (ровно прежний путь trust: ETag + строгий размер).
-     */
-    enum class ModelIntegrity { VALID, CORRUPT, NO_MANIFEST }
+    // ---- manifest/sha256 ----
 
-    /** Sidecar с SHA-256 снапшотом: <имя модели>.sha256 рядом с моделью. */
-    private fun manifestFile(file: File): File = File(file.parentFile, "${file.name}.sha256")
-
-    /** Постоянный sidecar точного размера: <имя модели>.size рядом с моделью.
-     *  В отличие от .part.size (вспомогательный, удаляется после загрузки), живёт
-     *  между запусками — *Ready() после рестарта знает ТОЧНЫЙ размер, а не только
-     *  fallback-порог MIN_*. Без него оборванный-на-97% файл (больше fallback-порога,
-     *  но меньше настоящего размера) считался бы готовым. */
     private fun exactSizeFile(file: File): File = File(file.parentFile, "${file.name}.size")
 
-    /** Кэш «этот файл (size+mtime) уже проверен в этом процессе» — дешёвая повторная сверка. */
-    private val integrityCache = ConcurrentHashMap<String, Pair<Long, Long>>()
-
-    /** SHA-256 файла (hex, lowercase); null при ошибке чтения. */
-    fun sha256Of(file: File): String? =
-        try {
-            MessageDigest.getInstance("SHA-256").run {
-                file.inputStream().use { input ->
-                    val buf = ByteArray(256 * 1024)
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        update(buf, 0, n)
-                    }
-                }
-                toHex(digest())
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "sha256 ${file.name}: ${e.message}")
-            null
-        }
-
-    /** 32 байта → 64 hex-символа (без per-byte String.format — хешируется до 574МБ). */
-    private fun toHex(bytes: ByteArray): String {
-        val hex = "0123456789abcdef"
-        val sb = StringBuilder(bytes.size * 2)
-        for (b in bytes) {
-            sb.append(hex[(b.toInt() shr 4) and 0xf])
-            sb.append(hex[b.toInt() and 0xf])
-        }
-        return sb.toString()
+    fun persistExactSize(file: File) {
+        runCatching { exactSizeFile(file).writeText(file.length().toString()) }
     }
 
-    /** Манифест валиден только как 64 hex-символа; битый/пустой/оборванный — NO_MANIFEST. */
-    private val HEX_64 = Regex("[0-9a-fA-F]{64}")
+    private fun readExpectedSize(sizeFile: File): Long? =
+        runCatching { sizeFile.takeIf { it.exists() }?.readText()?.trim()?.toLong() }
+            .getOrNull()
+            ?.takeIf { it > 0L }
 
-    /**
-     * Пишет манифест модели. digest можно передать готовым (считанный по tmp до
-     * rename — содержимое то же), иначе считается заново.
-     */
-    internal fun writeManifest(
-        file: File,
-        digest: String? = null,
-    ) {
-        val value =
-            digest ?: sha256Of(file) ?: run {
-                // digest не передан, а пересчёт не удался — молча выходить нельзя
-                Log.w(TAG, "manifest ${file.name}: SHA-256 не посчитался — манифест не пишу")
-                return
+    private fun sha256File(file: File): File = File(file.parentFile, "${file.name}.sha256")
+
+    fun sha256Of(file: File): String? {
+        if (!file.exists() || !file.isFile) return null
+        val digest = MessageDigest.getInstance("SHA-256")
+        val buf = ByteArray(DEFAULT_BUF)
+        file.inputStream().use { input ->
+            var read: Int
+            while (input.read(buf).also { read = it } >= 0) {
+                if (read > 0) digest.update(buf, 0, read)
             }
-        // кэш integrity устаревает при любой перезаписи модели/манифеста
-        integrityCache.remove(file.absolutePath)
-        try {
-            // Атомарно (tmp+rename): обрыв записи не оставит битый манифест — на
-            // месте останется прежний валидный снапшот, а не мусор NO_MANIFEST-болванка.
-            val tmp = File(file.parentFile, "${file.name}.sha256.tmp")
-            tmp.delete() // сирота от прошлого краха — не должен мешать перезаписи
-            tmp.writeText(value)
-            if (!tmp.renameTo(manifestFile(file))) {
-                tmp.delete()
-                // Старый манифест мог быть от ПРЕЖНЕЙ ревизии файла — оставить его
-                // = ложный CORRUPT на новой ревизии. Снимаем: без манифеста модель
-                // останется NO_MANIFEST (не блокирует), честнее ложной блокировки.
-                manifestFile(file).delete()
-                Log.w(TAG, "manifest ${file.name}: rename не удался — снапшот снят")
-            }
-        } catch (e: Exception) {
-            // при сбое записи тоже снимаем старый снапшот (иначе ложный CORRUPT
-            // для новой ревизии файла — блокировка без вины модели)
-            manifestFile(file).delete()
-            Log.w(TAG, "manifest ${file.name}: ${e.message}")
         }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
-    /**
-     * Проверяет файл модели против манифеста. Тяжёлую сверку (чтение всего файла)
-     * выполняет один раз в процессе; повторные вызовы для того же size+mtime — дёшево.
-     *
-     * Инвариант: не вызывается параллельно с downloadTo (downloadMutex сериализует
-     * скачивания; сервис дёргает сверку до/после — во время скачивания dest ещё
-     * не существует или нетронут, rename атомарен на одном томе).
-     */
+    fun writeManifest(file: File, digest: String) {
+        runCatching { sha256File(file).writeText(digest.lowercase() + "\n") }
+    }
+
+    private fun readManifest(file: File): String? =
+        runCatching { sha256File(file).takeIf { it.exists() }?.readText()?.trim()?.lowercase() }
+            .getOrNull()
+            ?.takeIf { it.matches(Regex("[0-9a-f]{64}")) }
+
+    private data class IntegrityStamp(val length: Long, val mtime: Long)
+    private val integrityCache = ConcurrentHashMap<String, IntegrityStamp>()
+
     fun checkIntegrity(file: File): ModelIntegrity {
-        // файла-модели нет/пуст — это не повреждение, а отсутствие (манифест-сирота)
-        if (!file.exists() || file.length() == 0L) return ModelIntegrity.NO_MANIFEST
-        val manifest = manifestFile(file)
-        val expected =
-            try {
-                manifest.readText().trim()
-            } catch (e: java.io.FileNotFoundException) {
-                null // манифеста нет — штатно (модель скачана до введения манифеста)
-            } catch (e: Exception) {
-                // манифест есть, но не читается (права/IO) — диагностируем, но не блокируем
-                Log.w(TAG, "manifest ${file.name} не читается: ${e.message}")
-                null
-            }
-        // нет манифеста или он битый (оборвался writeText) — проверить нечем:
-        // не блокируем загрузку (прежний путь доверия ETag+размер), но и не VALID
-        if (expected == null || !HEX_64.matches(expected)) {
-            return ModelIntegrity.NO_MANIFEST
-        }
-        // Хеш пишется в нижнем регистре, но формат принимает и A-F. Сравниваем без
-        // учёта регистра: иначе валидный манифест, набранный руками, превращается
-        // в ложный CORRUPT и модель просят скачать заново.
-        val expectedHex = expected.lowercase()
-        val stamp = file.length() to file.lastModified()
-        integrityCache[file.absolutePath]?.let { if (it == stamp) return ModelIntegrity.VALID }
-        val digest =
-            sha256Of(file)
-                ?: return ModelIntegrity.CORRUPT // файл не читается — деградировал, это повреждение
-        val ok = digest == expectedHex
-        // TOCTOU-защита: кэшируем ЗЕЛЁНЫЙ статус только если файл не менялся
-        // между снятием stamp и хэшированием (иначе в кэш ляжет штамп от старого
-        // содержимого — ложный VALID до следующего изменения файла).
-        val stampAfter = file.length() to file.lastModified()
+        if (!file.exists() || !file.isFile) return ModelIntegrity.CORRUPT
+        val stamp = IntegrityStamp(file.length(), file.lastModified())
+        if (integrityCache[file.absolutePath] == stamp) return ModelIntegrity.VALID
+        val expected = readManifest(file) ?: return ModelIntegrity.NO_MANIFEST
+        val digest = sha256Of(file) ?: return ModelIntegrity.CORRUPT
+        val ok = digest == expected
+        val stampAfter = IntegrityStamp(file.length(), file.lastModified())
         if (ok && stampAfter == stamp) integrityCache[file.absolutePath] = stamp
         return if (ok) ModelIntegrity.VALID else ModelIntegrity.CORRUPT
     }
@@ -209,19 +105,145 @@ object ModelDownloader {
             checkIntegrity(f) != ModelIntegrity.CORRUPT
     }
 
-    /** Скачивает small в f16 (465 МБ). Блокирующий (suspend). */
     suspend fun downloadSmall(
         context: Context,
         onProgress: (Long, Long) -> Unit = { _, _ -> },
     ): File = downloadTo(context, URL_SMALL, smallFile(context), MIN_SMALL, "small", MIN_FREE_SMALL, onProgress)
 
+    // ---- generic multi-file STT models (sherpa-onnx) ----
+
+    fun sttRoot(context: Context): File = File(context.filesDir, "stt").apply { mkdirs() }
+
+    fun sttModelDir(context: Context, model: SttModel): File =
+        File(sttRoot(context), model.dirName ?: model.id).apply { mkdirs() }
+
+    fun sttModelReady(context: Context, model: SttModel): Boolean {
+        if (model.flatFileName != null) {
+            val f = model.fileOf(context)
+            return f.exists() && f.length() > 0
+        }
+        if (model.files.isEmpty()) return false
+        val dir = File(sttRoot(context), model.dirName ?: model.id)
+        if (!dir.exists()) return false
+        return model.files.all { mf ->
+            val f = File(dir, mf.name)
+            f.exists() && f.length() > 0 && (mf.bytes <= 0L || f.length() >= minOf(mf.bytes, 1024L))
+        }
+    }
+
+    suspend fun downloadSttModel(
+        context: Context,
+        model: SttModel,
+        onProgress: (Long, Long) -> Unit = { _, _ -> },
+    ): File {
+        if (model.files.isEmpty()) {
+            return if (model.id == SttModels.DEFAULT_ID) downloadSmall(context, onProgress)
+            else error("Модель ${model.id} не имеет файлов для скачивания")
+        }
+        return downloadMutex.withLock {
+            withContext(Dispatchers.IO) {
+                val dir = sttModelDir(context, model)
+                val totalKnown = model.files.sumOf { it.bytes.coerceAtLeast(0L) }.takeIf { it > 0L } ?: model.bytes.coerceAtLeast(0L)
+                ensureFreeSpace(context, model.id, model.bytes.coerceAtLeast(totalKnown) + 64L * 1024L * 1024L)
+                var doneBefore = 0L
+                for (mf in model.files) {
+                    val target = File(dir, mf.name)
+                    if (target.exists() && target.length() > 0 && (mf.bytes <= 0L || target.length() == mf.bytes)) {
+                        doneBefore += target.length()
+                        onProgress(doneBefore, totalKnown.coerceAtLeast(doneBefore))
+                        continue
+                    }
+                    doneBefore += downloadToSttFile(dir, mf, doneBefore, totalKnown, onProgress)
+                }
+                File(dir, ".ready").writeText("ok\n")
+                onProgress(totalKnown.coerceAtLeast(doneBefore), totalKnown.coerceAtLeast(doneBefore))
+                dir
+            }
+        }
+    }
+
+    private suspend fun downloadToSttFile(
+        dir: File,
+        mf: SttModelFile,
+        doneBefore: Long,
+        totalKnown: Long,
+        onProgress: (Long, Long) -> Unit,
+    ): Long {
+        val dest = File(dir, mf.name)
+        val tmp = File(dir, mf.name + ".part")
+        val expectedMin = if (mf.bytes > 0L) maxOf(1L, mf.bytes - 1024L) else 1L
+        if (dest.exists() && dest.length() >= expectedMin) return dest.length()
+        var startAt = if (tmp.exists()) tmp.length() else 0L
+        val conn = (URL(mf.url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 30_000
+            readTimeout = 60_000
+            setRequestProperty("User-Agent", "opencode-mobile/1.0")
+            if (startAt > 0L) setRequestProperty("Range", "bytes=$startAt-")
+        }
+        try {
+            conn.connect()
+            val code = conn.responseCode
+            val append = code == HttpURLConnection.HTTP_PARTIAL
+            if (!append) startAt = 0L
+            if (code !in listOf(HttpURLConnection.HTTP_OK, HttpURLConnection.HTTP_PARTIAL)) {
+                error("HTTP $code при скачивании ${mf.name}")
+            }
+            val bodyLen = conn.contentLengthLong.takeIf { it > 0L } ?: -1L
+            val fileTotal = if (append && bodyLen > 0L) startAt + bodyLen else if (bodyLen > 0L) bodyLen else mf.bytes
+            FileOutputStream(tmp, append).use { out ->
+                conn.inputStream.use { input ->
+                    val buf = ByteArray(DEFAULT_BUF)
+                    var read: Int
+                    var fileDone = startAt
+                    while (input.read(buf).also { read = it } >= 0) {
+                        coroutineContext.ensureActive()
+                        if (read == 0) continue
+                        out.write(buf, 0, read)
+                        fileDone += read
+                        val overallTotal = if (totalKnown > 0L) totalKnown else if (fileTotal > 0L) doneBefore + fileTotal else doneBefore + fileDone
+                        onProgress(doneBefore + fileDone, overallTotal)
+                    }
+                    out.fd.sync()
+                }
+            }
+            if (mf.sha256 != null) {
+                val got = sha256Of(tmp)
+                if (!got.equals(mf.sha256, ignoreCase = true)) {
+                    tmp.delete()
+                    error("SHA-256 не совпал для ${mf.name}")
+                }
+                writeManifest(tmp, got)
+            }
+            if (mf.bytes > 0L && tmp.length() != mf.bytes) {
+                Log.w(TAG, "${mf.name}: размер ${tmp.length()} != ожидаемый ${mf.bytes}, принимаю по факту")
+            }
+            persistExactSize(tmp)
+            if (dest.exists()) dest.delete()
+            if (!tmp.renameTo(dest)) {
+                tmp.copyTo(dest, overwrite = true)
+                tmp.delete()
+            }
+            return dest.length()
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    fun deleteSttModel(context: Context, model: SttModel): Boolean {
+        if (model.flatFileName != null) return deleteModel(model.fileOf(context))
+        val dir = File(sttRoot(context), model.dirName ?: model.id)
+        return dir.exists() && dir.deleteRecursively()
+    }
+
+    fun deleteOtherSttDirs(context: Context): List<File> {
+        val root = sttRoot(context)
+        val keep = SttModels.sttDirNames
+        val gone = root.listFiles()?.filter { it.isDirectory && it.name !in keep }.orEmpty()
+        return gone.filter { it.deleteRecursively() }
+    }
+
     // ---- управление моделями ----
 
-    /** Удаляет модель вместе со всеми sidecar-ами (.part, .part.etag, .part.size,
-     *  .sha256) и сиротами fallback-копий (.tmp-final и пр.). Возвращает true,
-     *  если удалил хоть что-то. Безопасно при загруженном в whisper контексте
-     *  (ggml держит данные в памяти), но доступ к модели блокируется tombstone
-     *  в сервисе — см. WhisperTranscribeService.dropModelContext(). */
     fun deleteModel(file: File): Boolean {
         var deleted = false
         if (file.exists() && file.delete()) deleted = true
@@ -242,16 +264,6 @@ object ModelDownloader {
         return deleted
     }
 
-    /**
-     * Удаляет модели, которых больше нет в каталоге [SttModels], вместе с их
-     * sidecar-ами. Это чистка после вычеркивания моделей из продукта: turbo q5_0
-     * (на GPU мусор, на CPU rtf 6,25) и tiny (WER 60 %) занимали на устройстве
-     * больше 600 МБ, но скачать их уже нельзя и выбрать тоже.
-     *
-     * Возвращает список удалённых файлов — панели нужно показать, что именно
-     * освободилось. Удаляются только `ggml-*.bin`, которых нет в
-     * [SttModels.fileNames]; sidecar-ы моделей из каталога не трогаем.
-     */
     fun deleteOtherModels(context: Context): List<File> {
         val keep = SttModels.fileNames
         val root = modelsDir(context)
@@ -267,20 +279,15 @@ object ModelDownloader {
         return gone.filter { deleteModel(it) } + dirs
     }
 
-/** Суммарный размер всех файлов каталога моделей (включая .part и sidecar-ы). */
     fun modelsUsedBytes(context: Context): Long {
         val dir = modelsDir(context)
-        if (!dir.exists()) return 0L
-        return dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        val ggml = if (dir.exists()) dir.walkTopDown().filter { it.isFile }.sumOf { it.length() } else 0L
+        val stt = sttRoot(context).walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        return ggml + stt
     }
 
-    /** Свободное место на томе filesDir (байты). */
     fun freeBytes(context: Context): Long = context.filesDir.usableSpace
 
-    /**
-     * Общий загрузчик: качает url в dest (с resume и progress). При любом сбое
-     * бросает Exception; временный файл чистится только при полном срыве.
-     */
     private suspend fun downloadTo(
         context: Context,
         url: String,
@@ -292,11 +299,6 @@ object ModelDownloader {
     ): File =
         downloadMutex.withLock {
             withContext(Dispatchers.IO) {
-                // Существующий файл «достаточно большой» — НЕ значит готовый: проверяем
-                // целостность. VALID (SHA-256 сошёлся) — сразу отдаём; NO_MANIFEST
-                // (скачана старой версией) — доверяем только дешёвой GGML-magic сверке;
-                // CORRUPT (SHA-256 не сошёлся: повреждена/подменена) — удаляем вместе
-                // с sidecar-ами и качаем заново, иначе битая модель вернулась бы как есть.
                 if (dest.exists() && dest.length() > minBytes) {
                     when (checkIntegrity(dest)) {
                         ModelIntegrity.VALID -> {
@@ -310,7 +312,7 @@ object ModelDownloader {
                                 Log.d(TAG, "уже докачана (NO_MANIFEST, ggml-magic ok): ${dest.absolutePath}")
                                 return@withContext dest
                             }
-                            Log.w(TAG, "${dest.name}: существует, но GGML-magic не сходится — перекачка")
+                            Log.w(TAG, "${dest.name}: GGML-magic не сходится — перекачка")
                             deleteModel(dest)
                         }
                         ModelIntegrity.CORRUPT -> {
@@ -320,398 +322,166 @@ object ModelDownloader {
                     }
                 }
 
-                // Pre-check свободного места ДО старта (см. MIN_FREE_*): пользователь
-                // увидит «Недостаточно места» сразу, а не через 400 МБ скачивания.
                 ensureFreeSpace(context, label, requiredFree)
 
                 val tmp = File(modelsDir(context), "${dest.name}.part")
                 var partial = tmp.exists() && tmp.length() > 0
-                // Один снапшот длины на весь запрос: и для Range, и для сверок ниже
-                // (защита от TOCTOU, если файл урезали извне между чтениями).
                 var startAt = if (partial) tmp.length() else 0L
-                // ETag первого скачивания (sidecar рядом с .part) → If-Range при resume:
-                // сервер вернёт 206 только если ревизия НЕ менялась; если файл перезалили —
-                // 200 полного файла, и Guard 1 ниже пересоберёт с нуля. Это единственный
-                // полный способ отличить «тот же файл» от «чужой ревизии той же длины».
                 val etagFile = File(modelsDir(context), "${dest.name}.part.etag")
-                // Точный ожидаемый размер (из Content-Length первого 200-ответа): после
-                // скачивания сверяем done с ним ±0.5%. Без этого обрыв на 99% файла мог бы
-                // пройти константный порог MIN_TURBO и «валидная» битая модель упала бы в whisper.
                 val sizeFile = File(modelsDir(context), "${dest.name}.part.size")
-                // .part из прошлого запуска мог остаться с МУСОРНЫМ началом (HTTP-страница
-                // от прокси/капчи, которую не поймали ни content-type, ни первый-чанк —
-                // например, обрыв записи после них). Append к такому началу дал бы битый
-                // файл, который магическая сверка убьёт в самом конце — пустая трата 574 МБ.
-                // Проверяем GGML-magic начала .part ДО Range-запроса: мусор → перекачка с нуля.
-                if (partial && !hasGgmlMagic(tmp)) {
-                    Log.w(TAG, "${dest.name}: .part не начинается с GGML-magic — перекачка с нуля")
-                    tmp.delete()
-                    etagFile.delete()
-                    sizeFile.delete()
-                    partial = false
-                    startAt = 0L
-                }
-                val conn =
-                    (URL(url).openConnection() as HttpURLConnection).apply {
-                        instanceFollowRedirects = true
-                        connectTimeout = 30_000
-                        readTimeout = 60_000
-                        setRequestProperty("User-Agent", "Mozilla/5.0")
-                        // Дозапись оборванной части (resume) снижает трафик при разрывах.
-                        if (partial) {
-                            setRequestProperty("Range", "bytes=$startAt-")
-                            if (etagFile.exists()) {
-                                val etag = etagFile.readText().trim()
-                                if (etag.isNotEmpty()) setRequestProperty("If-Range", etag)
-                            }
-                        }
-                    }
-
-                try {
-                    conn.connect()
-                    val code = conn.responseCode
-                    val total: Long =
-                        when (code) {
-                            HttpURLConnection.HTTP_PARTIAL, HttpURLConnection.HTTP_OK -> conn.contentLengthLong
-                            else -> throw IllegalStateException("HTTP $code при скачивании ${dest.name}")
-                        }
-                    // Fail-loud вместо тихой дыры: без Content-Length (chunked, total<=0)
-                    // сверка размера после скачивания невозможна — обрыв на 99% пройдёт
-                    // незамеченным. HuggingFace resolve всегда отдаёт Content-Length.
-                    if (total <= 0) {
-                        throw IllegalStateException("сервер не отдал Content-Length для ${dest.name} — не могу гарантировать целостность")
-                    }
-
-                    // HTML вместо бинарной модели: HF/CDN при 502/403/редиректах иногда
-                    // отвечают 200 с error-страницей. Пишем fail-loud ДО записи байтов —
-                    // иначе «успешно скачанная» текстуха упадёт в whisper, а resume-хвост
-                    // склеит HTML дальше. GGML всегда бинарь; text/html|text/plain —
-                    // точно не модель. Прочие/пустые типы не блокируем (легальные CDN
-                    // отдают application/octet-stream или вовсе без типа) — мусор поймает
-                    // финальная GGML-magic сверка ниже.
-                    val ct = conn.contentType ?: ""
-                    if (ct.contains("text/html", ignoreCase = true) ||
-                        ct.contains("text/plain", ignoreCase = true)
-                    ) {
-                        throw IllegalStateException("сервер вернул HTML/текст вместо модели $label (content-type=$ct) — проверь сеть/URL")
-                    }
-                    if (ct.isEmpty()) {
-                        Log.w(TAG, "$label: content-type пуст — доверяю только GGML-magic сверке")
-                    }
-
-                    // Guard 1: сервер может проигнорировать Range и ответить 200 — тогда в теле
-                    // ПОЛНЫЙ файл с начала, а не хвост. Дозапись его к оборванному .part дала бы
-                    // битую модель. При 200 всегда пересоздаём .part с нуля. Если пришел 200
-                    // при наличии If-Range — значит ревизия изменилась, фиксируем новый ETag.
-                    var resuming = code == HttpURLConnection.HTTP_PARTIAL
-                    if (code == HttpURLConnection.HTTP_OK) {
-                        if (partial) {
-                            Log.w(TAG, "HTTP 200 (If-Range/Range → новая ревизия): пересобираю ${dest.name} с нуля")
-                        }
-                        tmp.delete()
-                        saveEtag(conn.getHeaderField("ETag"), etagFile)
-                        saveExpectedSize(total, sizeFile)
-                    }
-
-                    // Guard 2: без ETag-гарантии НЕ доверяем хвосту даже при совпавшем Content-Range
-                    // (ревизия могла смениться незаметно: длины совпали, байты другие),
-                    // и не доверяем, если начало хвоста не совпало с .part.
-                    if (resuming) {
-                        val crStart = parseContentRangeStart(conn.getHeaderField("Content-Range"))
-                        // 206 обязан нести Content-Range: если заголовка нет (crStart == null) —
-                        // не знаем границу хвоста, склейка может лечь на неверный офсет → с нуля.
-                        if (!etagFile.exists() || crStart == null || crStart != startAt) {
-                            Log.w(
-                                TAG,
-                                "206 без etag/Content-Range гарантии (start=$crStart, ждали $startAt, etag=${etagFile.exists()}) — перекачка с нуля",
-                            )
-                            resuming = false
+                val expectedSize = readExpectedSize(sizeFile)
+                val savedEtag = if (partial) etagFile.takeIf { it.exists() }?.readText()?.trim() else null
+                var conn = openGet(url, startAt, savedEtag)
+                var code = conn.responseCode
+                var isPartial = false
+                when (code) {
+                    HttpURLConnection.HTTP_PARTIAL -> {
+                        isPartial = true
+                        val cr = conn.getHeaderField("Content-Range")
+                        val rangeStart = cr?.substringAfter("bytes ")?.substringBefore("-")?.toLongOrNull()
+                        if (rangeStart != null && rangeStart != startAt) {
+                            Log.w(TAG, "$label: сервер вернул старт $rangeStart, ожидали $startAt — перекачка")
+                            conn.disconnect()
                             tmp.delete()
                             etagFile.delete()
                             sizeFile.delete()
+                            startAt = 0L
+                            partial = false
+                            conn = openGet(url, 0L, null)
+                            code = conn.responseCode
+                            isPartial = code == HttpURLConnection.HTTP_PARTIAL
                         }
                     }
+                    HttpURLConnection.HTTP_OK -> {
+                        if (partial) {
+                            Log.w(TAG, "$label: сервер игнорирует Range, скачиваем с нуля")
+                            tmp.delete()
+                            etagFile.delete()
+                            sizeFile.delete()
+                            startAt = 0L
+                            partial = false
+                        }
+                    }
+                    else -> {
+                        conn.disconnect()
+                        error("HTTP $code при скачивании $label")
+                    }
+                }
+                if (code !in listOf(HttpURLConnection.HTTP_OK, HttpURLConnection.HTTP_PARTIAL)) {
+                    conn.disconnect()
+                    error("HTTP $code при скачивании $label")
+                }
+                if (!isPartial) startAt = 0L
+                val bodyLen = conn.contentLengthLong.takeIf { it > 0L } ?: -1L
+                val total = when {
+                    isPartial && bodyLen > 0L -> startAt + bodyLen
+                    bodyLen > 0L -> bodyLen
+                    expectedSize != null -> expectedSize
+                    else -> -1L
+                }
+                conn.getHeaderField("ETag")?.takeIf { it.isNotBlank() }?.let { etagFile.writeText(it.trim()) }
+                if (!partial || !sizeFile.exists()) {
+                    if (total > 0L) sizeFile.writeText(total.toString())
+                }
 
-                    if (!tmp.exists() || tmp.length() == 0L) resuming = false
-
-                    val doneStart = if (resuming) startAt else 0L
-                    // total гарантированно > 0 (fail-loud выше) — единственный источник
-                    // неизвестности был chunked, который мы отсекли.
-                    val totalBytes = if (resuming) doneStart + total else total
-                    Log.d(TAG, "скачиваю ${dest.name}, http=$code, осталось=$total, уже есть=$doneStart")
-
-                    var done = doneStart
-                    // append (true) ТОЛЬКО при честном 206 — иначе полный 200-ответ ляжет поверх хвоста.
-                    val out = FileOutputStream(tmp, resuming)
-                    conn.inputStream.use { input ->
-                        out.use { fos ->
-                            val buf = ByteArray(256 * 1024)
-                            while (true) {
-                                // Каждый чанк: отмена пользователем (корутина) — чистый выход,
-                                // .part и sidecar-ы ОСТАЮТСЯ → следующий заход докачает с этого
-                                // места (resume), а не начнёт 574 МБ заново.
+                try {
+                    FileOutputStream(tmp, isPartial).use { out ->
+                        conn.inputStream.use { input ->
+                            val buf = ByteArray(DEFAULT_BUF)
+                            var read: Int
+                            var done = startAt
+                            var lastReport = 0L
+                            while (input.read(buf).also { read = it } >= 0) {
                                 coroutineContext.ensureActive()
-                                val n = input.read(buf)
-                                if (n < 0) break
-                                // Доп. защита от HTML: content-type мог быть пустым/обманным —
-                                // смотрим сами байты. Проверяем ПЕРВЫЙ чанк тела (done == doneStart;
-                                // при честном 206 это начало хвоста — тоже валидный бинарь, а HTML
-                                // туда не попадёт, т.к. хвост продолжает уже скачанный GGML).
-                                if (done == doneStart && looksLikeHtml(buf, n)) {
-                                    // HTML — не «оборванная модель»: resume бессмысленен,
-                                    // чистим .part и sidecar-ы, чтобы не склеивать страницу.
-                                    tmp.delete()
-                                    etagFile.delete()
-                                    sizeFile.delete()
-                                    throw IllegalStateException("сервер вернул HTML вместо модели $label (error page?) — проверь сеть/URL")
+                                if (read == 0) continue
+                                out.write(buf, 0, read)
+                                done += read
+                                val now = System.currentTimeMillis()
+                                if (now - lastReport > PROGRESS_MS) {
+                                    onProgress(done, total.coerceAtLeast(done))
+                                    lastReport = now
                                 }
-                                fos.write(buf, 0, n)
-                                done += n
-                                onProgress(done, totalBytes)
                             }
+                            out.fd.sync()
+                            onProgress(done, total.coerceAtLeast(done))
                         }
                     }
-
-                    if (done < minBytes) {
-                        throw IllegalStateException("файл оборван: $done байт (min=$minBytes)")
-                    }
-
-                    // Точная сверка с ожидаемым размером из sidecar (Content-Length первого
-                    // 200-ответа): Content-Length точен, поэтому равенство строгое — ловит
-                    // «чистый» обрыв, при котором сервер закрыл поток на 99% файла, а
-                    // константный порог MIN_TURBO такой обрыв бы пропустил.
-                    val expected = readExpectedSize(sizeFile)
-                    if (expected != null && expected > 0 && done != expected) {
-                        throw IllegalStateException("размер не сошёлся: $done != $expected")
-                    }
-
-                    // SHA-256 снапшот проверенного файла: считаем по tmp ДО rename (rename
-                    // не меняет содержимое — хеш тот же, экономит повторное чтение 574МБ),
-                    // манифест пишем уже под финальным именем после переноса.
-                    // GGML-magic ПЕРВЫМ: проверка 4 байт дешева, мусор убиваем ДО тяжёлого
-                    // SHA-256 574 МБ (хэш на заведомо битом файле — 3-5 сек впустую).
-                    verifyGgmlMagic(tmp, etagFile, sizeFile, label)
-                    val digest = sha256Of(tmp)
-                    if (digest == null) {
-                        // не читается — это уже повреждение: не отдаём успех без манифеста
-                        throw IllegalStateException("SHA-256 не посчитался для ${tmp.name} — файл не читается")
-                    }
-
-                    // Целиком скачан → атомарно переносим в финальное имя. Если renameTo
-                    // не дался (кросс-ФС/FUSE) — fallback копированием в временный
-                    // файл и rename; при сбое чистим всё, чтобы не оставить ни
-                    // недописанный dest, ни битый tmp.
-                    if (!tmp.renameTo(dest)) {
-                        val destTmp = File(dest.parentFile, "${dest.name}.tmp-final")
-                        Log.w(TAG, "${dest.name}: rename не дался — копирую целиком (может занять время на ${done / 1024 / 1024}MB)")
-                        // Fallback-копия создаёт ВТОРОЙ экземпляр файла при живых tmp и dest.
-                        // Пик каталога: tmp (done) + dest (если жив) + destTmp-копия (done)
-                        // + запас. Считаем по done (прогресс), не по tmp.length() (буфер).
-                        destTmp.delete() // сироты прошлых fallback-попыток
-                        val peak = done + maxOf(done, if (dest.exists()) dest.length() else 0L) + 16L * 1024 * 1024
-                        ensureFreeSpace(context, label, peak)
-                        try {
-                            tmp.copyTo(destTmp, overwrite = true)
-                            if (!destTmp.renameTo(dest)) {
-                                destTmp.delete()
-                                throw IllegalStateException("не удалось перенести ${dest.name} в финальное имя")
-                            }
-                        } catch (e: Exception) {
-                            // НЕ трогаем dest: если копирование упало (место/IO), на месте
-                            // мог остаться прежний рабочий файл — уничтожать его нельзя.
-                            destTmp.delete()
-                            throw e
-                        }
-                        tmp.delete()
-                        // Fallback-путь копировал байты вручную — в отличие от rename,
-                        // содержимое dest не гарантировано идентично tmp: сверяем явно.
-                        val copiedDigest = sha256Of(dest)
-                        if (copiedDigest == null || copiedDigest != digest) {
-                            throw IllegalStateException("${dest.name}: SHA-256 не сошёлся после fallback-переноса — файл не тот")
-                        }
-                    }
-                    // Манифест пишем ТОЛЬКО под реально лежащим файлом: rename мог тихо
-                    // не пройти (кривая ФС) — тогда dest старый/отсутствует, и манифест
-                    // не должен фиксировать несуществующий или прежний файл.
-                    if (dest.exists() && dest.length() == done) {
-                        writeManifest(dest, digest)
-                    } else {
-                        throw IllegalStateException("${dest.name}: файл не на месте после переноса (${dest.length()} != $done)")
-                    }
-                    // Скачивание завершено: sidecar-ы больше не нужны (следующий полный
-                    // заход запишет свежие). Ошибка удаления не критична.
-                    etagFile.delete()
-                    sizeFile.delete()
-                    persistExactSize(dest)
-                    Log.d(TAG, "скачана: ${dest.absolutePath} (${dest.length() / 1024 / 1024}MB)")
-                    dest
                 } finally {
                     conn.disconnect()
                 }
-            }
-        }
 
-    /** "bytes 1234-999999/1000000" → 1234; null если заголовка/парсинга нет. */
-    private fun parseContentRangeStart(header: String?): Long? {
-        if (header == null) return null
-        val m = Regex("""bytes\s+(\d+)-""").find(header) ?: return null
-        return m.groupValues[1].toLongOrNull()
-    }
-
-    /**
-     * Предстартовая проверка места: у пользователя должно быть сообщение ДО того,
-     * как 574 МБ оборвутся посреди пути. usableSpace в {0, -1} — неизвестно
-     * (ФС без лимита / квота не реализована): не блокируем, только логируем —
-     * реальный недостаток места всё равно поймает IOException при записи.
-     */
-    private fun ensureFreeSpace(
-        context: Context,
-        label: String,
-        requiredFree: Long,
-    ) {
-        val free = context.filesDir.usableSpace
-        val needMb = requiredFree / 1024 / 1024
-        when {
-            free >= requiredFree -> Unit // места достаточно
-            free > 0 -> throw IllegalStateException(
-                "Недостаточно места для $label: нужно примерно $needMb МБ, " +
-                    "свободно ${free / 1024 / 1024} МБ (не хватает ${(requiredFree - free) / 1024 / 1024} МБ)",
-            )
-            else -> Log.w(TAG, "usableSpace=$free для $label (нужно ~$needMb МБ) — проверку пропускаю")
-        }
-    }
-
-    /**
-     * Error-page (HTML) вместо бинарной модели: ищем маркеры страницы в первых
-     * 512 байтах. Смотрим ТОЛЬКО начало файла (первый чанк тела): GGML всегда
-     * открывается magic "ggml", '<' там невозможен — ложных срабатываний нет.
-     * Середину потока НЕ сканируем (в бинарнике '<' встречается легально) —
-     * там мусор поймает финальная GGML-magic сверка.
-     */
-    private fun looksLikeHtml(
-        buf: ByteArray,
-        len: Int,
-    ): Boolean {
-        val head = String(buf, 0, minOf(len, 512), Charsets.UTF_8)
-        return head.contains("<!DOCTYPE", ignoreCase = true) ||
-            head.contains("<html", ignoreCase = true)
-    }
-
-    /**
-     * GGML-magic файла: первые 4 байта — uint32 LE "ggml" (0x67676D6C).
-     * Официальные whisper.cpp ggml-*.bin пишут магию 32-битным словом в little-endian:
-     * физические байты 6C 6D 67 67 (а НЕ текст "ggml" = 67 67 6D 6C). Валидируем
-     * по LE-значению — как это делает сам whisper.cpp (memcmp против целого).
-     * Дешёвая проверка (4 байта) — используется и для .part-начала перед resume,
-     * и для финальной сверки всего tmp.
-     */
-    private val ggmlMagicBytes = byteArrayOf(0x6C.toByte(), 0x6D.toByte(), 0x67.toByte(), 0x67.toByte())
-
-    private fun hasGgmlMagic(file: File): Boolean =
-        try {
-            file.inputStream().use { input ->
-                val magic = ByteArray(4)
-                var off = 0
-                while (off < 4) {
-                    val n = input.read(magic, off, 4 - off)
-                    if (n < 0) break
-                    off += n
+                val finalSize = tmp.length()
+                val exactExpected = readExpectedSize(sizeFile)
+                if (exactExpected != null && finalSize != exactExpected) {
+                    Log.w(TAG, "$label: размер $finalSize != $exactExpected, оставляю .part для докачки")
+                    error("Неполная загрузка $label: $finalSize из $exactExpected")
                 }
-                off == 4 && magic.contentEquals(ggmlMagicBytes)
-            }
-        } catch (_: Exception) {
-            false
-        }
-
-    /**
-     * Финальная сверка tmp перед rename: см. [hasGgmlMagic]. Ловит мусор,
-     * прошедший предварительные проверки (обманутый content-type, HTML в середине
-     * потока от прокси). При провале чистим .part + sidecar-ы ДО rename/манифеста —
-     * повреждение не станет «валидной» моделью, следующая попытка начнёт с нуля.
-     */
-    private fun verifyGgmlMagic(
-        tmp: File,
-        etagFile: File,
-        sizeFile: File,
-        label: String,
-    ) {
-        if (hasGgmlMagic(tmp)) return
-        Log.e(TAG, "$label: GGML-magic не сошёлся — мусор вместо модели, перекачка с нуля")
-        tmp.delete()
-        etagFile.delete()
-        sizeFile.delete()
-        throw IllegalStateException("сервер отдал не модель (нет GGML-magic) для $label — файл очищен, попробуй ещё раз")
-    }
-
-    /**
-     * Пишет ETag ответа в sidecar; если сервер ETag не отдал или он слабый
-     * (W/"..." — не гарантирует байтовую идентичность) — удаляет sidecar,
-     * чтобы resume не доверял недоказанной ревизии.
-     */
-    private fun saveEtag(
-        etag: String?,
-        etagFile: File,
-    ) {
-        try {
-            if (etag != null && etag.isNotEmpty() && !etag.startsWith("W/")) {
-                etagFile.writeText(etag)
-            } else {
+                if (finalSize < minBytes) {
+                    error("Скачанный файл $label слишком мал: $finalSize < $minBytes")
+                }
+                if (!verifyGgmlMagic(tmp)) {
+                    tmp.delete()
+                    etagFile.delete()
+                    sizeFile.delete()
+                    error("Файл $label не похож на GGML (bad magic)")
+                }
+                val digest = sha256Of(tmp)
+                if (digest != null) writeManifest(tmp, digest)
+                persistExactSize(tmp)
+                if (dest.exists()) dest.delete()
+                if (!tmp.renameTo(dest)) {
+                    tmp.copyTo(dest, overwrite = true)
+                    tmp.delete()
+                }
                 etagFile.delete()
-            }
-        } catch (_: Exception) {
-            // sidecar — best-effort, скачивание от него не зависит
-        }
-    }
-
-    /** Пишет ожидаемый размер в sidecar; при -1 (chunked) размер неизвестен — удаляет. */
-    private fun saveExpectedSize(
-        total: Long,
-        sizeFile: File,
-    ) {
-        try {
-            if (total > 0) {
-                sizeFile.writeText(total.toString())
-            } else {
                 sizeFile.delete()
+                Log.d(TAG, "$label скачан: ${dest.absolutePath} (${dest.length()} б)")
+                dest
             }
-        } catch (_: Exception) {
-            // best-effort
+        }
+
+    private fun openGet(url: String, startAt: Long, etag: String?): HttpURLConnection =
+        (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 30_000
+            readTimeout = 60_000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", "opencode-mobile/1.0")
+            if (startAt > 0L) {
+                setRequestProperty("Range", "bytes=$startAt-")
+                if (!etag.isNullOrBlank()) setRequestProperty("If-Range", etag)
+            }
+        }
+
+    private fun ensureFreeSpace(context: Context, label: String, required: Long) {
+        val free = context.filesDir.usableSpace
+        if (free < required) {
+            val needMb = required / 1024 / 1024
+            val freeMb = free / 1024 / 1024
+            error("Недостаточно места для $label: нужно ~${needMb} МБ, свободно ${freeMb} МБ")
         }
     }
 
-    /** Персистит точный размер валидного файла в постоянный sidecar (см. [exactSizeFile]). */
-    private fun persistExactSize(file: File) {
-        try {
-            exactSizeFile(file).writeText(file.length().toString())
-        } catch (_: Exception) {
-            // best-effort: без sidecar *Ready() просто вернётся к fallback-порогу
-        }
+    private fun hasGgmlMagic(file: File): Boolean = verifyGgmlMagic(file)
+
+    private fun verifyGgmlMagic(file: File): Boolean {
+        if (!file.exists() || file.length() < 4) return false
+        val head = ByteArray(4)
+        return runCatching {
+            file.inputStream().use { if (it.read(head) != 4) return@runCatching false }
+            // "ggml" in little-endian-ish file header appears as bytes 67 67 6d 6c? In GGUF it's "GGUF";
+            // ggml old format starts with 0x67676d6c ('ggml') little-endian uint32.
+            val magicLe = ((head[3].toInt() and 0xFF) shl 24) or ((head[2].toInt() and 0xFF) shl 16) or
+                ((head[1].toInt() and 0xFF) shl 8) or (head[0].toInt() and 0xFF)
+            magicLe == 0x67676D6C || magicLe == 0x46554747 // ggml or GGUF
+        }.getOrDefault(false)
     }
 
-    /** Читает ожидаемый размер из sidecar; null если sidecar нет/битый. */
-    private fun readExpectedSize(sizeFile: File): Long? {
-        if (!sizeFile.exists()) return null
-        return try {
-            sizeFile.readText().trim().toLongOrNull()
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    /**
-     * Порог <готовности> для *Ready(): точный размер из постоянного sidecar
-     * (<имя>.size — пишется после успешной загрузки, см. [persistExactSize]).
-     * Sidecar валидируется нижней границей (не меньше 97% константы модели) —
-     * битый/чужой sidecar не даст ложной готовности. Legacy .part.size НЕ
-     * используется: он писался прогрессом докачки (промежуточный размер) и
-     * дал бы ложную готовность при оборванном апдейте модели.
-     */
-    private fun readyThreshold(
-        dest: File,
-        fallback: Long,
-    ): Long {
-        val expected = readExpectedSize(exactSizeFile(dest))
-        if (expected != null && expected >= fallback * 0.97) return expected
+    private fun readyThreshold(file: File, fallback: Long): Long {
+        val exact = readExpectedSize(exactSizeFile(file))
+        if (exact != null && exact >= fallback * 0.97) return exact
         return fallback
     }
+
+    private const val DEFAULT_BUF = 64 * 1024
+    private const val PROGRESS_MS = 400L
 }

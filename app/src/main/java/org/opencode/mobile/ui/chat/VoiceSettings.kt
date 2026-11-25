@@ -8,21 +8,16 @@ import androidx.compose.runtime.setValue
 import org.opencode.mobile.stt.SttModels
 
 /**
- * Движок распознавания и модель whisper.cpp — настройки голосового ввода.
+ * Настройки голосового ввода: движок (system/whisper-кошелёк) и выбранная
+ * локальная модель.
  *
- * Вынесено из `ChatOverlay` не ради строк: здесь два правила, которые раньше жили
- * в комментариях и проверялись только руками на телефоне.
+ * Важно: `stt_engine` хранит только `system|whisper` для совместимости.
+ * Конкретный runtime локальной модели (whisper.cpp ggml или sherpa-onnx)
+ * определяется по каталогу [SttModels] в P2.
  *
- * 1. `ncnn` выпилен 14.10.2026 вместе с моделью на 1,2 ГБ (SIGSEGV на энкодере
- *    Adreno, на CPU вчетверо медленнее whisper.cpp; таблицы — docs/VOICE-REPORT.md).
- *    У людей на диске осталось `stt_engine=ncnn`; значение обязано мигрировать
- *    на `whisper`, иначе настройка указывает в движок, которого больше нет.
- * 2. Модель читается из prefs **в момент записи**, а не из снимка на старте
- *    приложения. Копия в `remember` замораживалась: скачал turbo, перевыбрал —
- *    распознавание всё равно шло на base. Здесь единственный писатель — панель,
- *    поэтому значение в держателе и есть текущая настройка.
- *
- * Хранилище за узким [VoiceStore]: тест подставляет карту в памяти и не тащит Android.
+ * Миграция: старый ключ `stt_model_whisper` сохраняем; новый `stt_model_local`
+ * имеет приоритет. Нельзя терять выбранный `small` и нельзя затирать новые
+ * валидные id.
  */
 @Stable
 internal class VoiceSettings(
@@ -31,30 +26,42 @@ internal class VoiceSettings(
     var sttEngine by mutableStateOf(VoiceEngine.normalize(store.readEngine()))
         private set
 
-    var whisperModelId by mutableStateOf(VoiceEngine.knownModel(store.readWhisperModelId()))
+    var localModelId by mutableStateOf(resolveInitialModel(store))
         private set
+
+    /** Совместимость со старым именем поля, которое использует UI. */
+    val whisperModelId: String
+        get() = localModelId
 
     fun chooseEngine(engine: String) {
         sttEngine = VoiceEngine.normalize(engine)
         store.writeEngine(sttEngine)
     }
 
-    /** Модель для распознавания: ровно то, что выбрано в панели. */
-    fun sttModel(): String = whisperModelId
+    /** Модель для локального распознавания. */
+    fun sttModel(): String = localModelId
 
-    /**
-     * Выбор модели. Неизвестный id (модель убрали из каталога) уводится на дефолт
-     * тем же правилом, что и при чтении: иначе распознавание молча шло бы не той
-     * моделью, которую человек видит выбранной.
-     */
     fun chooseWhisperModel(id: String) {
-        whisperModelId = VoiceEngine.knownModel(id)
-        store.writeWhisperModel(whisperModelId)
+        localModelId = VoiceEngine.knownModel(id)
+        store.writeLocalModel(localModelId)
+        val model = SttModels.byId(localModelId)
+        if (model?.flatFileName != null) {
+            store.writeWhisperModel(localModelId)
+        }
     }
 
     companion object {
         const val ENGINE_KEY = "stt_engine"
         const val MODEL_KEY = "stt_model_whisper"
+        const val LOCAL_MODEL_KEY = "stt_model_local"
+
+        private fun resolveInitialModel(store: VoiceStore): String {
+            val local = store.readLocalModelId()?.takeIf { SttModels.byId(it) != null }
+            if (local != null) return local
+            val legacy = store.readWhisperModelId()?.takeIf { SttModels.byId(it) != null }
+            if (legacy != null) return legacy
+            return SttModels.DEFAULT_ID
+        }
     }
 }
 
@@ -80,6 +87,10 @@ internal interface VoiceStore {
     fun readWhisperModelId(): String?
 
     fun writeWhisperModel(id: String)
+
+    fun readLocalModelId(): String?
+
+    fun writeLocalModel(id: String)
 }
 
 internal class SharedPreferencesVoiceStore(
@@ -92,4 +103,8 @@ internal class SharedPreferencesVoiceStore(
     override fun readWhisperModelId(): String? = prefs.getString(VoiceSettings.MODEL_KEY, SttModels.DEFAULT_ID)
 
     override fun writeWhisperModel(id: String) = prefs.edit().putString(VoiceSettings.MODEL_KEY, id).apply()
+
+    override fun readLocalModelId(): String? = prefs.getString(VoiceSettings.LOCAL_MODEL_KEY, null)
+
+    override fun writeLocalModel(id: String) = prefs.edit().putString(VoiceSettings.LOCAL_MODEL_KEY, id).apply()
 }

@@ -26,31 +26,20 @@ import kotlinx.coroutines.withContext
 import org.opencode.mobile.stt.SttModel
 import org.opencode.mobile.stt.SttModels
 
-// Цвета и отступы — константами по правилам репозитория: detekt считает
-// литерал цвета магическим числом, а не только его второе появление.
 private const val PICK_BULLET_ARGB = 0xFFFF6D00L
 private const val PICK_TEXT_ARGB = 0xFFE6E6EL
 private const val PICK_DIM_ARGB = 0xFF90A4AEL
 private const val PICK_OK_ARGB = 0xFF7BD88FL
 private const val PICK_MISSING_ARGB = 0xFFFF6F5AL
 private const val PICK_BG_ARGB = 0xFF1C1C1CL
+private const val PICK_REC_ARGB = 0xFFFFD54FL
 private val PICK_CORNER = 8.dp
 private const val PICK_LEFT_PAD = 20
 private const val PICK_GAP = 2
 
 /**
- * Выбор модели распознавания для движка whisper.cpp.
- *
- * Правило, которое важнее всего: **модель, которой нет на диске, выбрать
- * нельзя.** Раньше выбора модели не было вовсе — только движок, — и если
- * файл не скачан, нажатие на микрофон приводило к ошибке в чате уже после
- * записи. Теперь такая модель показана, но тусклая и без реакции на нажатие,
- * а рядом написано, куда идти.
- *
- * Готовность моделей считается в IO-ветке: [SttModel.isReady] хеширует файл
- * целиком (141 МБ у base, 1,5 ГБ у turbo), и вызов в теле композабла повесил бы
- * панель настроек на секунды. Здесь поэтому стоит LaunchedEffect, а не чтение
- * при построении.
+ * Выбор локальной STT-модели. Модель, которой нет на диске, выбрать нельзя.
+ * Готовность считается в IO, не на UI-потоке.
  */
 @Composable
 internal fun SttModelPicker(
@@ -90,10 +79,6 @@ internal fun SttModelPicker(
     }
 }
 
-/**
- * Строка модели. Кликабельна только когда файл уже на диске: иначе выбор
- * «сработает», а распознавание упадёт с «модель не скачана» посреди записи.
- */
 @Composable
 private fun ModelRow(
     model: SttModel,
@@ -104,22 +89,21 @@ private fun ModelRow(
     Column(
         Modifier
             .fillMaxWidth()
-            .clickable(enabled = ready) { onSelect() }
+            .clickable(enabled = ready && model.runnable) { onSelect() }
             .padding(start = PICK_LEFT_PAD.dp, top = PICK_GAP.dp, bottom = PICK_GAP.dp),
     ) {
-        // «Не скачана» — для моделей с кнопкой скачивания; ручная модель
-        // (adb push) не «скачивается», а «устанавливается», и отправлять
-        // человека за кнопкой, которой нет, нельзя.
         val status =
             when {
+                !model.runnable -> "  ✘ не поддерживается этим APK"
                 ready -> "  ✔ скачана"
                 model.manual -> "  ✘ не установлена"
                 else -> "  ✘ не скачана"
             }
         val hint =
             when {
+                !model.runnable -> " — обнови/собери APK с поддержкой этой модели"
                 ready -> ""
-                model.manual -> " — ставится вручную (adb push) в каталог внешней памяти"
+                model.manual -> " — ставится вручную (adb push)"
                 else -> " — сначала скачай: Настройки -> Диагностика"
             }
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -131,21 +115,26 @@ private fun ModelRow(
             )
             Text(
                 model.id,
-                color = if (ready) Color(PICK_TEXT_ARGB) else Color(PICK_MISSING_ARGB),
+                color = if (ready && model.runnable) Color(PICK_TEXT_ARGB) else Color(PICK_MISSING_ARGB),
                 fontSize = 13.sp,
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
             )
-            Text(
-                "  " + model.sizeLabel,
-                color = Color(PICK_DIM_ARGB),
-                fontSize = 10.sp,
-            )
-            Text(
-                status,
-                color = if (ready) Color(PICK_OK_ARGB) else Color(PICK_MISSING_ARGB),
-                fontSize = 10.sp,
-            )
+            if (model.recommendedForRu) {
+                Text(
+                    "  RU recommended",
+                    color = Color(PICK_REC_ARGB),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            Text("  " + model.sizeLabel, color = Color(PICK_DIM_ARGB), fontSize = 10.sp)
         }
+        Text(
+            status,
+            color = if (ready && model.runnable) Color(PICK_OK_ARGB) else Color(PICK_MISSING_ARGB),
+            fontSize = 10.sp,
+            modifier = Modifier.padding(start = 14.dp),
+        )
         Text(
             model.note + hint,
             color = Color(PICK_DIM_ARGB),

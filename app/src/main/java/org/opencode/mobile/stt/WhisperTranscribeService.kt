@@ -80,15 +80,18 @@ class WhisperTranscribeService : Service() {
          * Parakeet TDT 0.6B v3 (25 европейских языков, включая русский) whisper small
          * по WER и времени. Модель кладётся вручную в getExternalFilesDir/parakeet.
          */
+        /** sherpa-onnx nemo_transducer (GigaAM/Parakeet). */
+        const val ENGINE_SHERPA_TRANSDUCER = "sherpa_transducer"
+        /** sherpa-onnx SenseVoice (runtime-gated). */
+        const val ENGINE_SENSE_VOICE = "sense_voice"
+        /** Старый идентификатор, оставлен для совместимости. */
         const val ENGINE_PARAKEET = "parakeet"
 
-        const val PARAKEET_DIR = "parakeet"
 
         /** Имя каталога для ModelSettings/use-кода (не private в companion лишает доступ вне). */
-        const val PARAKEET_DIR_NAME = "parakeet"
 
         /** Потоки для sherpa-onnx: 4 как у CPU-ветки whisper — на 8 ядрах не голодает. */
-        private const val PARAKEET_THREADS = 4
+        private const val SHERPA_THREADS = 2
 
         /** Максимум задач в очереди. Клип 30-60с PCM ≈ 2.6-5.3MB — ограничиваем память. */
         private const val MAX_QUEUE_SIZE = 4
@@ -123,7 +126,7 @@ class WhisperTranscribeService : Service() {
         private val whisperCtxCache = HashMap<String, WhisperContext>()
 
         /** Кэш parakeet-распознавателя (грузится один раз за процесс, ~650МБ модель). */
-        private val parakeetCache = HashMap<String, OfflineRecognizer>()
+        private val sherpaCache = HashMap<String, OfflineRecognizer>()
 
         /**
          * Tombstone удалённых моделей (thread-safe): модели, чей файл удалён с диска
@@ -399,7 +402,11 @@ class WhisperTranscribeService : Service() {
         private suspend fun transcribeTask(task: SttTask): String {
             val engine = chooseEngine(task.model, task.engine)
             return try {
-                if (engine == ENGINE_PARAKEET) transcribeParakeet(task) else transcribeWhisper(task)
+                when (engine) {
+                    ENGINE_SHERPA_TRANSDUCER, ENGINE_PARAKEET -> transcribeSherpa(task)
+                    ENGINE_SENSE_VOICE -> transcribeSenseVoice(task)
+                    else -> transcribeWhisper(task)
+                }
             } catch (e: Throwable) {
                 Log.e(TAG, "распознавание упало (в сервисе)", e)
                 "ОШИБКА ${engine.uppercase()}: ${e.message}"
@@ -411,15 +418,17 @@ class WhisperTranscribeService : Service() {
          * назвал ЛЮБОЙ из двух источников: боевой путь выводит движок из id модели,
          * а стенд может задать `-e engine parakeet` при произвольной модели.
          */
-        private fun chooseEngine(
-            modelId: String,
-            requested: String,
-        ): String =
-            if (requested == ENGINE_PARAKEET || modelId == SttModels.PARAKEET_ID) {
-                ENGINE_PARAKEET
-            } else {
-                ENGINE_WHISPER
+        private fun chooseEngine(modelId: String, requested: String): String {
+            val byModel = SttModels.byId(modelId)
+            if (byModel != null) {
+                return when (byModel.engineKind) {
+                    SttEngineKind.WHISPER_GGML -> ENGINE_WHISPER
+                    SttEngineKind.SHERPA_TRANSDUCER -> ENGINE_SHERPA_TRANSDUCER
+                    SttEngineKind.SHERPA_SENSE_VOICE -> ENGINE_SENSE_VOICE
+                }
             }
+            return if (requested == ENGINE_PARAKEET || modelId == SttModels.PARAKEET_ID) ENGINE_SHERPA_TRANSDUCER else ENGINE_WHISPER
+        }
 
         /** Ветка whisper.cpp: грузит движок/модель и делает проход, печатая замеры. */
         private suspend fun transcribeWhisper(task: SttTask): String {
@@ -451,74 +460,65 @@ class WhisperTranscribeService : Service() {
          * EngineLibs.load(Engine.TTS). Модель offline: подаём весь клип целиком
          * (acceptWaveform) и декодируем одним проходом.
          */
-        private fun transcribeParakeet(task: SttTask): String {
+        private fun transcribeSherpa(task: SttTask): String {
             val app = requireAppContext()
             if (!EngineLibs.load(app, Engine.TTS)) {
                 error(EngineLibs.reasonOf(app, Engine.TTS) ?: "libsherpa-onnx-jni не загрузился")
             }
             val loadStart = SystemClock.elapsedRealtime()
-            val recognizer = parakeetCache.getOrPut(PARAKEET_DIR) { buildParakeetRecognizer(app) }
+            val recognizer = sherpaCache.getOrPut(task.model) { buildSherpaRecognizer(app, task.model) }
             val loaded = SystemClock.elapsedRealtime()
             val stream = recognizer.createStream()
-            val text =
-                try {
-                    stream.acceptWaveform(task.samples, SAMPLE_RATE_HZ)
-                    recognizer.decode(stream)
-                    recognizer.getResult(stream).text.trim()
-                } finally {
-                    stream.release()
-                }
+            val text = try {
+                stream.acceptWaveform(task.samples, SAMPLE_RATE_HZ)
+                recognizer.decode(stream)
+                recognizer.getResult(stream).text.trim()
+            } finally { stream.release() }
             val done = SystemClock.elapsedRealtime()
-            val pAudioMs = task.samples.size * MS_PER_SECOND / SAMPLE_RATE_HZ
-            val pRtf = if (pAudioMs > 0) (done - loaded).toFloat() / pAudioMs else 0f
-            Log.i(
-                TAG,
-                "parakeet: загрузка ${loaded - loadStart} мс, " +
-                    "проход ${done - loaded} мс, звук $pAudioMs мс, rtf ${"%.2f".format(pRtf)}"
-            )
+            val audioMs = task.samples.size * MS_PER_SECOND / SAMPLE_RATE_HZ
+            val rtf = if (audioMs > 0) (done - loaded).toFloat() / audioMs else 0f
+            Log.i(TAG, "sherpa(${task.model}): загрузка ${loaded - loadStart} мс, проход ${done - loaded} мс, звук $audioMs мс, rtf ${\"%.2f\".format(rtf)}")
             return text
         }
 
-        /**
-         * Собирает OfflineRecognizer под модель parakeet-tdt-0.6b-v3-int8.
-         * Файлы берём из getExternalFilesDir/PARAKEET_DIR (для стенда кладутся
-         * adb push — у Android нет bzip2, а релиз модели идёт .tar.bz2).
-         * modelType="nemo_transducer" — то, что ждёт JNI для Parakeet TDT.
-         */
-        private fun buildParakeetRecognizer(app: Context): OfflineRecognizer {
-            val dir = File(app.getExternalFilesDir(null), PARAKEET_DIR)
+        private fun buildSherpaRecognizer(app: Context, modelId: String): OfflineRecognizer {
+            val model = SttModels.byId(modelId) ?: throw IllegalArgumentException("неизвестная модель: $modelId")
+            if (model.engineKind != SttEngineKind.SHERPA_TRANSDUCER) {
+                throw IllegalArgumentException("модель $modelId не transducer: ${model.engineKind}")
+            }
+            val dir = File(File(app.filesDir, "stt"), model.dirName ?: model.id)
             val tokens = File(dir, "tokens.txt")
+            val isGigaAm = model.id == SttModels.GIGAAM_RNNT_ID || model.dirName == SttModels.GIGAAM_RNNT_ID
+            val featureDim = if (isGigaAm) 64 else 80
             val encoder = File(dir, "encoder.int8.onnx")
-            val decoder = File(dir, "decoder.int8.onnx")
-            val joiner = File(dir, "joiner.int8.onnx")
+            val decoder = if (isGigaAm) File(dir, "decoder.onnx") else File(dir, "decoder.int8.onnx")
+            val joiner = if (isGigaAm) File(dir, "joiner.onnx") else File(dir, "joiner.int8.onnx")
             val missing = listOf(tokens, encoder, decoder, joiner).filterNot { it.exists() }
             if (missing.isNotEmpty()) {
-                error(
-                    "parakeet: нет файлов ${missing.joinToString { it.name }} в ${dir.absolutePath} " +
-                        "— положи модель (adb push) перед замером"
-                )
+                error("sherpa: нет файлов ${missing.joinToString { it.name }} в ${dir.absolutePath} — скачай модель в Настройки -> Диагностика")
             }
-            val config =
-                OfflineRecognizerConfig(
-                    featConfig = FeatureConfig(sampleRate = SAMPLE_RATE_HZ, featureDim = 80),
-                    modelConfig =
-                        OfflineModelConfig(
-                            transducer =
-                                OfflineTransducerModelConfig(
-                                    encoder = encoder.absolutePath,
-                                    decoder = decoder.absolutePath,
-                                    joiner = joiner.absolutePath,
-                                ),
-                            tokens = tokens.absolutePath,
-                            modelType = "nemo_transducer",
-                            numThreads = PARAKEET_THREADS,
-                            debug = org.opencode.mobile.BuildConfig.DEBUG,
-                            provider = "cpu",
-                        ),
-                    decodingMethod = "greedy_search",
-                )
-            Log.d(TAG, "parakeet: гружу модель из ${dir.absolutePath}")
+            val config = OfflineRecognizerConfig(
+                featConfig = FeatureConfig(sampleRate = SAMPLE_RATE_HZ, featureDim = featureDim),
+                modelConfig = OfflineModelConfig(
+                    transducer = OfflineTransducerModelConfig(
+                        encoder = encoder.absolutePath,
+                        decoder = decoder.absolutePath,
+                        joiner = joiner.absolutePath,
+                    ),
+                    tokens = tokens.absolutePath,
+                    modelType = "nemo_transducer",
+                    numThreads = SHERPA_THREADS,
+                    debug = org.opencode.mobile.BuildConfig.DEBUG,
+                    provider = "cpu",
+                ),
+                decodingMethod = "greedy_search",
+            )
+            Log.d(TAG, "sherpa: гружу ${model.id} из ${dir.absolutePath}")
             return OfflineRecognizer(config = config)
+        }
+
+        private fun transcribeSenseVoice(task: SttTask): String {
+            return "ОШИБКА STT: SenseVoice пока не поддержан этим APK (нужен sherpa-onnx sense_voice API)"
         }
 
         private fun enqueue(task: SttTask): Boolean =
