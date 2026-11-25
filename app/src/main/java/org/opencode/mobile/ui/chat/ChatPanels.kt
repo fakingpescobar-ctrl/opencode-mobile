@@ -35,6 +35,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.opencode.mobile.ui.GaugeSettings
 import org.opencode.mobile.ui.McpInfo
+import org.opencode.mobile.ui.MoltChipOff
+import org.opencode.mobile.ui.MoltValue
+import org.opencode.mobile.ui.SMALL
+import org.opencode.mobile.ui.SMALL_LINE
 
 // Панели шапки чата: каждая открывается своим флагом и живёт сама по себе.
 // Вынесены из ChatOverlay как есть — это деревья UI, которые ничего не решают
@@ -159,6 +163,8 @@ private fun ColorPickerSquare(
 }
 
 // Панель настроек: геометрия полос гейджа и диагностика озвучки.
+// Визуально в том же языке, что диагностика: MoltCard/MoltChipOff, TINY/SMALL,
+// плотные строки, без огромных заголовков и пустого воздуха.
 @Composable
 internal fun GaugePanel(
     appearance: ChatAppearance,
@@ -170,7 +176,7 @@ internal fun GaugePanel(
             .fillMaxWidth()
             .padding(top = 8.dp, bottom = 2.dp)
             .testTag(TAG_PANEL_SETTINGS),
-        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp),
     ) {
         GaugeSettings(
             ctxShape = appearance.ctxShape,
@@ -187,21 +193,31 @@ internal fun GaugePanel(
             onBarGapPersist = { appearance.persistBarGap() },
             onResetDefaults = { appearance.resetGauges() },
         )
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xFF151A24))
-                .border(1.dp, Color(0xFF332846), RoundedCornerShape(12.dp))
-                .clickable(enabled = !ttsTestRunning) { onRunTtsTest() }
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+        androidx.compose.material3.Surface(
+            color = MoltChipOff,
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth().clickable(enabled = !ttsTestRunning) { onRunTtsTest() },
         ) {
-            Text(
-                if (ttsTestRunning) "TTS-ДИАГНОСТИКА: синтез и распознавание…" else "TTS-ДИАГНОСТИКА: синтез → распознавание (лог VOICE)",
-                color = if (ttsTestRunning) Color(0xFFFF8A3D) else Color(0xFFB388FF),
-                fontSize = 11.sp,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
-            )
+            Row(
+                Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(if (ttsTestRunning) Color(0xFFFF8A3D) else Color(0xFFB388FF)),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    if (ttsTestRunning) "TTS-диагностика: синтез и распознавание…" else "TTS-диагностика: синтез → распознавание",
+                    color = if (ttsTestRunning) Color(0xFFFF8A3D) else MoltValue,
+                    fontSize = SMALL,
+                    lineHeight = SMALL_LINE,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
