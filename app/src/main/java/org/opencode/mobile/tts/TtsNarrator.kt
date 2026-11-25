@@ -257,6 +257,26 @@ object TtsNarrator {
      */
     fun isSpeaking(): Boolean = speaker?.isSpeaking == true
 
+    /**
+     * Короткий тестовый прогон голоса. Используется при выборе голоса в UI:
+     * пользователь слышит результат сразу, не дожидаясь ответа ассистента.
+     * Текущую очередь очищаем, чтобы превью не смешивалось с речью.
+     */
+    fun speakPreview(context: Context, text: String) {
+        val cfg = TtsConfig.read(context)
+        if (!cfg.isEnabled || text.isBlank()) return
+        stop()
+        val sp = ensureSpeaker(context, cfg)
+        if (sp == null) {
+            deferred = text to true
+            Log.i(TAG, "превью голоса отложено: движок грузится")
+            return
+        }
+        sp.start(cfg.sid, cfg.speechRate)
+        val chunks = SentenceChunker().let { it.push(text) + it.flush() }
+        chunks.mapNotNull(SpeechFilter::speechableText).forEach { sp.enqueue(it) }
+    }
+
     fun release() {
         stop()
         speaker?.release()

@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.InvertColors
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TextFormat
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -36,6 +37,7 @@ internal const val PANEL_COLOR = "color"
 internal const val PANEL_FONT = "font"
 internal const val PANEL_SETTINGS = "settings"
 internal const val PANEL_STT = "stt"
+internal const val PANEL_TTS = "tts"
 internal const val PANEL_PERF = "perf"
 
 // testTag-метки полос: якоря для проверки геометрии по дампу uiautomator.
@@ -184,10 +186,17 @@ private fun ServiceIcons(
     )
     HeaderIcon(
         icon = Icons.Filled.Mic,
-        description = "Настройки голосового ввода (STT)",
+        description = "Распознавание речи (STT)",
         tint = if (state.activePanel == PANEL_STT) Color.White else Color(0xFFBDBDBD),
         active = state.activePanel == PANEL_STT,
         onClick = { actions.onTogglePanel(PANEL_STT) },
+    )
+    HeaderIcon(
+        icon = Icons.Filled.VolumeUp,
+        description = "Озвучка ответов (TTS)",
+        tint = if (state.activePanel == PANEL_TTS) Color.White else Color(0xFFBDBDBD),
+        active = state.activePanel == PANEL_TTS,
+        onClick = { actions.onTogglePanel(PANEL_TTS) },
     )
     // Диагностика: состояние сервера, STT-модели и хвост лога serve. Полноэкранный
     // оверлей рисуется поверх всего, поэтому клавиатуру и фокус прячем здесь:

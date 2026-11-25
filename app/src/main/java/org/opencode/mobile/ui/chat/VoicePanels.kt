@@ -2,13 +2,20 @@ package org.opencode.mobile.ui.chat
 
 import android.content.Context
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -17,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
@@ -32,88 +40,132 @@ import org.opencode.mobile.tts.TtsConfig
 import org.opencode.mobile.tts.TtsEngine
 import org.opencode.mobile.tts.TtsNarrator
 import org.opencode.mobile.ui.SttModelPicker
+import kotlin.random.Random
 
-// Голосовые панели шапки: распознавание (Mic) и озвучка. Вынесены из ChatPanels,
-// потому что настроек у голоса вдвое больше, чем у цвета или гейджа, и держать
-// их в одном файле с остальными панелями значило держать файл на 600 строк.
-//
-// Всё, что панель меняет снаружи себя, лежит в объектах настроек (voice, tts,
-// elevenKey): сами они в состояние экрана не пишут.
+// Голосовые панели шапки: STT под Mic, TTS под динамиком. Разнесены по разным
+// иконкам, чтобы выбор движка распознавания и настройка озвучки не мешались.
 
-// Панель выбора голосового движка (system | whisper). Отдельная от GaugePanel:
-// GaugeSettings отвечает только за полосы гейджа. Открывается иконкой Mic.
+private val PanelBg = Brush.verticalGradient(listOf(Color(0xFF1A1F2B), Color(0xFF141821)))
+private val CardBg = Color(0xFF202838)
+private val CardActiveBg = Color(0xFF26324A)
+private val Accent = Color(0xFFFF8A3D)
+private val AccentSoft = Color(0x33FF8A3D)
+private val TextMain = Color(0xFFEAF0FF)
+private val TextDim = Color(0xFF93A0B8)
+
+private val TTS_PREVIEW_PHRASES = listOf(
+    "Это мой голос.",
+    "Это мой новый голос.",
+    "Привет, так я звучу.",
+    "Проверка голоса, как слышно?",
+    "Вот так будет звучать ответ.",
+)
+
 @Composable
 internal fun SttPanel(voice: VoiceSettings) {
     Column(
         Modifier
             .fillMaxWidth()
             .padding(top = 8.dp, bottom = 2.dp)
-            .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(16.dp))
+            .background(PanelBg)
+            .border(1.dp, Color(0xFF2A3550), RoundedCornerShape(16.dp))
             .testTag(TAG_PANEL_STT)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = 12.dp, vertical = 12.dp),
     ) {
         Text(
-            "Голосовое распознавание:",
-            color = Color(0xFFBDBDBD),
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
+            "РАСПОЗНАВАНИЕ РЕЧИ",
+            color = Accent,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.2.sp,
         )
-        SttEngineRow(
-            label = "Системный Android (Google)",
-            selected = voice.sttEngine == VoiceEngine.SYSTEM,
-        ) { voice.chooseEngine(VoiceEngine.SYSTEM) }
-        // Модель НЕ подставляется при смене движка: её выбирает человек списком
-        // ниже. Раньше движок молча затирал модель на base, и выбрать turbo было
-        // невозможно — настройка «движок» затирала настройку «модель».
-        SttEngineRow(
-            label = "Локальные модели (whisper.cpp / sherpa-onnx)",
-            selected = voice.sttEngine == VoiceEngine.WHISPER,
-        ) { voice.chooseEngine(VoiceEngine.WHISPER) }
-        // Подсказка: рекомендуется для русского
         Text(
-            "Рекомендуется для русского: GigaAM v3 E2E RNNT (скачать в Диагностику)",
-            color = Color(0xFF90A4AE),
-            fontSize = 10.sp,
-            modifier = Modifier.padding(top = 2.dp, bottom = 4.dp),
+            "Выбери движок STT. Для русского приоритет — GigaAM.",
+            color = TextDim,
+            fontSize = 11.sp,
+            modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
         )
-        // Список моделей — только для локального движка.
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SttEngineCard(
+                title = "Системный",
+                subtitle = "Android/Google",
+                selected = voice.sttEngine == VoiceEngine.SYSTEM,
+                modifier = Modifier.weight(1f),
+            ) { voice.chooseEngine(VoiceEngine.SYSTEM) }
+            SttEngineCard(
+                title = "Локальный",
+                subtitle = "Whisper/Sherpa",
+                selected = voice.sttEngine == VoiceEngine.WHISPER,
+                modifier = Modifier.weight(1f),
+            ) { voice.chooseEngine(VoiceEngine.WHISPER) }
+        }
+
         if (voice.sttEngine == VoiceEngine.WHISPER) {
-            SttModelPicker(
-                selected = voice.whisperModelId,
-                onSelect = { picked -> voice.chooseWhisperModel(picked) },
+            Spacer(Modifier.height(10.dp))
+            Text("МОДЕЛЬ", color = TextDim, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
+            Text(
+                "GigaAM v3 E2E RNNT — рекомендуемый RU-first. Скачивание в Диагностике.",
+                color = Color(0xFF9FC5A6),
+                fontSize = 10.sp,
+                modifier = Modifier.padding(top = 2.dp, bottom = 6.dp),
+            )
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFF171C27))
+                    .border(1.dp, Color(0xFF283149), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+            ) {
+                SttModelPicker(
+                    selected = voice.whisperModelId,
+                    onSelect = { picked -> voice.chooseWhisperModel(picked) },
+                )
+            }
+        } else {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Системный движок использует распознавание Android. Локальные модели не нужны.",
+                color = TextDim,
+                fontSize = 10.sp,
             )
         }
     }
 }
 
-// Строка выбора движка: кружок состояния и подпись. Две строки отличались только
-// движком и текстом, поэтому общая функция, а не копия на каждый движок.
 @Composable
-private fun SttEngineRow(
-    label: String,
+private fun SttEngineCard(
+    title: String,
+    subtitle: String,
     selected: Boolean,
+    modifier: Modifier = Modifier,
     onSelect: () -> Unit,
 ) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onSelect)
-                .padding(vertical = 6.dp),
+    val border = if (selected) Accent else Color(0xFF33405C)
+    val bg = if (selected) CardActiveBg else CardBg
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(bg)
+            .border(if (selected) 1.5.dp else 1.dp, border, RoundedCornerShape(14.dp))
+            .clickable(onClick = onSelect)
+            .padding(horizontal = 10.dp, vertical = 10.dp),
     ) {
-        Text(
-            if (selected) "● " else "○ ",
-            color = Color(0xFFFF6D00),
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Bold,
-        )
-        Text(label, color = Color(0xFFE6E6E6), fontSize = 13.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(8.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(if (selected) Accent else Color(0xFF55627A)),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(title, color = TextMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        }
+        Text(subtitle, color = TextDim, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp))
     }
 }
 
-// Панель озвучки. Живёт по тем же правилам, что STT: настройка в prefs,
-// переключение — сразу, без рестарта чата.
 @Composable
 internal fun TtsPanel(
     context: Context,
@@ -126,122 +178,148 @@ internal fun TtsPanel(
         Modifier
             .fillMaxWidth()
             .padding(top = 8.dp, bottom = 2.dp)
-            .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(16.dp))
+            .background(PanelBg)
+            .border(1.dp, Color(0xFF2A3550), RoundedCornerShape(16.dp))
             .testTag(TAG_PANEL_TTS)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = 12.dp, vertical = 12.dp),
     ) {
-        Text(
-            "Озвучка ответов:",
-            color = Color(0xFFBDBDBD),
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-        TtsRadioRow("Читать вслух", ttsOn) {
-            tts.setEnabled(!ttsOn)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "ОЗВУЧКА ОТВЕТОВ",
+                    color = Accent,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.2.sp,
+                )
+                Text(
+                    if (ttsOn) "TTS включён" else "TTS выключен",
+                    color = TextDim,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            ToggleChip(active = ttsOn, label = if (ttsOn) "ON" else "OFF") {
+                tts.setEnabled(!ttsOn)
+            }
         }
+
         if (!ttsOn) {
             Text(
                 if (TtsConfig.read(context).modelInstalled(context)) {
-                    "Supertonic offline: модель на месте, 2 потока, sid ${tts.config.sid}"
+                    "Supertonic offline готов, sid ${tts.config.sid + 1}."
                 } else {
-                    "Модель Supertonic не скачана — скачай её в Настройки -> Диагностика"
+                    "Модель Supertonic не скачана — скачай в Диагностике."
                 },
-                color = Color(0xFF90A4AE),
+                color = TextDim,
                 fontSize = 10.sp,
-                modifier = Modifier.padding(start = 20.dp, top = 2.dp),
+                modifier = Modifier.padding(top = 10.dp),
             )
+            return
         }
-        if (ttsOn) {
-            TtsEngineSection(tts, ttsFallback)
-            if (tts.config.engine.isCloud) {
-                ElevenKeySection(tts, elevenKey)
-            }
-            // Локальный sid к облаку отношения не имеет: там голос выбирается
-            // Voice ID выше. Показывать 1..10 при выбранном ElevenLabs — значит
-            // предлагать юзеру переключатель, который ничего не делает.
-            if (!tts.config.engine.isCloud) {
-                TtsVoiceSection(tts)
-            }
-            TtsDumpSection(context, tts)
+
+        Spacer(Modifier.height(10.dp))
+        TtsEngineSection(tts, ttsFallback)
+        if (tts.config.engine.isCloud) {
+            ElevenKeySection(tts, elevenKey)
+        } else {
+            TtsVoiceSection(tts, context)
         }
+        TtsDumpSection(context, tts)
     }
 }
 
-// Движок озвучки: что читать вслух и какой синтез выбран. Причина, по которой
-// выбранный движок молчит (ttsFallback), показывается здесь же: юзер иначе
-// слышит тишину и не знает, что фраза ушла в локальный движок.
 @Composable
-private fun TtsEngineSection(
-    tts: TtsSettings,
-    ttsFallback: String?,
-) {
-    TtsRadioRow("Supertonic (offline, русский)", tts.config.engine == TtsEngine.Sherpa) {
-        tts.chooseEngine(TtsEngine.Sherpa)
-    }
-    TtsRadioRow("ElevenLabs (облако, нужен VPN)", tts.config.engine == TtsEngine.ElevenLabs) {
-        tts.chooseEngine(TtsEngine.ElevenLabs)
-    }
-    // Что СЕЙЧАС реально озвучит, если выбранный движок не поднялся.
-    // Без этой строки юзер выбирает облако, слышит тишину и гадает
-    // почему: причина была только в Log.w и в UI не попадала.
-    // Текст приходит из ttsFallback - состояния, которое
-    // LaunchedEffect выше подтягивает из TtsNarrator. Считать его
-    // здесь нельзя: панель перерисовывается на каждый кадр, а
-    // File.length() по модели - это I/O на main thread.
-    // Локальная копия: ttsFallback - делегированное свойство, и Kotlin
-    // не smart-cast'ит такие (значение может измениться между
-    // проверкой и использованием).
-    val notice = ttsFallback
-    if (notice != null) {
+private fun ToggleChip(active: Boolean, label: String, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (active) AccentSoft else Color(0xFF222B3A))
+            .border(1.dp, if (active) Accent else Color(0xFF39465F), RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
         Text(
-            notice,
-            color = Color(TTS_FALLBACK_NOTICE_COLOR),
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.padding(start = 20.dp, top = 2.dp),
+            label,
+            color = if (active) Accent else TextDim,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
         )
     }
 }
 
-// Ключ ElevenLabs и Voice ID. Показывается только для облачного движка:
-// локальному голосу эти поля не нужны.
 @Composable
-private fun ElevenKeySection(
-    tts: TtsSettings,
-    elevenKey: ElevenKeySettings,
-) {
-    // Облако идёт в сеть, поэтому честно предупреждаем про VPN: из России
-    // api.elevenlabs.io без него не отвечает, и юзер иначе гадает, почему
-    // озвучка молчит.
-    // Облако идёт в сеть, поэтому честно предупреждаем про VPN:
-    // из России api.elevenlabs.io без него не отвечает, и юзер
-    // иначе гадает, почему озвучка молчит.
-    Text(
-        "api.elevenlabs.io из РФ закрыт — нужен включённый VPN. Без сети " +
-            "фраза уйдёт в локальный движок.",
-        color = Color(0xFF90A4AE),
-        fontSize = 10.sp,
-        modifier = Modifier.padding(start = 20.dp, top = 2.dp),
-    )
-    Column(
-        modifier = Modifier.padding(start = 20.dp, top = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+private fun TtsEngineSection(tts: TtsSettings, ttsFallback: String?) {
+    Text("ДВИЖОК", color = TextDim, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
+    Spacer(Modifier.height(6.dp))
+    TtsEngineCard(
+        "Supertonic (offline, русский)",
+        "Локально, без сети",
+        selected = tts.config.engine == TtsEngine.Sherpa,
+    ) { tts.chooseEngine(TtsEngine.Sherpa) }
+    Spacer(Modifier.height(6.dp))
+    TtsEngineCard(
+        "ElevenLabs (облако)",
+        "Нужен API-ключ и VPN из РФ",
+        selected = tts.config.engine == TtsEngine.ElevenLabs,
+    ) { tts.chooseEngine(TtsEngine.ElevenLabs) }
+    ttsFallback?.let { reason ->
+        Text(
+            reason,
+            color = Color(TTS_FALLBACK_NOTICE_COLOR),
+            fontSize = 10.sp,
+            modifier = Modifier.padding(start = 4.dp, top = 6.dp),
+        )
+    }
+}
+
+@Composable
+private fun TtsEngineCard(title: String, subtitle: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (selected) CardActiveBg else CardBg)
+            .border(1.dp, if (selected) Accent else Color(0xFF33405C), RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 10.dp),
     ) {
+        Text(
+            if (selected) "●" else "○",
+            color = if (selected) Accent else TextDim,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+        )
+        Spacer(Modifier.width(8.dp))
+        Column {
+            Text(title, color = TextMain, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            Text(subtitle, color = TextDim, fontSize = 10.sp)
+        }
+    }
+}
+
+@Composable
+private fun ElevenKeySection(tts: TtsSettings, elevenKey: ElevenKeySettings) {
+    Spacer(Modifier.height(10.dp))
+    Text(
+        "api.elevenlabs.io из РФ закрыт — нужен VPN. Без сети фраза уйдёт в локальный движок.",
+        color = TextDim,
+        fontSize = 10.sp,
+    )
+    Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         ElevenKeyField(elevenKey)
         ElevenVoiceField(tts)
     }
 }
 
-// Состояние ключа и поле ввода. Ключ маскируется: он даёт доступ к облачному
-// синтезу за счёт юзера, и случайный скриншот не должен его показывать.
 @Composable
 private fun ElevenKeyField(elevenKey: ElevenKeySettings) {
     Text(
         when {
             !elevenKey.hasKey -> "API-ключ не задан"
-            else ->
-                "API-ключ сохранён " +
-                    (elevenKey.preview ?: "(зашифрован)")
+            else -> "API-ключ сохранён " + (elevenKey.preview ?: "(зашифрован)")
         },
         color = if (elevenKey.hasKey) ElevenKeyPalette.HintOk else ElevenKeyPalette.HintMissing,
         fontSize = 11.sp,
@@ -256,22 +334,12 @@ private fun ElevenKeyField(elevenKey: ElevenKeySettings) {
         textStyle = TextStyle(color = Color(0xFFF0F0F0), fontSize = 13.sp),
         cursorBrush = SolidColor(Color(0xFF7BA6F8)),
         singleLine = true,
-        // Маскируем: ключ — доступ к облачному синтезу за счёт
-        // юзера, и подсветка под телефоном его не защитит,
-        // а вот случайный скриншот или демо стрима — защитит.
         visualTransformation = PasswordVisualTransformation(),
-        keyboardOptions = KeyboardOptions(
-            keyboardType = KeyboardType.Password,
-            imeAction = ImeAction.Done,
-        ),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
         decorationBox = { inner ->
             Box {
                 if (elevenKey.draft.isEmpty()) {
-                    Text(
-                        "sk_…",
-                        color = Color(0xFF777777),
-                        fontSize = 13.sp,
-                    )
+                    Text("sk_…", color = Color(0xFF777777), fontSize = 13.sp)
                 }
                 inner()
             }
@@ -280,8 +348,6 @@ private fun ElevenKeyField(elevenKey: ElevenKeySettings) {
     ElevenKeyActions(elevenKey)
 }
 
-// Сохранить/удалить и причина отказа. Без причины юзер видит неподвижную
-// кнопку и гадает, куда делся ключ.
 @Composable
 private fun ElevenKeyActions(elevenKey: ElevenKeySettings) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -291,24 +357,18 @@ private fun ElevenKeyActions(elevenKey: ElevenKeySettings) {
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
             modifier = Modifier
-                .clickable(enabled = elevenKey.draft.isNotBlank()) {
-                    elevenKey.save()
-                }.padding(horizontal = 8.dp, vertical = 4.dp),
+                .clickable(enabled = elevenKey.draft.isNotBlank()) { elevenKey.save() }
+                .padding(horizontal = 8.dp, vertical = 4.dp),
         )
         if (elevenKey.hasKey) {
             Text(
                 "Удалить",
                 color = ElevenKeyPalette.Danger,
                 fontSize = 12.sp,
-                modifier = Modifier
-                    .clickable {
-                        elevenKey.remove()
-                    }.padding(horizontal = 8.dp, vertical = 4.dp),
+                modifier = Modifier.clickable { elevenKey.remove() }.padding(horizontal = 8.dp, vertical = 4.dp),
             )
         }
     }
-    // Причина отказа от сохранения — иначе юзер видит
-    // неподвижную кнопку и гадает, куда делся ключ.
     elevenKey.error?.let { why ->
         Text(
             "не сохранено: $why",
@@ -319,20 +379,12 @@ private fun ElevenKeyActions(elevenKey: ElevenKeySettings) {
     }
 }
 
-// Voice ID и модель ElevenLabs. Модель только показывается: она задана
-// в конфиге и меняется не из панели.
 @Composable
 private fun ElevenVoiceField(tts: TtsSettings) {
-    Text(
-        "Voice ID:",
-        color = Color(0xFF8A8A8A),
-        fontSize = 11.sp,
-    )
+    Text("Voice ID:", color = TextDim, fontSize = 11.sp)
     BasicTextField(
         value = tts.config.elevenVoice,
-        onValueChange = { value ->
-            tts.update { it.copy(elevenVoice = value) }
-        },
+        onValueChange = { value -> tts.update { it.copy(elevenVoice = value) } },
         modifier = Modifier
             .fillMaxWidth()
             .background(Color(0xFF1C1C1C), RoundedCornerShape(8.dp))
@@ -341,93 +393,70 @@ private fun ElevenVoiceField(tts: TtsSettings) {
         cursorBrush = SolidColor(Color(0xFF7BA6F8)),
         singleLine = true,
     )
-    Text(
-        "Модель: ${tts.config.elevenModel}",
-        color = Color(0xFF8A8A8A),
-        fontSize = 11.sp,
-    )
+    Text("Модель: ${tts.config.elevenModel}", color = TextDim, fontSize = 11.sp)
 }
 
-// Локальный голос (sid) сеткой. К облаку отношения не имеет: там голос —
-// Voice ID выше.
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun TtsVoiceSection(tts: TtsSettings) {
+private fun TtsVoiceSection(tts: TtsSettings, context: Context) {
+    Spacer(Modifier.height(10.dp))
+    Text("ГОЛОС", color = TextDim, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
     Text(
-        "Голос:",
-        color = Color(0xFF8A8A8A),
-        fontSize = 11.sp,
-        modifier = Modifier.padding(start = 20.dp, top = 4.dp),
+        "Нажми на голос — сразу услышишь превью.",
+        color = TextDim,
+        fontSize = 10.sp,
+        modifier = Modifier.padding(top = 2.dp, bottom = 6.dp),
     )
-    /** Голоса в две строки по пять: на шапке телефона одна строка уже не помещалась. */
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        for (row in (0..TtsConfig.MAX_SID).chunked(SID_CHUNK)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                for (sid in row) {
-                    val active = tts.config.sid == sid
-                    Text(
-                        "${sid + 1}",
-                        color = if (active) Color(0xFF1C1C1C) else Color(0xFFE6E6E6),
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(
-                                if (active) Color(0xFFBDBDBD) else Color(0xFF2A2A2A),
-                            ).clickable {
-                                tts.update { it.copy(sid = sid) }
-                                TtsNarrator.stop()
-                            }.padding(horizontal = 12.dp, vertical = 5.dp),
-                    )
-                }
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        for (sid in 0..TtsConfig.MAX_SID) {
+            val active = tts.config.sid == sid
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(if (active) Accent else Color(0xFF232C3D))
+                    .border(1.dp, if (active) Accent else Color(0xFF34415A), RoundedCornerShape(10.dp))
+                    .clickable {
+                        tts.update { it.copy(sid = sid) }
+                        TtsNarrator.stop()
+                        val phrase = TTS_PREVIEW_PHRASES[Random.nextInt(TTS_PREVIEW_PHRASES.size)]
+                        TtsNarrator.speakPreview(context, phrase)
+                    }
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    "${sid + 1}",
+                    color = if (active) Color(0xFF151515) else TextMain,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center,
+                )
             }
         }
     }
 }
 
-// Дамп сырого PCM в filesDir/tts-dump.pcm (float32, без заголовка): по нему
-// видно длительность и паузы каждого фрагмента — то, чего не показывает лог.
 @Composable
-private fun TtsDumpSection(
-    context: Context,
-    tts: TtsSettings,
-) {
-    // Диагностика озвучки: дамп сырого PCM в filesDir/tts-dump.pcm
-    // (float32, без заголовка). По нему видно длительность и паузы
-    // каждого фрагмента — то, чего не показывает лог. Нужен, чтобы
-    // проверять озвучку без возможности послушать.
+private fun TtsDumpSection(context: Context, tts: TtsSettings) {
+    Spacer(Modifier.height(10.dp))
     TtsRadioRow("Дамп PCM (диагностика)", tts.config.dumpPcm) {
         tts.update { it.copy(dumpPcm = !it.dumpPcm) }
-        // Применяем к живой озвучке сразу: dumpOut переживает смену
-        // голоса и движка, иначе файл писался бы до перезапуска.
         TtsNarrator.applyDumpPref(context)
         TtsNarrator.stop()
     }
     if (tts.config.dumpPcm) {
         Text(
-            "Пишет files/tts-dump.pcm. Забрать: adb exec-out run-as " +
-                "org.opencode.mobile.debug cat files/tts-dump.pcm > dump.pcm",
-            color = Color(0xFF90A4AE),
+            "Пишет files/tts-dump.pcm. Забрать: adb exec-out run-as org.opencode.mobile.debug cat files/tts-dump.pcm > dump.pcm",
+            color = TextDim,
             fontSize = 10.sp,
             modifier = Modifier.padding(start = 20.dp, top = 2.dp),
         )
     }
 }
 
-// testTag-метки голосовых панелей: якоря для проверки геометрии по дампу
-// uiautomator (resource-id). В коде не читаются.
 private const val TAG_PANEL_STT = "panel_stt"
 private const val TAG_PANEL_TTS = "panel_tts"
-
-// Голоса в сетке: пять на строку — на шапке телефона шесть уже не помещались.
-private const val SID_CHUNK = 5
-
-/** Оранжевый плашки «озвучка переехала на другой движок»: предупреждение, не ошибка. */
 private const val TTS_FALLBACK_NOTICE_COLOR = 0xFFFFB74D
 
-// Цвета панели ключа ElevenLabs. Вынесены именами, потому что «серый — есть ключ,
-// оранжевый — ключа нет» и «красный — удалить/ошибка» это смысл, а не украшение:
-// по цвету видно состояние, не читая текст.
 @Suppress("MagicNumber")
 private object ElevenKeyPalette {
     val HintOk = Color(0xFF8A8A8A)

@@ -438,7 +438,6 @@ fun ChatOverlay(
         activePanel =
             when (request.panel) {
                 null -> null
-                PANEL_STT, "tts" -> PANEL_STT
                 else -> request.panel
             }
     }
@@ -458,6 +457,7 @@ fun ChatOverlay(
     val showFontPicker = activePanel == PANEL_FONT
     val showSettings = activePanel == PANEL_SETTINGS
     val showSttSettings = activePanel == PANEL_STT
+    val showTtsSettings = activePanel == PANEL_TTS
     val showPerf = activePanel == PANEL_PERF
 
     fun send() {
@@ -1169,7 +1169,7 @@ fun ChatOverlay(
             if (showSttSettings) {
                 SttPanel(voice)
             }
-            if (showSttSettings) {
+            if (showTtsSettings) {
                 TtsPanel(context, tts, ttsOn, ttsFallback, elevenKey)
             }
             if (showFontPicker) {
