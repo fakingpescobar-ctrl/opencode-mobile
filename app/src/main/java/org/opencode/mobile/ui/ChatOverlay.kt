@@ -232,7 +232,7 @@ fun ChatOverlay(
     // Снимок ленты, черновик, отправка/остановка и плашка причины живут в ChatUiState:
     // правила записи и что переживает смерть процесса — там, у полей. Здесь отрисовка.
     val ui = rememberSaveable(saver = ChatUiState.saver) { ChatUiState() }
-    var whisperRecorder: AudioRecorder? = null
+    var whisperRecorder by remember { mutableStateOf<AudioRecorder?>(null) }
     val listState = rememberLazyListState()
     var knownMsgs by remember { mutableIntStateOf(0) }
     // ИНДЕКС последнего завершённого ответа, на который уже сработала вибрация.
