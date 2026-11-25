@@ -169,9 +169,8 @@ internal fun GaugePanel(
         Modifier
             .fillMaxWidth()
             .padding(top = 8.dp, bottom = 2.dp)
-            .background(Color(0xFF1C1C1C), RoundedCornerShape(12.dp))
-            .testTag(TAG_PANEL_SETTINGS)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .testTag(TAG_PANEL_SETTINGS),
+        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
     ) {
         GaugeSettings(
             ctxShape = appearance.ctxShape,
@@ -188,16 +187,22 @@ internal fun GaugePanel(
             onBarGapPersist = { appearance.persistBarGap() },
             onResetDefaults = { appearance.resetGauges() },
         )
-        Spacer(Modifier.height(8.dp))
-        Text(
-            if (ttsTestRunning) "TTS-тест: синтезирую и распознаю…" else "Диагностика: синтез → распознавание (см. лог VOICE)",
-            color = Color(0xFF5A8DEE),
-            fontSize = 11.sp,
-            modifier =
-                Modifier
-                    .padding(top = 6.dp)
-                    .clickable(enabled = !ttsTestRunning) { onRunTtsTest() },
-        )
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color(0xFF151A24))
+                .border(1.dp, Color(0xFF332846), RoundedCornerShape(12.dp))
+                .clickable(enabled = !ttsTestRunning) { onRunTtsTest() }
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+        ) {
+            Text(
+                if (ttsTestRunning) "TTS-ДИАГНОСТИКА: синтез и распознавание…" else "TTS-ДИАГНОСТИКА: синтез → распознавание (лог VOICE)",
+                color = if (ttsTestRunning) Color(0xFFFF8A3D) else Color(0xFFB388FF),
+                fontSize = 11.sp,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+            )
+        }
     }
 }
 
