@@ -16,6 +16,7 @@ import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
 import com.whispercpp.whisper.WhisperContext
 import kotlinx.coroutines.CompletableDeferred
@@ -82,6 +83,8 @@ class WhisperTranscribeService : Service() {
          */
         /** sherpa-onnx nemo_transducer (GigaAM/Parakeet). */
         const val ENGINE_SHERPA_TRANSDUCER = "sherpa_transducer"
+        /** sherpa-onnx SenseVoice (runtime-gated). */
+        const val ENGINE_SENSE_VOICE = "sense_voice"
         /** Старый идентификатор, оставлен для совместимости. */
         const val ENGINE_PARAKEET = "parakeet"
 
@@ -404,6 +407,7 @@ class WhisperTranscribeService : Service() {
             return try {
                 when (engine) {
                     ENGINE_SHERPA_TRANSDUCER, ENGINE_PARAKEET -> transcribeSherpa(task)
+                    ENGINE_SENSE_VOICE -> transcribeSenseVoice(task)
                     else -> transcribeWhisper(task)
                 }
             } catch (e: Throwable) {
@@ -426,6 +430,7 @@ class WhisperTranscribeService : Service() {
                 return when (byModel.engineKind) {
                     SttEngineKind.WHISPER_GGML -> ENGINE_WHISPER
                     SttEngineKind.SHERPA_TRANSDUCER -> ENGINE_SHERPA_TRANSDUCER
+                    SttEngineKind.SHERPA_SENSE_VOICE -> ENGINE_SENSE_VOICE
                 }
             }
             return if (requested == ENGINE_PARAKEET || modelId == SttModels.PARAKEET_ID) {
@@ -517,6 +522,180 @@ class WhisperTranscribeService : Service() {
             )
             Log.d(TAG, "sherpa: гружу ${model.id} из ${dir.absolutePath}")
             return OfflineRecognizer(config = config)
+        }
+
+        private fun transcribeSenseVoice(task: SttTask): String {
+            val app = requireAppContext()
+            if (!EngineLibs.load(app, Engine.TTS)) {
+                error(EngineLibs.reasonOf(app, Engine.TTS) ?: "libsherpa-onnx-jni не загрузился")
+            }
+            val loadStart = SystemClock.elapsedRealtime()
+            val recognizer = sherpaCache.getOrPut(task.model) { buildSenseVoiceRecognizer(app, task.model) }
+            val loaded = SystemClock.elapsedRealtime()
+            val stream = recognizer.createStream()
+            val text = try {
+                stream.acceptWaveform(task.samples, SAMPLE_RATE_HZ)
+                recognizer.decode(stream)
+                recognizer.getResult(stream).text.trim()
+            } finally {
+                stream.release()
+            }
+            val done = SystemClock.elapsedRealtime()
+            val audioMs = task.samples.size * MS_PER_SECOND / SAMPLE_RATE_HZ
+            val rtf = if (audioMs > 0) (done - loaded).toFloat() / audioMs else 0f
+            Log.i(
+                TAG,
+                "sherpa(${task.model}): загрузка ${loaded - loadStart} мс, " +
+                    "проход ${done - loaded} мс, звук ${audioMs} мс, rtf ${"%.2f".format(rtf)}",
+            )
+            return text
+        }
+
+        private fun buildSenseVoiceRecognizer(app: Context, modelId: String): OfflineRecognizer {
+            val model = SttModels.byId(modelId) ?: throw IllegalArgumentException("неизвестная модель: $modelId")
+            if (model.engineKind != SttEngineKind.SHERPA_SENSE_VOICE) {
+                throw IllegalArgumentException("модель $modelId не sense_voice: ${model.engineKind}")
+            }
+            val dir = File(File(app.filesDir, "stt"), model.dirName ?: model.id)
+            val tokens = File(dir, "tokens.txt")
+            val modelFile = File(dir, "model.int8.onnx")
+            val missing = listOf(tokens, modelFile).filterNot { it.exists() }
+            if (missing.isNotEmpty()) {
+                error(
+                    "sense_voice: нет файлов ${missing.joinToString { it.name }} в ${dir.absolutePath} — " +
+                        "скачай модель в Настройки -> Диагностика",
+                )
+            }
+            val config = OfflineRecognizerConfig(
+                featConfig = FeatureConfig(sampleRate = SAMPLE_RATE_HZ, featureDim = 80),
+                modelConfig = OfflineModelConfig(
+                    senseVoice = OfflineSenseVoiceModelConfig(
+                        model = modelFile.absolutePath,
+                        language = "",
+                        useInverseTextNormalization = true,
+                    ),
+                    tokens = tokens.absolutePath,
+                    numThreads = SHERPA_THREADS,
+                    debug = org.opencode.mobile.BuildConfig.DEBUG,
+                    provider = "cpu",
+                ),
+                decodingMethod = "greedy_search",
+            )
+            Log.d(TAG, "sherpa: гружу ${model.id} (sense_voice) из ${dir.absolutePath}")
+            return OfflineRecognizer(config = config)
+        }
+
+        private fun enqueue(task: SttTask): Boolean =
+            synchronized(queue) {
+                if (queue.size >= MAX_QUEUE_SIZE) {
+                    // reject: очередь полна -> worker гарантированно активен или стартует
+                    // (каждое добавление идёт с startForegroundService -> onStartCommand ->
+                    // ensureWorker), гашение распланирует хвост worker'а. Наш стоп-чек
+                    // не трогаем и не постим повторно — дублей нет.
+                    false
+                } else {
+                    queue.addLast(task)
+                    // Снятие отложенного гашения — под тем же локом, что и добавление:
+                    // хвост worker'а синхронизирован этим же локом, поэтому он не успеет
+                    // распланировать stop ПОСЛЕ нашего снятия, пока задача уже в очереди
+                    // (иначе отложенный стоп слетел бы и сервис завис без гашения).
+                    mainHandler.removeCallbacks(stopRunnable)
+                    true
+                }
+            }
+
+        private fun pollQueue(): SttTask? =
+            synchronized(queue) {
+                queue.removeFirstOrNull()
+            }
+
+        private fun removeTask(id: Long) {
+            synchronized(queue) {
+                val it = queue.iterator()
+                while (it.hasNext()) {
+                    if (it.next().id == id) {
+                        it.remove()
+                        return
+                    }
+                }
+            }
+        }
+
+        private fun isQueueEmpty(): Boolean =
+            synchronized(queue) {
+                queue.isEmpty()
+            }
+
+        /**
+         * Возвращает (и кэширует) контекст whisper под выбранную модель.
+         * Модель лежит файлом в filesDir — её качает ModelDownloader по данным
+         * каталога [SttModels]; если файла нет, loadContextLocked даёт понятную
+         * ошибку со ссылкой на настройки.
+         */
+        private fun obtainContext(model: String): WhisperContext {
+            // Tombstone: файл модели удалён через UI — не загружаем «контекст из
+            // ниоткуда», а сообщаем понятную причину (перекачай в настройках STT).
+            // Второй check ВНУТРИ лямбды ловит гонку UI-drop между первым check и
+            // входом в getOrPut-лямбду: dropModelContext (UI-поток) выполним в любой
+            // момент на многоядре, а лямбда — единственное место, где файл реально
+            // открывается. После входа в лямбду (второй check пройден) остаётся
+            // TOCTOU во время requireNotCorrupt/createContextFromFile (секунды
+            // чтения 141-574MB) — его ловит catch ниже (переводим в понятный текст).
+            if (deletedModelFiles.contains(model)) {
+                error("модель \"$model\" удалена — перекачай её в настройках STT")
+            }
+            return whisperCtxCache.getOrPut(model) {
+                if (deletedModelFiles.contains(model)) {
+                    error("модель \"$model\" удалена — перекачай её в настройках STT")
+                }
+                try {
+                    loadContextLocked(model)
+                } catch (e: Exception) {
+                    // Файл удалён прямо во время загрузки (unlink на открытом fd —
+                    // POSIX-призрак — это ок; хуже: unlink ДО open -> FileNotFound).
+                    // Причины: tombstone (UI уже пометил) ИЛИ файл исчез в окне
+                    // delete..drop (FileNotFound/IOException до пометки). Обе —
+                    // «удалена/повреждена — перекачай». Свой IllegalStateException
+                    // («не скачана», «повреждена») не трогаем — текст уже понятный.
+                    if (e is IllegalStateException && !deletedModelFiles.contains(model)) {
+                        throw e // настоящая семантическая ошибка (не скачана/повреждена)
+                    }
+                    // error() в stdlib принимает только message, без cause, поэтому
+                    // вариант с причиной остаётся на throw — detekt его не рубит.
+                    throw IllegalStateException("модель \"$model\" удалена или повреждена — перекачай её в настройках STT", e)
+                }
+            }
+        }
+
+        /** ВАЖНО (инвариант): вызывается ТОЛЬКО из единственного worker-потока
+         *  (в [runPendingTasks]/транскрипции). Кэши контекстов не потокобезопасны;
+         *  второй читатель/писатель = гонка. НЕ вызывать из onStartCommand, UI и т.д. */
+        private fun loadContextLocked(model: String): WhisperContext {
+            val app = requireAppContext()
+            // Список моделей живёт в каталоге [SttModels], а не здесь: раньше здесь
+            // стоял when на шесть копий одного и того же (имя файла + подпись),
+            // и добавление модели означало править и его, и UI, и диагностику.
+            val spec = SttModels.byId(model) ?: throw IllegalArgumentException("неизвестная модель: $model")
+            return loadGgmlFile(app, spec.fileOf(app), spec.isReady, spec.id)
+        }
+
+        /** Общая загрузка ggml-модели: проверить наличие, целостность, открыть контекст.
+         *  Всё, что различается между моделями, приходит аргументами из каталога. */
+        private fun loadGgmlFile(
+            app: Context,
+            file: java.io.File,
+            ready: (Context) -> Boolean,
+            label: String,
+        ): WhisperContext {
+            if (!ready(app)) {
+                error(
+                    "$label не скачана (${if (file.exists()) (file.length() / 1024 / 1024) else 0}MB) — " +
+                        "скачай в Настройки -> Диагностика -> Голосовое распознавание"
+                )
+            }
+            requireNotCorrupt(file, label)
+            Log.d(TAG, "гружу $label-модель с файла (${file.length() / 1024 / 1024}MB)")
+            return WhisperContext.createContextFromFile(file.absolutePath)
         }
 
         private fun requireAppContext(): Context =
