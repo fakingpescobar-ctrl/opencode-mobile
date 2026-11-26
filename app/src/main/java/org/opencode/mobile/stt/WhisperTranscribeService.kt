@@ -408,6 +408,7 @@ class WhisperTranscribeService : Service() {
                 when (engine) {
                     ENGINE_SHERPA_TRANSDUCER, ENGINE_PARAKEET -> transcribeSherpa(task)
                     ENGINE_SENSE_VOICE -> transcribeSenseVoice(task)
+                    else -> transcribeWhisper(task)
                 }
             } catch (e: Throwable) {
                 Log.e(TAG, "распознавание упало (в сервисе)", e)
@@ -430,6 +431,7 @@ class WhisperTranscribeService : Service() {
                     SttEngineKind.WHISPER_GGML -> ENGINE_WHISPER
                     SttEngineKind.SHERPA_TRANSDUCER -> ENGINE_SHERPA_TRANSDUCER
                     SttEngineKind.SHERPA_SENSE_VOICE -> ENGINE_SENSE_VOICE
+                }
             }
             return if (requested == ENGINE_PARAKEET || modelId == SttModels.PARAKEET_ID) {
                 ENGINE_SHERPA_TRANSDUCER
@@ -519,6 +521,67 @@ class WhisperTranscribeService : Service() {
                 decodingMethod = "greedy_search",
             )
             Log.d(TAG, "sherpa: гружу ${model.id} из ${dir.absolutePath}")
+            return OfflineRecognizer(config = config)
+        }
+
+        private fun transcribeSenseVoice(task: SttTask): String {
+            val app = requireAppContext()
+            if (!EngineLibs.load(app, Engine.TTS)) {
+                error(EngineLibs.reasonOf(app, Engine.TTS) ?: "libsherpa-onnx-jni не загрузился")
+            }
+            val loadStart = SystemClock.elapsedRealtime()
+            val recognizer = sherpaCache.getOrPut(task.model) { buildSenseVoiceRecognizer(app, task.model) }
+            val loaded = SystemClock.elapsedRealtime()
+            val stream = recognizer.createStream()
+            val text = try {
+                stream.acceptWaveform(task.samples, SAMPLE_RATE_HZ)
+                recognizer.decode(stream)
+                recognizer.getResult(stream).text.trim()
+            } finally {
+                stream.release()
+            }
+            val done = SystemClock.elapsedRealtime()
+            val audioMs = task.samples.size * MS_PER_SECOND / SAMPLE_RATE_HZ
+            val rtf = if (audioMs > 0) (done - loaded).toFloat() / audioMs else 0f
+            Log.i(
+                TAG,
+                "sherpa(${task.model}): загрузка ${loaded - loadStart} мс, " +
+                    "проход ${done - loaded} мс, звук ${audioMs} мс, rtf ${"%.2f".format(rtf)}",
+            )
+            return text
+        }
+
+        private fun buildSenseVoiceRecognizer(app: Context, modelId: String): OfflineRecognizer {
+            val model = SttModels.byId(modelId) ?: throw IllegalArgumentException("неизвестная модель: $modelId")
+            if (model.engineKind != SttEngineKind.SHERPA_SENSE_VOICE) {
+                throw IllegalArgumentException("модель $modelId не sense_voice: ${model.engineKind}")
+            }
+            val dir = File(File(app.filesDir, "stt"), model.dirName ?: model.id)
+            val tokens = File(dir, "tokens.txt")
+            val modelFile = File(dir, "model.int8.onnx")
+            val missing = listOf(tokens, modelFile).filterNot { it.exists() }
+            if (missing.isNotEmpty()) {
+                error(
+                    "sense_voice: нет файлов ${missing.joinToString { it.name }} в ${dir.absolutePath} — " +
+                        "скачай модель в Настройки -> Диагностика",
+                )
+            }
+            val config = OfflineRecognizerConfig(
+                featConfig = FeatureConfig(sampleRate = SAMPLE_RATE_HZ, featureDim = 80),
+                modelConfig = OfflineModelConfig(
+                    senseVoice = OfflineSenseVoiceModelConfig(
+                        model = modelFile.absolutePath,
+                        language = "",
+                        useInverseTextNormalization = true,
+                    ),
+                    tokens = tokens.absolutePath,
+                    numThreads = SHERPA_THREADS,
+                    debug = org.opencode.mobile.BuildConfig.DEBUG,
+                    provider = "cpu",
+                ),
+                decodingMethod = "greedy_search",
+            )
+            Log.d(TAG, "sherpa: гружу ${model.id} (sense_voice) из ${dir.absolutePath}")
             return OfflineRecognizer(config = config)
         }
 
