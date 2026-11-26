@@ -429,7 +429,7 @@ class WhisperTranscribeService : Service() {
                 return when (byModel.engineKind) {
                     SttEngineKind.WHISPER_GGML -> ENGINE_WHISPER
                     SttEngineKind.SHERPA_TRANSDUCER -> ENGINE_SHERPA_TRANSDUCER
-                    SttEngineKind.SHERPA_SENSE_VOICE -> ENGINE_SENSE_VOICE
+                }
             }
             return if (requested == ENGINE_PARAKEET || modelId == SttModels.PARAKEET_ID) {
                 ENGINE_SHERPA_TRANSDUCER
