@@ -240,7 +240,7 @@ object SttModels {
             ),
             SttModel(
                 id = ZIPFORMER_RU_ID,
-                note = "Zipformer RU int8 2025-04-20 · sherpa-onnx transducer (alphacep/vosk-model-ru) · публичный HF, runtime-путь в APK пока не подключён",
+                note = "Zipformer RU int8 2025-04-20 · sherpa-onnx transducer (alphacep/vosk-model-ru) · публичный HF, runtime подключён экспериментально",
                 bytes = 73_476_000L,
                 isReady = { ctx -> byIdStatic(ctx, ZIPFORMER_RU_ID) },
                 fileOf = { ctx -> sherpaDir(ctx, ZIPFORMER_RU_ID) },
@@ -259,7 +259,7 @@ object SttModels {
                     ),
                 recommendedForRu = false,
                 languages = "ru",
-                runnable = false,
+                runnable = true,
             ),
             SttModel(
                 id = TONE_CTC_ID,

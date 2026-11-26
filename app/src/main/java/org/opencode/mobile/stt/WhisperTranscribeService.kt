@@ -16,7 +16,6 @@ import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
-import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
 import com.whispercpp.whisper.WhisperContext
 import kotlinx.coroutines.CompletableDeferred
@@ -83,8 +82,6 @@ class WhisperTranscribeService : Service() {
          */
         /** sherpa-onnx nemo_transducer (GigaAM/Parakeet). */
         const val ENGINE_SHERPA_TRANSDUCER = "sherpa_transducer"
-        /** sherpa-onnx SenseVoice (runtime-gated). */
-        const val ENGINE_SENSE_VOICE = "sense_voice"
         /** Старый идентификатор, оставлен для совместимости. */
         const val ENGINE_PARAKEET = "parakeet"
 
@@ -494,146 +491,59 @@ class WhisperTranscribeService : Service() {
             val dir = File(File(app.filesDir, "stt"), model.dirName ?: model.id)
             val tokens = File(dir, "tokens.txt")
             val isGigaAm = model.id == SttModels.GIGAAM_RNNT_ID || model.dirName == SttModels.GIGAAM_RNNT_ID
+            val isNemo = isGigaAm || model.id == SttModels.PARAKEET_ID || model.dirName == SttModels.PARAKEET_ID
             val featureDim = if (isGigaAm) 64 else 80
-            val encoder = File(dir, "encoder.int8.onnx")
-            val decoder = if (isGigaAm) File(dir, "decoder.onnx") else File(dir, "decoder.int8.onnx")
-            val joiner = if (isGigaAm) File(dir, "joiner.onnx") else File(dir, "joiner.int8.onnx")
-            val missing = listOf(tokens, encoder, decoder, joiner).filterNot { it.exists() }
-            if (missing.isNotEmpty()) {
-                error("sherpa: нет файлов ${missing.joinToString { it.name }} в ${dir.absolutePath} — скачай модель в Настройки -> Диагностика")
+            val encoder = pickFirstExisting(dir, "encoder.int8.onnx", "encoder.onnx")
+            val decoder = pickFirstExisting(
+                dir,
+                if (isGigaAm) "decoder.onnx" else "decoder.int8.onnx",
+                if (isGigaAm) "decoder.int8.onnx" else "decoder.onnx",
+            )
+            val joiner = pickFirstExisting(
+                dir,
+                if (isGigaAm) "joiner.onnx" else "joiner.int8.onnx",
+                if (isGigaAm) "joiner.int8.onnx" else "joiner.onnx",
+            )
+            val bpe = File(dir, "bpe.model")
+            val missing = listOfNotNull(
+                tokens.takeUnless { it.exists() },
+                encoder,
+                decoder,
+                joiner,
+            ).filterIsInstance<File>()
+            // encoder/decoder/joiner return null when missing; collect names for error
+            val missingNames = buildList {
+                if (!tokens.exists()) add("tokens.txt")
+                if (encoder == null) add("encoder(.int8).onnx")
+                if (decoder == null) add("decoder(.int8).onnx")
+                if (joiner == null) add("joiner(.int8).onnx")
+            }
+            if (missingNames.isNotEmpty()) {
+                error("sherpa: нет файлов ${missingNames.joinToString()} в ${dir.absolutePath} — скачай модель в Настройки -> Диагностика")
             }
             val config = OfflineRecognizerConfig(
                 featConfig = FeatureConfig(sampleRate = SAMPLE_RATE_HZ, featureDim = featureDim),
                 modelConfig = OfflineModelConfig(
                     transducer = OfflineTransducerModelConfig(
-                        encoder = encoder.absolutePath,
-                        decoder = decoder.absolutePath,
-                        joiner = joiner.absolutePath,
+                        encoder = encoder!!.absolutePath,
+                        decoder = decoder!!.absolutePath,
+                        joiner = joiner!!.absolutePath,
                     ),
                     tokens = tokens.absolutePath,
-                    modelType = "nemo_transducer",
+                    modelType = if (isNemo) "nemo_transducer" else "",
                     numThreads = SHERPA_THREADS,
                     debug = org.opencode.mobile.BuildConfig.DEBUG,
                     provider = "cpu",
+                    bpeVocab = if (bpe.exists()) bpe.absolutePath else "",
                 ),
                 decodingMethod = "greedy_search",
             )
-            Log.d(TAG, "sherpa: гружу ${model.id} из ${dir.absolutePath}")
+            Log.d(TAG, "sherpa: гружу ${model.id} из ${dir.absolutePath}, nemo=$isNemo, dim=$featureDim")
             return OfflineRecognizer(config = config)
         }
 
-        private fun enqueue(task: SttTask): Boolean =
-            synchronized(queue) {
-                if (queue.size >= MAX_QUEUE_SIZE) {
-                    // reject: очередь полна -> worker гарантированно активен или стартует
-                    // (каждое добавление идёт с startForegroundService -> onStartCommand ->
-                    // ensureWorker), гашение распланирует хвост worker'а. Наш стоп-чек
-                    // не трогаем и не постим повторно — дублей нет.
-                    false
-                } else {
-                    queue.addLast(task)
-                    // Снятие отложенного гашения — под тем же локом, что и добавление:
-                    // хвост worker'а синхронизирован этим же локом, поэтому он не успеет
-                    // распланировать stop ПОСЛЕ нашего снятия, пока задача уже в очереди
-                    // (иначе отложенный стоп слетел бы и сервис завис без гашения).
-                    mainHandler.removeCallbacks(stopRunnable)
-                    true
-                }
-            }
-
-        private fun pollQueue(): SttTask? =
-            synchronized(queue) {
-                queue.removeFirstOrNull()
-            }
-
-        private fun removeTask(id: Long) {
-            synchronized(queue) {
-                val it = queue.iterator()
-                while (it.hasNext()) {
-                    if (it.next().id == id) {
-                        it.remove()
-                        return
-                    }
-                }
-            }
-        }
-
-        private fun isQueueEmpty(): Boolean =
-            synchronized(queue) {
-                queue.isEmpty()
-            }
-
-        /**
-         * Возвращает (и кэширует) контекст whisper под выбранную модель.
-         * Модель лежит файлом в filesDir — её качает ModelDownloader по данным
-         * каталога [SttModels]; если файла нет, loadContextLocked даёт понятную
-         * ошибку со ссылкой на настройки.
-         */
-        private fun obtainContext(model: String): WhisperContext {
-            // Tombstone: файл модели удалён через UI — не загружаем «контекст из
-            // ниоткуда», а сообщаем понятную причину (перекачай в настройках STT).
-            // Второй check ВНУТРИ лямбды ловит гонку UI-drop между первым check и
-            // входом в getOrPut-лямбду: dropModelContext (UI-поток) выполним в любой
-            // момент на многоядре, а лямбда — единственное место, где файл реально
-            // открывается. После входа в лямбду (второй check пройден) остаётся
-            // TOCTOU во время requireNotCorrupt/createContextFromFile (секунды
-            // чтения 141-574MB) — его ловит catch ниже (переводим в понятный текст).
-            if (deletedModelFiles.contains(model)) {
-                error("модель \"$model\" удалена — перекачай её в настройках STT")
-            }
-            return whisperCtxCache.getOrPut(model) {
-                if (deletedModelFiles.contains(model)) {
-                    error("модель \"$model\" удалена — перекачай её в настройках STT")
-                }
-                try {
-                    loadContextLocked(model)
-                } catch (e: Exception) {
-                    // Файл удалён прямо во время загрузки (unlink на открытом fd —
-                    // POSIX-призрак — это ок; хуже: unlink ДО open -> FileNotFound).
-                    // Причины: tombstone (UI уже пометил) ИЛИ файл исчез в окне
-                    // delete..drop (FileNotFound/IOException до пометки). Обе —
-                    // «удалена/повреждена — перекачай». Свой IllegalStateException
-                    // («не скачана», «повреждена») не трогаем — текст уже понятный.
-                    if (e is IllegalStateException && !deletedModelFiles.contains(model)) {
-                        throw e // настоящая семантическая ошибка (не скачана/повреждена)
-                    }
-                    // error() в stdlib принимает только message, без cause, поэтому
-                    // вариант с причиной остаётся на throw — detekt его не рубит.
-                    throw IllegalStateException("модель \"$model\" удалена или повреждена — перекачай её в настройках STT", e)
-                }
-            }
-        }
-
-        /** ВАЖНО (инвариант): вызывается ТОЛЬКО из единственного worker-потока
-         *  (в [runPendingTasks]/транскрипции). Кэши контекстов не потокобезопасны;
-         *  второй читатель/писатель = гонка. НЕ вызывать из onStartCommand, UI и т.д. */
-        private fun loadContextLocked(model: String): WhisperContext {
-            val app = requireAppContext()
-            // Список моделей живёт в каталоге [SttModels], а не здесь: раньше здесь
-            // стоял when на шесть копий одного и того же (имя файла + подпись),
-            // и добавление модели означало править и его, и UI, и диагностику.
-            val spec = SttModels.byId(model) ?: throw IllegalArgumentException("неизвестная модель: $model")
-            return loadGgmlFile(app, spec.fileOf(app), spec.isReady, spec.id)
-        }
-
-        /** Общая загрузка ggml-модели: проверить наличие, целостность, открыть контекст.
-         *  Всё, что различается между моделями, приходит аргументами из каталога. */
-        private fun loadGgmlFile(
-            app: Context,
-            file: java.io.File,
-            ready: (Context) -> Boolean,
-            label: String,
-        ): WhisperContext {
-            if (!ready(app)) {
-                error(
-                    "$label не скачана (${if (file.exists()) (file.length() / 1024 / 1024) else 0}MB) — " +
-                        "скачай в Настройки -> Диагностика -> Голосовое распознавание"
-                )
-            }
-            requireNotCorrupt(file, label)
-            Log.d(TAG, "гружу $label-модель с файла (${file.length() / 1024 / 1024}MB)")
-            return WhisperContext.createContextFromFile(file.absolutePath)
-        }
+        private fun pickFirstExisting(dir: File, vararg names: String): File? =
+            names.asSequence().map { File(dir, it) }.firstOrNull { it.exists() }
 
         private fun requireAppContext(): Context =
             appContext ?: error("STT: context не инициализирован (transcribe() не вызывался до worker)")
