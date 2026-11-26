@@ -407,7 +407,7 @@ class WhisperTranscribeService : Service() {
             return try {
                 when (engine) {
                     ENGINE_SHERPA_TRANSDUCER, ENGINE_PARAKEET -> transcribeSherpa(task)
-                    ENGINE_SENSE_VOICE -> transcribeSenseVoice(task)
+                    else -> transcribeWhisper(task)
                 }
             } catch (e: Throwable) {
                 Log.e(TAG, "распознавание упало (в сервисе)", e)
