@@ -21,7 +21,6 @@ data class SttModelFile(
 enum class SttEngineKind {
     WHISPER_GGML,
     SHERPA_TRANSDUCER,
-    SHERPA_SENSE_VOICE,
 }
 
 @Suppress("LongParameterList")
@@ -60,6 +59,8 @@ data class SttModel(
 
 object SttModels {
     const val DEFAULT_ID = WhisperTranscribeService.MODEL_SMALL
+    const val TINY_ID = "tiny"
+    const val BASE_ID = "base"
 
     /** sherpa-onnx nemo_transducer (Parakeet). */
     const val PARAKEET_ID = "parakeet-tdt-0.6b-v3"
@@ -67,22 +68,53 @@ object SttModels {
     /** GigaAM v3 E2E RNNT, sherpa-onnx nemo_transducer. RU-first. */
     const val GIGAAM_RNNT_ID = "gigaam-v3-e2e-rnnt"
 
-    /** SenseVoice small int8, sherpa-onnx sense_voice. */
-    const val SENSEVOICE_SMALL_ID = "sensevoice-small-int8"
+    /** whisper.cpp ggml, квантованный форк bond005/whisper-podlodka-turbo. */
+    const val PODLODKA_Q5_ID = "whisper-podlodka-turbo-q5_0"
+    const val PODLODKA_Q8_ID = "whisper-podlodka-turbo-q8_0"
+
+    // SenseVoice удалён: установленная модель zh/en/ja/ko/yue, RU не поддерживает.
 
     private const val HF = "https://huggingface.co"
     private const val MB = 1024L * 1024L
 
     private fun sherpaDir(context: Context, dir: String): File = File(File(context.filesDir, "stt"), dir)
 
-    private fun sherpaReady(context: Context, model: SttModel): Boolean = ModelDownloader.sttModelReady(context, model)
+    private fun byIdStatic(context: Context, id: String): Boolean {
+        val m = all.firstOrNull { it.id == id } ?: return false
+        return ModelDownloader.sttModelReady(context, m)
+    }
 
-    private fun sherpaFetch(model: SttModel): suspend (Context, (Long, Long) -> Unit) -> Unit = { ctx, on ->
-        ModelDownloader.downloadSttModel(ctx, model, on)
+    private suspend fun byFetchStatic(context: Context, id: String, on: (Long, Long) -> Unit) {
+        val m = all.firstOrNull { it.id == id } ?: return
+        ModelDownloader.downloadSttModel(context, m, on)
     }
 
     val all: List<SttModel> =
         listOf(
+            SttModel(
+                id = TINY_ID,
+                note = "Самый быстрый whisper · слабее на RU · контрольный fallback",
+                bytes = 77_691_713L,
+                isReady = { ctx -> ModelDownloader.ggmlModelReady(ctx, ModelDownloader.TINY_FILE, ModelDownloader.MIN_TINY) },
+                fileOf = { ctx -> ModelDownloader.ggmlModelFile(ctx, ModelDownloader.TINY_FILE) },
+                fetch = { ctx, on -> ModelDownloader.downloadTiny(ctx, on) },
+                sizeLabel = "74 МБ",
+                flatFileName = ModelDownloader.TINY_FILE,
+                engineKind = SttEngineKind.WHISPER_GGML,
+                languages = "multilingual",
+            ),
+            SttModel(
+                id = BASE_ID,
+                note = "Быстрый whisper · базовый fallback · RU средний",
+                bytes = 147_951_465L,
+                isReady = { ctx -> ModelDownloader.ggmlModelReady(ctx, ModelDownloader.BASE_FILE, ModelDownloader.MIN_BASE) },
+                fileOf = { ctx -> ModelDownloader.ggmlModelFile(ctx, ModelDownloader.BASE_FILE) },
+                fetch = { ctx, on -> ModelDownloader.downloadBase(ctx, on) },
+                sizeLabel = "141 МБ",
+                flatFileName = ModelDownloader.BASE_FILE,
+                engineKind = SttEngineKind.WHISPER_GGML,
+                languages = "multilingual",
+            ),
             SttModel(
                 id = WhisperTranscribeService.MODEL_SMALL,
                 note = "2,3 с · ошибка в 3 % слов на фразе до 4 секунд",
@@ -94,6 +126,30 @@ object SttModels {
                 flatFileName = ModelDownloader.SMALL_FILE,
                 engineKind = SttEngineKind.WHISPER_GGML,
                 languages = "multilingual",
+            ),
+            SttModel(
+                id = PODLODKA_Q5_ID,
+                note = "RU whisper-podlodka-turbo ggml q5_0 · сторонний GGML-квант (JoaoZaokk), проверять качество на CPH2747",
+                bytes = ModelDownloader.PODLODKA_Q5_BYTES,
+                isReady = { ctx -> ModelDownloader.ggmlModelReady(ctx, ModelDownloader.PODLODKA_Q5_FILE, ModelDownloader.MIN_PODLODKA_Q5) },
+                fileOf = { ctx -> ModelDownloader.ggmlModelFile(ctx, ModelDownloader.PODLODKA_Q5_FILE) },
+                fetch = { ctx, on -> ModelDownloader.downloadPodlodkaQ5(ctx, on) },
+                sizeLabel = "547 МБ",
+                flatFileName = ModelDownloader.PODLODKA_Q5_FILE,
+                engineKind = SttEngineKind.WHISPER_GGML,
+                languages = "ru",
+            ),
+            SttModel(
+                id = PODLODKA_Q8_ID,
+                note = "RU whisper-podlodka-turbo ggml q8_0 · выше качество/размер, сторонний GGML-квант (JoaoZaokk)",
+                bytes = ModelDownloader.PODLODKA_Q8_BYTES,
+                isReady = { ctx -> ModelDownloader.ggmlModelReady(ctx, ModelDownloader.PODLODKA_Q8_FILE, ModelDownloader.MIN_PODLODKA_Q8) },
+                fileOf = { ctx -> ModelDownloader.ggmlModelFile(ctx, ModelDownloader.PODLODKA_Q8_FILE) },
+                fetch = { ctx, on -> ModelDownloader.downloadPodlodkaQ8(ctx, on) },
+                sizeLabel = "834 МБ",
+                flatFileName = ModelDownloader.PODLODKA_Q8_FILE,
+                engineKind = SttEngineKind.WHISPER_GGML,
+                languages = "ru",
             ),
             SttModel(
                 id = GIGAAM_RNNT_ID,
@@ -139,38 +195,7 @@ object SttModels {
                 recommendedForRu = false,
                 languages = "multilingual (вкл. ru)",
             ),
-            SttModel(
-                id = SENSEVOICE_SMALL_ID,
-                note = "Мультиязычный · sherpa-onnx SenseVoice · ~239 МБ · RU есть, не RU-first",
-                bytes = 239L * MB,
-                isReady = { ctx -> byIdStatic(ctx, SENSEVOICE_SMALL_ID) },
-                fileOf = { ctx -> sherpaDir(ctx, SENSEVOICE_SMALL_ID) },
-                fetch = { ctx, on -> byFetchStatic(ctx, SENSEVOICE_SMALL_ID, on) },
-                sizeLabel = "~239 МБ",
-                flatFileName = null,
-                manual = false,
-                engineKind = SttEngineKind.SHERPA_SENSE_VOICE,
-                dirName = SENSEVOICE_SMALL_ID,
-                files =
-                    listOf(
-                        SttModelFile("model.int8.onnx", "$HF/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx"),
-                        SttModelFile("tokens.txt", "$HF/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt"),
-                    ),
-                recommendedForRu = false,
-                languages = "multilingual (вкл. ru)",
-                runnable = true,
-            ),
         )
-
-    private fun byIdStatic(context: Context, id: String): Boolean {
-        val m = all.firstOrNull { it.id == id } ?: return false
-        return ModelDownloader.sttModelReady(context, m)
-    }
-
-    private suspend fun byFetchStatic(context: Context, id: String, on: (Long, Long) -> Unit) {
-        val m = all.firstOrNull { it.id == id } ?: return
-        ModelDownloader.downloadSttModel(context, m, on)
-    }
 
     fun byId(id: String): SttModel? = all.firstOrNull { it.id == id }
 

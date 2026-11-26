@@ -25,12 +25,38 @@ object ModelDownloader {
     private const val TAG = "ModelDL"
 
     private const val HF_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
+
+    private const val URL_TINY = "$HF_BASE/ggml-tiny.bin"
+    const val TINY_FILE = "ggml-tiny.bin"
+    const val MIN_TINY = 70L * 1024 * 1024
+    const val TINY_BYTES = 77_691_713L
+    private const val MIN_FREE_TINY = 120L * 1024 * 1024
+
+    private const val URL_BASE = "$HF_BASE/ggml-base.bin"
+    const val BASE_FILE = "ggml-base.bin"
+    const val MIN_BASE = 140L * 1024 * 1024
+    const val BASE_BYTES = 147_951_465L
+    private const val MIN_FREE_BASE = 200L * 1024 * 1024
+
     private const val URL_SMALL = "$HF_BASE/ggml-small.bin"
     const val SMALL_FILE = "ggml-small.bin"
-    private const val MIN_SMALL = 460L * 1024 * 1024
+    const val MIN_SMALL = 460L * 1024 * 1024
     const val SMALL_BYTES = 487601967L
     const val SMALL_MODEL = "small"
     private const val MIN_FREE_SMALL = 550L * 1024 * 1024
+
+    private const val PODLODKA_HF = "https://huggingface.co/JoaoZaokk/whisper-podlodka-turbo-ggml/resolve/main"
+    private const val URL_PODLODKA_Q5 = "$PODLODKA_HF/ggml-whisper-podlodka-turbo-q5_0.bin"
+    const val PODLODKA_Q5_FILE = "ggml-whisper-podlodka-turbo-q5_0.bin"
+    const val MIN_PODLODKA_Q5 = 540L * 1024 * 1024
+    const val PODLODKA_Q5_BYTES = 574_041_195L
+    private const val MIN_FREE_PODLODKA_Q5 = 650L * 1024 * 1024
+
+    private const val URL_PODLODKA_Q8 = "$PODLODKA_HF/ggml-whisper-podlodka-turbo-q8_0.bin"
+    const val PODLODKA_Q8_FILE = "ggml-whisper-podlodka-turbo-q8_0.bin"
+    const val MIN_PODLODKA_Q8 = 830L * 1024 * 1024
+    const val PODLODKA_Q8_BYTES = 874_188_075L
+    private const val MIN_FREE_PODLODKA_Q8 = 950L * 1024 * 1024
 
     private val RETIRED_MODEL_DIRS = listOf("ncnn-turbo")
 
@@ -94,21 +120,45 @@ object ModelDownloader {
         return if (ok) ModelIntegrity.VALID else ModelIntegrity.CORRUPT
     }
 
-    // ---- small ----
+    // ---- ggml single-file models ----
 
-    fun smallFile(context: Context): File = File(modelsDir(context), SMALL_FILE)
+    fun ggmlModelFile(context: Context, fileName: String): File = File(modelsDir(context), fileName)
 
-    fun smallReady(context: Context): Boolean {
-        val f = smallFile(context)
+    fun ggmlModelReady(context: Context, fileName: String, minBytes: Long): Boolean {
+        val f = ggmlModelFile(context, fileName)
         return f.exists() &&
-            f.length() >= readyThreshold(f, MIN_SMALL) &&
+            f.length() >= readyThreshold(f, minBytes) &&
             checkIntegrity(f) != ModelIntegrity.CORRUPT
     }
+
+    fun smallFile(context: Context): File = ggmlModelFile(context, SMALL_FILE)
+
+    fun smallReady(context: Context): Boolean = ggmlModelReady(context, SMALL_FILE, MIN_SMALL)
+
+    suspend fun downloadTiny(
+        context: Context,
+        onProgress: (Long, Long) -> Unit = { _, _ -> },
+    ): File = downloadTo(context, URL_TINY, ggmlModelFile(context, TINY_FILE), MIN_TINY, "tiny", MIN_FREE_TINY, onProgress)
+
+    suspend fun downloadBase(
+        context: Context,
+        onProgress: (Long, Long) -> Unit = { _, _ -> },
+    ): File = downloadTo(context, URL_BASE, ggmlModelFile(context, BASE_FILE), MIN_BASE, "base", MIN_FREE_BASE, onProgress)
 
     suspend fun downloadSmall(
         context: Context,
         onProgress: (Long, Long) -> Unit = { _, _ -> },
     ): File = downloadTo(context, URL_SMALL, smallFile(context), MIN_SMALL, "small", MIN_FREE_SMALL, onProgress)
+
+    suspend fun downloadPodlodkaQ5(
+        context: Context,
+        onProgress: (Long, Long) -> Unit = { _, _ -> },
+    ): File = downloadTo(context, URL_PODLODKA_Q5, ggmlModelFile(context, PODLODKA_Q5_FILE), MIN_PODLODKA_Q5, "podlodka-q5_0", MIN_FREE_PODLODKA_Q5, onProgress)
+
+    suspend fun downloadPodlodkaQ8(
+        context: Context,
+        onProgress: (Long, Long) -> Unit = { _, _ -> },
+    ): File = downloadTo(context, URL_PODLODKA_Q8, ggmlModelFile(context, PODLODKA_Q8_FILE), MIN_PODLODKA_Q8, "podlodka-q8_0", MIN_FREE_PODLODKA_Q8, onProgress)
 
     // ---- generic multi-file STT models (sherpa-onnx) ----
 
