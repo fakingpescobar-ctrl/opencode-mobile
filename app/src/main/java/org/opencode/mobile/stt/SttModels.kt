@@ -72,6 +72,14 @@ object SttModels {
     const val PODLODKA_Q5_ID = "whisper-podlodka-turbo-q5_0"
     const val PODLODKA_Q8_ID = "whisper-podlodka-turbo-q8_0"
 
+    /** Доп. STT-кандидаты: фактчек/интеграция поэтапно. */
+    const val VOSK_RU_054_ID = "vosk-model-ru-0.54"
+    const val VOSK_RU_052_ID = "vosk-model-small-ru-0.52"
+    const val ZIPFORMER_RU_ID = "zipformer-small-ru-int8"
+    const val TONE_CTC_ID = "t-one-ctc-ru-streaming"
+    const val QWEN3_ASR_06B_ID = "qwen3-asr-0.6b"
+    const val QWEN3_ASR_17B_ID = "qwen3-asr-1.7b"
+
     // SenseVoice удалён: установленная модель zh/en/ja/ko/yue, RU не поддерживает.
 
     private const val HF = "https://huggingface.co"
@@ -194,6 +202,114 @@ object SttModels {
                     ),
                 recommendedForRu = false,
                 languages = "multilingual (вкл. ru)",
+            ),
+            SttModel(
+                id = VOSK_RU_054_ID,
+                note = "Vosk RU 0.54 · Alpha Cephei · официальный пакет · нужен libvosk JNI/runtime (в текущем APK нет) · manual",
+                bytes = 1_877_000_000L,
+                isReady = { ctx -> byIdStatic(ctx, VOSK_RU_054_ID) },
+                fileOf = { ctx -> sherpaDir(ctx, VOSK_RU_054_ID) },
+                fetch = { _, _ -> error("Vosk 0.54: нужен libvosk runtime; добавь модель вручную в files/stt/vosk-model-ru-0.54 после интеграции") },
+                sizeLabel = "~1.8 ГБ",
+                flatFileName = null,
+                manual = true,
+                engineKind = SttEngineKind.WHISPER_GGML,
+                dirName = VOSK_RU_054_ID,
+                files = emptyList(),
+                recommendedForRu = false,
+                languages = "ru",
+                runnable = false,
+            ),
+            SttModel(
+                id = VOSK_RU_052_ID,
+                note = "Vosk small RU 0.52 · Alpha Cephei · легче 0.54 · нужен libvosk JNI/runtime (в текущем APK нет) · manual",
+                bytes = 1_500_000_000L,
+                isReady = { ctx -> byIdStatic(ctx, VOSK_RU_052_ID) },
+                fileOf = { ctx -> sherpaDir(ctx, VOSK_RU_052_ID) },
+                fetch = { _, _ -> error("Vosk 0.52: нужен libvosk runtime; добавь модель вручную в files/stt/vosk-model-small-ru-0.52 после интеграции") },
+                sizeLabel = "~1.5 ГБ",
+                flatFileName = null,
+                manual = true,
+                engineKind = SttEngineKind.WHISPER_GGML,
+                dirName = VOSK_RU_052_ID,
+                files = emptyList(),
+                recommendedForRu = false,
+                languages = "ru",
+                runnable = false,
+            ),
+            SttModel(
+                id = ZIPFORMER_RU_ID,
+                note = "Zipformer RU small int8 · sherpa-onnx transducer · скачать можно, runtime-путь в APK пока не подключён",
+                bytes = 60L * MB,
+                isReady = { ctx -> byIdStatic(ctx, ZIPFORMER_RU_ID) },
+                fileOf = { ctx -> sherpaDir(ctx, ZIPFORMER_RU_ID) },
+                fetch = { ctx, on -> byFetchStatic(ctx, ZIPFORMER_RU_ID, on) },
+                sizeLabel = "~60 МБ",
+                flatFileName = null,
+                manual = false,
+                engineKind = SttEngineKind.SHERPA_TRANSDUCER,
+                dirName = ZIPFORMER_RU_ID,
+                files =
+                    listOf(
+                        SttModelFile("encoder.int8.onnx", "$HF/csukuangfj/sherpa-onnx-zipformer-small-ru-2024-09-18-int8/resolve/main/encoder.int8.onnx"),
+                        SttModelFile("decoder.onnx", "$HF/csukuangfj/sherpa-onnx-zipformer-small-ru-2024-09-18-int8/resolve/main/decoder.onnx"),
+                        SttModelFile("joiner.int8.onnx", "$HF/csukuangfj/sherpa-onnx-zipformer-small-ru-2024-09-18-int8/resolve/main/joiner.int8.onnx"),
+                        SttModelFile("tokens.txt", "$HF/csukuangfj/sherpa-onnx-zipformer-small-ru-2024-09-18-int8/resolve/main/tokens.txt"),
+                    ),
+                recommendedForRu = false,
+                languages = "ru",
+                runnable = false,
+            ),
+            SttModel(
+                id = TONE_CTC_ID,
+                note = "T-one (T-Tech) · streaming CTC RU · нужен online/streaming sherpa pipeline (в APK не подключён) · manual",
+                bytes = 150L * MB,
+                isReady = { ctx -> byIdStatic(ctx, TONE_CTC_ID) },
+                fileOf = { ctx -> sherpaDir(ctx, TONE_CTC_ID) },
+                fetch = { _, _ -> error("T-one: нужен streaming/online runtime; интеграция не подключена в этом APK") },
+                sizeLabel = "~150 МБ",
+                flatFileName = null,
+                manual = true,
+                engineKind = SttEngineKind.SHERPA_TRANSDUCER,
+                dirName = TONE_CTC_ID,
+                files = emptyList(),
+                recommendedForRu = false,
+                languages = "ru",
+                runnable = false,
+            ),
+            SttModel(
+                id = QWEN3_ASR_06B_ID,
+                note = "Qwen3-ASR 0.6B · тяжёлая модель · нужен Qwen3-ASR runtime/память; проверить на CPH2747",
+                bytes = 1_200L * MB,
+                isReady = { ctx -> byIdStatic(ctx, QWEN3_ASR_06B_ID) },
+                fileOf = { ctx -> sherpaDir(ctx, QWEN3_ASR_06B_ID) },
+                fetch = { _, _ -> error("Qwen3-ASR 0.6B: артефакт/рантайм не подключены автоматически; нужна проверка формата и лицензии") },
+                sizeLabel = "~1.2 ГБ",
+                flatFileName = null,
+                manual = true,
+                engineKind = SttEngineKind.SHERPA_TRANSDUCER,
+                dirName = QWEN3_ASR_06B_ID,
+                files = emptyList(),
+                recommendedForRu = false,
+                languages = "multilingual",
+                runnable = false,
+            ),
+            SttModel(
+                id = QWEN3_ASR_17B_ID,
+                note = "Qwen3-ASR 1.7B · очень тяжёлая модель · высокий риск ОЗУ/латентности на телефоне",
+                bytes = 3_400L * MB,
+                isReady = { ctx -> byIdStatic(ctx, QWEN3_ASR_17B_ID) },
+                fileOf = { ctx -> sherpaDir(ctx, QWEN3_ASR_17B_ID) },
+                fetch = { _, _ -> error("Qwen3-ASR 1.7B: артефакт/рантайм не подключены автоматически; нужна проверка формата и лицензии") },
+                sizeLabel = "~3.4 ГБ",
+                flatFileName = null,
+                manual = true,
+                engineKind = SttEngineKind.SHERPA_TRANSDUCER,
+                dirName = QWEN3_ASR_17B_ID,
+                files = emptyList(),
+                recommendedForRu = false,
+                languages = "multilingual",
+                runnable = false,
             ),
         )
 

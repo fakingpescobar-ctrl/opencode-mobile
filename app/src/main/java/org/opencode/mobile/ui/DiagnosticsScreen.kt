@@ -864,6 +864,12 @@ fun DiagnosticsScreen(
                     // Без нативной библиотеки кнопка микрофона не даст ничего,
                     // поэтому движок показываем раньше моделей: сначала его.
                     EngineRows(engineDl, startEngineDownload)
+                    Spacer(Modifier.height(6.dp))
+                    InfoRow("Доп. STT/VAD компоненты", "статус фактчека — не все подключены в runtime", Color(NOTE_ARGB))
+                    InfoRow("Silero VAD v6", "требует отдельный VAD-пайплайн/артефакт; в APK не подключён", Color(0xFFFFC107))
+                    InfoRow("Smart Turn v3.2", "требует turn-detection пайплайн/артефакт; в APK не подключён", Color(0xFFFFC107))
+                    InfoRow("Qwen3-ForcedAligner 0.6B", "aligner, не STT-модель; нужен отдельный runtime/формат", Color(0xFFFFC107))
+                    InfoRow("onnx-asr (istupakov)", "Python reference/wrapper; в Android APK нужен нативный порт/ONNX runtime", Color(0xFFFFC107))
                 }
 
                 DiagSection("Голосовое распознавание", sttTone) {
@@ -1875,8 +1881,6 @@ private fun SttModelRows(
     val ready = snap?.ggmlReady.orEmpty()
     for (model in SttModels.all) {
         val bytes = ready[model.id]
-        // Модель уже готова на диске — показываем размер; иначе — статус
-        val title = model.id
         val size =
             when {
                 bytes != null -> fmtBytes(bytes)
@@ -1885,23 +1889,25 @@ private fun SttModelRows(
         val statusText =
             when {
                 bytes != null -> "готов · " + size
+                !model.runnable && model.manual -> "не подключено в APK · manual (" + size + ")"
+                !model.runnable -> "скачивается, но runtime не подключён (" + size + ")"
                 model.manual -> "не скачана · вручную (adb push)"
-                else -> "не скачана · сначала скачай: Настройки → Диагностика"
+                else -> "не скачана · можно скачать (" + size + ")"
             }
         val statusColor =
             when {
-                bytes != null -> Color(0xFF7BD88F)
+                bytes != null && model.runnable -> Color(0xFF7BD88F)
+                bytes != null && !model.runnable -> Color(0xFFFFC107)
+                !model.runnable -> Color(NOTE_ARGB)
                 model.manual -> Color(NOTE_ARGB)
                 else -> Color(0xFFFF6F5A)
             }
-        InfoRow(
-            model.id,
-            statusText,
-            statusColor,
-        )
-        // Дополнительная строка с заметкой модели
+        InfoRow(model.id, statusText, statusColor)
         InfoRow("  " + model.id, model.note, Color(NOTE_ARGB))
         if (model.recommendedForRu) InfoRow("  RU", "рекомендуется для русского", Color(0xFFFFD54F))
+        if (!model.runnable) {
+            InfoRow("  runtime", "не подключён в этом APK — модель видна в каталоге, но выбрать/запустить нельзя до интеграции", Color(0xFFFFC107))
+        }
     }
     when (val dl = state) {
         is SttDownloadState.Running -> InfoRow(
@@ -1921,10 +1927,10 @@ private fun SttModelRows(
 }
 
 /** Кнопки скачивания для STT-моделей, которых ещё нет на диске.
- *  Использует model.fetch() для унифицированного скачивания:
- *  - ggml small → downloadSmall
- *  - sherpa-onnx модели → downloadSttModel (multi-file)
- *  - manual модели — кнопки нет (файлы кладут adb push) */
+ *  - runnable + downloadable: кнопка скачивания
+ *  - manual: подсказка adb push/интеграция
+ *  - не runnable, но downloadable: можно скачать файлы заранее, запуск заблокирован честно
+ */
 @Composable
 private fun SttDownloadControls(
     onDownload: (String) -> Unit,
@@ -1932,10 +1938,23 @@ private fun SttDownloadControls(
 ) {
     for (model in SttModels.all) {
         if (ready[model.id] != null) continue
-        if (model.manual) {
-            InfoRow("Установка " + model.id, "вручную (adb push) — кнопки скачивания нет", Color(NOTE_ARGB))
-        } else {
-            downloadButton("Скачать " + model.id + " (~" + model.sizeLabel + ")") { onDownload(model.id) }
+        when {
+            model.manual -> {
+                val msg = if (model.runnable) {
+                    "вручную (adb push) — кнопки скачивания нет"
+                } else {
+                    "runtime/артефакт не подключены автоматически; см. примечание модели"
+                }
+                InfoRow("Установка " + model.id, msg, Color(NOTE_ARGB))
+            }
+            !model.runnable -> {
+                downloadButton("Скачать файлы " + model.id + " (~" + model.sizeLabel + ", runtime не подключён)") {
+                    onDownload(model.id)
+                }
+            }
+            else -> {
+                downloadButton("Скачать " + model.id + " (~" + model.sizeLabel + ")") { onDownload(model.id) }
+            }
         }
     }
 }
