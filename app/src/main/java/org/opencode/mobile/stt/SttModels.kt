@@ -75,7 +75,8 @@ object SttModels {
     /** Доп. STT-кандидаты: фактчек/интеграция поэтапно. */
     const val VOSK_RU_054_ID = "vosk-model-ru-0.54"
     const val VOSK_RU_052_ID = "vosk-model-small-ru-0.52"
-    const val ZIPFORMER_RU_ID = "zipformer-small-ru-int8"
+    /** Публичная замена битому csukuangfj/sherpa-onnx-zipformer-small-ru-2024-09-18-int8 (401). */
+    const val ZIPFORMER_RU_ID = "zipformer-ru-int8-2025-04-20"
     const val TONE_CTC_ID = "t-one-ctc-ru-streaming"
     const val QWEN3_ASR_06B_ID = "qwen3-asr-0.6b"
     const val QWEN3_ASR_17B_ID = "qwen3-asr-1.7b"
@@ -239,22 +240,22 @@ object SttModels {
             ),
             SttModel(
                 id = ZIPFORMER_RU_ID,
-                note = "Zipformer RU small int8 · sherpa-onnx transducer · скачать можно, runtime-путь в APK пока не подключён",
-                bytes = 60L * MB,
+                note = "Zipformer RU int8 2025-04-20 · sherpa-onnx transducer (alphacep/vosk-model-ru) · публичный HF, runtime-путь в APK пока не подключён",
+                bytes = 73_476_000L,
                 isReady = { ctx -> byIdStatic(ctx, ZIPFORMER_RU_ID) },
                 fileOf = { ctx -> sherpaDir(ctx, ZIPFORMER_RU_ID) },
                 fetch = { ctx, on -> byFetchStatic(ctx, ZIPFORMER_RU_ID, on) },
-                sizeLabel = "~60 МБ",
+                sizeLabel = "~70 МБ",
                 flatFileName = null,
                 manual = false,
                 engineKind = SttEngineKind.SHERPA_TRANSDUCER,
                 dirName = ZIPFORMER_RU_ID,
                 files =
                     listOf(
-                        SttModelFile("encoder.int8.onnx", "$HF/csukuangfj/sherpa-onnx-zipformer-small-ru-2024-09-18-int8/resolve/main/encoder.int8.onnx"),
-                        SttModelFile("decoder.onnx", "$HF/csukuangfj/sherpa-onnx-zipformer-small-ru-2024-09-18-int8/resolve/main/decoder.onnx"),
-                        SttModelFile("joiner.int8.onnx", "$HF/csukuangfj/sherpa-onnx-zipformer-small-ru-2024-09-18-int8/resolve/main/joiner.int8.onnx"),
-                        SttModelFile("tokens.txt", "$HF/csukuangfj/sherpa-onnx-zipformer-small-ru-2024-09-18-int8/resolve/main/tokens.txt"),
+                        SttModelFile("encoder.int8.onnx", "$HF/csukuangfj/sherpa-onnx-zipformer-ru-int8-2025-04-20/resolve/main/encoder.int8.onnx", 70_876_638L),
+                        SttModelFile("decoder.onnx", "$HF/csukuangfj/sherpa-onnx-zipformer-ru-int8-2025-04-20/resolve/main/decoder.onnx", 2_093_080L),
+                        SttModelFile("joiner.int8.onnx", "$HF/csukuangfj/sherpa-onnx-zipformer-ru-int8-2025-04-20/resolve/main/joiner.int8.onnx", 259_417L),
+                        SttModelFile("tokens.txt", "$HF/csukuangfj/sherpa-onnx-zipformer-ru-int8-2025-04-20/resolve/main/tokens.txt", 6_388L),
                     ),
                 recommendedForRu = false,
                 languages = "ru",
