@@ -546,7 +546,7 @@ class WhisperTranscribeService : Service() {
             Log.i(
                 TAG,
                 "sherpa(${task.model}): загрузка ${loaded - loadStart} мс, " +
-                    "проход ${done - loaded} мс, звук ${audioMs} мс, rtf ${\"%.2f\".format(rtf)}",
+                    "проход ${done - loaded} мс, звук ${audioMs} мс, rtf ${"%.2f".format(rtf)}",
             )
             return text
         }
