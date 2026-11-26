@@ -220,7 +220,9 @@ object ModelDownloader {
         onProgress: (Long, Long) -> Unit,
     ): Long {
         val dest = File(dir, mf.name)
+        dest.parentFile?.mkdirs()
         val tmp = File(dir, mf.name + ".part")
+        tmp.parentFile?.mkdirs()
         val expectedMin = if (mf.bytes > 0L) maxOf(1L, mf.bytes - 1024L) else 1L
         if (dest.exists() && dest.length() >= expectedMin) return dest.length()
         var startAt = if (tmp.exists()) tmp.length() else 0L

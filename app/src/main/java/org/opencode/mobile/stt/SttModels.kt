@@ -21,6 +21,7 @@ data class SttModelFile(
 enum class SttEngineKind {
     WHISPER_GGML,
     SHERPA_TRANSDUCER,
+    SHERPA_QWEN3_ASR,
 }
 
 @Suppress("LongParameterList")
@@ -280,20 +281,28 @@ object SttModels {
             ),
             SttModel(
                 id = QWEN3_ASR_06B_ID,
-                note = "Qwen3-ASR 0.6B · тяжёлая модель · нужен Qwen3-ASR runtime/память; проверить на CPH2747",
-                bytes = 1_200L * MB,
+                note = "Qwen3-ASR 0.6B int8 · sherpa-onnx offline · ~986 МБ на диске · тяжёлый, высокий риск RAM/latency на CPH2747; экспериментально",
+                bytes = 986_554_365L,
                 isReady = { ctx -> byIdStatic(ctx, QWEN3_ASR_06B_ID) },
                 fileOf = { ctx -> sherpaDir(ctx, QWEN3_ASR_06B_ID) },
-                fetch = { _, _ -> error("Qwen3-ASR 0.6B: артефакт/рантайм не подключены автоматически; нужна проверка формата и лицензии") },
-                sizeLabel = "~1.2 ГБ",
+                fetch = { ctx, on -> byFetchStatic(ctx, QWEN3_ASR_06B_ID, on) },
+                sizeLabel = "~986 МБ",
                 flatFileName = null,
-                manual = true,
-                engineKind = SttEngineKind.SHERPA_TRANSDUCER,
+                manual = false,
+                engineKind = SttEngineKind.SHERPA_QWEN3_ASR,
                 dirName = QWEN3_ASR_06B_ID,
-                files = emptyList(),
+                files =
+                    listOf(
+                        SttModelFile("conv_frontend.onnx", "$HF/aoiandroid/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/resolve/main/conv_frontend.onnx", 44_148_281L, "d22dc4423e0940e49884e903d2ea2f7e5567c14fc1aed97e4e26d6b8f208ef9e"),
+                        SttModelFile("encoder.int8.onnx", "$HF/aoiandroid/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/resolve/main/encoder.int8.onnx", 182_491_662L, "60748d3e6744a57c9c91e1b17424a6c2990567e8adceb0783940c03ed98fa9d9"),
+                        SttModelFile("decoder.int8.onnx", "$HF/aoiandroid/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/resolve/main/decoder.int8.onnx", 755_914_231L, "4f6885be5959ae26af3089d38ee7972c5fafbeeb1cf8d5e76eab6d8b61ca5771"),
+                        SttModelFile("tokenizer/vocab.json", "$HF/aoiandroid/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/resolve/main/tokenizer/vocab.json", 2_776_833L),
+                        SttModelFile("tokenizer/merges.txt", "$HF/aoiandroid/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/resolve/main/tokenizer/merges.txt", 1_671_853L),
+                        SttModelFile("tokenizer/tokenizer_config.json", "$HF/aoiandroid/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25/resolve/main/tokenizer/tokenizer_config.json", 12_487L),
+                    ),
                 recommendedForRu = false,
-                languages = "multilingual",
-                runnable = false,
+                languages = "multilingual (вкл. ru)",
+                runnable = true,
             ),
             SttModel(
                 id = QWEN3_ASR_17B_ID,

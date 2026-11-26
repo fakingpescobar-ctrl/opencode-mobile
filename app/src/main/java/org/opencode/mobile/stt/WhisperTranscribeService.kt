@@ -14,6 +14,7 @@ import android.os.SystemClock
 import android.util.Log
 import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
+import com.k2fsa.sherpa.onnx.OfflineQwen3AsrModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
@@ -81,8 +82,10 @@ class WhisperTranscribeService : Service() {
          * Parakeet TDT 0.6B v3 (25 европейских языков, включая русский) whisper small
          * по WER и времени. Модель кладётся вручную в getExternalFilesDir/parakeet.
          */
-        /** sherpa-onnx nemo_transducer (GigaAM/Parakeet). */
+        /** sherpa-onnx nemo_transducer (GigaAM/Parakeet/Zipformer). */
         const val ENGINE_SHERPA_TRANSDUCER = "sherpa_transducer"
+        /** sherpa-onnx offline Qwen3-ASR (тяжёлый, экспериментальный). */
+        const val ENGINE_SHERPA_QWEN3_ASR = "sherpa_qwen3_asr"
         /** sherpa-onnx SenseVoice (runtime-gated). */
         const val ENGINE_SENSE_VOICE = "sense_voice"
         /** Старый идентификатор, оставлен для совместимости. */
@@ -406,6 +409,7 @@ class WhisperTranscribeService : Service() {
             val engine = chooseEngine(task.model, task.engine)
             return try {
                 when (engine) {
+                    ENGINE_SHERPA_QWEN3_ASR -> transcribeSherpa(task)
                     ENGINE_SHERPA_TRANSDUCER, ENGINE_PARAKEET -> transcribeSherpa(task)
                     else -> transcribeWhisper(task)
                 }
@@ -429,6 +433,7 @@ class WhisperTranscribeService : Service() {
                 return when (byModel.engineKind) {
                     SttEngineKind.WHISPER_GGML -> ENGINE_WHISPER
                     SttEngineKind.SHERPA_TRANSDUCER -> ENGINE_SHERPA_TRANSDUCER
+                    SttEngineKind.SHERPA_QWEN3_ASR -> ENGINE_SHERPA_QWEN3_ASR
                 }
             }
             return if (requested == ENGINE_PARAKEET || modelId == SttModels.PARAKEET_ID) {
@@ -488,10 +493,54 @@ class WhisperTranscribeService : Service() {
 
         private fun buildSherpaRecognizer(app: Context, modelId: String): OfflineRecognizer {
             val model = SttModels.byId(modelId) ?: throw IllegalArgumentException("неизвестная модель: $modelId")
-            if (model.engineKind != SttEngineKind.SHERPA_TRANSDUCER) {
-                throw IllegalArgumentException("модель $modelId не transducer: ${model.engineKind}")
-            }
             val dir = File(File(app.filesDir, "stt"), model.dirName ?: model.id)
+            return when (model.engineKind) {
+                SttEngineKind.SHERPA_QWEN3_ASR -> buildSherpaQwen3Recognizer(model, dir)
+                SttEngineKind.SHERPA_TRANSDUCER -> buildSherpaTransducerRecognizer(model, dir)
+                else -> throw IllegalArgumentException("модель $modelId не sherpa: ${model.engineKind}")
+            }
+        }
+
+        private fun buildSherpaQwen3Recognizer(model: SttModel, dir: File): OfflineRecognizer {
+            val required = listOf(
+                "conv_frontend.onnx",
+                "encoder.int8.onnx",
+                "decoder.int8.onnx",
+                "tokenizer/vocab.json",
+                "tokenizer/merges.txt",
+                "tokenizer/tokenizer_config.json",
+            )
+            val missing = required.filterNot { File(dir, it).exists() }
+            if (missing.isNotEmpty()) {
+                error("qwen3-asr: нет файлов ${missing.joinToString()} в ${dir.absolutePath} — скачай модель в Настройки -> Диагностика")
+            }
+            val tokenizerDir = File(dir, "tokenizer")
+            val config = OfflineRecognizerConfig(
+                featConfig = FeatureConfig(sampleRate = SAMPLE_RATE_HZ, featureDim = 80),
+                modelConfig = OfflineModelConfig(
+                    qwen3Asr = OfflineQwen3AsrModelConfig(
+                        convFrontend = File(dir, "conv_frontend.onnx").absolutePath,
+                        encoder = File(dir, "encoder.int8.onnx").absolutePath,
+                        decoder = File(dir, "decoder.int8.onnx").absolutePath,
+                        tokenizer = tokenizerDir.absolutePath,
+                        maxTotalLen = 512,
+                        maxNewTokens = 128,
+                        temperature = 1e-6f,
+                        topP = 0.8f,
+                        seed = 42,
+                    ),
+                    tokens = "",
+                    numThreads = SHERPA_THREADS,
+                    debug = org.opencode.mobile.BuildConfig.DEBUG,
+                    provider = "cpu",
+                ),
+                decodingMethod = "greedy_search",
+            )
+            Log.d(TAG, "sherpa-qwen3: гружу ${model.id} из ${dir.absolutePath}")
+            return OfflineRecognizer(config = config)
+        }
+
+        private fun buildSherpaTransducerRecognizer(model: SttModel, dir: File): OfflineRecognizer {
             val tokens = File(dir, "tokens.txt")
             val isGigaAm = model.id == SttModels.GIGAAM_RNNT_ID || model.dirName == SttModels.GIGAAM_RNNT_ID
             val isNemo = isGigaAm || model.id == SttModels.PARAKEET_ID || model.dirName == SttModels.PARAKEET_ID
