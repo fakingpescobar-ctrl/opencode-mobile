@@ -15,8 +15,7 @@ Zipformer RU int8 2025-04-20 подключён в apk-124 как экспери
 CER 6.9%, RTF 0.029, 362ms; силён на обычной RU/длинной речи, но слаб на аббревиатурах/латинице/именах устройств
 (#5 WER 64.7%) — default не меняет. В apk-125 добавлен **Qwen3-ASR 0.6B int8** (sherpa offline,
 `aoiandroid/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25`, Apache-2.0 mirror) как экспериментальный
-downloadable/runnable путь; ~986 МБ, высокий риск RAM/latency/OOM на CPH2747. **Smoke/bench Qwen3 ещё не делался,
-модель на устройстве не скачана** — до smoke поддержку рабочей не заявляем. Подробности: `MOBILE_AGENT/ЖУРНАЛ.md`,
+downloadable/runnable путь; ~986 МБ, высокий риск RAM/latency/OOM на CPH2747. **Qwen3 0.6B на apk-126 (smoke `my_voice_1`, warm): runtime жив, без OOM, load 0ms/pass 4926ms/RTF 0.31, но норм. WER 62.5%/CER 61.5% (цифровой формат + ошибка хвоста) — качество сомнительное. 9-WAV не запускался; поддержка остаётся экспериментальной.** Подробности: `MOBILE_AGENT/ЖУРНАЛ.md`,
 `MOBILE_AGENT/СОСТОЯНИЕ.md`, `MOBILE_AGENT/STT_MARKET_АНАЛИЗ_2026-11-26.md`.
 
 **Состояние UI (наследие apk-80…96, всё ещё актуально):** в шапке чата — чип ⚡ **после** индикатора MCP,
