@@ -443,6 +443,7 @@ class WhisperTranscribeService : Service() {
                     SttEngineKind.WHISPER_GGML -> ENGINE_WHISPER
                     SttEngineKind.SHERPA_TRANSDUCER -> ENGINE_SHERPA_TRANSDUCER
                     SttEngineKind.SHERPA_QWEN3_ASR -> ENGINE_SHERPA_QWEN3_ASR
+                    SttEngineKind.SHERPA_ONLINE_CTC -> ENGINE_SHERPA_ONLINE_CTC
                 }
             }
             return if (requested == ENGINE_PARAKEET || modelId == SttModels.PARAKEET_ID) {
