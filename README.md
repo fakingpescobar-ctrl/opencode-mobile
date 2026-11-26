@@ -4,11 +4,11 @@
   <img src="social-preview.png" alt="OpenCode Mobile — превью" width="100%">
 </p>
 
-**Активная сборка: apk-125.** Установлена: ассет `dist-opencode-mobile-125-810c586.apk`,
-263 388 773 байт, sha256 `ef4e8431d698c947af5d0c09ba30206032caf4feeb457699bfb2a4c12506a62d`.
-Release run #121 (`45875991826`) на коммите `810c586431b1fc5575dfbc9025170e3fe273af1c`
+**Активная сборка: apk-126.** Установлена: ассет `dist-opencode-mobile-126-9a8a0ed.apk`,
+263 388 773 байт, sha256 `af301cfcbe0019a49e31f65f1ab985bb174a87374ef674563959f5f7cbfc42fe`.
+Release run #122 (`45880770106`) на коммите `9a8a0ed702a48763ca13337d8a49fcb1dff82502`
 зелёный, sha/размер скачанного файла совпали с GitHub; `verify-install.sh` → `match=yes`,
-установлена 26.11 через `mobile_app_install` (job `4882bc87-fc3a-4ac5-a9b4-797b8799e46f`, installed).
+установлена 26.11 через `mobile_app_install` (job `fe8a47a4-029b-4b51-9275-329081a68451`, installed).
 
 **STT (актуальное состояние, 26.11):** RU-first baseline — GigaAM v3 E2E RNNT (быстрый и устойчивый на RU).
 Zipformer RU int8 2025-04-20 подключён в apk-124 как экспериментальный sherpa transducer: 9-WAV avg WER 10.9%,
