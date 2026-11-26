@@ -19,6 +19,10 @@ import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
+import com.k2fsa.sherpa.onnx.OnlineModelConfig
+import com.k2fsa.sherpa.onnx.OnlineRecognizer
+import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OnlineToneCtcModelConfig
 import com.whispercpp.whisper.WhisperContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -86,6 +90,8 @@ class WhisperTranscribeService : Service() {
         const val ENGINE_SHERPA_TRANSDUCER = "sherpa_transducer"
         /** sherpa-onnx offline Qwen3-ASR (тяжёлый, экспериментальный). */
         const val ENGINE_SHERPA_QWEN3_ASR = "sherpa_qwen3_asr"
+        /** sherpa-onnx OnlineRecognizer (T-one CTC и др. streaming модели). */
+        const val ENGINE_SHERPA_ONLINE_CTC = "sherpa_online_ctc"
         /** sherpa-onnx SenseVoice (runtime-gated). */
         const val ENGINE_SENSE_VOICE = "sense_voice"
         /** Старый идентификатор, оставлен для совместимости. */
@@ -133,6 +139,8 @@ class WhisperTranscribeService : Service() {
 
         /** Кэш parakeet-распознавателя (грузится один раз за процесс, ~650МБ модель). */
         private val sherpaCache = HashMap<String, OfflineRecognizer>()
+        /** Кэш sherpa-onnx OnlineRecognizer по id модели (T-one streaming и др.). */
+        private val sherpaOnlineCache = HashMap<String, OnlineRecognizer>()
 
         /**
          * Tombstone удалённых моделей (thread-safe): модели, чей файл удалён с диска
@@ -409,6 +417,7 @@ class WhisperTranscribeService : Service() {
             val engine = chooseEngine(task.model, task.engine)
             return try {
                 when (engine) {
+                    ENGINE_SHERPA_ONLINE_CTC -> transcribeSherpaOnline(task)
                     ENGINE_SHERPA_QWEN3_ASR -> transcribeSherpa(task)
                     ENGINE_SHERPA_TRANSDUCER, ENGINE_PARAKEET -> transcribeSherpa(task)
                     else -> transcribeWhisper(task)
@@ -585,6 +594,84 @@ class WhisperTranscribeService : Service() {
             )
             Log.d(TAG, "sherpa: гружу ${model.id} из ${dir.absolutePath}, nemo=$isNemo, dim=$featureDim")
             return OfflineRecognizer(config = config)
+        }
+
+        /**
+         * Ветка sherpa-onnx OnlineRecognizer (streaming CTC, напр. T-one).
+         * Файл целиком подаётся чанками в online stream — для STT_BENCH и
+         * коротких записей этого достаточно; настоящий live-streaming
+         * потребует отдельного audio pipeline.
+         */
+        private fun transcribeSherpaOnline(task: SttTask): String {
+            val app = requireAppContext()
+            if (!EngineLibs.load(app, Engine.TTS)) {
+                error(EngineLibs.reasonOf(app, Engine.TTS) ?: "libsherpa-onnx-jni не загрузился")
+            }
+            val loadStart = SystemClock.elapsedRealtime()
+            val recognizer = sherpaOnlineCache.getOrPut(task.model) { buildSherpaOnlineRecognizer(app, task.model) }
+            val loaded = SystemClock.elapsedRealtime()
+            val stream = recognizer.createStream()
+            val text = try {
+                // Подаём аудио кусками ~100ms, как ожидает online pipeline.
+                val chunk = 1600 // 100ms @ 16kHz
+                var offset = 0
+                while (offset < task.samples.size) {
+                    val end = minOf(offset + chunk, task.samples.size)
+                    val slice = task.samples.copyOfRange(offset, end)
+                    stream.acceptWaveform(slice, SAMPLE_RATE_HZ)
+                    while (recognizer.isReady(stream)) {
+                        recognizer.decode(stream)
+                    }
+                    offset = end
+                }
+                // Добираем хвост.
+                val tailPad = FloatArray(4800) // 300ms тишины для endpoint/flush
+                stream.acceptWaveform(tailPad, SAMPLE_RATE_HZ)
+                stream.inputFinished()
+                while (recognizer.isReady(stream)) {
+                    recognizer.decode(stream)
+                }
+                recognizer.getResult(stream).text.trim()
+            } finally {
+                stream.release()
+            }
+            val done = SystemClock.elapsedRealtime()
+            val audioMs = task.samples.size * MS_PER_SECOND / SAMPLE_RATE_HZ
+            val rtf = if (audioMs > 0) (done - loaded).toFloat() / audioMs else 0f
+            Log.i(TAG, "sherpa-online(${task.model}): загрузка ${loaded - loadStart} мс, проход ${done - loaded} мс, звук ${audioMs} мс, rtf ${"%.2f".format(rtf)}")
+            return text
+        }
+
+        private fun buildSherpaOnlineRecognizer(app: Context, modelId: String): OnlineRecognizer {
+            val model = SttModels.byId(modelId) ?: throw IllegalArgumentException("неизвестная модель: $modelId")
+            val dir = File(File(app.filesDir, "stt"), model.dirName ?: model.id)
+            if (!model.isReady(app)) {
+                error("модель ${model.id} не скачана/не готова в ${dir.absolutePath}")
+            }
+            val tokens = File(dir, "tokens.txt")
+            val modelFile = pickFirstExisting(dir, "model.int8.onnx", "model.onnx")
+            val missing = buildList {
+                if (!tokens.exists()) add("tokens.txt")
+                if (modelFile == null) add("model(.int8).onnx")
+            }
+            if (missing.isNotEmpty()) {
+                error("sherpa-online: нет файлов ${missing.joinToString()} в ${dir.absolutePath} — скачай модель в Настройки -> Диагностика")
+            }
+            val config = OnlineRecognizerConfig(
+                featConfig = FeatureConfig(sampleRate = SAMPLE_RATE_HZ, featureDim = 80),
+                modelConfig = OnlineModelConfig(
+                    toneCtc = OnlineToneCtcModelConfig(model = modelFile!!.absolutePath),
+                    tokens = tokens.absolutePath,
+                    numThreads = SHERPA_THREADS,
+                    debug = org.opencode.mobile.BuildConfig.DEBUG,
+                    provider = "cpu",
+                    modelType = "t_one_ctc",
+                ),
+                enableEndpoint = true,
+                decodingMethod = "greedy_search",
+            )
+            Log.d(TAG, "sherpa-online: гружу ${model.id} из ${dir.absolutePath}")
+            return OnlineRecognizer(config = config)
         }
 
         private fun pickFirstExisting(dir: File, vararg names: String): File? =

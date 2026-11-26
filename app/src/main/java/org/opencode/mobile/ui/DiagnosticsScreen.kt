@@ -866,6 +866,7 @@ fun DiagnosticsScreen(
                     EngineRows(engineDl, startEngineDownload)
                     Spacer(Modifier.height(6.dp))
                     InfoRow("Доп. STT/VAD компоненты", "статус фактчека — не все подключены в runtime", Color(NOTE_ARGB))
+                    InfoRow("T-one (T-Tech) streaming", "sherpa-onnx OnlineRecognizer CTC · экспериментально подключён (скачать модель в STT)", Color(0xFF80CBC4))
                     InfoRow("Silero VAD v6", "требует отдельный VAD-пайплайн/артефакт; в APK не подключён", Color(0xFFFFC107))
                     InfoRow("Smart Turn v3.2", "требует turn-detection пайплайн/артефакт; в APK не подключён", Color(0xFFFFC107))
                     InfoRow("Qwen3-ForcedAligner 0.6B", "aligner, не STT-модель; нужен отдельный runtime/формат", Color(0xFFFFC107))

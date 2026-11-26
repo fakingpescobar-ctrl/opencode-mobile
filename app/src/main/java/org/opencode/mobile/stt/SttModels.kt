@@ -22,6 +22,8 @@ enum class SttEngineKind {
     WHISPER_GGML,
     SHERPA_TRANSDUCER,
     SHERPA_QWEN3_ASR,
+    /** sherpa-onnx OnlineRecognizer (streaming/CTC, напр. T-one). */
+    SHERPA_ONLINE_CTC,
 }
 
 @Suppress("LongParameterList")
@@ -264,20 +266,34 @@ object SttModels {
             ),
             SttModel(
                 id = TONE_CTC_ID,
-                note = "T-one (T-Tech) · streaming CTC RU · нужен online/streaming sherpa pipeline (в APK не подключён) · manual",
-                bytes = 150L * MB,
+                note = "T-one (T-Tech) · streaming CTC RU · sherpa-onnx OnlineRecognizer · экспериментально",
+                bytes = 128_111_859L,
                 isReady = { ctx -> byIdStatic(ctx, TONE_CTC_ID) },
                 fileOf = { ctx -> sherpaDir(ctx, TONE_CTC_ID) },
-                fetch = { _, _ -> error("T-one: нужен streaming/online runtime; интеграция не подключена в этом APK") },
-                sizeLabel = "~150 МБ",
+                fetch = { ctx, on -> byFetchStatic(ctx, TONE_CTC_ID, on) },
+                sizeLabel = "~122 МБ",
                 flatFileName = null,
-                manual = true,
-                engineKind = SttEngineKind.SHERPA_TRANSDUCER,
+                manual = false,
+                engineKind = SttEngineKind.SHERPA_ONLINE_CTC,
                 dirName = TONE_CTC_ID,
-                files = emptyList(),
+                files =
+                    listOf(
+                        SttModelFile(
+                            "model.int8.onnx",
+                            "$HF/csukuangfj/sherpa-onnx-streaming-t-one-russian-2025-09-08/resolve/main/model.int8.onnx",
+                            128_111_523L,
+                            "5ded080e2a6c86ecc11bcb0902d77524eb3e8b0844cb0c0754347f5aafb4dabc",
+                        ),
+                        SttModelFile(
+                            "tokens.txt",
+                            "$HF/csukuangfj/sherpa-onnx-streaming-t-one-russian-2025-09-08/resolve/main/tokens.txt",
+                            202L,
+                            "1b142114bebfc804e668fcba49159c1be7b21d3f",
+                        ),
+                    ),
                 recommendedForRu = false,
                 languages = "ru",
-                runnable = false,
+                runnable = true,
             ),
             SttModel(
                 id = QWEN3_ASR_06B_ID,
