@@ -16,6 +16,7 @@ import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
 import com.whispercpp.whisper.WhisperContext
 import kotlinx.coroutines.CompletableDeferred
@@ -524,7 +525,64 @@ class WhisperTranscribeService : Service() {
         }
 
         private fun transcribeSenseVoice(task: SttTask): String {
-            return "ОШИБКА STT: SenseVoice пока не поддержан этим APK (нужен sherpa-onnx sense_voice API)"
+            val app = requireAppContext()
+            if (!EngineLibs.load(app, Engine.TTS)) {
+                error(EngineLibs.reasonOf(app, Engine.TTS) ?: "libsherpa-onnx-jni не загрузился")
+            }
+            val loadStart = SystemClock.elapsedRealtime()
+            val recognizer = sherpaCache.getOrPut(task.model) { buildSenseVoiceRecognizer(app, task.model) }
+            val loaded = SystemClock.elapsedRealtime()
+            val stream = recognizer.createStream()
+            val text = try {
+                stream.acceptWaveform(task.samples, SAMPLE_RATE_HZ)
+                recognizer.decode(stream)
+                recognizer.getResult(stream).text.trim()
+            } finally {
+                stream.release()
+            }
+            val done = SystemClock.elapsedRealtime()
+            val audioMs = task.samples.size * MS_PER_SECOND / SAMPLE_RATE_HZ
+            val rtf = if (audioMs > 0) (done - loaded).toFloat() / audioMs else 0f
+            Log.i(
+                TAG,
+                "sherpa(${task.model}): загрузка ${loaded - loadStart} мс, " +
+                    "проход ${done - loaded} мс, звук ${audioMs} мс, rtf ${\"%.2f\".format(rtf)}",
+            )
+            return text
+        }
+
+        private fun buildSenseVoiceRecognizer(app: Context, modelId: String): OfflineRecognizer {
+            val model = SttModels.byId(modelId) ?: throw IllegalArgumentException("неизвестная модель: $modelId")
+            if (model.engineKind != SttEngineKind.SHERPA_SENSE_VOICE) {
+                throw IllegalArgumentException("модель $modelId не sense_voice: ${model.engineKind}")
+            }
+            val dir = File(File(app.filesDir, "stt"), model.dirName ?: model.id)
+            val tokens = File(dir, "tokens.txt")
+            val modelFile = File(dir, "model.int8.onnx")
+            val missing = listOf(tokens, modelFile).filterNot { it.exists() }
+            if (missing.isNotEmpty()) {
+                error(
+                    "sense_voice: нет файлов ${missing.joinToString { it.name }} в ${dir.absolutePath} — " +
+                        "скачай модель в Настройки -> Диагностика",
+                )
+            }
+            val config = OfflineRecognizerConfig(
+                featConfig = FeatureConfig(sampleRate = SAMPLE_RATE_HZ, featureDim = 80),
+                modelConfig = OfflineModelConfig(
+                    senseVoice = OfflineSenseVoiceModelConfig(
+                        model = modelFile.absolutePath,
+                        language = "",
+                        useInverseTextNormalization = true,
+                    ),
+                    tokens = tokens.absolutePath,
+                    numThreads = SHERPA_THREADS,
+                    debug = org.opencode.mobile.BuildConfig.DEBUG,
+                    provider = "cpu",
+                ),
+                decodingMethod = "greedy_search",
+            )
+            Log.d(TAG, "sherpa: гружу ${model.id} (sense_voice) из ${dir.absolutePath}")
+            return OfflineRecognizer(config = config)
         }
 
         private fun enqueue(task: SttTask): Boolean =
