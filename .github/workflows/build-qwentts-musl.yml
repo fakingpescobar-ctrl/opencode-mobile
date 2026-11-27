@@ -1,6 +1,6 @@
 # CI: собрать qwentts.cpp (Qwen3-TTS 12Hz, 0.6B/1.7B) под musl aarch64.
 # НЕ трогает release-apk.yml и живой APK. Класть в .github/workflows/build-qwentts-musl.yml.
-# На телефоне запускать через /system/bin/linker64 + LD_LIBRARY_PATH из libldmusl.so.
+# На телефоне запускать через libldmusl.so (musl loader) + LD_LIBRARY_PATH с musl-рантаймом.
 name: Build qwentts.cpp musl bench (arm64)
 
 on:
@@ -55,6 +55,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" \
+            -DCMAKE_BUILD_RPATH='$ORIGIN' \
             -DGGML_NATIVE=OFF \
             -DGGML_STATIC=ON \
             -DGGML_BACKEND_DL=OFF \
@@ -70,7 +71,13 @@ jobs:
           file qwen-tts qwen-codec tts-server libqwen.so
           readelf -Ws libqwen.so | grep -q 'qt_init' || { echo "нет qt_init"; exit 1; }
           readelf -Ws libqwen.so | grep -q 'qt_synthesize' || { echo "нет qt_synthesize"; exit 1; }
-          tar czf /tmp/qwentts-musl-arm64.tar.gz qwen-tts qwen-codec tts-server libqwen.so
+          echo '--- dynamic deps ---'
+          for f in qwen-tts qwen-codec tts-server libqwen.so; do readelf -d "$f" | grep -E 'NEEDED|RUNPATH'; done
+          echo '--- built shared libs ---'
+          find . -maxdepth 3 -name 'lib*.so*' -type f -o -type l -name 'lib*.so*' | sort
+          tar czf /tmp/qwentts-musl-arm64.tar.gz \
+            qwen-tts qwen-codec tts-server libqwen.so \
+            $(find . -maxdepth 3 -name 'libggml*.so*' | sed 's|^\./||' | sort -u)
           sha256sum /tmp/qwentts-musl-arm64.tar.gz
 
       - name: Upload artifact
