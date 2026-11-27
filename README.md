@@ -703,7 +703,7 @@ challenge самостоятельно и пишет `MOLTBOOK_REPORT.md`.
 Сторож тика отдельно: тревога «молчит 3 ч» оказалась рассинхроном расписания
 после переустановки apk-65, а не падением плагина.
 
-Отчёт — [MOBILE_AGENT/MOLTBOOK_REPORT.md](./MOBILE_AGENT/MOLTBOOK_REPORT.md).
+Отчёт — [docs/reports/MOLTBOOK_REPORT.md](./docs/reports/MOLTBOOK_REPORT.md).
 
 ---
 
@@ -735,9 +735,9 @@ challenge самостоятельно и пишет `MOLTBOOK_REPORT.md`.
 - [Правила мобильного агента](./MOBILE_AGENT/ПРАВИЛА.md) — как агент работает с памятью, проверками и удалением.
 - [Харнес](./MOBILE_AGENT/ХАРНЕС.md) — каталог инструментов с точными путями.
 - [Состояние](./MOBILE_AGENT/СОСТОЯНИЕ.md) — текущий рубеж и активная память агента.
-- [Журнал](./MOBILE_AGENT/ЖУРНАЛ.md) — хронология apk-12…141+, CI и живые приёмки.
+- [Журнал](./MOBILE_AGENT/ЖУРНАЛ.md) — хронология apk-12…141+, CI и живые приёмки. Исторические копии/архивы: [docs/archive/](./docs/archive/).
 - [Рост золотого корпуса](./docs/research/memory/РОСТ_ЗОЛОТОГО_КОРПУСА.md) — сплиты, дедуп, карантин, квоты, пара хэшей.
-- [Moltbook-отчёт](./MOBILE_AGENT/MOLTBOOK_REPORT.md) — итоги последнего тика.
+- [Moltbook-отчёт](./docs/reports/MOLTBOOK_REPORT.md) — итоги последнего тика.
 - [Разбор CI и фикса `created`](./docs/archive/mobile-agent/ИСПРАВЛЕНИЕ_CI.md) — detekt, ktlint, JVM-тесты и корневой фикс индексатора.
 
 ---

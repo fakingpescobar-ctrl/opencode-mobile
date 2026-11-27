@@ -16,20 +16,25 @@
 - [VOICE REPORT](./VOICE-REPORT.md)
 - [Эксперименты STT latency](./EXPERIMENTS-STT-LATENCY.md)
 - [STT market/bench анализ 2026-11-26](./research/STT_MARKET_АНАЛИЗ_2026-11-26.md)
+- [STT бенчмарк 2026-11-26](./benchmarks/STT_БЕНЧМАРК_2026-11-26.md)
 - [Vosk feasibility](./research/VOSK_FEASIBILITY_REPORT.md)
+- [Исследование STT движков](./research/ИССЛЕДОВАНИЕ_STT_ДВИЖКИ.md)
 - [TTS implementation plan](./tts-implementation-plan.md)
 
-## Исследования
-- [Исследования](./research/) — STT, память, LLM, rerank/embedding.
-- [Бенчмарки](./benchmarks/) — LLM/сопроцессор/качество/выбор модели.
+## Архитектура / память / LLM
+- [Архитектура памяти](./architecture/АРХИТЕКТУРА_ПАМЯТИ.md)
+- [Исследования памяти](./research/memory/)
+- [Исследования LLM/ядра](./research/)
+- [Бенчмарки](./benchmarks/)
+
+## Отчёты и архив
+- [Отчёты](./reports/)
+- [Приёмки APK](./reports/acceptance/)
 - [Аудиты](./audits/)
-- [Отчёты/приёмки](./reports/)
+- [Архив mobile-agent](./archive/mobile-agent/)
+- [Корневые дубли журналов](./archive/root-duplicates/) — исторические копии; актуальные: `MOBILE_AGENT/ЖУРНАЛ.md`, `MOBILE_AGENT/СОСТОЯНИЕ.md`.
 
-## Архив
-- [Архив mobile-agent](./archive/mobile-agent/) — исторические приёмки, манифесты, старые разборы.
-- [Дубликаты корневых журналов](./archive/root-duplicates/) — устаревшие корневые копии; актуальные: `MOBILE_AGENT/ЖУРНАЛ.md`, `MOBILE_AGENT/СОСТОЯНИЕ.md`.
-
-## Рабочие документы агента (актуальные)
+## Рабочие документы агента (актуальные, на месте)
 - [MOBILE_AGENT/СОСТОЯНИЕ.md](../MOBILE_AGENT/СОСТОЯНИЕ.md)
 - [MOBILE_AGENT/ЖУРНАЛ.md](../MOBILE_AGENT/ЖУРНАЛ.md)
 - [MOBILE_AGENT/ПРАВИЛА.md](../MOBILE_AGENT/ПРАВИЛА.md)
