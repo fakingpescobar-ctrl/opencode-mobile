@@ -72,9 +72,10 @@ internal fun SttModelPicker(
     val context = LocalContext.current
     var readyIds by remember { mutableStateOf(emptySet<String>()) }
 
+    val visibleModels = remember { SttModels.all.filterNot { it.hiddenFromPicker } }
     LaunchedEffect(Unit) {
         readyIds = withContext(Dispatchers.IO) {
-            SttModels.all.filter { it.isReady(context) }.map { it.id }.toSet()
+            visibleModels.filter { it.isReady(context) }.map { it.id }.toSet()
         }
     }
 
@@ -125,16 +126,16 @@ internal fun SttModelPicker(
             )
             Spacer(Modifier.weight(1f))
             StatusTag(
-                SttModels.all.count { it.id in readyIds }.toString() + " готовы",
+                visibleModels.count { it.id in readyIds }.toString() + " готовы",
                 DiagOk,
             )
         }
         Text(
-            "Стиль диагностики · все модели каталога",
+            "Стиль диагностики · рекомендованные/рабочие модели",
             color = DiagDim,
             fontSize = 10.sp,
         )
-        SttModels.all.forEachIndexed { index, model ->
+        visibleModels.forEachIndexed { index, model ->
             AnimatedVisibility(
                 visible = true,
                 enter = fadeIn(tween(220, delayMillis = (index * 35).coerceAtMost(280))) +
@@ -149,7 +150,7 @@ internal fun SttModelPicker(
             }
         }
         Text(
-            "Скачивание/удаление — в Диагностике. Неподключённые runtime нельзя выбрать.",
+            "Скачивание/удаление и скрытые экспериментальные модели — в Диагностике.",
             color = DiagDim,
             fontSize = 10.sp,
             modifier = Modifier.padding(top = 2.dp),

@@ -58,6 +58,8 @@ data class SttModel(
     val languages: String = "ru",
     /** Можно ли запускать в текущем APK (runtime-gate для P2). */
     val runnable: Boolean = true,
+    /** Скрыть из основного chat picker; модель остаётся в каталоге/диагностике/bench. */
+    val hiddenFromPicker: Boolean = false,
 )
 
 object SttModels {
@@ -297,7 +299,7 @@ object SttModels {
             ),
             SttModel(
                 id = QWEN3_ASR_06B_ID,
-                note = "Qwen3-ASR 0.6B int8 · sherpa-onnx offline · ~986 МБ на диске · тяжёлый, высокий риск RAM/latency на CPH2747; экспериментально",
+                note = "Qwen3-ASR 0.6B int8 · sherpa-onnx offline · экспериментально, скрыт из обычного выбора: 9-WAV apk-132 avg WER 24.5%/CER 16.2%/pass 2567ms, 3/9 >3s; GigaAM лучше для RU",
                 bytes = 986_554_365L,
                 isReady = { ctx -> byIdStatic(ctx, QWEN3_ASR_06B_ID) },
                 fileOf = { ctx -> sherpaDir(ctx, QWEN3_ASR_06B_ID) },
@@ -319,6 +321,7 @@ object SttModels {
                 recommendedForRu = false,
                 languages = "multilingual (вкл. ru)",
                 runnable = true,
+                hiddenFromPicker = true,
             ),
             SttModel(
                 id = QWEN3_ASR_17B_ID,
