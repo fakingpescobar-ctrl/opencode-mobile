@@ -4,19 +4,13 @@
   <img src="social-preview.png" alt="OpenCode Mobile — превью" width="100%">
 </p>
 
-**Активная сборка: apk-126.** Установлена: ассет `dist-opencode-mobile-126-9a8a0ed.apk`,
-263 388 773 байт, sha256 `af301cfcbe0019a49e31f65f1ab985bb174a87374ef674563959f5f7cbfc42fe`.
-Release run #122 (`45880770106`) на коммите `9a8a0ed702a48763ca13337d8a49fcb1dff82502`
-зелёный, sha/размер скачанного файла совпали с GitHub; `verify-install.sh` → `match=yes`,
-установлена 26.11 через `mobile_app_install` (job `fe8a47a4-029b-4b51-9275-329081a68451`, installed).
+**Активная сборка: apk-138.** Установлена: ассет `dist-opencode-mobile-138-5072e0f.apk`,
+263 485 365 байт, sha256 `305e8b4ef7343ef86dcf4f255f5d784c0cea58ddf44cb3357490e37a1be64270`.
+Release run #134 (`45968432027`) на коммите `5072e0f0b6a6` (main) зелёный, sha/размер скачанного файла совпали с GitHub;
+`verify-install.sh` → `match=yes`, установка подтверждена 27.11 через `mobile_app_install` (job `3e9e45a3-f597-4fcc-ad59-cb7019885fa3`, installed, тап Макса).
+Промежуточные: apk-136 (`45961813280`, `8cbc47e6ecc9`) перенесла STT runtime-мету из Диагностики в чат; apk-137 (`45963587367`, `b4074e3e41b7`) починила пропажу меты после snapshot-refresh через `sttMetaCache`; apk-138 сделала STT-строку наклонной. Live smoke apk-138: Silero VAD v6, 1 seg/4.6s, GigaAM pass 262ms, RTF 0.06, текст верный, фиолетовая *наклонная* STT-строка под сообщением остаётся — подтверждено Максом.
 
-**STT (актуальное состояние, 26.11):** RU-first baseline — GigaAM v3 E2E RNNT (быстрый и устойчивый на RU).
-Zipformer RU int8 2025-04-20 подключён в apk-124 как экспериментальный sherpa transducer: 9-WAV avg WER 10.9%,
-CER 6.9%, RTF 0.029, 362ms; силён на обычной RU/длинной речи, но слаб на аббревиатурах/латинице/именах устройств
-(#5 WER 64.7%) — default не меняет. В apk-125 добавлен **Qwen3-ASR 0.6B int8** (sherpa offline,
-`aoiandroid/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25`, Apache-2.0 mirror) как экспериментальный
-downloadable/runnable путь; ~986 МБ, высокий риск RAM/latency/OOM на CPH2747. **Qwen3 0.6B на apk-126 (smoke `my_voice_1`, warm): runtime жив, без OOM, load 0ms/pass 4926ms/RTF 0.31, но норм. WER 62.5%/CER 61.5% (цифровой формат + ошибка хвоста) — качество сомнительное. 9-WAV не запускался; поддержка остаётся экспериментальной.** Подробности: `MOBILE_AGENT/ЖУРНАЛ.md`,
-`MOBILE_AGENT/СОСТОЯНИЕ.md`, `MOBILE_AGENT/STT_MARKET_АНАЛИЗ_2026-11-26.md`.
+**STT (актуальное состояние, 27.11):** RU-first baseline — GigaAM v3 E2E RNNT. Chat STT picker в стиле Диагностики показывает рекомендованные/рабочие модели; скрытые экспериментальные (сейчас Qwen3 0.6B, hide_experiment по 9-WAV bench) остаются в каталоге/диагностике/bench/runtime. T-one (sherpa-onnx OnlineRecognizer, Tone CTC RU) на 9 WAV apk-131: avg WER 12.77%, CER 6.31%, avg pass 803.6ms, RTF 0.05-0.09; силён на обычной RU, слаб на латинице/аббревиатурах/брендах/кодах устройств (#5 WER 70.59%) — default не меняет. Zipformer RU быстрый, но тоже слаб на tech/latin. Qwen3-ASR 0.6B 9-WAV apk-132: avg WER 24.5%, CER 16.2%, avg pass 2567ms, RTF 0.20; 3/9 >3s (max 6962ms), качество переменное (tech/latin/даты/фонетика) — вердикт hide_experiment, GigaAM лучше (15.8% WER). Silero VAD v6: apk-131 live smoke FAIL (`NoSuchMethodError: SpeechSegment.<init>(I[F)V`, JNI int/long mismatch, RMS fallback); apk-132 fix подтверждён live hold-to-speak smoke 27.11 (`VAD=silero-v6`, 4 сегмента из 9с, без NoSuchMethodError/RMS fallback). apk-134 (27.11): `ChunkedTranscriber` добивает до 3s только `WHISPER_GGML`; sherpa/GigaAM без лишнего padding. 9-WAV GigaAM `STT_BENCH` на apk-134: avg WER 15.8%, avg pass 823ms, avg RTF 0.059, 9/9 ok, регрессии качества нет; live hold-to-speak smoke PASS 27.11 (Silero VAD v6, 4 seg/12s, GigaAM RTF 0.06-0.07). apk-135 добавила STT runtime diagnostics; apk-136/137/138 перенесли её в чат как мелкую фиолетовую *наклонную* строку под распознанным голосовым сообщением и закрепили мету через `sttMetaCache` (не пропадает после snapshot refresh). Live smoke apk-138 подтверждён Максом 27.11. Подробности: `MOBILE_AGENT/ЖУРНАЛ.md`, `MOBILE_AGENT/СОСТОЯНИЕ.md`, `MOBILE_AGENT/STT_MARKET_АНАЛИЗ_2026-11-26.md`.
 
 | Модель | APK / scope | WER | CER | RTF | Avg/pass | Статус / примечание |
 |---|---|---:|---:|---:|---:|---|
@@ -28,9 +22,11 @@ downloadable/runnable путь; ~986 МБ, высокий риск RAM/latency/O
 | Podlodka turbo ggml q5_0 | apk-119, 9 WAV | 18.3% | 12.5% | 1.744 | 22464 ms | Не проходит <=3s на текущем runtime |
 | Podlodka turbo ggml q8_0 | apk-119, 9 WAV | 19.2% | 14.2% | 1.642 | 21258 ms | Не проходит <=3s на текущем runtime |
 | Zipformer RU int8 2025-04-20 | apk-124, 9 WAV | 10.9% | 6.9% | 0.029 | 362 ms | Быстрый; слаб на аббр/латинице/именах устройств (#5) |
+| T-one CTC RU streaming | apk-131, 9 WAV | 12.8% | 6.3% | 0.05-0.09 | 804 ms | Очень быстрый; слаб на латинице/аббр/брендах/кодах (#5 WER 70.6%) |
 | Qwen3-ASR 0.6B int8 | apk-126, 1 WAV smoke (warm) | 62.5%* | 61.5%* | 0.31 | 4926 ms pass | Runtime жив, без OOM; *норм. WER/CER, цифры+ошибка хвоста; cold-load/9-WAV не делались |
 
 > Qwen3 smoke: `my_voice_1`, 16k mono, 16100ms, load 0ms (warm), pass 4926ms. Hyp: "Завтра, 27 ноября 2026 года в 9:05 утра и в 18:05 вечера нужно пройти за письголоса."
+> T-one 9-WAV: cold load 1159ms на первом файле, далее 0ms; avg pass 803.6ms. Провал на tech/latin: voice_5 "API, MCP, Wi-Fi и устройство OPPO CPH2747" распознан с WER 70.6%.
 
 **Состояние UI (наследие apk-80…96, всё ещё актуально):** в шапке чата — чип ⚡ **после** индикатора MCP,
 без свечения: внутри стоит сам знак ⚡, как просил Макс. Он открывает анимированную
