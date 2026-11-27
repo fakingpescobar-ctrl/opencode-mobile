@@ -53,7 +53,7 @@
   политикой `untrusted_app` — проверено на реальном OPPO, на других устройствах
   стоит делать smoke-тест.
 - **STT производительность:** зависит от модели/движка. GigaAM v3 E2E RNNT — текущий RU-first baseline (apk-134 9-WAV: 15.8% WER, 823ms avg pass, RTF 0.059). Whisper small качественный, но медленнее; Podlodka GGML q5/q8 на CPH2747 не проходит <=3s. Qwen3-ASR 0.6B int8 — экспериментальный, 3/9 >3s.
-- **WER/RTF замерены на эталонных WAV Макса (CPH2747):** GigaAM 15.8% WER/0.059 RTF; T-one 12.8%/0.06 (слаб на latin/abbr); Whisper small 20.0%/0.169; Qwen3 0.6B 24.5%/0.20 (hide_experiment). Детали — `MOBILE_AGENT/STT_MARKET_АНАЛИЗ_2026-11-26.md`.
+- **WER/RTF замерены на эталонных WAV Макса (CPH2747):** GigaAM 15.8% WER/0.059 RTF; T-one 12.8%/0.06 (слаб на latin/abbr); Whisper small 20.0%/0.169; Qwen3 0.6B 24.5%/0.20 (hide_experiment). Детали — `docs/research/STT_MARKET_АНАЛИЗ_2026-11-26.md`.
 
 - **Квантованные модели на GPU не работают** (turbo q5_0 → мусор, rtf 47–58).
   В `jni.c` стоит квант-гейт по имени файла; отладочный обход — метка `quant_gpu`

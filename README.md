@@ -10,7 +10,7 @@ Release run #137 (`45982164592`) на коммите `d00747dc0fd5` (main) зе�
 `verify-install.sh` → `match=yes`, установка подтверждена 27.11 через `mobile_app_install` (job `6a5377f7-74f7-484b-b236-b3d4157b0f9a`, installed, тап Макса).
 apk-141: chat STT picker показывает только уже скачанные/готовые модели (`isReady && runnable`); недоступные/нескачанные в выборе не отображаются, скачивание остаётся в Диагностике. Промежуточный apk-140 (`45981587711`, `9188970f1f3d`) скрыл из picker’а нерабочие Vosk 0.54/0.52 и Qwen3-ASR 1.7B (`hiddenFromPicker`, runtime недоступен).
 
-**STT (актуальное состояние, 27.11):** RU-first baseline — GigaAM v3 E2E RNNT. Chat STT picker показывает только скачанные/готовые модели (`isReady && runnable`); недоступные/нескачанные скрыты, скачивание — в Диагностике. Qwen3-ASR 0.6B, Vosk 0.54/0.52, Qwen3-ASR 1.7B скрыты из обычного выбора (`hiddenFromPicker`/runtime ограничения). На тех же 9 RU WAV Макса: GigaAM 15.8% WER / 0.059 RTF / 823ms avg pass; T-one 12.8% WER / 804ms, но слаб на латинице/аббревиатурах/кодах (#5 WER 70.6%); Qwen3-ASR 0.6B 24.5% WER / 2567ms, 3/9 >3s — hide_experiment. Silero VAD v6 live PASS на apk-132+; apk-134 убрал лишний 3s padding для sherpa; apk-135–138 добавили STT runtime-мету в чат (фиолетовая *курсивная* строка, `sttMetaCache`). Подробности: `MOBILE_AGENT/ЖУРНАЛ.md`, `MOBILE_AGENT/СОСТОЯНИЕ.md`, `MOBILE_AGENT/STT_MARKET_АНАЛИЗ_2026-11-26.md`.
+**STT (актуальное состояние, 27.11):** RU-first baseline — GigaAM v3 E2E RNNT. Chat STT picker показывает только скачанные/готовые модели (`isReady && runnable`); недоступные/нескачанные скрыты, скачивание — в Диагностике. Qwen3-ASR 0.6B, Vosk 0.54/0.52, Qwen3-ASR 1.7B скрыты из обычного выбора (`hiddenFromPicker`/runtime ограничения). На тех же 9 RU WAV Макса: GigaAM 15.8% WER / 0.059 RTF / 823ms avg pass; T-one 12.8% WER / 804ms, но слаб на латинице/аббревиатурах/кодах (#5 WER 70.6%); Qwen3-ASR 0.6B 24.5% WER / 2567ms, 3/9 >3s — hide_experiment. Silero VAD v6 live PASS на apk-132+; apk-134 убрал лишний 3s padding для sherpa; apk-135–138 добавили STT runtime-мету в чат (фиолетовая *курсивная* строка, `sttMetaCache`). Подробности: `MOBILE_AGENT/ЖУРНАЛ.md`, `MOBILE_AGENT/СОСТОЯНИЕ.md`, `docs/research/STT_MARKET_АНАЛИЗ_2026-11-26.md`.
 
 | Модель | APK / scope | WER | CER | RTF | Avg/pass | Статус / примечание |
 |---|---|---:|---:|---:|---:|---|
@@ -427,7 +427,7 @@ flowchart LR
 | Пара хэшей | `index_sha` (документы) + `gold_sha` (эталон) в каждом протоколе |
 
 Подробности —
-[MOBILE_AGENT/РОСТ_ЗОЛОТОГО_КОРПУСА.md](./MOBILE_AGENT/РОСТ_ЗОЛОТОГО_КОРПУСА.md).
+[docs/research/memory/РОСТ_ЗОЛОТОГО_КОРПУСА.md](./docs/research/memory/РОСТ_ЗОЛОТОГО_КОРПУСА.md).
 
 ---
 
@@ -459,15 +459,15 @@ flowchart LR
 модель проиграла ядру по top1 и на всех (0.487 против 0.593), и на held-out
 (0.667 против 0.733); гейт по неуверенности не дал выигрыша ни на одном признаке.
 Дефолт остаётся детерминированный FTS5, модель — research/opt-in. Разбор:
-`MOBILE_AGENT/tools/llama-bench/DECISION-GOLD113.md`. Внешние embed/rerank
+`docs/research/llama-bench/DECISION-GOLD113.md`. Внешние embed/rerank
 (e5-small, bge-v2-m3) тоже прогнаны на 113/30 и тоже проиграли ядру по top1
 и held-out (0.600 и 0.500 против 0.733); гибрид bge на held-out 0.700. Итоговая
-сводка — `MOBILE_AGENT/tools/llama-bench/EXTERNALS-GOLD113.md`. Финальный вердикт
-всего research (дефолт FTS5, APK не трогать) — `MOBILE_AGENT/ВЕРДИКТ_RESEARCH_ПАМЯТИ.md`.
+сводка — `docs/research/llama-bench/EXTERNALS-GOLD113.md`. Финальный вердикт
+всего research (дефолт FTS5, APK не трогать) — `docs/research/ВЕРДИКТ_RESEARCH_ПАМЯТИ.md`.
 Retrieval-фикс: исправлена инверсия bm25, top1 held-out 0.733→0.800 —
-`MOBILE_AGENT/tools/llama-bench/RETRIEVAL-FIX-BM25.md`. Волна 1 безопасности
+`docs/research/llama-bench/RETRIEVAL-FIX-BM25.md`. Волна 1 безопасности
 ядра: fail-closed манифест, `approve` как гейт provenance и receipt цитат —
-подробности в `MOBILE_AGENT/ВЕРДИКТ_RESEARCH_ПАМЯТИ.md`. Волна 2: детерминированный
+подробности в `docs/research/ВЕРДИКТ_RESEARCH_ПАМЯТИ.md`. Волна 2: детерминированный
 FTS5-прирост в дефолтном `legacy` (recall5 0.982, held-out 1.000), held-out gate
 по умолчанию и `MCP_OPERATOR_ID` из Kotlin. Волна 3 добавила явный
 `mode:"l0"` с entity-алиасами, Волна 4 — opt-in `mode:"wave4"` с одним слотом на
@@ -477,7 +477,7 @@ FTS5-прирост в дефолтном `legacy` (recall5 0.982, held-out 1.00
 прогнан полный живой замер (358 MCP-вызовов) и диагностика: два «провала»
 gold оказались устаревшими метками, а не дефектом поиска; с исправленными
 метками поиск закрывает 100% корпуса. Подробности — раздел ниже и
-`MOBILE_AGENT/ВОЛНА_3_ENTITY_L0.md`.
+`docs/research/memory/ВОЛНА_3_ENTITY_L0.md`.
 
 ---
 
@@ -539,7 +539,7 @@ MRR gold 0.9041, held-out 0.9444. Вживую h06 в топ-5 попадает 
 Свежий прогон жёсткого gold: `n=20`, `avgMs=8`, `avgAdaptiveMs=5`,
 `avgTokens=1713`, `misses=[]`.
 Отчёт —
-[архивы/БЕНЧМАРК_СЛОЖНЫХ_ЗАПРОСОВ.md](./MOBILE_AGENT/архивы/БЕНЧМАРК_СЛОЖНЫХ_ЗАПРОСОВ.md).
+[архивы/БЕНЧМАРК_СЛОЖНЫХ_ЗАПРОСОВ.md](./docs/archive/mobile-agent/БЕНЧМАРК_СЛОЖНЫХ_ЗАПРОСОВ.md).
 
 ### График recall по сборкам
 
@@ -619,7 +619,7 @@ xychart-beta
     bar [0.850, 0.950, 1.000]
 ```
 
-Отчёт — [ВОЛНА_4_ТОП5_ДИВЕРСИФИКАЦИЯ.md](./MOBILE_AGENT/ВОЛНА_4_ТОП5_ДИВЕРСИФИКАЦИЯ.md).
+Отчёт — [ВОЛНА_4_ТОП5_ДИВЕРСИФИКАЦИЯ.md](./docs/research/memory/ВОЛНА_4_ТОП5_ДИВЕРСИФИКАЦИЯ.md).
 Доставлено в apk-74: release run #70, versionCode 74, `verify-install.sh` →
 `match=yes`, живой h06 закрыт только в `wave4`.
 
@@ -671,7 +671,7 @@ CI в витрине намеренно не привязан к номеру ru
 | Архив | — | 17 511 545 байт |
 
 Подробности —
-[архивы/МАНИФЕСТ_УБОРКИ_TMP_20261120.md](./MOBILE_AGENT/архивы/МАНИФЕСТ_УБОРКИ_TMP_20261120.md).
+[архивы/МАНИФЕСТ_УБОРКИ_TMP_20261120.md](./docs/archive/mobile-agent/МАНИФЕСТ_УБОРКИ_TMP_20261120.md).
 
 ```mermaid
 xychart-beta
@@ -736,9 +736,9 @@ challenge самостоятельно и пишет `MOLTBOOK_REPORT.md`.
 - [Харнес](./MOBILE_AGENT/ХАРНЕС.md) — каталог инструментов с точными путями.
 - [Состояние](./MOBILE_AGENT/СОСТОЯНИЕ.md) — текущий рубеж и активная память агента.
 - [Журнал](./MOBILE_AGENT/ЖУРНАЛ.md) — хронология apk-12…141+, CI и живые приёмки.
-- [Рост золотого корпуса](./MOBILE_AGENT/РОСТ_ЗОЛОТОГО_КОРПУСА.md) — сплиты, дедуп, карантин, квоты, пара хэшей.
+- [Рост золотого корпуса](./docs/research/memory/РОСТ_ЗОЛОТОГО_КОРПУСА.md) — сплиты, дедуп, карантин, квоты, пара хэшей.
 - [Moltbook-отчёт](./MOBILE_AGENT/MOLTBOOK_REPORT.md) — итоги последнего тика.
-- [Разбор CI и фикса `created`](./MOBILE_AGENT/архивы/ИСПРАВЛЕНИЕ_CI.md) — detekt, ktlint, JVM-тесты и корневой фикс индексатора.
+- [Разбор CI и фикса `created`](./docs/archive/mobile-agent/ИСПРАВЛЕНИЕ_CI.md) — detekt, ktlint, JVM-тесты и корневой фикс индексатора.
 
 ---
 
