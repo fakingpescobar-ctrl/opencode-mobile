@@ -29,7 +29,10 @@ data class VadModelConfig(
     var debug: Boolean = false,
 )
 
-class SpeechSegment(val start: Long, val samples: FloatArray)
+class SpeechSegment(val start: Long, val samples: FloatArray) {
+    // Compatibility: bundled libsherpa-onnx-jni in some APK builds resolves <init>(I[F)V.
+    constructor(start: Int, samples: FloatArray) : this(start.toLong(), samples)
+}
 
 class Vad(
     assetManager: AssetManager? = null,
