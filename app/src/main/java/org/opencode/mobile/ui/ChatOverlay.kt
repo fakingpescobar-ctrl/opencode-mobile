@@ -151,6 +151,8 @@ internal data class ChatMsg(
      * печати: индекс в ленте не годится, она обрезается до MAX_SHOWN.
      */
     val id: String = "",
+    /** Компактная STT-мета под распознанным голосовым сообщением пользователя. */
+    val sttMeta: String? = null,
 )
 
 // Один вызов инструмента модели (tool) для live-чипа «что делает сейчас».
@@ -461,7 +463,7 @@ fun ChatOverlay(
     val showTtsSettings = activePanel == PANEL_TTS
     val showPerf = activePanel == PANEL_PERF
 
-    fun send() {
+    fun send(sttMeta: String? = null) {
         val text = ui.draft.trim()
         if (text.isEmpty() || ui.sending) return
         val sessionId = ui.snapshot?.activeId
@@ -481,7 +483,7 @@ fun ChatOverlay(
                 keyboard?.hide()
                 focusManager.clearFocus()
                 // Оптимистично: мгновенно показываем своё сообщение в ленте.
-                ui.snapshot = ui.snapshot?.let { it.copy(messages = it.messages + ChatMsg("user", text)) }
+                ui.snapshot = ui.snapshot?.let { it.copy(messages = it.messages + ChatMsg("user", text, sttMeta = sttMeta)) }
                 scrollToBottomFull(listState, (ui.snapshot?.messages?.size ?: 0) - 1)
             } else {
                 // Черновик намеренно остаётся: сообщение не ушло, повтор должен
@@ -839,8 +841,9 @@ fun ChatOverlay(
                 whisperBusy = false
                 if (!text.isNullOrBlank() && !text.startsWith("ОШИБКА")) {
                     speechError = null
+                    val sttMeta = org.opencode.mobile.stt.SttRuntimeStatus.get()?.chatLine()
                     ui.draft = text
-                    send()
+                    send(sttMeta = sttMeta)
                 } else {
                     speechError = if (text.startsWith("ОШИБКА")) text else "не распознал голос, попробуй ещё"
                 }
