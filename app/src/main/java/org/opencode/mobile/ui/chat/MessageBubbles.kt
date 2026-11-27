@@ -169,6 +169,17 @@ internal fun MessageRow(
                 )
             }
         }
+        if (m.role == "user" && !m.sttMeta.isNullOrBlank()) {
+            SelectionContainer {
+                Text(
+                    m.sttMeta,
+                    color = Color(0xFFB388FF),
+                    fontSize = 10.sp,
+                    lineHeight = 13.sp,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+        }
     }
 }
 
