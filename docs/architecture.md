@@ -51,28 +51,15 @@ Android-ядро позволяет `execve` только с **PIE**-бинар�
 - Память хранится в `$XDG_CONFIG_HOME/opencode/memory/` (json-каталог прошлых
   сессий), переживает переустановку приложения.
 
-### STT: foreground-сервис и GPU
+### STT: foreground-сервис, sherpa-onnx и whisper.cpp
 
-На ColorOS/OPPO фоновые compute-потоки душатся до 1–5% CPU. Поэтому
-распознавание выполняется в **foreground-сервисе** (`WhisperTranscribeService`) —
-так ОС даёт процессу нормальный приоритет. Модель кэшируется в памяти между
-вызовами (грузится один раз).
+Распознавание выполняется в foreground-сервисе (`WhisperTranscribeService` / chunked pipeline), чтобы ОС не душила CPU в фоне. Запись: `AudioRecord` → PCM16 16кГц mono → VAD/сегментация → движок → текст в поле ввода.
 
-Сам whisper считает на **GPU** телефона: `GGML_VULKAN=ON`, `flash_attn=true`,
-8 потоков. Модель `small` (465 МБ) на OnePlus CPH2747 / Adreno 840:
+Актуальные движки:
+- **sherpa-onnx** — GigaAM v3 E2E RNNT (RU-first default), Parakeet, Zipformer RU, T-one CTC streaming, Qwen3-ASR 0.6B (эксперимент), SenseVoice (non-RU).
+- **whisper.cpp GGML Vulkan** — Whisper tiny/base/small/Podlodka GGML.
 
-| бэкенд | проход | rtf | WER (7 клипов) |
-|---|---|---|---|
-| **GPU** | **~2 с** | 0,20–0,37 | **11,3 %** |
-| CPU | ~4,8 с | 0,46–0,86 | 11,3 % |
-
-Качественно GPU и CPU дают **одинаковый** результат, разница только в
-скорости (×2,2). Полные таблицы по всем моделям и разбор выбора —
-[docs/VOICE-REPORT.md](VOICE-REPORT.md).
-
-Запись: `AudioRecord` → PCM16 16кГц → нормализация пика (телефоны пишут тихо) →
-подкладка тишины (whisper врёт на очень коротких клипах) → распознавание →
-текст в поле ввода.
+На apk-134+ `ChunkedTranscriber` добавляет 3s padding только для `WHISPER_GGML`; sherpa пути идут без лишнего padding. Silero VAD v6 используется в chunked-пути (apk-132+ fix подтверждён live smoke). STT runtime-статус пишется в `SttRuntimeStatus` и показывается в чате мелкой фиолетовой *курсивной* строкой под голосовым сообщением.
 
 ---
 

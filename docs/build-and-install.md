@@ -124,10 +124,7 @@
   отключается, всё остальное работает.
   Проверено: `git clone` + скрипт нативов + `build.ps1 -Task debug -SkipNative`
   даёт рабочий APK, сервер отвечает, агент отвечает.
-- Модель STT (`ggml-small.bin`) в assets **не хранится** — качается по требованию
-  через `ModelDownloader` в `filesDir/models/`. Движок whisper.cpp (86 МБ) тоже
-  качается отдельно, в `filesDir/engines/whisper/` — оба набора берутся из
-  GitHub-релиза движков и проверяются по размеру и SHA-256.
+- Модели STT в assets **не хранятся** — скачиваются по требованию в `filesDir/stt` / engine dirs. Каталог и статусы — `stt/SttModels.kt`; выбор в чате показывает только скачанные/готовые модели (`isReady && runnable`).
 
 ---
 

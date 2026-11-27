@@ -13,7 +13,9 @@
 | 7 | R8-минификация + shrinkResources в release | APK 374 → 274 MB (R8), затем lazy-вынос base → **147 MB** (release-подпись; пакет чистый `org.opencode.mobile`) |
 | 8 | base-модель вынесена из assets в lazy-скачивание | base/turbo качаются по требованию; APK больше не тащит 141MB whisper |
 | 9 | whisper.cpp переведён на GPU (`GGML_VULKAN` + `flash_attn`), квант-гейт | base: rtf 0,38 → 0,06–0,12 на том же тексте |
-| 10 | ncnn выпилен, движки и модель качаются отдельно, осталась одна модель `small` | APK −33 МБ, WER 11,3 % за 2 с |
+| 10 | ncnn выпилен; whisper.cpp + sherpa-onnx пути; модели скачиваются отдельно | APK меньше, STT каталог расширен |
+| 11 | GigaAM/T-one/Qwen3/Zipformer/Parakeet интегрированы/замерены, GigaAM RU-first | выбор по WER/RTF/RU-risks |
+| 12 | Chat STT picker показывает только ready-модели; STT meta в чате | меньше мусора в picker, наблюдаемость в чате |
 
 **Итог:** UI CPU ~38% → ~1.5-8% (×5–25), рендер 99-перц. 9 мс, janky 0.33%,
 фон ~0%. Единственный хвост — внутренний `opencode serve` (~35%, код движка, не наш).
@@ -50,15 +52,9 @@
 - **SELinux**: маппинг либ из `filesDir` (`mmap PROT_EXEC`) может быть ограничен
   политикой `untrusted_app` — проверено на реальном OPPO, на других устройствах
   стоит делать smoke-тест.
-- **Performance STT**: модель `small` на GPU — проход ~2 с на любой длине клипа
-  (whisper всегда кодирует окно 30 с, поэтому короткая фраза платит за тишину).
-  Полные замеры — [docs/VOICE-REPORT.md](VOICE-REPORT.md).
-- **WER посчитан**: эталонные транскрипты взяты из набора
-  `C:\Projects\MyFLOW\data\eval_wispr` (624 фразы), движок — `tools/stt-accuracy.ps1`.
-  `small`: **11,3 % на 7 клипах**, **17,4 % на 40 фразах с человеческим эталоном**
-  (и 3,1 % на фразах до 4 секунд). Оговорка: `their_edited` заполнен лишь у 88
-  записей из 624, у остальных эталон — вывод чужого ASR, поэтому абсолютные
-  проценты смещены неизвестно на сколько.
+- **STT производительность:** зависит от модели/движка. GigaAM v3 E2E RNNT — текущий RU-first baseline (apk-134 9-WAV: 15.8% WER, 823ms avg pass, RTF 0.059). Whisper small качественный, но медленнее; Podlodka GGML q5/q8 на CPH2747 не проходит <=3s. Qwen3-ASR 0.6B int8 — экспериментальный, 3/9 >3s.
+- **WER/RTF замерены на эталонных WAV Макса (CPH2747):** GigaAM 15.8% WER/0.059 RTF; T-one 12.8%/0.06 (слаб на latin/abbr); Whisper small 20.0%/0.169; Qwen3 0.6B 24.5%/0.20 (hide_experiment). Детали — `MOBILE_AGENT/STT_MARKET_АНАЛИЗ_2026-11-26.md`.
+
 - **Квантованные модели на GPU не работают** (turbo q5_0 → мусор, rtf 47–58).
   В `jni.c` стоит квант-гейт по имени файла; отладочный обход — метка `quant_gpu`
   рядом с моделью.

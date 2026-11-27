@@ -29,12 +29,13 @@ app/
         Retention.kt             # JS-рантайм приложения (musl-Bun) + harness
         Ipv4Proxy.kt             # исходящая сеть (CONNECT-туннель, IPv4-first)
       stt/
-        WhisperTranscribeService.kt  # foreground-сервис распознавания
-        SpeechSegmenter.kt           # VAD-сегментация речи (ЭКСП-5)
-        ChunkedTranscriber.kt        # чанкинг: сегменты → отдельные распознавания
-        SttModels.kt                 # каталог моделей (сейчас одна — small) + замеры
-        ModelDownloader.kt           # скачивание ggml-small (lazy, resume, integrity SHA-256)
-        SttBenchReceiver.kt          # отладочный вход: WAV → та же очередь (для бенчей)
+        WhisperTranscribeService.kt  # foreground-сервис распознавания (whisper.cpp + sherpa direct)
+        SpeechSegmenter.kt           # VAD-сегментация речи
+        ChunkedTranscriber.kt        # чанкинг: VAD/сегменты → движок; sherpa без 3s whisper-padding
+        SttModels.kt                 # каталог моделей, ready/runnable/hiddenFromPicker, engineKind
+        SttRuntimeStatus.kt          # process-local runtime snapshot + chatLine()
+        ModelDownloader.kt           # скачивание моделей (lazy, resume, integrity checks)
+        SttBenchReceiver.kt          # отладочный вход: WAV → STT_BENCH
         SttWav.kt                    # разбор RIFF/WAVE
       engine/
         EngineCatalog.kt             # состав и размеры скачиваемых движков
@@ -74,7 +75,7 @@ app/
       social/                   # мобильный агент moltbook: тик, будильник, watchdog
     assets/                       # шрифты, MCP-ассеты (memory/moltbook/ynison), harness
     jniLibs/arm64-v8a/           # нативы НЕ в git: opencode + musl/Bun/GCC + sherpa (см. fetch-opencode-binary.ps1)
- whisperlib/                      # JNI-обёртки whisper.cpp
+ whisperlib/                      # JNI-обёртки whisper.cpp (GGML Vulkan путь)
    src/main/jni/
      whisper/                     # whisper.cpp (ggml; use_gpu + flash_attn + квант-гейт)
      whisper/CMakeLists.txt       # переменные внешних путей: WHISPER_LIB_DIR
