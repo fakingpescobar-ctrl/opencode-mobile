@@ -235,6 +235,8 @@ fun ChatOverlay(
     // Снимок ленты, черновик, отправка/остановка и плашка причины живут в ChatUiState:
     // правила записи и что переживает смерть процесса — там, у полей. Здесь отрисовка.
     val ui = rememberSaveable(saver = ChatUiState.saver) { ChatUiState() }
+    // STT meta не приходит с сервера; держим локально и приклеиваем к user-сообщениям.
+    val sttMetaCache = remember { mutableMapOf<String, String>() }
     var whisperRecorder by remember { mutableStateOf<AudioRecorder?>(null) }
     val listState = rememberLazyListState()
     var knownMsgs by remember { mutableIntStateOf(0) }
@@ -466,6 +468,7 @@ fun ChatOverlay(
     fun send(sttMeta: String? = null) {
         val text = ui.draft.trim()
         if (text.isEmpty() || ui.sending) return
+        if (sttMeta != null) sttMetaCache[text] = sttMeta
         val sessionId = ui.snapshot?.activeId
         ui.sending = true
         userScrolledUp = false
@@ -483,7 +486,7 @@ fun ChatOverlay(
                 keyboard?.hide()
                 focusManager.clearFocus()
                 // Оптимистично: мгновенно показываем своё сообщение в ленте.
-                ui.snapshot = ui.snapshot?.let { it.copy(messages = it.messages + ChatMsg("user", text, sttMeta = sttMeta)) }
+                ui.snapshot = ui.snapshot?.let { it.copy(messages = it.messages + ChatMsg("user", text, sttMeta = sttMetaCache[text])) }
                 scrollToBottomFull(listState, (ui.snapshot?.messages?.size ?: 0) - 1)
             } else {
                 // Черновик намеренно остаётся: сообщение не ушло, повтор должен
@@ -1059,7 +1062,13 @@ fun ChatOverlay(
             }
             val publish = decision.publish
             if (publish != null) {
-                ui.snapshot = publish
+                ui.snapshot = if (sttMetaCache.isEmpty()) publish else publish.copy(
+                    messages = publish.messages.map { m ->
+                        if (m.role == "user" && m.sttMeta.isNullOrBlank()) {
+                            sttMetaCache[m.text]?.let { m.copy(sttMeta = it) } ?: m
+                        } else m
+                    }
+                )
                 // Озвучка: раскладываем растущий текст ответа на предложения.
                 // Все правила (первый снапшот не читает историю, смена сессии
                 // гасит речь, новый вопрос сбрасывает курсор, живое сообщение
