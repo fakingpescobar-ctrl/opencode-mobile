@@ -66,94 +66,73 @@ internal fun SttPanel(voice: VoiceSettings) {
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(top = 8.dp, bottom = 2.dp)
-            .clip(RoundedCornerShape(16.dp))
+            .padding(top = 6.dp, bottom = 2.dp)
+            .clip(RoundedCornerShape(14.dp))
             .background(PanelBg)
-            .border(1.dp, Color(0xFF2A3550), RoundedCornerShape(16.dp))
+            .border(1.dp, Color(0xFF2A3550), RoundedCornerShape(14.dp))
             .testTag(TAG_PANEL_STT)
-            .padding(horizontal = 12.dp, vertical = 12.dp),
+            .padding(horizontal = 10.dp, vertical = 10.dp),
     ) {
-        Text(
-            "РАСПОЗНАВАНИЕ РЕЧИ",
-            color = Accent,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 1.2.sp,
-        )
-        Text(
-            "Выбери движок STT. Для русского приоритет — GigaAM.",
-            color = TextDim,
-            fontSize = 11.sp,
-            modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            SttEngineCard(
-                title = "Системный",
-                subtitle = "Android/Google",
-                selected = voice.sttEngine == VoiceEngine.SYSTEM,
-                modifier = Modifier.weight(1f),
-            ) { voice.chooseEngine(VoiceEngine.SYSTEM) }
-            SttEngineCard(
-                title = "Локальный",
-                subtitle = "Whisper/Sherpa",
-                selected = voice.sttEngine == VoiceEngine.WHISPER,
-                modifier = Modifier.weight(1f),
-            ) { voice.chooseEngine(VoiceEngine.WHISPER) }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "РАСПОЗНАВАНИЕ РЕЧИ",
+                    color = Accent,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp,
+                )
+                Text(
+                    if (voice.sttEngine == VoiceEngine.WHISPER) "Локальный · GigaAM приоритет" else "Системный Android/Google",
+                    color = TextDim,
+                    fontSize = 10.sp,
+                )
+            }
+            SttEngineChip("SYS", voice.sttEngine == VoiceEngine.SYSTEM) { voice.chooseEngine(VoiceEngine.SYSTEM) }
+            Spacer(Modifier.width(6.dp))
+            SttEngineChip("LOCAL", voice.sttEngine == VoiceEngine.WHISPER) { voice.chooseEngine(VoiceEngine.WHISPER) }
         }
 
         if (voice.sttEngine == VoiceEngine.WHISPER) {
-            Spacer(Modifier.height(10.dp))
-            Text("МОДЕЛЬ", color = TextDim, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
-            Text(
-                "GigaAM v3 E2E RNNT — рекомендуемый RU-first. Скачивание в Диагностике.",
-                color = Color(0xFF9FC5A6),
-                fontSize = 10.sp,
-                modifier = Modifier.padding(top = 2.dp, bottom = 6.dp),
-            )
+            Spacer(Modifier.height(8.dp))
             SttModelPicker(
                 selected = voice.whisperModelId,
                 onSelect = { picked -> voice.chooseWhisperModel(picked) },
             )
         } else {
-            Spacer(Modifier.height(8.dp))
             Text(
-                "Системный движок использует распознавание Android. Локальные модели не нужны.",
+                "Локальные модели не нужны.",
                 color = TextDim,
                 fontSize = 10.sp,
+                modifier = Modifier.padding(top = 8.dp, start = 2.dp),
             )
         }
     }
 }
 
 @Composable
-private fun SttEngineCard(
-    title: String,
-    subtitle: String,
+private fun SttEngineChip(
+    label: String,
     selected: Boolean,
-    modifier: Modifier = Modifier,
     onSelect: () -> Unit,
 ) {
     val border = if (selected) Accent else Color(0xFF33405C)
-    val bg = if (selected) CardActiveBg else CardBg
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
+    val bg = if (selected) Color(0xFF2A241D) else CardBg
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(9.dp))
             .background(bg)
-            .border(if (selected) 1.5.dp else 1.dp, border, RoundedCornerShape(14.dp))
+            .border(1.dp, border, RoundedCornerShape(9.dp))
             .clickable(onClick = onSelect)
-            .padding(horizontal = 10.dp, vertical = 10.dp),
+            .padding(horizontal = 10.dp, vertical = 6.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .size(8.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(if (selected) Accent else Color(0xFF55627A)),
-            )
-            Spacer(Modifier.width(6.dp))
-            Text(title, color = TextMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-        }
-        Text(subtitle, color = TextDim, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp))
+        Text(
+            label,
+            color = if (selected) Accent else TextDim,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.4.sp,
+        )
     }
 }
 
