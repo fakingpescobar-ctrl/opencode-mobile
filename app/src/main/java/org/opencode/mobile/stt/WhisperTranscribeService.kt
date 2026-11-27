@@ -469,6 +469,21 @@ class WhisperTranscribeService : Service() {
             val done = SystemClock.elapsedRealtime()
             val wAudioMs = task.samples.size * MS_PER_SECOND / SAMPLE_RATE_HZ
             val wRtf = if (wAudioMs > 0) (done - loaded).toFloat() / wAudioMs else 0f
+            SttRuntimeStatus.update(
+                SttRuntimeStatus.Snapshot(
+                    atMs = System.currentTimeMillis(),
+                    model = task.model,
+                    engine = "whisper",
+                    vadBackend = "direct",
+                    segments = 1,
+                    audioMs = wAudioMs.toLong(),
+                    passMs = (done - loaded).coerceAtLeast(0),
+                    loadMs = (loaded - loadStart).coerceAtLeast(0),
+                    rtf = wRtf,
+                    textChars = text.length,
+                    error = if (text.startsWith("ОШИБКА")) text else null,
+                )
+            )
             Log.i(
                 TAG,
                 "whisper: загрузка ${loaded - loadStart} мс, " +
@@ -497,6 +512,21 @@ class WhisperTranscribeService : Service() {
             val done = SystemClock.elapsedRealtime()
             val audioMs = task.samples.size * MS_PER_SECOND / SAMPLE_RATE_HZ
             val rtf = if (audioMs > 0) (done - loaded).toFloat() / audioMs else 0f
+            SttRuntimeStatus.update(
+                SttRuntimeStatus.Snapshot(
+                    atMs = System.currentTimeMillis(),
+                    model = task.model,
+                    engine = "sherpa",
+                    vadBackend = "direct",
+                    segments = 1,
+                    audioMs = audioMs.toLong(),
+                    passMs = (done - loaded).coerceAtLeast(0),
+                    loadMs = (loaded - loadStart).coerceAtLeast(0),
+                    rtf = rtf,
+                    textChars = text.length,
+                    error = if (text.startsWith("ОШИБКА")) text else null,
+                )
+            )
             Log.i(TAG, "sherpa(${task.model}): загрузка ${loaded - loadStart} мс, проход ${done - loaded} мс, звук ${audioMs} мс, rtf ${"%.2f".format(rtf)}")
             return text
         }
@@ -639,6 +669,21 @@ class WhisperTranscribeService : Service() {
             val done = SystemClock.elapsedRealtime()
             val audioMs = task.samples.size * MS_PER_SECOND / SAMPLE_RATE_HZ
             val rtf = if (audioMs > 0) (done - loaded).toFloat() / audioMs else 0f
+            SttRuntimeStatus.update(
+                SttRuntimeStatus.Snapshot(
+                    atMs = System.currentTimeMillis(),
+                    model = task.model,
+                    engine = "sherpa-online-ctc",
+                    vadBackend = "direct",
+                    segments = 1,
+                    audioMs = audioMs.toLong(),
+                    passMs = (done - loaded).coerceAtLeast(0),
+                    loadMs = (loaded - loadStart).coerceAtLeast(0),
+                    rtf = rtf,
+                    textChars = text.length,
+                    error = if (text.startsWith("ОШИБКА")) text else null,
+                )
+            )
             Log.i(TAG, "sherpa-online(${task.model}): загрузка ${loaded - loadStart} мс, проход ${done - loaded} мс, звук ${audioMs} мс, rtf ${"%.2f".format(rtf)}")
             return text
         }
