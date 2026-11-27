@@ -45,13 +45,24 @@ object ChunkedTranscriber {
 
         val vadUsed = SileroVadSegmenter.isAvailable(context)
         val segments = SileroVadSegmenter.split(context, samples) ?: SpeechSegmenter().split(samples)
-        val speech = segments.map { segment -> prepareAudio(segment.samples) }
+        val speech = segments.map { segment -> prepareAudio(segment.samples, model) }
         logSegments(speech, samples.size, vadUsed)
         return transcribeSegments(context, segments, speech, model)
     }
 
-    /** whisper.cpp врёт на клипах короче 3 секунд — всегда добиваем нулями до минимума. */
-    private fun prepareAudio(samples: FloatArray): FloatArray = padToMin(samples, minSamples = 3 * SAMPLE_RATE)
+    /**
+     * whisper.cpp врёт на клипах короче 3 секунд — добиваем нулями до минимума.
+     * Для sherpa-onnx (GigaAM/Parakeet/T-one/Qwen3/SenseVoice) паддинг не нужен:
+     * он только добавляет тишину в decode и лишнюю latency на коротких сегментах.
+     */
+    private fun prepareAudio(samples: FloatArray, model: String): FloatArray {
+        val kind = SttModels.byId(model)?.engineKind
+        return if (kind == null || kind == SttEngineKind.WHISPER_GGML) {
+            padToMin(samples, minSamples = 3 * SAMPLE_RATE)
+        } else {
+            samples
+        }
+    }
 
     private fun logSegments(
         speech: List<FloatArray>,
