@@ -66,12 +66,15 @@ internal fun SttModelPicker(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var readyIds by remember { mutableStateOf(emptySet<String>()) }
-    val visibleModels = remember { SttModels.all.filterNot { it.hiddenFromPicker } }
+    val catalogModels = remember { SttModels.all.filterNot { it.hiddenFromPicker } }
+    var checked by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         readyIds = withContext(Dispatchers.IO) {
-            visibleModels.filter { it.isReady(context) }.map { it.id }.toSet()
+            catalogModels.filter { it.isReady(context) }.map { it.id }.toSet()
         }
+        checked = true
     }
+    val visibleModels = remember(readyIds, checked) { catalogModels.filter { it.id in readyIds && it.runnable } }
 
     val pulse = rememberInfiniteTransition(label = "stt-p")
     val glow by pulse.animateFloat(
@@ -103,9 +106,17 @@ internal fun SttModelPicker(
             Text("МОДЕЛЬ", color = Dim, fontSize = 9.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.8.sp)
             Spacer(Modifier.weight(1f))
             Text(
-                "${visibleModels.count { it.id in readyIds }} готовы",
+                if (checked) "${visibleModels.size} доступны" else "проверяю…",
                 color = Ok.copy(alpha = 0.9f),
                 fontSize = 9.sp,
+            )
+        }
+        if (checked && visibleModels.isEmpty()) {
+            Text(
+                "Скачай модель в Диагностике — после скачивания она появится здесь.",
+                color = Dim,
+                fontSize = 10.sp,
+                modifier = Modifier.padding(horizontal = 2.dp, vertical = 4.dp),
             )
         }
         visibleModels.forEach { model ->
