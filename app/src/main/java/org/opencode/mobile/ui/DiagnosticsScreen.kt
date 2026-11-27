@@ -300,6 +300,8 @@ fun DiagnosticsScreen(
     // (snapshot-state потокобезопасен); выход с экрана отменяет корутину
     // (CancellationException проходит сквозь загрузку через ensureActive).
     var sttDl by remember { mutableStateOf<SttDownloadState>(SttDownloadState.Idle) }
+    // Скачивание Silero VAD v6 (компонент сегментации, не STT-модель).
+    var vadDl by remember { mutableStateOf<String?>(null) }
     val startSttDownload: (String) -> Unit = { modelId ->
         if (sttDl !is SttDownloadState.Running) {
             val model = SttModels.byId(modelId)
@@ -867,7 +869,29 @@ fun DiagnosticsScreen(
                     Spacer(Modifier.height(6.dp))
                     InfoRow("Доп. STT/VAD компоненты", "статус фактчека — не все подключены в runtime", Color(NOTE_ARGB))
                     InfoRow("T-one (T-Tech) streaming", "sherpa-onnx OnlineRecognizer CTC · экспериментально подключён (скачать модель в STT)", Color(0xFF80CBC4))
-                    InfoRow("Silero VAD v6", "требует отдельный VAD-пайплайн/артефакт; в APK не подключён", Color(0xFFFFC107))
+                    val sileroReady = ModelDownloader.sileroVadReady(context)
+                    InfoRow("Silero VAD v6", if (sileroReady) "скачан · используется в STT-сегментации (sherpa-onnx)" else "не скачан · можно скачать как VAD-компонент; без него STT fallback на RMS", Color(if (sileroReady) 0xFF80CBC4 else 0xFFFFC107))
+                    if (!sileroReady) {
+                        downloadButton(if (vadDl == null) "Скачать Silero VAD v6 (~628 КБ)" else "Скачивание Silero VAD: $vadDl") {
+                            if (vadDl == null) {
+                                scope.launch {
+                                    try {
+                                        vadDl = "0%"
+                                        withContext(Dispatchers.IO) {
+                                            ModelDownloader.downloadSileroVad(context) { d, t ->
+                                                vadDl = if (t > 0) "${(d * 100 / t).toInt()}%" else "${d / 1024} КБ"
+                                            }
+                                        }
+                                        vadDl = null
+                                        refreshKey++
+                                    } catch (e: Exception) {
+                                        currentCoroutineContext().ensureActive()
+                                        vadDl = e.message ?: "ошибка"
+                                    }
+                                }
+                            }
+                        }
+                    }
                     InfoRow("Smart Turn v3.2", "требует turn-detection пайплайн/артефакт; в APK не подключён", Color(0xFFFFC107))
                     InfoRow("Qwen3-ForcedAligner 0.6B", "aligner, не STT-модель; нужен отдельный runtime/формат", Color(0xFFFFC107))
                     InfoRow("onnx-asr (istupakov)", "Python reference/wrapper; в Android APK нужен нативный порт/ONNX runtime", Color(0xFFFFC107))

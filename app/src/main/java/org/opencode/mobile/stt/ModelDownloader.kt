@@ -60,6 +60,64 @@ object ModelDownloader {
 
     private val RETIRED_MODEL_DIRS = listOf("ncnn-turbo")
 
+    // ---- VAD / turn-detection components (not STT models) ----
+    private const val SHERPA_ASR_BASE = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models"
+    const val SILERO_VAD_FILE = "silero_vad.onnx"
+    const val SILERO_VAD_BYTES = 643_854L
+    const val SILERO_VAD_SHA256 = "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
+    private const val SILERO_VAD_URL = "$SHERPA_ASR_BASE/silero_vad.onnx"
+
+    fun vadDir(context: Context): File = File(context.filesDir, "vad").apply { mkdirs() }
+    fun sileroVadFile(context: Context): File = File(vadDir(context), SILERO_VAD_FILE)
+    fun sileroVadReady(context: Context): Boolean {
+        val f = sileroVadFile(context)
+        return f.exists() && f.length() == SILERO_VAD_BYTES
+    }
+    suspend fun downloadSileroVad(context: Context, onProgress: (Long, Long) -> Unit = { _, _ -> }): File {
+        return downloadMutex.withLock {
+            withContext(Dispatchers.IO) {
+                val dest = sileroVadFile(context)
+                if (dest.exists() && dest.length() == SILERO_VAD_BYTES) return@withContext dest
+                ensureFreeSpace(context, "silero-vad-v6", SILERO_VAD_BYTES + 4L * 1024L * 1024L)
+                val tmp = File(dest.parentFile, dest.name + ".part")
+                if (tmp.exists()) tmp.delete()
+                downloadRawFile(SILERO_VAD_URL, tmp, SILERO_VAD_BYTES, onProgress)
+                val got = sha256Of(tmp)
+                if (got == null || !got.equals(SILERO_VAD_SHA256, ignoreCase = true)) {
+                    tmp.delete(); error("Silero VAD sha256 mismatch")
+                }
+                if (dest.exists()) dest.delete()
+                if (!tmp.renameTo(dest)) { tmp.copyTo(dest, overwrite = true); tmp.delete() }
+                dest
+            }
+        }
+    }
+    private suspend fun downloadRawFile(url: String, dest: File, expected: Long, onProgress: (Long, Long) -> Unit) {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 30_000; readTimeout = 60_000
+            setRequestProperty("User-Agent", "opencode-mobile/1.0")
+        }
+        try {
+            conn.connect()
+            val code = conn.responseCode
+            if (code != HttpURLConnection.HTTP_OK) error("HTTP $code при скачивании $url")
+            val total = conn.contentLengthLong.takeIf { it > 0L } ?: expected
+            FileOutputStream(dest).use { out ->
+                conn.inputStream.use { input ->
+                    val buf = ByteArray(DEFAULT_BUF); var read:Int; var done=0L; var last=0L
+                    while (input.read(buf).also { read = it } >= 0) {
+                        coroutineContext.ensureActive()
+                        if (read==0) continue
+                        out.write(buf,0,read); done+=read
+                        val now=System.currentTimeMillis()
+                        if (now-last>PROGRESS_MS) { onProgress(done,total.coerceAtLeast(done)); last=now }
+                    }
+                    out.fd.sync(); onProgress(done,total.coerceAtLeast(done))
+                }
+            }
+        } finally { conn.disconnect() }
+    }
+
     /** Папка каталога ggml-моделей внутри filesDir: <filesDir>/models/. */
     fun modelsDir(context: Context): File = File(context.filesDir, "models").apply { mkdirs() }
 

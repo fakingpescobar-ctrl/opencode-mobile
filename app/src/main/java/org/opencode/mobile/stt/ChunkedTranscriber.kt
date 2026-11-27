@@ -43,7 +43,8 @@ object ChunkedTranscriber {
         // утекал бы во все следующие до перезапуска процесса.
         WhisperTranscribeService.resetLanguageLatch()
 
-        val segments = SpeechSegmenter().split(samples)
+        val vadUsed = SileroVadSegmenter.isAvailable(context)
+        val segments = SileroVadSegmenter.split(context, samples) ?: SpeechSegmenter().split(samples)
         val speech = segments.map { segment -> prepareAudio(segment.samples) }
         logSegments(speech, samples.size)
         return transcribeSegments(context, segments, speech, model)
@@ -61,7 +62,7 @@ object ChunkedTranscriber {
             return
         }
         val metas = speech.map { "%.1fс".format(it.size / SAMPLE_RATE.toFloat()) }
-        Log.d(TAG, "сегментов: ${speech.size} из ${totalSamples / SAMPLE_RATE}с: ${metas.joinToString()}")
+        Log.d(TAG, "VAD=${if (vadUsed) \"silero-v6\" else \"rms\"} сегментов: ${speech.size} из ${totalSamples / SAMPLE_RATE}с: ${metas.joinToString()}")
     }
 
     private suspend fun transcribeSegments(
