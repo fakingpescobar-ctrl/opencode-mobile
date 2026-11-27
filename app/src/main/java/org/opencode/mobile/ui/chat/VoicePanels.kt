@@ -110,19 +110,10 @@ internal fun SttPanel(voice: VoiceSettings) {
                 fontSize = 10.sp,
                 modifier = Modifier.padding(top = 2.dp, bottom = 6.dp),
             )
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(Color(0xFF171C27))
-                    .border(1.dp, Color(0xFF283149), RoundedCornerShape(12.dp))
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-            ) {
-                SttModelPicker(
-                    selected = voice.whisperModelId,
-                    onSelect = { picked -> voice.chooseWhisperModel(picked) },
-                )
-            }
+            SttModelPicker(
+                selected = voice.whisperModelId,
+                onSelect = { picked -> voice.chooseWhisperModel(picked) },
+            )
         } else {
             Spacer(Modifier.height(8.dp))
             Text(
