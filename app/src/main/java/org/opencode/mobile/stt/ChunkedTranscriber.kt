@@ -43,11 +43,32 @@ object ChunkedTranscriber {
         // утекал бы во все следующие до перезапуска процесса.
         WhisperTranscribeService.resetLanguageLatch()
 
-        val vadUsed = SileroVadSegmenter.isAvailable(context)
-        val segments = SileroVadSegmenter.split(context, samples) ?: SpeechSegmenter().split(samples)
+        val t0 = System.currentTimeMillis()
+        val sileroAvailable = SileroVadSegmenter.isAvailable(context)
+        val sileroSegments = if (sileroAvailable) SileroVadSegmenter.split(context, samples) else null
+        val vadUsed = sileroSegments != null
+        val segments = sileroSegments ?: SpeechSegmenter().split(samples)
         val speech = segments.map { segment -> prepareAudio(segment.samples, model) }
         logSegments(speech, samples.size, vadUsed)
-        return transcribeSegments(context, segments, speech, model)
+        val out = transcribeSegments(context, segments, speech, model)
+        val passMs = (System.currentTimeMillis() - t0).coerceAtLeast(0)
+        val audioMs = (samples.size * 1000L) / SAMPLE_RATE
+        val err = if (out.startsWith("ОШИБКА")) out else null
+        SttRuntimeStatus.update(
+            SttRuntimeStatus.Snapshot(
+                atMs = System.currentTimeMillis(),
+                model = model,
+                engine = SttModels.byId(model)?.engineKind?.name?.lowercase() ?: "unknown",
+                vadBackend = if (vadUsed) "silero-v6" else "rms",
+                segments = speech.size,
+                audioMs = audioMs,
+                passMs = passMs,
+                rtf = if (audioMs > 0) passMs.toFloat() / audioMs else 0f,
+                textChars = if (err == null) out.length else 0,
+                error = err,
+            )
+        )
+        return out
     }
 
     /**
