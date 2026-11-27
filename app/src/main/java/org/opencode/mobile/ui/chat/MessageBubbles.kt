@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -176,6 +177,7 @@ internal fun MessageRow(
                     color = Color(0xFFB388FF),
                     fontSize = 10.sp,
                     lineHeight = 13.sp,
+                    fontStyle = FontStyle.Italic,
                     modifier = Modifier.padding(top = 2.dp),
                 )
             }
