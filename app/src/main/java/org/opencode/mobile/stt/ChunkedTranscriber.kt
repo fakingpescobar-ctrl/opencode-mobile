@@ -46,7 +46,7 @@ object ChunkedTranscriber {
         val vadUsed = SileroVadSegmenter.isAvailable(context)
         val segments = SileroVadSegmenter.split(context, samples) ?: SpeechSegmenter().split(samples)
         val speech = segments.map { segment -> prepareAudio(segment.samples) }
-        logSegments(speech, samples.size)
+        logSegments(speech, samples.size, vadUsed)
         return transcribeSegments(context, segments, speech, model)
     }
 
@@ -56,13 +56,15 @@ object ChunkedTranscriber {
     private fun logSegments(
         speech: List<FloatArray>,
         totalSamples: Int,
+        vadUsed: Boolean,
     ) {
         if (speech.isEmpty()) {
             Log.d(TAG, "VAD: речи не обнаружено (${totalSamples / SAMPLE_RATE}с) — пустой результат")
             return
         }
         val metas = speech.map { "%.1fс".format(it.size / SAMPLE_RATE.toFloat()) }
-        Log.d(TAG, "VAD=${if (vadUsed) \"silero-v6\" else \"rms\"} сегментов: ${speech.size} из ${totalSamples / SAMPLE_RATE}с: ${metas.joinToString()}")
+        val vadTag = if (vadUsed) "silero-v6" else "rms"
+        Log.d(TAG, "VAD=$vadTag сегментов: ${speech.size} из ${totalSamples / SAMPLE_RATE}с: ${metas.joinToString()}")
     }
 
     private suspend fun transcribeSegments(
