@@ -1,0 +1,80 @@
+# CI: собрать qwentts.cpp (Qwen3-TTS 12Hz, 0.6B/1.7B) под musl aarch64.
+# НЕ трогает release-apk.yml и живой APK. Класть в .github/workflows/build-qwentts-musl.yml.
+# На телефоне запускать через /system/bin/linker64 + LD_LIBRARY_PATH из libldmusl.so.
+name: Build qwentts.cpp musl bench (arm64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      qwen_ref:
+        description: 'коммит/тег ServeurpersoCom/qwentts.cpp'
+        required: false
+        default: '2edb35f87b709a070b2d5379f77e5c52a1daa585'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Zig toolchain (aarch64-linux-musl через zig cc)
+        run: |
+          if command -v zig >/dev/null 2>&1; then
+            echo "zig уже есть: $(zig version)"
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq zig || true
+          fi
+          if ! command -v zig >/dev/null 2>&1; then
+            ZIG=0.13.0
+            curl -fsSL --max-time 120 -o /tmp/zig.tar.xz \
+              "https://ziglang.org/download/${ZIG}/zig-linux-x86_64-${ZIG}.tar.xz"
+            tar -xf /tmp/zig.tar.xz -C /tmp
+            echo "/tmp/zig-linux-x86_64-${ZIG}" >> $GITHUB_PATH
+          fi
+          zig version
+          printf '#!/bin/sh\nexec zig cc -target aarch64-linux-musl "$@"\n' > /tmp/aarch64-musl-cc
+          printf '#!/bin/sh\nexec zig c++ -target aarch64-linux-musl "$@"\n' > /tmp/aarch64-musl-cxx
+          chmod +x /tmp/aarch64-musl-cc /tmp/aarch64-musl-cxx
+
+      - name: qwentts.cpp source (с ggml-сабмодулем)
+        run: |
+          git clone --recurse-submodules https://github.com/ServeurpersoCom/qwentts.cpp.git /tmp/qwentts
+          cd /tmp/qwentts
+          git checkout ${{ github.event.inputs.qwen_ref || '2edb35f87b709a070b2d5379f77e5c52a1daa585' }}
+          git submodule update --init --recursive
+          git rev-parse HEAD
+          git -C ggml rev-parse HEAD
+
+      - name: CMake static CPU-only build (musl arm64)
+        run: |
+          cd /tmp/qwentts
+          cmake -S . -B build \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_C_COMPILER=/tmp/aarch64-musl-cc \
+            -DCMAKE_CXX_COMPILER=/tmp/aarch64-musl-cxx \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" \
+            -DGGML_NATIVE=OFF \
+            -DGGML_STATIC=ON \
+            -DGGML_BACKEND_DL=OFF \
+            -DGGML_CPU=ON \
+            -DGGML_BUILD_TESTS=OFF \
+            -DGGML_BUILD_EXAMPLES=OFF \
+            -DQWEN_SHARED=ON
+          cmake --build build -j4 --target qwen-tts qwen-codec tts-server qwen
+
+      - name: Проверка артефактов
+        run: |
+          cd /tmp/qwentts/build
+          file qwen-tts qwen-codec tts-server libqwen.so
+          readelf -Ws libqwen.so | grep -q 'qt_init' || { echo "нет qt_init"; exit 1; }
+          readelf -Ws libqwen.so | grep -q 'qt_synthesize' || { echo "нет qt_synthesize"; exit 1; }
+          tar czf /tmp/qwentts-musl-arm64.tar.gz qwen-tts qwen-codec tts-server libqwen.so
+          sha256sum /tmp/qwentts-musl-arm64.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwentts-musl-arm64
+          path: /tmp/qwentts-musl-arm64.tar.gz
