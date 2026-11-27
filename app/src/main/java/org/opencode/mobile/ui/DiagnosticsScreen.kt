@@ -901,6 +901,17 @@ fun DiagnosticsScreen(
                     InfoRow("Движок", engineLabel(prefs))
                     // Модель — выбор пользователя из каталога.
                     InfoRow("Модель", currentModelLabel(prefs))
+                    val sttRt = org.opencode.mobile.stt.SttRuntimeStatus.get()
+                    if (sttRt != null) {
+                        val age = ((System.currentTimeMillis() - sttRt.atMs) / 1000).coerceAtLeast(0)
+                        InfoRow("Последний VAD", sttRt.vadBackend, if (sttRt.vadBackend == "silero-v6") Color(0xFF80CBC4) else MoltIdle)
+                        InfoRow("Сегменты/звук", "${sttRt.segments} · ${sttRt.audioMs}ms")
+                        InfoRow("Latency/RTF", "load ${sttRt.loadMs}ms · pass ${sttRt.passMs}ms · rtf ${"%.2f".format(sttRt.rtf)}")
+                        if (sttRt.error != null) InfoRow("Последняя ошибка", sttRt.error.take(140), Color(0xFFFF6F5A))
+                        InfoRow("Обновлено", "${age}с назад · ${sttRt.model}", MoltIdle)
+                    } else {
+                        InfoRow("Последний прогон", "нет данных (сделай STT/голосовую запись)", MoltIdle)
+                    }
                     if (snapshot == null) {
                         InfoRow("Модели", "загрузка…")
                     } else {
