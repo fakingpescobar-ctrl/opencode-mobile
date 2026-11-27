@@ -225,6 +225,7 @@ object SttModels {
                 recommendedForRu = false,
                 languages = "ru",
                 runnable = false,
+                hiddenFromPicker = true,
             ),
             SttModel(
                 id = VOSK_RU_052_ID,
@@ -242,6 +243,7 @@ object SttModels {
                 recommendedForRu = false,
                 languages = "ru",
                 runnable = false,
+                hiddenFromPicker = true,
             ),
             SttModel(
                 id = ZIPFORMER_RU_ID,
@@ -339,6 +341,7 @@ object SttModels {
                 recommendedForRu = false,
                 languages = "multilingual",
                 runnable = false,
+                hiddenFromPicker = true,
             ),
         )
 
