@@ -7,6 +7,21 @@
 Транспорт: `adb forward tcp:4098 (ПК) → tcp:4096 (телефон)`. USB-кабель обязателен
 (пока; потом легко переключить на туннель — в `ocmobile/tools` уже есть tunnel-скрипты).
 
+> **opencode v2 (актуально):** `bridge.mjs` написан под v1 — его пути `/session/...`
+> без префикса `/api` на сервере 2.4.0 отдают SPA-HTML, а Basic auth не передаётся.
+> Для живого общения используй `oc-v2.ps1` (он переиспользует `adb-auth-common.ps1`):
+>
+> ```
+> pwsh -File tools/mobile-bridge/oc-v2.ps1 ping
+> pwsh -File tools/mobile-bridge/oc-v2.ps1 sessions -Limit 5
+> pwsh -File tools/mobile-bridge/oc-v2.ps1 history -Limit 3
+> pwsh -File tools/mobile-bridge/oc-v2.ps1 ask -Text "Привет, принимаешь?"
+> pwsh -File tools/mobile-bridge/oc-v2.ps1 abort
+> ```
+>
+> Скрипт сам поддерживает `adb forward`, читает пароль из `/proc/<pid>/environ`
+> через `run-as` и пишет `{ "text": "..." }` в `POST /api/session/{id}/prompt`.
+
 ## Требования
 
 - Node.js ≥ 22 (fetch глобально)
