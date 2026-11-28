@@ -82,7 +82,9 @@ G1d (`docs/research/QWEN3_TTS_ISA_GATE.md:57-74`) официально DROP:
 - В пине `ServeurpersoCom/qwentts.cpp @ 2edb35f` сабмодуль ggml зафиксирован на `ef4555b7aede4467a5de803b103615e0a5f30dd8`.
 - В этом ggml уже есть `src/ggml-cpu/kleidiai/` и опция `GGML_CPU_KLEIDIAI`; `CMakeLists.txt` тянет KleidiAI `v1.32.0` через `FetchContent` с MD5 `05f1953428ffe8e8c7f585dc6d508887`.
 - Ядра KleidiAI — Apache-2.0, basic сборка поддерживает Linux/Android AArch64.
-- Живой `baseline` (`workflow_dispatch`, run `46114617340`) собрался успешно. Первый `kleidiai` (run `46115587334`) упал не по существу варианта: KleidiAI v1.32.0 задаёт per-source `-march=armv8.2-a+fp16+...`, а Zig 0.13 знает ту же фичу как `fullfp16` (`error: unknown CPU feature: 'fp16'`). Обёртка тулчейна теперь переводит `-march` в `-mcpu=generic+features` и нормализует фичи по отдельным токенам. Это инфраструктурная правка, не технический DROP KleidiAI и не новый research-гейт.
+- Живой `baseline` (`workflow_dispatch`, run `46114617340`) собрался успешно. Первый `kleidiai` (run `46115587334`) упал не по существу варианта: KleidiAI v1.32.0 задаёт per-source `-march=armv8.2-a+fp16+...`, а Zig 0.13 знает ту же фичу как `fullfp16` (`error: unknown CPU feature: 'fp16'`). Обёртка тулчейна переводит `-march` в `-mcpu=generic+features` и нормализует фичи по отдельным токенам.
+- Второй `kleidiai` (run `46116054109`) уперся в другое ограничение тулчейна: Zig 0.13 не передаёт CPU-фичи во встроенный ассемблер AArch64 (`TODO` в `src/Compilation.zig`), поэтому `.S`-ядра KleidiAI падали с `instruction requires: fullfp16`. Пробный run `46117571710` это подтвердил: `-mcpu=generic+fullfp16`, `-Wa,-march=...` и `-march=...` в Zig ассемблере фич не получают. Лечение — `CMAKE_ASM_COMPILER=/usr/bin/aarch64-linux-gnu-gcc`, который понимает GCC-флаг `+fp16`; это снова инфраструктура, не технический DROP и не новый research-гейт.
+- После этого `kleidiai` собрался успешно: run `46117846810`, artifact `qwentts-arm-kleidiai` (`qwen-tts` sha `27120686…`, `libggml-cpu.so.1.0.0` 11 193 360 байт против 5 761 296 в baseline). Повторный `baseline` на том же коммите тулчейна `ed8ef16` (run `46118237217`) дал **побайтово те же 7 бинарников**, что и run `46114617340`: сравнение baseline ↔ kleidiai корректно, расхождение вызвано только `GGML_CPU_KLEIDIAI`.
 
 **Решение:** KleidiAI — первый новый замеряемый вариант после baseline. Ожидаемый выигрыш на dotprod/i8mm — гипотеза, не факт. SME2/SVE2-части не берём: Oryon их через HWCAP не заявляет.
 
@@ -108,7 +110,7 @@ G1d (`docs/research/QWEN3_TTS_ISA_GATE.md:57-74`) официально DROP:
 
 **Форматный раскол:** `qwentts.cpp` ждёт `qwen-talker-{size}-{mode}-{variant}.gguf` + `qwen-tokenizer-12hz-{variant}.gguf` (0.6B Base Q4_K_M есть, ~629 МБ). `llama.cpp b12816 llama-tts` / BricksDisplay используют backbone + codec. Без конвертации не взаимозаменяемо.
 
-**Гипотеза (не подтверждена нашим профилем):** узкое место — Predictor, а не CodecDecode. В отчёте G1d есть только общая фраза «CodecDecode остаётся доминирующим (50–55% времени)» (`QWEN3_TTS_ISA_GATE.md:72`), без разбивки по слоям. `pwconv1/pwconv2` и `convnext-block.h:88-95` там нет. Патчить pwconv вслепую не будем.
+**Гипотеза «узкое место — Predictor» опровергнута нашим профилем.** В отчёте G1d была только общая фраза «CodecDecode остаётся доминирующим (50–55% времени)» (`QWEN3_TTS_ISA_GATE.md:72`), без разбивки по слоям. Наш замер 28/28 (раздел 7.1) даёт CodecDecode **~58–59%** времени, Predictor ~23%, Talker ~14–16%. `pwconv1/pwconv2` exist (`src/convnext-block.h:88-95`, forward `:154-166` и `:253-261`), но это Predictor — патчить их вслепую не будем: первый кодовый гейт логичнее бить по CodecDecode (потоки/аффинность, затем F16 → Q8_0/Q4_0).
 
 ## 5. Локальные точки входа
 
@@ -142,13 +144,32 @@ G1d (`docs/research/QWEN3_TTS_ISA_GATE.md:57-74`) официально DROP:
 
 Новый `workflow_dispatch`-workflow `.github/workflows/build-qwentts-arm-research.yml`, скопированный с `build-qwentts-musl.yml`, с двумя вариантами: `baseline` и `kleidiai`. Никакого `GGML_CPU_ARM_ARCH`, никакого повтора G1d. Workflow проверяет, что FA-коммит `76ec9de` — предок пина, и пишет manifest с sha.
 
-**Проверка:** workflow в `main`, `git diff --check`, валидный YAML; `baseline` — success (run `46114617340`), первый `kleidiai` — инфраструктурный failure (run `46115587334`, `fp16` → `fullfp16`), повтор после правки тулчейна — отдельный `workflow_dispatch`.
+**Проверка:** workflow в `main`, `git diff --check`, валидный YAML; `baseline` — success (`46114617340`, повтор `46118237217`), `kleidiai` — success (`46117846810`). Два промежуточных `kleidiai`-run (`46115587334`, `46116054109`) и probe `46117571710` были инфраструктурными отказами тулчейна, не вердиктами; каждый повтор шёл через отдельный `workflow_dispatch`.
 
 ### Шаг 1 — stage-профиль
 
 Восстановить `bench-resident.mjs` / `run-bun.sh` / `summary-resident.mjs` из diagnostics-артефактов мобильного агента или переписать минимальный измеритель с тем же протоколом 28 запросов. Снять разбивку Talker / Predictor / CodecDecode и распределение по 8 ядрам на **одном и том же** WAV. Отдельный кейс клонирования голоса использует референс из раздела 2.1; его sha сверяется до и после прогона.
 
 **Проверка:** 28/28 HTTP 200, совпадают sha эталона, вывод с долями по стадиям.
+
+#### 7.1. Фактический stage-профиль baseline (28/28, 01:36 UTC-смещение, CPH2747)
+
+Измерители восстановлены как локальные копии с env-оверрайдами (`QWEN_BIN` / `QWEN_OUT` / `QWEN_VARIANT` / `QWEN_PORT`): `bench-arm-resident.mjs` и `run-arm-resident.sh`. Эталонные `bin/` и `out-resident/` G1c не подменялись. Прогон идёт в приватной папке приложения: внешняя FAT/FUSE не даёт musl-загрузчику `mmap` executable-сегментов (`Not a valid dynamic program`). SHA бинарей сверяются перед каждым запуском.
+
+baseline — новый базовый бинарь `qwen-tts 5a54104f…` (пин `2edb35f`), **не** G1c `2b456a06…`. Поэтому для G2 корректно сравнивать KleidiAI только с этим свежим baseline на том же коммите тулчейна `ed8ef16`; G1c-цифры остаются исторической точкой отсчёта и в пороги G2 не переписываются.
+
+| Категория | n | HTTP 200 | RTF med | Первый PCM med | Talker med | Predictor med | CodecDecode med | Total med |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| cold-first | 1 | 1 | 2.6902 | 463 мс | 411 мс | 672 мс | 1634 мс | 3011 мс |
+| short | 12 | 12 | 2.5766 | 400 мс | 522 мс | 849 мс | 2184 мс | 3794 мс |
+| medium | 10 | 10 | 2.6699 | 968 мс | 2582 мс | 4334 мс | 11022 мс | 18689 мс |
+| long | 5 | 5 | 3.0117 | 1866 мс | 9410 мс | 13932 мс | 35199 мс | 60233 мс |
+
+Доли от Total: CodecDecode **57.6 / 59.0 / 58.4%** (short/medium/long), Predictor 22.4 / 23.2 / 23.1%, Talker 13.8 / 13.8 / 15.6%. Инструментация не потребовалась: `tts-server` сам печатает `[Perf]`-строки в stderr (`src/pipeline-tts.cpp:458-486`, `qt_log()`). Peak > 0.01 во всех 28 записях, формат s16le 24 kHz mono, 0 crash/hang. Итог: доминирует CodecDecode; `pwconv1/pwconv2` (Predictor) — не первая цель.
+
+**Контроль дрейфа:** первый (оборванный ADB) KleidiAI-прогон дал 19/28 записей с RTF med 3.0428 (short) и 3.0130 (medium) и равномерно большими времени всех стадий (~+25–30% к baseline: Talker 669 против 522 мс, Predictor 1097 против 849 мс, CodecDecode 2757 против 2184 мс на short). Равномерность похожа на тепловой/частотный дрейф стенда, а не на эффект конкретных ядер, поэтому для вердикта нужен A/B/A: после полного KleidiAI-прогона повторить baseline на том же коммите и сверить, не уехал ли он тоже. Первый baseline сохраняется как `resident-matrix-A1.json`.
+
+**Полный KleidiAI-прогон** (28/28 HTTP 200, exit 0, startup 2013 мс): RTF med `3.0965 / 3.3834 / 3.3820`, первый PCM `476 / 1216 / 2083 мс`, Peak > 0.01 во всех записях. Все стадии снова медленнее baseline: на short Talker 605 против 522 мс, Predictor 1008 против 849 мс, CodecDecode 2538 против 2184 мс; на long — 10984 против 9410, 16142 против 13932, 40073 против 35199 мс. Равномерное замедление сохраняется; формальный отчёт — `docs/research/QWEN3_TTS_G2_KLEIDIAI_GATE.md`. **Вердикт G2: DROP** (RTF хуже baseline на 20.2 / 26.7 / 12.3%, порог ≥10% улучшения не взят ни в одной категории). Повтор baseline A2 для оценки дрейфа был запущен, но ADB снова ушёл в offline и JSON не был забран; на вердикт это не влияет — даже с учётом дрейфа KleidiAI не может пройти порог.
 
 ### Шаг 2 — первый гейт по данным профиля
 
