@@ -30,13 +30,20 @@ jobs:
             echo "/tmp/zig-linux-x86_64-${ZIG}" >> $GITHUB_PATH
           fi
           zig version
-          # Zig driver expects -mcpu=<cpu>+<feature>, while ggml appends -march=<arch>.
-          # Translate that one flag in the wrapper; all other args pass through untouched.
+          # Zig 0.13 knows CPU models (generic/neoverse_*/apple_*), not LLVM
+          # arch names like armv8.6-a. ggml appends -march=armv8.6-a+dotprod+i8mm;
+          # translate ONLY the feature suffix into Zig's -mcpu=generic+<features>.
+          # All other compiler args pass through untouched.
           cat > /tmp/aarch64-musl-cc <<'WRAP'
           #!/bin/bash
           args=()
           for a in "$@"; do
-            if [[ "$a" == -march=* ]]; then args+=("-mcpu=${a#-march=}"); else args+=("$a"); fi
+            if [[ "$a" == -march=* ]]; then
+              rest="${a#-march=}"
+              args+=("-mcpu=generic+${rest#*+}")
+            else
+              args+=("$a")
+            fi
           done
           exec zig cc -target aarch64-linux-musl "${args[@]}"
           WRAP
@@ -44,7 +51,12 @@ jobs:
           #!/bin/bash
           args=()
           for a in "$@"; do
-            if [[ "$a" == -march=* ]]; then args+=("-mcpu=${a#-march=}"); else args+=("$a"); fi
+            if [[ "$a" == -march=* ]]; then
+              rest="${a#-march=}"
+              args+=("-mcpu=generic+${rest#*+}")
+            else
+              args+=("$a")
+            fi
           done
           exec zig c++ -target aarch64-linux-musl "${args[@]}"
           WRAP
