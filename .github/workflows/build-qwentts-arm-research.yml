@@ -48,11 +48,9 @@ jobs:
       - name: Zig toolchain (aarch64-linux-musl через zig cc)
         run: |
           set -euo pipefail
-          if command -v zig >/dev/null 2>&1; then
-            echo "zig уже есть: $(zig version)"
-          else
+          if ! command -v zig >/dev/null 2>&1 || ! command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
             sudo apt-get update -qq
-            sudo apt-get install -y -qq zig || true
+            sudo apt-get install -y -qq zig gcc-aarch64-linux-gnu || true
           fi
           if ! command -v zig >/dev/null 2>&1; then
             ZIG=0.13.0
@@ -61,7 +59,12 @@ jobs:
             tar -xf /tmp/zig.tar.xz -C /tmp
             echo "/tmp/zig-linux-x86_64-${ZIG}" >> $GITHUB_PATH
           fi
+          if ! command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
+            echo "aarch64-linux-gnu-gcc не найден: .S-ядра KleidiAI не собрать"
+            exit 1
+          fi
           zig version
+          aarch64-linux-gnu-gcc --version | head -n 1
           # G1d урок: Zig 0.13 не понимает -march=armv8.x-a как имя CPU.
           # KleidiAI v1.32.0 добавляет per-source -march=armv8.2-a+fp16+...:
           # переводим в -mcpu=generic+features и нормализуем GCC-имя fp16
@@ -113,8 +116,9 @@ jobs:
           ln -sf /tmp/aarch64-musl-toolchain /tmp/aarch64-musl-cc
           ln -sf /tmp/aarch64-musl-toolchain /tmp/aarch64-musl-cxx
 
-          # Диагностика тулчейна (не research-гейт): какие флаги реально
-          # доходят до встроенного ассемблера Zig для ARM FP16.
+          # Встроенный ассемблер Zig для AArch64 не получает CPU-фичи
+          # (TODO в Compilation.zig), поэтому .S-ядра KleidiAI собираем
+          # GNU-кросс-ассемблером, который понимает GCC-флаг +fp16.
           cat > /tmp/fp16-probe.S <<'PROBE'
           .text
           .global fp16_probe
@@ -122,18 +126,10 @@ jobs:
               fmax v17.8h, v17.8h, v0.8h
               ret
           PROBE
-          probe() {
-            label="$1"; shift
-            if zig cc -target aarch64-linux-musl "$@" -c /tmp/fp16-probe.S -o /tmp/fp16-probe.o 2>/tmp/fp16-probe.err; then
-              echo "PROBE OK: $label"
-            else
-              echo "PROBE FAIL: $label: $(head -c 200 /tmp/fp16-probe.err | tr '\n' ' ')"
-            fi
-          }
-          probe mcpu -mcpu=generic+fullfp16
-          probe wa -Wa,-march=armv8.2-a+fullfp16
-          probe both -mcpu=generic+fullfp16 -Wa,-march=armv8.2-a+fullfp16
-          probe march -march=armv8.2-a+fullfp16
+          aarch64-linux-gnu-gcc -march=armv8.2-a+fp16 \
+            -c /tmp/fp16-probe.S -o /tmp/fp16-probe.o \
+            || { echo "GNU ассемблер не принял +fp16"; exit 1; }
+          echo "PROBE OK: GNU aarch64 assembler accepts +fp16"
 
       - name: qwentts.cpp source (с ggml-сабмодулем)
         env:
@@ -175,6 +171,7 @@ jobs:
             -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
             -DCMAKE_C_COMPILER=/tmp/aarch64-musl-cc \
             -DCMAKE_CXX_COMPILER=/tmp/aarch64-musl-cxx \
+            -DCMAKE_ASM_COMPILER=/usr/bin/aarch64-linux-gnu-gcc \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" \
