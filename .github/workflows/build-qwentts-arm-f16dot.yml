@@ -1,0 +1,348 @@
+# Research-only G7: собрать qwentts.cpp под musl aarch64 и проверить NEON F16->F32 widening
+# в ggml_vec_dot_f16_f32. Не трогает release-apk.yml, APK, подпись и установку на устройство.
+# План: docs/plans/qwen3-tts-g7-f16-dot-neon.md (зафиксирован до правок, commit 5b4746a).
+# База: G4 codec8 (qwen-tts 595035cd...). Единственная переменная — ggml/src/ggml-cpu/vec.cpp.
+# Запрещено: GGML_CPU_ARM_ARCH / повтор G1d; KleidiAI (G2 DROP); SVE2/SME2.
+name: Build qwentts ARM research (baseline/f16dot)
+
+on:
+  workflow_dispatch:
+    inputs:
+      qwen_ref:
+        description: 'Коммит/тег ServeurpersoCom/qwentts.cpp'
+        required: false
+        default: '2edb35f87b709a070b2d5379f77e5c52a1daa585'
+      variant:
+        description: 'baseline (G4 codec8) или f16dot (одна переменная: vec.cpp)'
+        required: false
+        default: 'baseline'
+        type: choice
+        options:
+          - baseline
+          - f16dot
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qwentts-arm-f16dot-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Проверить вариант и зафиксировать параметры
+        id: params
+        run: |
+          set -euo pipefail
+          VARIANT="${{ github.event.inputs.variant || 'baseline' }}"
+          case "$VARIANT" in
+            baseline|f16dot) ;;
+            *) echo "Неизвестный variant: $VARIANT" >&2; exit 1 ;;
+          esac
+          echo "variant=$VARIANT" >> "$GITHUB_OUTPUT"
+          echo "research variant: $VARIANT"
+          echo "GGML_CPU_KLEIDIAI: OFF (G2 DROP, не повторяем)"
+          echo "GGML_CPU_ARM_ARCH: не задаётся (G1d DROP, не повторяем)"
+
+      - name: Zig toolchain (aarch64-linux-musl через zig cc)
+        run: |
+          set -euo pipefail
+          if ! command -v zig >/dev/null 2>&1 || ! command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq zig gcc-aarch64-linux-gnu || true
+          fi
+          if ! command -v zig >/dev/null 2>&1; then
+            ZIG=0.13.0
+            curl -fsSL --max-time 120 -o /tmp/zig.tar.xz \
+              "https://ziglang.org/download/${ZIG}/zig-linux-x86_64-${ZIG}.tar.xz"
+            tar -xf /tmp/zig.tar.xz -C /tmp
+            echo "/tmp/zig-linux-x86_64-${ZIG}" >> $GITHUB_PATH
+          fi
+          if ! command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
+            echo "aarch64-linux-gnu-gcc не найден"
+            exit 1
+          fi
+          zig version
+          aarch64-linux-gnu-gcc --version | head -n 1
+          cat > /tmp/aarch64-musl-toolchain <<'WRAPPER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          normalize_features() {
+            local rest="$1" f out="" last
+            while :; do
+              f=${rest%%+*}
+              if [ "$rest" = "$f" ]; then last=1; else last=0; fi
+              case "$f" in
+                fp16) f=fullfp16 ;;
+              esac
+              if [ -n "$out" ]; then out="$out+$f"; else out="$f"; fi
+              if [ "$last" -eq 1 ]; then break; fi
+              rest=${rest#*+}
+            done
+            printf '%s' "$out"
+          }
+
+          args=("-target" "aarch64-linux-musl")
+          for arg in "$@"; do
+            case "$arg" in
+              -march=armv8*|-march=armv9*)
+                arch=${arg#-march=}
+                feats=""
+                case "$arch" in
+                  *+*) feats=$(normalize_features "${arch#*+}") ;;
+                esac
+                if [ -n "$feats" ]; then
+                  args+=("-mcpu=generic+$feats")
+                else
+                  args+=("-mcpu=generic")
+                fi
+                ;;
+              *) args+=("$arg") ;;
+            esac
+          done
+
+          case "$(basename "$0")" in
+            *cxx) exec zig c++ "${args[@]}" ;;
+            *) exec zig cc "${args[@]}" ;;
+          esac
+          WRAPPER
+          chmod +x /tmp/aarch64-musl-toolchain
+          ln -sf /tmp/aarch64-musl-toolchain /tmp/aarch64-musl-cc
+          ln -sf /tmp/aarch64-musl-toolchain /tmp/aarch64-musl-cxx
+          echo "TOOLCHAIN READY"
+
+      - name: qwentts.cpp source (с ggml-сабмодулем)
+        env:
+          QWEN_REF: ${{ github.event.inputs.qwen_ref || '2edb35f87b709a070b2d5379f77e5c52a1daa585' }}
+        run: |
+          set -euo pipefail
+          git clone --recurse-submodules https://github.com/ServeurpersoCom/qwentts.cpp.git /tmp/qwentts
+          cd /tmp/qwentts
+          git checkout "$QWEN_REF"
+          git submodule update --init --recursive
+          QWEN_HEAD=$(git rev-parse HEAD)
+          GGML_HEAD=$(git -C ggml rev-parse HEAD)
+          echo "QWEN_HEAD=$QWEN_HEAD" >> "$GITHUB_ENV"
+          echo "GGML_HEAD=$GGML_HEAD" >> "$GITHUB_ENV"
+          echo "qwentts: $QWEN_HEAD"
+          echo "ggml: $GGML_HEAD"
+          if [ "$GGML_HEAD" != "ef4555b7aede4467a5de803b103615e0a5f30dd8" ]; then
+            echo "ggml pin differs from G2/G4: $GGML_HEAD" >&2
+            exit 1
+          fi
+
+      - name: Одна переменная — f16dot (vec.cpp); база — G4 codec8
+        env:
+          VARIANT: ${{ steps.params.outputs.variant }}
+        run: |
+          set -euo pipefail
+          cd /tmp/qwentts
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          variant = os.environ["VARIANT"]
+          p = Path("src/pipeline-codec.cpp")
+          t = p.read_text()
+          old_load = "    pc->bp              = bp;\n"
+          new_load = (
+              "    // G4 codec8: отдельный CPU-бэкенд кодера, 8 потоков; Talker/Predictor остаются на 4.\n"
+              "    BackendPair codec_bp = {};\n"
+              "    codec_bp.backend = cpu_backend_new(backend_cpu_n_threads() * 2);\n"
+              "    codec_bp.cpu_backend = codec_bp.backend;\n"
+              "    if (!codec_bp.backend) {\n"
+              "        qt_log(QT_LOG_ERROR, \"[Load] Codec backend init failed\");\n"
+              "        return false;\n"
+              "    }\n"
+              "    bp = codec_bp;\n"
+              "    pc->bp              = bp;\n"
+              "    qt_log(QT_LOG_INFO, \"[Load] Codec backend: %s (CPU threads: %d)\",\n"
+              "           ggml_backend_name(bp.backend), backend_cpu_n_threads() * 2);\n"
+          )
+          assert t.count(old_load) == 1, f"old_load count {t.count(old_load)}"
+          t = t.replace(old_load, new_load)
+          old_free = (
+              "    if (pc->gguf.gguf) {\n"
+              "        gf_close(&pc->gguf);\n"
+              "    }\n"
+              "}\n"
+          )
+          new_free = (
+              "    if (pc->gguf.gguf) {\n"
+              "        gf_close(&pc->gguf);\n"
+              "    }\n"
+              "    backend_release(pc->bp.backend, pc->bp.cpu_backend);\n"
+              "    pc->bp = {};\n"
+              "}\n"
+          )
+          assert t.count(old_free) == 1, f"old_free count {t.count(old_free)}"
+          t = t.replace(old_free, new_free)
+          p.write_text(t)
+
+          if variant == "f16dot":
+              v = Path("ggml/src/ggml-cpu/vec.cpp")
+              s = v.read_text()
+              old = (
+                  "#elif defined(GGML_SIMD)\n"
+                  "    // convert chunks of x to F32 and reuse the F32 SIMD dot\n"
+              )
+              new = (
+                  "#elif defined(__ARM_NEON) && defined(__ARM_FEATURE_FMA) && defined(__ARM_FP16_FORMAT_IEEE)\n"
+                  "    // G7 f16dot: в-регистральное расширение F16 -> F32,\n"
+                  "    // без stack-буфера и вызова ggml_vec_dot_f32 на каждые 64 элемента.\n"
+                  "    {\n"
+                  "        const int np = n & ~15;\n"
+                  "        float32x4_t acc0 = vdupq_n_f32(0.0f);\n"
+                  "        float32x4_t acc1 = vdupq_n_f32(0.0f);\n"
+                  "        float32x4_t acc2 = vdupq_n_f32(0.0f);\n"
+                  "        float32x4_t acc3 = vdupq_n_f32(0.0f);\n"
+                  "        for (int j = 0; j < np; j += 16) {\n"
+                  "            const float32x4_t x0 = vcvt_f32_f16(vld1_f16((const __fp16 *)(x + j +  0)));\n"
+                  "            const float32x4_t x1 = vcvt_f32_f16(vld1_f16((const __fp16 *)(x + j +  4)));\n"
+                  "            const float32x4_t x2 = vcvt_f32_f16(vld1_f16((const __fp16 *)(x + j +  8)));\n"
+                  "            const float32x4_t x3 = vcvt_f32_f16(vld1_f16((const __fp16 *)(x + j + 12)));\n"
+                  "            acc0 = vfmaq_f32(acc0, x0, vld1q_f32(y + j +  0));\n"
+                  "            acc1 = vfmaq_f32(acc1, x1, vld1q_f32(y + j +  4));\n"
+                  "            acc2 = vfmaq_f32(acc2, x2, vld1q_f32(y + j +  8));\n"
+                  "            acc3 = vfmaq_f32(acc3, x3, vld1q_f32(y + j + 12));\n"
+                  "        }\n"
+                  "        sumf += vaddvq_f32(vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3)));\n"
+                  "        i = np;\n"
+                  "    }\n"
+                  "#elif defined(GGML_SIMD)\n"
+                  "    // convert chunks of x to F32 and reuse the F32 SIMD dot\n"
+              )
+              assert s.count(old) == 1, f"vec.cpp anchor count {s.count(old)}"
+              v.write_text(s.replace(old, new))
+          PY
+          grep -Fq 'G4 codec8' src/pipeline-codec.cpp \
+            || { echo "codec8: маркер правки не найден" >&2; exit 1; }
+          test "$(git diff --name-only)" = "src/pipeline-codec.cpp" \
+            || { echo "qwentts: изменено больше одного файла" >&2; exit 1; }
+          if [ "$VARIANT" = "f16dot" ]; then
+            grep -Fq 'G7 f16dot' ggml/src/ggml-cpu/vec.cpp \
+              || { echo "f16dot: маркер правки не найден" >&2; exit 1; }
+            test "$(git -C ggml diff --name-only)" = "src/ggml-cpu/vec.cpp" \
+              || { echo "ggml: изменено больше одного файла" >&2; exit 1; }
+            echo "f16dot: G4 codec8 + NEON F16->F32 widening в ggml_vec_dot_f16_f32"
+            git -C ggml --no-pager diff -- src/ggml-cpu/vec.cpp
+          else
+            test -z "$(git -C ggml status --porcelain)" \
+              || { echo "baseline: ggml не должен быть изменён" >&2; exit 1; }
+            echo "baseline: только G4 codec8, ggml байт-в-байт"
+          fi
+          git --no-pager diff -- src/pipeline-codec.cpp
+
+      - name: CMake musl aarch64 (флаги байт-в-байт как в G4/G6)
+        env:
+          VARIANT: ${{ steps.params.outputs.variant }}
+        run: |
+          set -euo pipefail
+          cd /tmp/qwentts
+          cmake -S . -B build \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_C_COMPILER=/tmp/aarch64-musl-cc \
+            -DCMAKE_CXX_COMPILER=/tmp/aarch64-musl-cxx \
+            -DCMAKE_ASM_COMPILER=/usr/bin/aarch64-linux-gnu-gcc \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" \
+            -DCMAKE_BUILD_RPATH='$ORIGIN' \
+            -DGGML_NATIVE=OFF \
+            -DGGML_STATIC=ON \
+            -DGGML_BACKEND_DL=OFF \
+            -DGGML_CPU=ON \
+            -DGGML_CPU_KLEIDIAI=OFF \
+            -DGGML_BUILD_TESTS=OFF \
+            -DGGML_BUILD_EXAMPLES=OFF \
+            -DQWEN_SHARED=ON 2>&1 | tee "/tmp/qwentts-cmake-$VARIANT.log"
+          cmake --build build -j4 --target qwen-tts qwen-codec tts-server qwen
+
+      - name: Проверка артефактов и manifest
+        env:
+          VARIANT: ${{ steps.params.outputs.variant }}
+        run: |
+          set -euo pipefail
+          cd /tmp/qwentts/build
+          file qwen-tts qwen-codec tts-server libqwen.so
+          readelf -Ws libqwen.so > /tmp/libqwen-symbols.txt
+          grep -q 'qt_init' /tmp/libqwen-symbols.txt || { echo "нет qt_init"; exit 1; }
+          grep -q 'qt_synthesize' /tmp/libqwen-symbols.txt || { echo "нет qt_synthesize"; exit 1; }
+          echo '--- dynamic deps ---'
+          for f in qwen-tts qwen-codec tts-server libqwen.so; do
+            readelf -d "$f" | grep -E 'NEEDED|RUNPATH' || true
+          done
+          BIN_SHA=$(sha256sum qwen-tts qwen-codec tts-server libqwen.so)
+          QWEN_SHA=$(sha256sum qwen-tts | cut -d' ' -f1)
+          CPU_LIB=$(find . -maxdepth 3 -name 'libggml-cpu.so.1.0.0' | head -n 1)
+          [ -n "$CPU_LIB" ] || { echo "нет libggml-cpu.so.1.0.0" >&2; exit 1; }
+          CPU_SHA=$(sha256sum "$CPU_LIB" | cut -d' ' -f1)
+          echo "$CPU_SHA  $CPU_LIB"
+          # Патч G7 меняет только ggml: qwentts-бинари остаются байт-идентичными G4 codec8,
+          # меняется libggml-cpu.so.1.0.0. Это и есть доказательство, что правка попала в сборку.
+          case "$QWEN_SHA" in
+            595035cd49902412b1085f5a6cdeec5aa5cdf7ef7ae49f498fb3fa3d3921e202)
+              echo "qwen-tts байт-идентичен G4 codec8 (ожидаемо: меняется только ggml)" ;;
+            *) echo "qwen-tts $QWEN_SHA != G4 595035cd..." >&2; exit 1 ;;
+          esac
+          case "$VARIANT" in
+            baseline)
+              case "$CPU_SHA" in
+                b0bc63b93b2d789aaefdf0893b534044563561e40e8c8db856c91a60434a711f)
+                  echo "baseline: libggml-cpu байт-идентичен G4" ;;
+                *) echo "baseline: libggml-cpu $CPU_SHA != G4 b0bc63b9..." >&2; exit 1 ;;
+              esac
+              ;;
+            f16dot)
+              case "$CPU_SHA" in
+                b0bc63b93b2d789aaefdf0893b534044563561e40e8c8db856c91a60434a711f)
+                  echo "f16dot: libggml-cpu не изменился, патч vec.cpp не попал в сборку" >&2; exit 1 ;;
+                *) echo "f16dot: libggml-cpu отличается от G4: $CPU_SHA" ;;
+              esac
+              ;;
+          esac
+          GGML_LIBS=$(find . -maxdepth 3 -name 'libggml*.so*' | sed 's|^\./||' | sort -u)
+          tar czf "/tmp/qwentts-arm-$VARIANT.tar.gz" \
+            qwen-tts qwen-codec tts-server libqwen.so $GGML_LIBS
+          SHA=$(sha256sum "/tmp/qwentts-arm-$VARIANT.tar.gz" | cut -d' ' -f1)
+          printf '%s  %s\n' "$SHA" "/tmp/qwentts-arm-$VARIANT.tar.gz" > "/tmp/qwentts-arm-$VARIANT.sha256"
+          echo "$BIN_SHA" > "/tmp/qwentts-arm-$VARIANT.binaries.sha256"
+          jq -n \
+            --arg variant "$VARIANT" \
+            --arg qwen_ref "$QWEN_HEAD" \
+            --arg ggml_ref "$GGML_HEAD" \
+            --arg patch "$(case "$VARIANT" in f16dot) echo 'G4 codec8 + G7 NEON F16->F32 widening in ggml_vec_dot_f16_f32' ;; *) echo 'G4 codec8 only' ;; esac)" \
+            --arg kleidiai OFF \
+            --arg qwen_tts_sha256 "$QWEN_SHA" \
+            --arg libggml_cpu_sha256 "$CPU_SHA" \
+            --arg tar_sha256 "$SHA" \
+            --arg binaries_sha256 "$BIN_SHA" \
+            '{
+              variant: $variant,
+              qwen_ref: $qwen_ref,
+              ggml_ref: $ggml_ref,
+              patch: $patch,
+              ggml_cpu_arch: null,
+              ggml_cpu_kleidiai: $kleidiai,
+              flash_attn: "already in baseline via 76ec9de",
+              qwen_tts_sha256: $qwen_tts_sha256,
+              libggml_cpu_sha256: $libggml_cpu_sha256,
+              tar_sha256: $tar_sha256,
+              binaries_sha256: $binaries_sha256,
+              scope: "research-only; APK/CI-release not touched"
+            }' > "/tmp/qwentts-arm-$VARIANT.manifest.json"
+          cat "/tmp/qwentts-arm-$VARIANT.manifest.json"
+
+      - name: Upload research artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwentts-arm-${{ steps.params.outputs.variant }}
+          path: |
+            /tmp/qwentts-arm-*.tar.gz
+            /tmp/qwentts-arm-*.sha256
+            /tmp/qwentts-arm-*.manifest.json
+          if-no-files-found: error
