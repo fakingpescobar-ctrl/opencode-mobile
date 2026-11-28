@@ -113,6 +113,28 @@ jobs:
           ln -sf /tmp/aarch64-musl-toolchain /tmp/aarch64-musl-cc
           ln -sf /tmp/aarch64-musl-toolchain /tmp/aarch64-musl-cxx
 
+          # Диагностика тулчейна (не research-гейт): какие флаги реально
+          # доходят до встроенного ассемблера Zig для ARM FP16.
+          cat > /tmp/fp16-probe.S <<'PROBE'
+          .text
+          .global fp16_probe
+          fp16_probe:
+              fmax v17.8h, v17.8h, v0.8h
+              ret
+          PROBE
+          probe() {
+            label="$1"; shift
+            if zig cc -target aarch64-linux-musl "$@" -c /tmp/fp16-probe.S -o /tmp/fp16-probe.o 2>/tmp/fp16-probe.err; then
+              echo "PROBE OK: $label"
+            else
+              echo "PROBE FAIL: $label: $(head -c 200 /tmp/fp16-probe.err | tr '\n' ' ')"
+            fi
+          }
+          probe mcpu -mcpu=generic+fullfp16
+          probe wa -Wa,-march=armv8.2-a+fullfp16
+          probe both -mcpu=generic+fullfp16 -Wa,-march=armv8.2-a+fullfp16
+          probe march -march=armv8.2-a+fullfp16
+
       - name: qwentts.cpp source (с ggml-сабмодулем)
         env:
           QWEN_REF: ${{ github.event.inputs.qwen_ref || '2edb35f87b709a070b2d5379f77e5c52a1daa585' }}
