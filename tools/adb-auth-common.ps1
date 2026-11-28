@@ -16,7 +16,13 @@
 #     уходит на устройство ФАЙЛОМ.
 # Скан обязательно идёт под run-as, иначе hidepid не даст прочитать environ соседей.
 
-$script:OcAdb = "C:\Users\OLD\AppData\Local\Android\Sdk\platform-tools\adb.exe"
+# adb может лежать в разных SDK — берём первый существующий, а не жёсткий путь старого PC.
+$script:OcAdb = @(
+    "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
+    "C:\Users\BIGBRO\tools\platform-tools\adb.exe"
+    "C:\Users\OLD\AppData\Local\Android\Sdk\platform-tools\adb.exe"
+) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $script:OcAdb) { throw "adb.exe не найден в известных SDK" }
 $script:OcPkg = "org.opencode.mobile.debug"
 
 # Возвращает пароль сервера либо $null, если serve не запущен / переменной нет.
@@ -31,7 +37,7 @@ for p in /proc/[0-9]*; do
     break
   fi
 done
-'@ | Set-Content -LiteralPath $scannerLocal -NoNewline
+'@ -replace "`r`n", "`n" | Set-Content -LiteralPath $scannerLocal -NoNewline
 
         & $script:OcAdb push $scannerLocal $scannerRemote 2>&1 | Out-Null
         & $script:OcAdb shell "chmod 755 $scannerRemote" 2>&1 | Out-Null
