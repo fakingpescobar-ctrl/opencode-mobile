@@ -220,7 +220,8 @@ jobs:
           PY
           grep -Fq 'G4 codec8' src/pipeline-codec.cpp \
             || { echo "codec8: маркер правки не найден" >&2; exit 1; }
-          test "$(git diff --name-only)" = "src/pipeline-codec.cpp" \
+          # submodule ggml считается изменённым в родительском репо; ограничиваемся src/
+          test "$(git diff --name-only -- src/)" = "src/pipeline-codec.cpp" \
             || { echo "qwentts: изменено больше одного файла" >&2; exit 1; }
           if [ "$VARIANT" = "f16dot" ]; then
             grep -Fq 'G7 f16dot' ggml/src/ggml-cpu/vec.cpp \
