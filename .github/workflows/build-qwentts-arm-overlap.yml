@@ -614,12 +614,14 @@ jobs:
           p.write_text(t)
           print("G8 overlap: pipeline-tts.cpp patched")
           PY
-          grep -Fq 'G8 async codec overlap' src/pipeline-tts.cpp \
-            || { echo "G8: маркер правки не найден" >&2; exit 1; }
+          grep -Fq 'G4 codec8' src/pipeline-codec.cpp \
+            || { echo "G8: маркер G4 codec8 не найден" >&2; exit 1; }
           if [ "$VARIANT" = "baseline" ]; then
             test "$(git diff --name-only -- src/)" = "src/pipeline-codec.cpp" \
               || { echo "baseline: изменено больше одного файла" >&2; exit 1; }
           else
+            grep -Fq 'G8 async codec overlap' src/pipeline-tts.cpp \
+              || { echo "G8: overlap-маркер не найден" >&2; exit 1; }
             files=$(git diff --name-only -- src/ | tr '\n' ' ' | sed 's/ $//')
             test "$files" = "src/pipeline-codec.cpp src/pipeline-tts.cpp" \
               || { echo "overlap: изменено больше двух файлов: $files" >&2; exit 1; }
@@ -673,10 +675,15 @@ jobs:
           [ -n "$CPU_LIB" ] || { echo "нет libggml-cpu.so.1.0.0" >&2; exit 1; }
           CPU_SHA=$(sha256sum "$CPU_LIB" | cut -d' ' -f1)
           LIB_SHA=$(sha256sum libqwen.so | cut -d' ' -f1)
-          case "$QWEN_SHA" in
-            595035cd49902412b1085f5a6cdeec5aa5cdf7ef7ae49f498fb3fa3d3921e202)
-              echo "qwen-tts байт-идентичен G4 (ожидаемо)" ;;
-            *) echo "qwen-tts $QWEN_SHA != G4 595035cd..." >&2; exit 1 ;;
+          case "$VARIANT:$QWEN_SHA" in
+            baseline:595035cd49902412b1085f5a6cdeec5aa5cdf7ef7ae49f498fb3fa3d3921e202)
+              echo "baseline: qwen-tts байт-идентичен G4" ;;
+            baseline:*)
+              echo "baseline: qwen-tts $QWEN_SHA != G4 595035cd..." >&2; exit 1 ;;
+            overlap:595035cd49902412b1085f5a6cdeec5aa5cdf7ef7ae49f498fb3fa3d3921e202)
+              echo "overlap: qwen-tts не изменился, патч не попал в сборку" >&2; exit 1 ;;
+            overlap:*)
+              echo "overlap: qwen-tts отличается от G4: $QWEN_SHA" ;;
           esac
           case "$CPU_SHA" in
             b0bc63b93b2d789aaefdf0893b534044563561e40e8c8db856c91a60434a711f)
