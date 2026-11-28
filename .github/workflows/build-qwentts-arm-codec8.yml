@@ -1,8 +1,9 @@
-# Research-only: собрать qwentts.cpp под musl aarch64 и проверить codec8-вариант.
+# Research-only: собрать qwentts.cpp под musl aarch64 и проверить codec8/stream16.
 # Не трогает release-apk.yml, APK, подпись и установку на устройство.
-# План: docs/plans/qwen3-tts-codec-only-threads.md
+# Планы: docs/plans/qwen3-tts-codec-only-threads.md (G4 codec8),
+#        docs/plans/qwen3-tts-g6-codec-stream-chunk.md (G6 stream16).
 # Запрещено: GGML_CPU_ARM_ARCH / повтор G1d; KleidiAI (G2 DROP); SVE2/SME2.
-name: Build qwentts ARM research (baseline/codec8)
+name: Build qwentts ARM research (baseline/codec8/stream16)
 
 on:
   workflow_dispatch:
@@ -12,13 +13,14 @@ on:
         required: false
         default: '2edb35f87b709a070b2d5379f77e5c52a1daa585'
       variant:
-        description: 'baseline или codec8 (только одна переменная за прогон)'
+        description: 'baseline, codec8 или stream16 (только одна переменная за прогон)'
         required: false
         default: 'baseline'
         type: choice
         options:
           - baseline
           - codec8
+          - stream16
 
 permissions:
   contents: read
@@ -38,7 +40,7 @@ jobs:
           set -euo pipefail
           VARIANT="${{ github.event.inputs.variant || 'baseline' }}"
           case "$VARIANT" in
-            baseline|codec8) ;;
+            baseline|codec8|stream16) ;;
             *) echo "Неизвестный variant: $VARIANT" >&2; exit 1 ;;
           esac
           echo "variant=$VARIANT" >> "$GITHUB_OUTPUT"
@@ -135,7 +137,7 @@ jobs:
             exit 1
           fi
 
-      - name: Одна переменная — отдельный CPU-бэкенд для CodecDecode (codec8)
+      - name: Одна переменная — codec8 (8 потоков) и, для G6, stream16 (T=16)
         env:
           VARIANT: ${{ steps.params.outputs.variant }}
         run: |
@@ -152,7 +154,9 @@ jobs:
             exit 0
           fi
           python3 - <<'PY'
+          import os
           from pathlib import Path
+          variant = os.environ["VARIANT"]
           p = Path("src/pipeline-codec.cpp")
           t = p.read_text()
           old_load = "    pc->bp              = bp;\n"
@@ -189,13 +193,29 @@ jobs:
           assert t.count(old_free) == 1, f"old_free count {t.count(old_free)}"
           t = t.replace(old_free, new_free)
           p.write_text(t)
+          if variant == "stream16":
+              h = Path("src/pipeline-codec.h")
+              s = h.read_text()
+              old_cls = "static const int CODEC_STREAM_CLASSES = 4;"
+              new_cls = "static const int CODEC_STREAM_CLASSES = 5; // G6 stream16: T in {1,2,4,8,16}"
+              assert s.count(old_cls) == 1, f"old_cls count {s.count(old_cls)}"
+              h.write_text(s.replace(old_cls, new_cls))
           PY
           grep -Fq 'G4 codec8' src/pipeline-codec.cpp \
             || { echo "codec8: маркер правки не найден" >&2; exit 1; }
-          test "$(git diff --name-only)" = "src/pipeline-codec.cpp" \
-            || { echo "codec8: изменено больше одного файла" >&2; exit 1; }
+          if [ "$VARIANT" = "stream16" ]; then
+            grep -Fq 'G6 stream16' src/pipeline-codec.h \
+              || { echo "stream16: маркер правки не найден" >&2; exit 1; }
+            test "$(git diff --name-only | sort | tr '\n' ' ')" = "src/pipeline-codec.cpp src/pipeline-codec.h " \
+              || { echo "stream16: изменено больше двух файлов" >&2; exit 1; }
+            echo "stream16: поверх codec8 (8 потоков), CODEC_STREAM_CLASSES=5 (T до 16)"
+          else
+            test "$(git diff --name-only)" = "src/pipeline-codec.cpp" \
+              || { echo "codec8: изменено больше одного файла" >&2; exit 1; }
+            echo "codec8: CodecDecode = 8 потоков, Talker/Predictor = 4"
+          fi
           git --no-pager diff -- src/pipeline-codec.cpp
-          echo "codec8: CodecDecode = 8 потоков, Talker/Predictor = 4"
+          if [ "$VARIANT" = "stream16" ]; then git --no-pager diff -- src/pipeline-codec.h; fi
       - name: CMake musl aarch64 (флаги байт-в-байт как в G2)
         env:
           VARIANT: ${{ steps.params.outputs.variant }}
@@ -245,9 +265,15 @@ jobs:
             esac
           else
             case "$QWEN_SHA" in
-              5a54104f*) echo "codec8: бинарь не изменился, правка не попала в сборку" >&2; exit 1 ;;
-              *) echo "codec8: qwen-tts отличается от baseline: $QWEN_SHA" ;;
+              5a54104f*) echo "$VARIANT: бинарь не изменился, правка не попала в сборку" >&2; exit 1 ;;
+              *) echo "$VARIANT: qwen-tts отличается от baseline: $QWEN_SHA" ;;
             esac
+            if [ "$VARIANT" = "stream16" ]; then
+              case "$QWEN_SHA" in
+                595035cd*) echo "stream16: бинарь совпадает с G4 codec8, правка T=16 не попала" >&2; exit 1 ;;
+                *) echo "stream16: qwen-tts отличается от G4 codec8 595035cd" ;;
+              esac
+            fi
           fi
           GGML_LIBS=$(find . -maxdepth 3 -name 'libggml*.so*' | sed 's|^\./||' | sort -u)
           tar czf "/tmp/qwentts-arm-$VARIANT.tar.gz" \
@@ -259,7 +285,7 @@ jobs:
             --arg variant "$VARIANT" \
             --arg qwen_ref "$QWEN_HEAD" \
             --arg ggml_ref "$GGML_HEAD" \
-            --arg patch "$([ "$VARIANT" = "codec8" ] && echo 'pipeline_codec_load: separate 8-thread CPU backend for codec' || echo 'none')" \
+            --arg patch "$(case "$VARIANT" in codec8) echo 'pipeline_codec_load: separate 8-thread CPU backend for codec' ;; stream16) echo 'codec8 + CODEC_STREAM_CLASSES 4->5 (T max 16)' ;; *) echo 'none' ;; esac)" \
             --arg kleidiai OFF \
             --arg qwen_tts_sha256 "$QWEN_SHA" \
             --arg tar_sha256 "$SHA" \
