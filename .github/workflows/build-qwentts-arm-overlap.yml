@@ -620,9 +620,9 @@ jobs:
             test "$(git diff --name-only -- src/)" = "src/pipeline-codec.cpp" \
               || { echo "baseline: изменено больше одного файла" >&2; exit 1; }
           else
-            test "$(git diff --name-only -- src/)" = "src/pipeline-codec.cpp
-src/pipeline-tts.cpp" \
-              || { echo "overlap: изменено больше двух файлов" >&2; exit 1; }
+            files=$(git diff --name-only -- src/ | tr '\n' ' ' | sed 's/ $//')
+            test "$files" = "src/pipeline-codec.cpp src/pipeline-tts.cpp" \
+              || { echo "overlap: изменено больше двух файлов: $files" >&2; exit 1; }
           fi
           test -z "$(git -C ggml status --porcelain)" \
             || { echo "ggml не должен быть изменён" >&2; exit 1; }
