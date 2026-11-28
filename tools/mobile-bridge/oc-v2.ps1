@@ -127,9 +127,19 @@ switch ($Command) {
         $prompt = @{ text = ($Text -join ' ') }
         "session: $id"
         "prompt: $($prompt.text)"
+        # POST только ставит сообщение в очередь: ответ генерируется асинхронно.
+        $before = Invoke-OcApi "/session/$id/message"
+        $beforeId = if ($before.data.Count) { $before.data[0].id } else { '' }
         $null = Invoke-OcApi "/session/$id/prompt" -Method POST -Body $prompt -Timeout $TimeoutSec
-        # POST возвращает служебную обёртку; текст надёжнее дочитать из /message.
-        $m = Invoke-OcApi "/session/$id/message"
+        $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
+        $m = $null
+        while ([DateTime]::UtcNow -lt $deadline) {
+            $m = Invoke-OcApi "/session/$id/message"
+            $fresh = @($m.data | Where-Object { $_.id -ne $beforeId -and (Get-Prop $_ 'type') -eq 'assistant' }) | Select-Object -First 1
+            if ($fresh) { break }
+            Start-Sleep -Seconds 2
+        }
+        if (-not $m) { throw 'Не удалось дочитать ответ агента' }
         Show-Text -Messages $m -Count 4
     }
     'abort' {
