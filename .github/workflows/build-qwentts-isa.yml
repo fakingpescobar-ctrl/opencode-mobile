@@ -30,8 +30,24 @@ jobs:
             echo "/tmp/zig-linux-x86_64-${ZIG}" >> $GITHUB_PATH
           fi
           zig version
-          printf '#!/bin/sh\nexec zig cc -target aarch64-linux-musl "$@"\n' > /tmp/aarch64-musl-cc
-          printf '#!/bin/sh\nexec zig c++ -target aarch64-linux-musl "$@"\n' > /tmp/aarch64-musl-cxx
+          # Zig driver expects -mcpu=<cpu>+<feature>, while ggml appends -march=<arch>.
+          # Translate that one flag in the wrapper; all other args pass through untouched.
+          cat > /tmp/aarch64-musl-cc <<'WRAP'
+          #!/bin/bash
+          args=()
+          for a in "$@"; do
+            if [[ "$a" == -march=* ]]; then args+=("-mcpu=${a#-march=}"); else args+=("$a"); fi
+          done
+          exec zig cc -target aarch64-linux-musl "${args[@]}"
+          WRAP
+          cat > /tmp/aarch64-musl-cxx <<'WRAP'
+          #!/bin/bash
+          args=()
+          for a in "$@"; do
+            if [[ "$a" == -march=* ]]; then args+=("-mcpu=${a#-march=}"); else args+=("$a"); fi
+          done
+          exec zig c++ -target aarch64-linux-musl "${args[@]}"
+          WRAP
           chmod +x /tmp/aarch64-musl-cc /tmp/aarch64-musl-cxx
 
       - name: qwentts.cpp source (с ggml-сабмодулем)
