@@ -63,19 +63,36 @@ jobs:
           fi
           zig version
           # G1d урок: Zig 0.13 не понимает -march=armv8.x-a как имя CPU.
-          # KleidiAI добавляет per-source -march=armv8.2-a+..., поэтому
-          # переводим ARM -march в -mcpu=generic+features, как в research-G1d.
-          cat > /tmp/aarch64-musl-cc <<'WRAPPER'
+          # KleidiAI v1.32.0 добавляет per-source -march=armv8.2-a+fp16+...:
+          # переводим в -mcpu=generic+features и нормализуем GCC-имя fp16
+          # в Zig-имя fullfp16 (иначе: error: unknown CPU feature: 'fp16').
+          cat > /tmp/aarch64-musl-toolchain <<'WRAPPER'
           #!/usr/bin/env bash
           set -euo pipefail
+
+          normalize_features() {
+            local rest="$1" f out="" last
+            while :; do
+              f=${rest%%+*}
+              if [ "$rest" = "$f" ]; then last=1; else last=0; fi
+              case "$f" in
+                fp16) f=fullfp16 ;;
+              esac
+              if [ -n "$out" ]; then out="$out+$f"; else out="$f"; fi
+              if [ "$last" -eq 1 ]; then break; fi
+              rest=${rest#*+}
+            done
+            printf '%s' "$out"
+          }
+
           args=("-target" "aarch64-linux-musl")
           for arg in "$@"; do
             case "$arg" in
               -march=armv8*|-march=armv9*)
                 arch=${arg#-march=}
+                feats=""
                 case "$arch" in
-                  *+*) feats=${arch#*+} ;;
-                  *) feats="" ;;
+                  *+*) feats=$(normalize_features "${arch#*+}") ;;
                 esac
                 if [ -n "$feats" ]; then
                   args+=("-mcpu=generic+$feats")
@@ -86,32 +103,15 @@ jobs:
               *) args+=("$arg") ;;
             esac
           done
-          exec zig cc "${args[@]}"
+
+          case "$(basename "$0")" in
+            *cxx) exec zig c++ "${args[@]}" ;;
+            *) exec zig cc "${args[@]}" ;;
+          esac
           WRAPPER
-          cat > /tmp/aarch64-musl-cxx <<'WRAPPER'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          args=("-target" "aarch64-linux-musl")
-          for arg in "$@"; do
-            case "$arg" in
-              -march=armv8*|-march=armv9*)
-                arch=${arg#-march=}
-                case "$arch" in
-                  *+*) feats=${arch#*+} ;;
-                  *) feats="" ;;
-                esac
-                if [ -n "$feats" ]; then
-                  args+=("-mcpu=generic+$feats")
-                else
-                  args+=("-mcpu=generic")
-                fi
-                ;;
-              *) args+=("$arg") ;;
-            esac
-          done
-          exec zig c++ "${args[@]}"
-          WRAPPER
-          chmod +x /tmp/aarch64-musl-cc /tmp/aarch64-musl-cxx
+          chmod +x /tmp/aarch64-musl-toolchain
+          ln -sf /tmp/aarch64-musl-toolchain /tmp/aarch64-musl-cc
+          ln -sf /tmp/aarch64-musl-toolchain /tmp/aarch64-musl-cxx
 
       - name: qwentts.cpp source (с ggml-сабмодулем)
         env:

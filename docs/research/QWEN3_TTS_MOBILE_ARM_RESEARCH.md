@@ -82,6 +82,7 @@ G1d (`docs/research/QWEN3_TTS_ISA_GATE.md:57-74`) официально DROP:
 - В пине `ServeurpersoCom/qwentts.cpp @ 2edb35f` сабмодуль ggml зафиксирован на `ef4555b7aede4467a5de803b103615e0a5f30dd8`.
 - В этом ggml уже есть `src/ggml-cpu/kleidiai/` и опция `GGML_CPU_KLEIDIAI`; `CMakeLists.txt` тянет KleidiAI `v1.32.0` через `FetchContent` с MD5 `05f1953428ffe8e8c7f585dc6d508887`.
 - Ядра KleidiAI — Apache-2.0, basic сборка поддерживает Linux/Android AArch64.
+- Живой `baseline` (`workflow_dispatch`, run `46114617340`) собрался успешно. Первый `kleidiai` (run `46115587334`) упал не по существу варианта: KleidiAI v1.32.0 задаёт per-source `-march=armv8.2-a+fp16+...`, а Zig 0.13 знает ту же фичу как `fullfp16` (`error: unknown CPU feature: 'fp16'`). Обёртка тулчейна теперь переводит `-march` в `-mcpu=generic+features` и нормализует фичи по отдельным токенам. Это инфраструктурная правка, не технический DROP KleidiAI и не новый research-гейт.
 
 **Решение:** KleidiAI — первый новый замеряемый вариант после baseline. Ожидаемый выигрыш на dotprod/i8mm — гипотеза, не факт. SME2/SVE2-части не берём: Oryon их через HWCAP не заявляет.
 
@@ -141,7 +142,7 @@ G1d (`docs/research/QWEN3_TTS_ISA_GATE.md:57-74`) официально DROP:
 
 Новый `workflow_dispatch`-workflow `.github/workflows/build-qwentts-arm-research.yml`, скопированный с `build-qwentts-musl.yml`, с двумя вариантами: `baseline` и `kleidiai`. Никакого `GGML_CPU_ARM_ARCH`, никакого повтора G1d. Workflow проверяет, что FA-коммит `76ec9de` — предок пина, и пишет manifest с sha.
 
-**Проверка:** workflow в `main`, `git diff --check`, валидный YAML; запуск вручную через Actions.
+**Проверка:** workflow в `main`, `git diff --check`, валидный YAML; `baseline` — success (run `46114617340`), первый `kleidiai` — инфраструктурный failure (run `46115587334`, `fp16` → `fullfp16`), повтор после правки тулчейна — отдельный `workflow_dispatch`.
 
 ### Шаг 1 — stage-профиль
 
